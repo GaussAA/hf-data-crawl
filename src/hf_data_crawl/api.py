@@ -47,6 +47,14 @@ MAX_LIMIT = 1000
 RETRYABLE_STATUS: frozenset[int] = frozenset({429, 500, 502, 503, 504})
 
 
+class TransportError(RuntimeError):
+    """传输层失败（连接中断、TLS 握手失败、代理断流）。
+
+    与 HTTP 状态码错误分开：状态码是服务器明确答复，连接异常是没收到答复，
+    两者都该重试，但原因与日志文本不同。
+    """
+
+
 @dataclass(frozen=True)
 class HfResponse:
     """transport 的返回形态：状态码、响应头、原始字节。"""
@@ -204,11 +212,19 @@ class HfDatasetApi:
     def _request(self, params: dict[str, Any]) -> HfResponse:
         attempt = 0
         while True:
-            response = self._transport.get(
-                self._base_url,
-                dict(params),
-                {"Accept": "application/json"},
-            )
+            try:
+                response = self._transport.get(
+                    self._base_url,
+                    dict(params),
+                    {"Accept": "application/json"},
+                )
+            except TransportError:
+                if attempt >= self._max_retries:
+                    raise
+                self._sleeper(self._backoff(attempt))
+                attempt += 1
+                continue
+
             if response.status == 200:
                 return response
             if response.status in RETRYABLE_STATUS and attempt < self._max_retries:
@@ -216,6 +232,9 @@ class HfDatasetApi:
                 attempt += 1
                 continue
             raise RuntimeError(f"HF 接口返回 {response.status}: {response.body[:200]!r}")
+
+    def _backoff(self, attempt: int) -> float:
+        return min(self._retry_base_delay * (2**attempt), 60.0)
 
     def _retry_delay(self, response: HfResponse, attempt: int) -> float:
         _, reset_in = _parse_rate_limit(response.headers)

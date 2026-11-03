@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from hf_data_crawl.api import HfDatasetApi, HfResponse
+from hf_data_crawl.api import HfDatasetApi, HfResponse, TransportError
 from hf_data_crawl.checkpoint import MemoryCheckpoint
 
 
@@ -216,6 +216,43 @@ def test_中断后从checkpoint续跑不重复入库() -> None:
 
     assert full == ["a/1", "a/2", "a/3"]
     assert first_half + resumed == full
+
+
+def test_连接中断后重试并最终成功() -> None:
+    """代理 SSL 断流并不返回状态码，只抛连接异常——这条路径必须也能重试。"""
+
+    class FlakyTransport:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> HfResponse:
+            self.calls += 1
+            if self.calls <= 2:
+                raise TransportError("ConnectError: [SSL: UNEXPECTED_EOF_WHILE_READING]")
+            return HfResponse(
+                status=200,
+                headers={"RateLimit": '"api";r=470;t=180'},
+                body=json.dumps([record("a/ok")]).encode(),
+            )
+
+    sleeps: list[float] = []
+    api = HfDatasetApi(transport=FlakyTransport(), sleeper=sleeps.append)
+
+    pages = list(api.scan(sort="createdAt"))
+
+    assert [r["id"] for r in pages[0].records] == ["a/ok"]
+    assert len(sleeps) == 2
+
+
+def test_连接持续中断超过重试次数即抛出() -> None:
+    class DeadTransport:
+        def get(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> HfResponse:
+            raise TransportError("ConnectError: connection reset")
+
+    api = HfDatasetApi(transport=DeadTransport(), sleeper=lambda _: None, max_retries=3)
+
+    with pytest.raises(TransportError, match="connection reset"):
+        list(api.scan(sort="createdAt"))
 
 
 def test_响应头大小写不敏感() -> None:
