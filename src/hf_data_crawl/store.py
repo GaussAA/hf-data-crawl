@@ -12,11 +12,14 @@ import gzip
 import hashlib
 import json
 import os
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 import polars as pl
+
+from .silver import SILVER_SCHEMA, derive_row
 
 BRONZE_SCHEMA: dict[str, pl.DataType] = {
     "id": pl.Utf8,
@@ -35,6 +38,38 @@ BRONZE_SCHEMA: dict[str, pl.DataType] = {
     "page_file": pl.Utf8,
     "snapshot_date": pl.Date,
 }
+
+OBSERVATIONS_SCHEMA: dict[str, pl.DataType] = {
+    "id": pl.Utf8,
+    "snapshot_date": pl.Date,
+    "downloads": pl.Int64,
+    "downloads_all_time": pl.Int64,
+    "likes": pl.Int64,
+}
+
+CURRENT_SCHEMA: dict[str, pl.DataType] = {
+    "id": pl.Utf8,
+    "author": pl.Utf8,
+    "sha": pl.Utf8,
+    "last_modified": pl.Utf8,
+    "downloads": pl.Int64,
+    "downloads_all_time": pl.Int64,
+    "likes": pl.Int64,
+    "gated": pl.Utf8,
+    "private": pl.Boolean,
+    "first_seen_at": pl.Date,
+    "last_seen_at": pl.Date,
+}
+
+METRIC_COLUMNS: tuple[str, ...] = ("downloads", "downloads_all_time", "likes")
+
+
+@dataclass(frozen=True)
+class StateUpdate:
+    """一次状态更新的结果，供运行摘要使用。"""
+
+    appended: int
+    current_rows: int
 
 
 class DatasetStore:
@@ -119,6 +154,145 @@ class DatasetStore:
             return pl.DataFrame(schema=BRONZE_SCHEMA)
         return pl.read_parquet(target)
 
+    @property
+    def silver_dir(self) -> Path:
+        return self._root / "silver"
+
+    @property
+    def state_dir(self) -> Path:
+        return self._root / "state"
+
+    def build_silver(self, snapshot_date: date) -> int:
+        """由 Bronze 派生 Silver 分区，返回行数。"""
+        bronze = self.read_bronze(snapshot_date)
+        if bronze.height == 0:
+            return 0
+        rows = [derive_row(row, snapshot_date) for row in bronze.iter_rows(named=True)]
+        frame = pl.DataFrame(rows, schema=SILVER_SCHEMA)
+        target = self.silver_dir / f"dt={snapshot_date.isoformat()}" / "silver.parquet"
+        _write_parquet(frame, target)
+        return frame.height
+
+    def read_silver(self, snapshot_date: date) -> pl.DataFrame:
+        target = self.silver_dir / f"dt={snapshot_date.isoformat()}" / "silver.parquet"
+        if not target.exists():
+            return pl.DataFrame(schema=SILVER_SCHEMA)
+        return pl.read_parquet(target)
+
+    def read_observations(self) -> pl.DataFrame:
+        files = sorted((self.state_dir / "observations").glob("dt=*/obs.parquet"))
+        if not files:
+            return pl.DataFrame(schema=OBSERVATIONS_SCHEMA)
+        return pl.concat([pl.read_parquet(path) for path in files], how="vertical_relaxed")
+
+    def read_current(self) -> pl.DataFrame:
+        target = self.state_dir / "current.parquet"
+        if not target.exists():
+            return pl.DataFrame(schema=CURRENT_SCHEMA)
+        return pl.read_parquet(target)
+
+    def update_state(self, snapshot_date: date) -> StateUpdate:
+        """按当日 Silver 更新观测流水与当前态。
+
+        观测只在该日指标与「该日之前的最后一条观测」不同时追加；
+        同日重跑先重建该日分区，故结果与一次跑完一致。
+        """
+        silver = self.read_silver(snapshot_date)
+        if silver.height == 0:
+            return StateUpdate(appended=0, current_rows=self.read_current().height)
+
+        existing = self.read_observations()
+        before = existing.filter(pl.col("snapshot_date") == snapshot_date).height
+
+        previous = (
+            existing.filter(pl.col("snapshot_date") < snapshot_date)
+            .sort("snapshot_date")
+            .group_by("id", maintain_order=True)
+            .agg(
+                [
+                    pl.col(column).last().alias(f"{column}_prev")
+                    for column in METRIC_COLUMNS
+                ]
+            )
+        )
+        joined = silver.select(["id", *METRIC_COLUMNS]).join(previous, on="id", how="left")
+
+        changed = pl.col(f"{METRIC_COLUMNS[0]}_prev").is_null()
+        for column in METRIC_COLUMNS:
+            changed = changed | (
+                pl.col(column).fill_null(-1) != pl.col(f"{column}_prev").fill_null(-1)
+            )
+
+        new_observations = joined.filter(changed).select(
+            [
+                pl.col("id"),
+                pl.lit(snapshot_date, dtype=pl.Date).alias("snapshot_date"),
+                *[pl.col(column) for column in METRIC_COLUMNS],
+            ]
+        )
+
+        target = (
+            self.state_dir / "observations" / f"dt={snapshot_date.isoformat()}" / "obs.parquet"
+        )
+        if new_observations.height == 0:
+            if target.exists():
+                target.unlink()
+        else:
+            _write_parquet(new_observations.select(list(OBSERVATIONS_SCHEMA)), target)
+
+        current = self._rebuild_current(snapshot_date, silver)
+        _write_parquet(current, self.state_dir / "current.parquet")
+
+        return StateUpdate(
+            appended=max(0, new_observations.height - before),
+            current_rows=current.height,
+        )
+
+    def _rebuild_current(self, snapshot_date: date, silver: pl.DataFrame) -> pl.DataFrame:
+        """勾稽当前态：本轮出现的取 Silver，未出现的沿用原行，不擅自改状态。"""
+        carried_columns = [
+            "id",
+            "author",
+            "sha",
+            "last_modified",
+            *METRIC_COLUMNS,
+            "gated",
+            "private",
+            "last_seen_at",
+        ]
+        previous = self.read_current()
+        today_ids = silver["id"].to_list()
+        carried = previous.filter(~pl.col("id").is_in(today_ids)).select(carried_columns)
+
+        today = silver.select(
+            [
+                "id",
+                "author",
+                "sha",
+                "last_modified",
+                *METRIC_COLUMNS,
+                "gated",
+                "private",
+            ]
+        ).with_columns(pl.lit(snapshot_date, dtype=pl.Date).alias("last_seen_at"))
+
+        first_seen = self.read_observations().group_by("id").agg(
+            pl.col("snapshot_date").min().alias("first_seen_at")
+        )
+
+        combined = pl.concat(
+            [carried.select(carried_columns), today.select(carried_columns)],
+            how="vertical_relaxed",
+        )
+        return (
+            combined.join(first_seen, on="id", how="left")
+            .with_columns(
+                pl.col("first_seen_at").fill_null(pl.lit(snapshot_date, dtype=pl.Date))
+            )
+            .select(list(CURRENT_SCHEMA))
+            .sort("id")
+        )
+
     @staticmethod
     def _to_row(record: Any, snapshot_date: date, page_file: str) -> dict[str, Any] | None:
         if not isinstance(record, dict):
@@ -162,3 +336,11 @@ def _as_text(value: Any) -> str | None:
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value)
+
+
+def _write_parquet(frame: pl.DataFrame, target: Path) -> None:
+    """先写临时文件再替换，避免半截 parquet 被后续读取。"""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_suffix(".parquet.tmp")
+    frame.write_parquet(temp)
+    os.replace(temp, target)

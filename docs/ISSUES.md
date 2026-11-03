@@ -34,10 +34,11 @@
 - **覆盖故事**: 3、4、5、16
 - **要建的东西**：把 Record 展开成结构化 Dataset——标签拆成维度（`task_categories`、`languages`、`size_categories`、`license`）；`downloads` 与 `downloadsAllTime` 分明；生成 `first_seen_at` / `last_seen_at`；维护 Current 表（每集一行最新态）与 Observations 表（指标变化才追加）。
 - **验收**：
-  - [ ] 指标未变的集不追加观测行
-  - [ ] 指标变化的集追加一行且旧行保留
-  - [ ] 同一日重跑，Observations 不新增重复行
-  - [ ] Current 表行数等于去重后的 Dataset 数
+  - [x] 指标未变的集不追加观测行
+  - [x] 指标变化的集追加一行且旧行保留
+  - [x] 同一日重跑，Observations 不新增重复行
+  - [x] Current 表行数等于去重后的 Dataset 数
+- **状态**: 已完成（2026-11-03）。观测以 dt 分区存放，同日重跑先重建该日分区；current 由「本轮 Silver + 未出现行的原值」勾稽，下架判定留给 S5。
 
 ## S4 · `collect` 子命令（日增量）
 
