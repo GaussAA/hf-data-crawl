@@ -79,6 +79,10 @@ class DatasetStore:
         self._root = Path(root)
 
     @property
+    def root(self) -> Path:
+        return self._root
+
+    @property
     def raw_dir(self) -> Path:
         return self._root / "raw"
 

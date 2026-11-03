@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .api import MAX_LIMIT, HfDatasetApi
 from .collect import CollectSummary, Collector
+from .gold import BOARDS, GoldCatalog, GoldNotReady
 from .store import DatasetStore
 from .transport import HttpxTransport
 
@@ -40,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     collect.add_argument("--dry-run", action="store_true", help="只探一页并打印字段，不落盘")
 
+    query = subparsers.add_parser("query", help="查询 Gold 视图或执行任意 SQL")
+    query.add_argument("--board", default=None, choices=sorted(BOARDS), help="内置榜单")
+    query.add_argument("--sql", default=None, help="任意只读 SQL")
+    query.add_argument("--limit", type=int, default=50, help="榜单条数上限")
+
     return parser
 
 
@@ -49,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "collect":
         return _run_collect(args, store)
+    if args.command == "query":
+        return _run_query(args, store)
 
     return 1
 
@@ -69,6 +77,30 @@ def _run_collect(args: argparse.Namespace, store: DatasetStore) -> int:
         dry_run=args.dry_run,
     )
     _print_summary(summary)
+    return 0
+
+
+def _run_query(args: argparse.Namespace, store: DatasetStore) -> int:
+    try:
+        catalog = GoldCatalog(store)
+    except GoldNotReady as error:
+        print(error)
+        return 1
+
+    try:
+        frame = (
+            catalog.run(args.sql)
+            if args.sql
+            else catalog.board(args.board or "growth", args.limit)
+        )
+    finally:
+        catalog.close()
+
+    if frame.height == 0:
+        print("查询无结果：可能尚无足够的观测点（增速榜需至少两天的数据）。")
+        return 0
+
+    print(frame)
     return 0
 
 
