@@ -68,14 +68,15 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 - **下架判定只在扫完时做**：`reconcile` 用 `--max-pages` 有界跑时不会标记下架，否则未扫到的部分会被整片误判。
 - **派生层可重建**：`build` 只读 Raw，断网即可回填。派生规则变更后一条命令重算历史。
 
-## 定时建议
+## 定时
 
-Windows 计划任务示例（每日 03:10 增量、每周日 04:00 对账）：
-
-```bat
-schtasks /Create /SC DAILY /TN "hf-collect" /TR "uv run --project C:\path\to\hf-data-crawl hf-data-crawl collect" /ST 03:10
-schtasks /Create /SC WEEKLY /D SUN /TN "hf-reconcile" /TR "uv run --project C:\path\to\hf-data-crawl hf-data-crawl reconcile" /ST 04:00
+```powershell
+pwsh -File scripts\setup-schedule.ps1              # 注册：每日 03:10 增量、每周日 04:00 对账
+pwsh -File scripts\setup-schedule.ps1 -Uninstall   # 卸载
+schtasks /Query /TN hf-collect /V /FO LIST         # 核对
 ```
+
+计划任务调 `scripts/collect.cmd` 与 `scripts/reconcile.cmd` 两个包装脚本：代理默认取 `HF_PROXY`，日志追加到 `data\logs\`，`uv` 找不到时回退到 `%USERPROFILE%\.local\bin\uv.exe`。
 
 每轮摘要落在 `runs/`，失败也写并带错误原因，不会静默。
 
