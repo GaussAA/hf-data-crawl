@@ -1,0 +1,23 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# 采集产物（数据不入库）
+data/
+runs/
+
+# 接口探测的临时样本
+.probe/
+
+# 本地密钥与代理配置
+.env
+
+# 测试缓存
+.pytest_cache/

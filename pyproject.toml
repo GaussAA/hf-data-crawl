@@ -1,0 +1,30 @@
+[project]
+name = "hf-data-crawl"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "GaussAA", email = "m17356051831@163.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "duckdb>=2.0.0",
+    "httpx>=0.28.1",
+    "polars>=2.1.0",
+]
+
+[project.scripts]
+hf-data-crawl = "hf_data_crawl:main"
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
