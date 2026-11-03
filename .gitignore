@@ -21,3 +21,6 @@ runs/
 
 # 测试缓存
 .pytest_cache/
+
+# 本机 agent 记忆（本地状态，不入库）
+.workbuddy/
