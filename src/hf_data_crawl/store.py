@@ -59,6 +59,7 @@ CURRENT_SCHEMA: dict[str, pl.DataType] = {
     "private": pl.Boolean,
     "first_seen_at": pl.Date,
     "last_seen_at": pl.Date,
+    "status": pl.Utf8,
 }
 
 METRIC_COLUMNS: tuple[str, ...] = ("downloads", "downloads_all_time", "likes")
@@ -193,7 +194,29 @@ class DatasetStore:
         target = self.state_dir / "current.parquet"
         if not target.exists():
             return pl.DataFrame(schema=CURRENT_SCHEMA)
-        return pl.read_parquet(target)
+        frame = pl.read_parquet(target)
+        if "status" not in frame.columns:
+            # 兼容旧数据：状态列缺失时视为全部在架。
+            frame = frame.with_columns(pl.lit("active").alias("status"))
+        return frame
+
+    def mark_disappeared(self, dataset_ids: list[str]) -> int:
+        """把指定数据集标为下架。只改状态，不动观测史与 last_seen_at。"""
+        if not dataset_ids:
+            return 0
+        current = self.read_current()
+        if current.height == 0:
+            return 0
+        updated = current.with_columns(
+            pl.when(pl.col("id").is_in(dataset_ids))
+            .then(pl.lit("disappeared"))
+            .otherwise(pl.col("status"))
+            .alias("status")
+        )
+        changed = int((updated["status"] != current["status"]).sum())
+        if changed:
+            _write_parquet(updated.select(list(CURRENT_SCHEMA)), self.state_dir / "current.parquet")
+        return changed
 
     def update_state(self, snapshot_date: date) -> StateUpdate:
         """按当日 Silver 更新观测流水与当前态。
@@ -263,6 +286,7 @@ class DatasetStore:
             "gated",
             "private",
             "last_seen_at",
+            "status",
         ]
         previous = self.read_current()
         today_ids = silver["id"].to_list()
@@ -278,7 +302,10 @@ class DatasetStore:
                 "gated",
                 "private",
             ]
-        ).with_columns(pl.lit(snapshot_date, dtype=pl.Date).alias("last_seen_at"))
+        ).with_columns(
+            pl.lit(snapshot_date, dtype=pl.Date).alias("last_seen_at"),
+            pl.lit("active").alias("status"),
+        )
 
         first_seen = self.read_observations().group_by("id").agg(
             pl.col("snapshot_date").min().alias("first_seen_at")
