@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import csv
 import time
 from dataclasses import dataclass
 from datetime import date
@@ -73,8 +74,12 @@ class Reconciler:
         before_sha = dict(zip(before["id"].to_list(), before["sha"].to_list()))
         before_status = dict(zip(before["id"].to_list(), before["status"].to_list()))
 
-        seen: set[str] = set()
-        seen_sha: dict[str, str | None] = {}
+        # 已扫描过的 id 必须与游标一同持久化：只存游标的话，续跑后「见过谁」是空的，
+        # 前半段会被整片误判为下架（实测一次就误杀了 4.6 万条）。
+        session_path = self._store.state_dir / f"reconcile-seen-{snapshot_date.isoformat()}.csv"
+        if checkpoint.cursor is None:
+            session_path.unlink(missing_ok=True)
+
         pages = 0
         records = 0
         stopped_reason = "end"
@@ -94,9 +99,7 @@ class Reconciler:
                 records=current_page.records,
                 meta={"sort": "createdAt", "direction": "-1", "mode": "reconcile"},
             )
-            for record in current_page.records:
-                seen.add(record["id"])
-                seen_sha[record["id"]] = record.get("sha")
+            self._append_session(session_path, current_page.records)
             checkpoint.save(current_page.next_cursor)
 
             if max_pages is not None and pages >= max_pages:
@@ -106,6 +109,8 @@ class Reconciler:
         self._store.build_bronze(snapshot_date)
         self._store.build_silver(snapshot_date)
         self._store.update_state(snapshot_date)
+
+        seen, seen_sha = self._load_session(session_path)
 
         new_ids = sorted(seen - before_ids)
         reactivated = sorted(
@@ -122,6 +127,7 @@ class Reconciler:
             disappeared = sorted(before_ids - seen)
             self._store.mark_disappeared(disappeared)
             checkpoint.save(None)
+            session_path.unlink(missing_ok=True)
 
         report_path = self._write_report(
             snapshot_date,
@@ -144,6 +150,30 @@ class Reconciler:
             stopped_reason=stopped_reason,
             elapsed_seconds=time.monotonic() - started,
         )
+
+    @staticmethod
+    def _append_session(path: Path, records: list[dict[str, Any]]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_header = not path.exists()
+        with path.open("a", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            if write_header:
+                writer.writerow(["id", "sha"])
+            for record in records:
+                writer.writerow([record["id"], record.get("sha") or ""])
+
+    @staticmethod
+    def _load_session(path: Path) -> tuple[set[str], dict[str, str | None]]:
+        if not path.exists():
+            return set(), {}
+        frame = pl.read_csv(
+            path,
+            schema={"id": pl.Utf8, "sha": pl.Utf8},
+            truncate_ragged_lines=True,
+        )
+        ids = frame["id"].to_list()
+        shas = frame["sha"].to_list()
+        return set(ids), dict(zip(ids, [item or None for item in shas]))
 
     def _write_report(
         self,

@@ -152,6 +152,28 @@ def test_有界对账保留游标以便续跑(store: DatasetStore) -> None:
     assert "cursor" in resumed.calls[0]
 
 
+def test_续跑后不把前半段已扫过的判成下架(store: DatasetStore) -> None:
+    """只存游标不存「见过谁」，续跑时前半段会被整片误判——实测误杀过 4.6 万条。"""
+    first = FakeCursorTransport([[record("a", "sha-a1")], [record("c", "sha-c1")]])
+    reconciler(first, store).run(DAY2, limit=100, max_pages=1)
+
+    resumed = FakeCursorTransport([[record("a", "sha-a1")], [record("c", "sha-c1")]])
+    summary = reconciler(resumed, store).run(DAY2, limit=100)
+
+    assert summary.disappeared == 1
+    assert status_of(store, "acme/a") == "active"
+    assert status_of(store, "acme/c") == "active"
+    assert status_of(store, "acme/b") == "disappeared"
+
+
+def test_完成后清理扫描会话文件(store: DatasetStore) -> None:
+    transport = FakeCursorTransport([[record("a", "sha-a1")]])
+
+    reconciler(transport, store).run(DAY2, limit=100)
+
+    assert not list(store.state_dir.glob("reconcile-seen-*.csv"))
+
+
 def test_全量扫描使用createdAt稳定序(store: DatasetStore) -> None:
     transport = FakeCursorTransport([[record("a", "sha-a1")]])
 
