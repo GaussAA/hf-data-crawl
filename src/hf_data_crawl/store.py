@@ -98,8 +98,13 @@ class DatasetStore:
         page_index: int,
         records: list[dict[str, Any]],
         meta: dict[str, Any] | None = None,
+        label: str = "part",
     ) -> Path:
-        """落一页原始响应，返回文件路径。同内容重复写不新增文件。"""
+        """落一页原始响应，返回文件路径。同内容重复写不新增文件。
+
+        `label` 参与文件名，用于让不同扫描批次的顺序可辨（"top" 排在 "part" 之后，
+        因此同一 id 在 Bronze 去重时以刷新批次的新值胜出）。
+        """
         payload = {
             "meta": {
                 **(meta or {}),
@@ -114,7 +119,7 @@ class DatasetStore:
 
         target_dir = self.raw_dir / f"dt={snapshot_date.isoformat()}"
         target_dir.mkdir(parents=True, exist_ok=True)
-        path = target_dir / f"part-{page_index:06d}-{digest}.json.gz"
+        path = target_dir / f"{label}-{page_index:06d}-{digest}.json.gz"
         if path.exists():
             return path
 

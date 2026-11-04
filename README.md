@@ -30,9 +30,9 @@ uv run hf-data-crawl query --board downloads --limit 20
 常用参数：
 
 ```bash
-hf-data-crawl collect   [--date YYYY-MM-DD] [--limit 1000] [--max-pages N] [--pages-without-new 3] [--dry-run]
+hf-data-crawl collect   [--date YYYY-MM-DD] [--limit 1000] [--max-pages N] [--pages-without-new 3] [--refresh-top 20000] [--dry-run]
 hf-data-crawl reconcile [--date YYYY-MM-DD] [--limit 1000] [--max-pages N]
-hf-data-crawl query     [--board growth|downloads|alltime|categories] [--limit 50] [--sql "..."]
+hf-data-crawl query     [--board growth|growth_pct|downloads|alltime|categories] [--limit 50] [--sql "..."]
 ```
 
 全局参数 `--data-dir` 需放在子命令之前，默认取 `HF_DATA_DIR`，否则 `./data`。
@@ -70,6 +70,8 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 - **水位线不用 `max(lastModified)`**：实测存在 2028 年的异常时间戳，任何单调性假设都会失效。改为「连续 N 页无新记录」。
 - **下架判定只在扫完时做**：`reconcile` 用 `--max-pages` 有界跑时不会标记下架，否则未扫到的部分会被整片误判。
 - **派生层可重建**：`build` 只读 Raw，断网即可回填。派生规则变更后一条命令重算历史。
+- **顶部池刷新**：`collect --refresh-top 20000` 在增量之后按 `sort=downloads` 补扫前 2 万名。日增量只覆盖「最近更新的万把条」，若不补这一趟，增速榜长期只有零星读数。成本约 20 页。
+- **`downloads` 非实时**：实测同一集相隔 9 小时读数完全相同，故增速必须跨日观测；同日重复扫描不产生新读数。
 
 ## 定时
 

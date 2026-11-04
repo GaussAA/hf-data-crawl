@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 from datetime import date
@@ -51,6 +52,8 @@ class CollectSummary:
     stopped_reason: str
     elapsed_seconds: float
     preview: list[dict[str, Any]] | None = None
+    top_pages: int = 0
+    refreshed: int = 0
 
 
 class Collector:
@@ -76,6 +79,7 @@ class Collector:
         limit: int = MAX_LIMIT,
         max_pages: int | None = None,
         pages_without_new: int | None = None,
+        refresh_top: int = 0,
         dry_run: bool = False,
     ) -> CollectSummary:
         threshold = max(1, pages_without_new if pages_without_new is not None else self._pages_without_new)
@@ -156,6 +160,33 @@ class Collector:
                 preview=preview,
             )
 
+        # 顶部池刷新：按全站下载量取前 N 名补扫一遍。
+        # 日增量只覆盖「最近更新的万把条」，增速榜因此长期取不到第二个点；
+        # 补这一趟，头部集每天都有新读数，而成本只有二十来页。
+        top_pages_done = 0
+        refreshed = 0
+        if refresh_top > 0:
+            page_budget = max(1, math.ceil(refresh_top / max(1, limit)))
+            for top_index, top_page in enumerate(
+                self._api.scan(
+                    sort="downloads",
+                    direction="-1",
+                    limit=limit,
+                    expand=LEAN_EXPAND,
+                    max_pages=page_budget,
+                ),
+                1,
+            ):
+                top_pages_done = top_index
+                refreshed += len(top_page.records)
+                self._store.write_raw(
+                    snapshot_date=snapshot_date,
+                    page_index=top_index,
+                    records=top_page.records,
+                    meta={"sort": "downloads", "direction": "-1", "mode": "top-refresh"},
+                    label="top",
+                )
+
         bronze_rows = self._store.build_bronze(snapshot_date)
         silver_rows = self._store.build_silver(snapshot_date)
         state = self._store.update_state(snapshot_date)
@@ -177,4 +208,6 @@ class Collector:
             rate_remaining=rate_remaining,
             stopped_reason=stopped_reason,
             elapsed_seconds=time.monotonic() - started,
+            top_pages=top_pages_done,
+            refreshed=refreshed,
         )

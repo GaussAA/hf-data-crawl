@@ -45,6 +45,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="连续多少页无新记录即判定到达水位线",
     )
     collect.add_argument("--dry-run", action="store_true", help="只探一页并打印字段，不落盘")
+    collect.add_argument(
+        "--refresh-top",
+        type=int,
+        default=0,
+        help="额外按下载量补扫前 N 名（0 表示不补），用于让增速榜每天有新读数",
+    )
 
     reconcile = subparsers.add_parser("reconcile", help="全量对账（按 createdAt 稳定序）")
     reconcile.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
@@ -112,6 +118,7 @@ def _collect(args: argparse.Namespace, store: DatasetStore) -> tuple[int, Any]:
         limit=args.limit,
         max_pages=args.max_pages,
         pages_without_new=args.pages_without_new,
+        refresh_top=args.refresh_top,
         dry_run=args.dry_run,
     )
     _print_collect(summary)
@@ -173,6 +180,8 @@ def _print_collect(summary: CollectSummary) -> None:
         f"观测 +{summary.appended_observations} · current {summary.current_rows} 行"
     )
     print(f"  配额余量 {summary.rate_remaining} · 停止原因 {summary.stopped_reason}")
+    if summary.top_pages:
+        print(f"  顶部池刷新 {summary.top_pages} 页 / {summary.refreshed} 条")
 
 
 def _print_reconcile(summary: ReconcileSummary) -> None:

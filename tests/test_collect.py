@@ -159,3 +159,69 @@ def test_默认lean档不请求cardData(store: DatasetStore) -> None:
     expand = transport.calls[0]["expand[]"]
     assert "cardData" not in expand
     assert "downloadsAllTime" in expand
+
+
+class SortAwareTransport:
+    """按 sort 参数分流回放的假 transport，用于验证顶部池刷新。"""
+
+    def __init__(self, pages_by_sort: dict[str, list[list[dict[str, Any]]]]) -> None:
+        self._pages = pages_by_sort
+        self._index = {key: 0 for key in pages_by_sort}
+        self.calls: list[dict[str, Any]] = []
+
+    def get(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> HfResponse:
+        import json
+
+        self.calls.append(dict(params))
+        sort = str(params["sort"])
+        pages = self._pages[sort]
+        index = self._index[sort]
+        self._index[sort] = index + 1
+        response_headers = {"RateLimit": '"api";r=450;t=180'}
+        if index + 1 < len(pages):
+            response_headers["Link"] = (
+                f'<https://huggingface.co/api/datasets?sort={sort}&cursor={sort}-{index + 2}>; rel="next"'
+            )
+        return HfResponse(
+            status=200,
+            headers=response_headers,
+            body=json.dumps(pages[index]).encode(),
+        )
+
+
+def test_顶部刷新按条数换算页数并单独落盘(store: DatasetStore) -> None:
+    transport = SortAwareTransport(
+        {
+            "lastModified": [page("a", 2)],
+            "downloads": [page("t", 1), page("u", 1), page("v", 1)],
+        }
+    )
+
+    summary = collector(transport, store).run(DAY1, limit=2, refresh_top=5, pages_without_new=5)
+
+    assert summary.top_pages == 3  # ceil(5 / 2)
+    assert summary.refreshed == 3
+    assert len(list(store.raw_dir.rglob("top-*.json.gz"))) == 3
+    assert store.read_current().height == 5
+
+
+def test_未指定顶部刷新时只扫一趟(store: DatasetStore) -> None:
+    transport = SortAwareTransport({"lastModified": [page("a", 2)]})
+
+    summary = collector(transport, store).run(DAY1, limit=100, pages_without_new=5)
+
+    assert summary.top_pages == 0
+    assert summary.refreshed == 0
+    assert {call["sort"] for call in transport.calls} == {"lastModified"}
+
+
+def test_顶部刷新使用下载量排序(store: DatasetStore) -> None:
+    transport = SortAwareTransport(
+        {"lastModified": [page("a", 1)], "downloads": [page("t", 1)]}
+    )
+
+    collector(transport, store).run(DAY1, limit=100, refresh_top=100, pages_without_new=5)
+
+    downloads_calls = [call for call in transport.calls if call["sort"] == "downloads"]
+    assert downloads_calls
+    assert downloads_calls[0]["direction"] == "-1"
