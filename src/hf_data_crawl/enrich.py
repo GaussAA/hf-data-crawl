@@ -13,20 +13,14 @@ from dataclasses import dataclass
 from datetime import date
 
 from .api import MAX_LIMIT, HfDatasetApi
+from .collect import IDENTITY_EXPAND
 from .store import DatasetStore
 
 #: 比 lean 档多要三样：卡片本体、论文关联、引用文本。
+#: 基座沿用 IDENTITY_EXPAND 而非另抄一份：两档字段一旦分叉，同一日若既有 part
+#: 又有 card 分区，Bronze 会按文件名去重，缺字段的那份可能胜出，导致整列为空。
 ENRICH_EXPAND: tuple[str, ...] = (
-    "author",
-    "downloads",
-    "downloadsAllTime",
-    "likes",
-    "gated",
-    "sha",
-    "createdAt",
-    "lastModified",
-    "description",
-    "tags",
+    *IDENTITY_EXPAND,
     "cardData",
     "paperswithcode_id",
     "citation",

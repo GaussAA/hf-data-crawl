@@ -16,21 +16,37 @@ from .api import MAX_LIMIT, HfDatasetApi
 from .checkpoint import FileCheckpoint
 from .store import DatasetStore
 
-#: Lean 档：不含 cardData。实测 full 档约 6 KB/条、带宽 90–170 KB/s，
-#: 日增量若拉全量字段，光传输就要数小时，而增量的信息量几乎全在指标字段。
-LEAN_EXPAND: tuple[str, ...] = (
+#: 身份与指标基座：一次请求拿全。含体积（mainSize）、私有与禁用标记、趋势分。
+#:
+#: 铁律——HF 的 `expand[]` 是**白名单裁剪**而非增补：只要传了它，未列出的字段
+#: 一律不返回，连默认响应里本就有的 `private` / `disabled` 都会被裁掉
+#: （实测 `expand[]=downloads` 时返回体只剩 `_id/downloads/id`）。
+#: 因此本清单必须与 `store.BRONZE_SCHEMA` 的源字段严格同步，
+#: 由 `tests/test_schema_contract.py` 强制校验，防止再出现「列声明了但源端不供」
+#: 从而整列为空却不报错的静默缺陷（2026-11-04 实测 private 曾 100% 为空）。
+IDENTITY_EXPAND: tuple[str, ...] = (
     "author",
+    "createdAt",
+    "description",
+    "disabled",
     "downloads",
     "downloadsAllTime",
-    "likes",
     "gated",
-    "sha",
-    "createdAt",
     "lastModified",
-    "description",
-    "trendingScore",
+    "likes",
+    "mainSize",
+    "private",
+    "resourceGroup",
+    "sha",
     "tags",
+    "trendingScore",
+    "xetEnabled",
 )
+
+#: Lean 档：不含 cardData。实测满档约 6 KB/条、带宽 90–170 KB/s，
+#: 日增量若拉全量字段，光传输就要数小时，而增量的信息量几乎全在指标字段。
+#: 补齐后实测 980 B/条（原 923 B），只多 6.2%，却换来体积与真实私有标记。
+LEAN_EXPAND: tuple[str, ...] = IDENTITY_EXPAND
 
 CHECKPOINT_FILENAME = "collect-checkpoint.json"
 
