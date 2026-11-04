@@ -12,6 +12,7 @@ import polars as pl
 
 from .card import CARD_CONFIGS_SCHEMA, ENRICH_SCHEMA
 from .silver import PLAIN_TAG_COLUMN, SILVER_SCHEMA, TAG_DIMENSIONS
+from .sizes import SIZE_SCHEMA
 from .store import OBSERVATIONS_SCHEMA, DatasetStore
 
 #: 内置榜单。`?` 为条数上限占位。
@@ -131,6 +132,7 @@ class GoldCatalog:
         self._create_file_view(
             "card_config", "enrich/card_configs.parquet", _empty_view(CARD_CONFIGS_SCHEMA)
         )
+        self._create_file_view("dataset_size", "enrich/size.parquet", _empty_view(SIZE_SCHEMA))
         self._connection.execute(
             """
             CREATE VIEW latest_silver AS
@@ -153,10 +155,15 @@ class GoldCatalog:
                    cd.card_annotations_creators, cd.card_language_creators,
                    cd.card_source_datasets, cd.card_homepage,
                    cd.card_config_count, cd.card_num_rows,
-                   cd.card_dataset_bytes, cd.card_download_bytes
+                   cd.card_dataset_bytes, cd.card_download_bytes,
+                   ds.num_rows AS server_num_rows,
+                   ds.num_columns_max AS server_num_columns,
+                   ds.num_bytes_memory AS server_num_bytes_memory,
+                   ds.estimated_num_rows AS server_estimated_rows
             FROM current AS c
             LEFT JOIN latest_silver AS s ON c.id = s.id
             LEFT JOIN card AS cd ON c.id = cd.id
+            LEFT JOIN dataset_size AS ds ON c.id = ds.id
             """
         )
         # 长表视图：一行一个 (数据集, 维度, 取值)。宽表便于 join 榜单，长表便于

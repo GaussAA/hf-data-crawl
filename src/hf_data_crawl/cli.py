@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from collections.abc import Callable
 from datetime import date, datetime
 from pathlib import Path
@@ -20,6 +21,7 @@ from .rebuild import RebuildSummary, rebuild_from_raw
 from .reconcile import ReconcileSummary, Reconciler
 from .report import Reporter
 from .runs import write_run
+from .sizes import HfSizeApi, SizeFetcher, SizeSummary, tail
 from .store import DatasetStore
 from .transport import HttpxTransport
 
@@ -71,6 +73,16 @@ def build_parser() -> argparse.ArgumentParser:
     enrich.add_argument("--top", type=int, default=20_000, help="补抓前多少名")
     enrich.add_argument("--limit", type=int, default=MAX_LIMIT, help="每页条数，上限 1000")
 
+    sizes = subparsers.add_parser("fetch-sizes", help="经 datasets-server 补规模与列数")
+    sizes.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
+    sizes.add_argument("--top", type=int, default=20_000, help="按下载量取前多少名")
+    sizes.add_argument("--workers", type=int, default=16, help="并发数，实测 16 稳定在 22 req/s")
+    sizes.add_argument(
+        "--retry-unavailable",
+        action="store_true",
+        help="重试上次标记为不可用的数据集（默认跳过，因为它们多为永久缺失）",
+    )
+
     report = subparsers.add_parser("report", help="生成静态榜单页（不联网）")
     report.add_argument("--out", default=None, help="输出路径，默认 data/reports/dashboard.html")
     report.add_argument("--top", type=int, default=20, help="每张榜单条数")
@@ -90,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
         return _execute(store, "build", lambda: _build(store))
     if args.command == "enrich":
         return _execute(store, "enrich", lambda: _enrich(args, store))
+    if args.command == "fetch-sizes":
+        return _execute(store, "fetch-sizes", lambda: _fetch_sizes(args, store))
     if args.command == "report":
         return _execute(store, "report", lambda: _report(args, store))
     if args.command == "query":
@@ -160,6 +174,60 @@ def _enrich(args: argparse.Namespace, store: DatasetStore) -> tuple[int, Any]:
     summary = enricher.run(snapshot, top=args.top, limit=args.limit)
     _print_enrich(summary)
     return 0, summary
+
+
+def _fetch_sizes(args: argparse.Namespace, store: DatasetStore) -> tuple[int, Any]:
+    snapshot = date.fromisoformat(args.date) if args.date else date.today()
+    current = store.read_current()
+    if current.height == 0:
+        print("尚无采集数据，请先运行 `hf-data-crawl collect`。")
+        return 1, {"error": "empty"}
+
+    ordered = current.sort("downloads", descending=True, nulls_last=True)
+    fetcher = SizeFetcher(
+        api=HfSizeApi(transport=HttpxTransport()),
+        workers=args.workers,
+        progress=_size_progress,
+    )
+    summary, frame = fetcher.run(
+        snapshot,
+        dataset_ids=ordered["id"].to_list(),
+        top=max(1, args.top),
+        retry_unavailable=args.retry_unavailable,
+        existing=store.read_sizes(),
+    )
+    # 进度条走的是 \r 原地刷新，收尾必须换行，否则摘要会贴在同一行上。
+    print()
+    store.merge_sizes(frame)
+    _print_sizes(summary, store.read_sizes().height)
+    return 0, summary
+
+
+def _size_progress(done: int, total: int) -> None:
+    """终端里原地刷新，非终端（日志、CI）按十等分打印。
+
+    直接输出 `\\r` 会把日志冲成几百行甚至糊成一行——取决于接收方是否解释回车。
+    进度是给人看的，先判断给谁看。
+    """
+    step = max(1, total // 10)
+    if not sys.stdout.isatty():
+        if done % step and done != total:
+            return
+        print(f"  补齐规模 {done}/{total}（{tail(done, total)}%）", flush=True)
+        return
+    print(f"\r  补齐规模 {done}/{total}（{tail(done, total)}%）", end="", flush=True)
+
+
+def _print_sizes(summary: SizeSummary, table_rows: int) -> None:
+    print(
+        f"{summary.snapshot_date} 规模补齐：候选 {summary.requested} 条"
+        f" / 耗时 {summary.elapsed_seconds:.1f}s"
+    )
+    print(
+        f"  成功 {summary.fetched} · 永久缺失 {summary.unavailable} · "
+        f"临时失败 {summary.failed} · 已存跳过 {summary.skipped}"
+    )
+    print(f"  规模表累计 {table_rows} 行（临时失败不入库，下次自然重试）")
 
 
 def _query(args: argparse.Namespace, store: DatasetStore) -> int:

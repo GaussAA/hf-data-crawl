@@ -21,6 +21,10 @@ import polars as pl
 
 from .card import CARD_CONFIGS_SCHEMA, ENRICH_SCHEMA, extract_card_row, extract_config_rows
 from .silver import SILVER_SCHEMA, derive_row
+from .sizes import SIZE_SCHEMA
+
+#: 规模表文件名。与卡片表同放 enrich/，因为它同样是「按需补齐」的产物。
+SIZE_FILENAME = "size.parquet"
 
 BRONZE_SCHEMA: dict[str, pl.DataType] = {
     "id": pl.Utf8,
@@ -315,6 +319,33 @@ class DatasetStore:
         if not target.exists():
             return pl.DataFrame(schema=schema)
         return _align_frame(pl.read_parquet(target), schema)
+
+    def read_sizes(self) -> pl.DataFrame:
+        return self.read_card_table(SIZE_FILENAME, SIZE_SCHEMA)
+
+    def merge_sizes(self, frame: pl.DataFrame) -> int:
+        """把新一批规模数据并入总表，同 id 以新值为准。
+
+        不可用的记录也一并落库：不记下来，下一轮还得为它们重烧 30% 的请求预算。
+        """
+        target = self.enrich_dir / SIZE_FILENAME
+        fresh = frame.unique(subset=["id"], keep="last")
+        if target.exists() and fresh.height:
+            previous = _align_frame(pl.read_parquet(target), SIZE_SCHEMA)
+            merged = pl.concat(
+                [
+                    previous.filter(~pl.col("id").is_in(fresh["id"].to_list())),
+                    fresh,
+                ],
+                how="vertical_relaxed",
+            )
+        elif target.exists():
+            merged = _align_frame(pl.read_parquet(target), SIZE_SCHEMA)
+        else:
+            merged = fresh
+
+        _write_parquet(merged.select(list(SIZE_SCHEMA)).sort("id"), target)
+        return merged.height
 
     def build_silver(self, snapshot_date: date) -> int:
         """由 Bronze 派生 Silver 分区，返回行数。"""
