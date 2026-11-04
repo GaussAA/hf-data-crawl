@@ -199,7 +199,7 @@ class DatasetStore:
     def build_bronze(self, snapshot_date: date) -> int:
         """从该日期的 Raw 整体重建 Bronze 分区，返回写入标量行数。"""
         partition = self.raw_dir / f"dt={snapshot_date.isoformat()}"
-        files = sorted(partition.glob("*.json.gz")) if partition.exists() else []
+        files = self._ordered_raw_files(partition)
         if not files:
             return 0
 
@@ -224,6 +224,24 @@ class DatasetStore:
         frame.write_parquet(temp)
         os.replace(temp, target)
         return frame.height
+
+    @staticmethod
+    def _ordered_raw_files(partition: Path) -> list[Path]:
+        """按写入时间升序返回 Raw 分块，同 id 以最后写入者为准。
+
+        不能用文件名字典序：同一页在不同批次会因内容变化而存成不同摘要的文件，
+        而摘要是随机哈希，谁排前面纯属偶然。2026-11-04 实测因此丢过一半数据——
+        今早的 `top-*`（旧字段集）压住了刚写的 `top-*`（含 mainSize），
+        表现为 main_size 只覆盖了 11,552/20,000，且不报任何错。
+
+        mtime 才是真实的写入序。同名文件被复用（幂等）时 mtime 保持首次写入时间，
+        这正是「同内容谁胜出都一样」的语义。
+        """
+        if not partition.exists():
+            return []
+        return sorted(
+            partition.glob("*.json.gz"), key=lambda path: (path.stat().st_mtime, path.name)
+        )
 
     def read_bronze(self, snapshot_date: date) -> pl.DataFrame:
         target = self.bronze_dir / f"dt={snapshot_date.isoformat()}" / "bronze.parquet"
