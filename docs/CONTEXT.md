@@ -8,9 +8,11 @@
 |---|---|---|
 | **Dataset** | HF 上一个公开数据集的元信息快照，以 `id`（`author/name`）唯一标识 | 不是数据文件本身；本项目从不下载仓库内容 |
 | **Record** | HF 列表 API 返回的单条 JSON 对象 | 不是我们落盘的行——落盘的叫 Row |
-| **Expand 白名单** | HF 列表接口 `expand[]` 允许的字段集合，取错值直接 400 并回显全表 | 不是 `full=true` 的同义词 |
-| **Lean scan** | 只取身份与指标字段（不含 `cardData`）的列表遍历，约 1.6 KB/条 | 不是采样，覆盖仍是全站 |
+| **Expand 白名单** | HF 列表接口 `expand[]` 允许的字段集合，取错值直接 400 并回显全表 | 不是 `full=true` 的同义词；更**不是「在原响应上增补」——它是裁剪，传了它就只返回列出的字段** |
+| **Lean scan** | 只取身份与指标字段（不含 `cardData`）的列表遍历，16 字段约 980 B/条 | 不是采样，覆盖仍是全站 |
 | **Full fetch** | 取含 `cardData` 的完整记录，约 6 KB/条 | 不是单库详情接口（那条路会带上 `siblings`，单库可达 7 MB） |
+| **Card Config** | 卡片里一个配置（子集）及其 split 明细，带行数、字节、列结构 | 不是数据集本身；一个 Dataset 可有数十个 Config |
+| **Dataset Size** | datasets-server 给出的转换后规模（`num_rows` / `num_columns` / 内存字节） | 不是仓库字节（`mainSize`），也不是原始文件大小 |
 | **Cursor page** | 一次列表请求的结果，下一页地址在响应头 `Link: rel="next"` 的 `cursor` 参数里 | 不是 offset 分页，HF 已无 `page` 参数 |
 | **Watermark** | 增量扫描的停止条件，表示「早于此刻的记录本轮不必再看」 | 不是 `max(lastModified)`——实测存在 2028 年的异常值 |
 | **Reconcile** | 全量核对：确认哪些 Dataset 仍在、哪些已下架、哪些字段被外部改动 | 不是重新抓一遍就完事，核心产出是差异 |
@@ -23,7 +25,8 @@
 |---|---|---|
 | **Raw** | API 原始响应，逐页原样落盘 | `raw/dt=YYYY-MM-DD/*.json.gz` |
 | **Bronze** | 一行一条 Record，保留原始 JSON 列 + 少数可筛字段 | parquet |
-| **Silver** | 展开后的结构化 Dataset（标签拆维度、许可证归一） | parquet |
+| **Silver** | 展开后的结构化 Dataset（标签拆 16 类维度、许可证归一） | parquet |
+| **Enrich** | 按需补齐的卡片与规模数据：宽表、config 明细、规模表 | parquet，按 id 覆盖 |
 | **Current** | 每个 Dataset 最新一行状态 | parquet，整表重写 |
 | **Observations** | 指标变化流水，仅变化时追加 | parquet，追加 |
 | **Gold** | 榜单视图（增速、总量、分类榜），DuckDB 视图而非实体表 | 视图 |
@@ -39,3 +42,8 @@
 7. 单库详情接口默认携带 `siblings`，体量可达 MB 级，不用于批量。
 8. 经本机代理（`127.0.0.1:7897`）实测吞吐：1000 条 full 档 5.9 MB / 35–64 s。瓶颈是带宽（约 90–170 KB/s），不是限流。
 9. **`downloads` 不是实时值**：`huggingface/documentation-images` 相隔约 9 小时两次读取均为 5,839,203（`likes` 同为 253）。同日内重复扫描不会产生新读数，故「增速」必须以跨日观测为前提。
+10. **`expand[]` 是白名单裁剪，不是增补**（2026-11-04 实测）：只传 `expand[]=downloads` 时，返回体仅剩 `_id` / `downloads` / `id`；默认响应里本就有的 `private`、`disabled`、`key` 会一并消失。任何未列进 expand 的字段都拿不到，且不报错。
+11. **`siblings` 在列表接口恒为空数组**：即使 `expand[]=siblings` 也返回 `[]`，文件清单只能走单库详情（`blobs=false` 约 1.8 KB/条）。`usedStorage`（含历史版本，alpaca 318 MB）亦只在详情接口，与 `mainSize`（主分支，alpaca 24 MB）相差一个量级。
+12. **`datasets-server.huggingface.co`** 提供 `/size`（`num_rows`、`num_columns`、`num_bytes_memory`）、`/splits`、`/statistics`、`/is-valid`。`/size` 实测成功率约 80%，未转 parquet 返回 500、受保护返回 401、不支持返回 501——**均属永久缺失，不该重试**；并发 16 稳定 26 req/s，未见 429。
+13. **HF 没有下载量时序接口**：`/api/datasets/{id}/downloads` 返回 404。增速只能靠自建观测流水累积，这是本项目保留 `observations` 分区的根本原因。
+14. **`trendingScore` 是整数且可为 null**，`gated` 取值是 `false` / `"manual"` / `"auto"` 三种，`mainSize` 最大观测到 489 GB。

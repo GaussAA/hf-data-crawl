@@ -24,20 +24,22 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | 命令 | 作用 | 联网 |
 |---|---|---|
 | `collect` | 日增量：按 `lastModified` 倒序扫到水位线 | 是 |
-| `enrich` | 按下载量取头部，补抓 `cardData`（正式名/许可证/论文关联） | 是 |
+| `enrich` | 按下载量取头部，补抓 `cardData`（标签、config/split 明细、行数列数） | 是 |
+| `fetch-sizes` | 经 datasets-server 补规模与列数（`num_rows` / `num_columns_max`） | 是 |
 | `reconcile` | 全量对账：按 `createdAt` 稳定序扫全站，产出新增/下架/sha 变更 | 是 |
-| `build` | 从 Raw 重建全部派生层 | 否 |
+| `build` | 从 Raw 重建全部派生层（含卡片与明细） | 否 |
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
 | `report` | 生成单文件榜单页（离线可看） | 否 |
 
 常用参数：
 
 ```bash
-hf-data-crawl collect   [--date YYYY-MM-DD] [--limit 1000] [--max-pages N] [--pages-without-new 3] [--refresh-top 20000] [--dry-run]
-hf-data-crawl enrich    [--date YYYY-MM-DD] [--top 20000] [--limit 1000]
-hf-data-crawl reconcile [--date YYYY-MM-DD] [--limit 1000] [--max-pages N]
-hf-data-crawl query     [--board growth|growth_pct|downloads|alltime|categories] [--limit 50] [--sql "..."]
-hf-data-crawl report    [--out PATH] [--top 20]
+hf-data-crawl collect      [--date YYYY-MM-DD] [--limit 1000] [--max-pages N] [--pages-without-new 3] [--refresh-top 20000] [--dry-run]
+hf-data-crawl enrich       [--date YYYY-MM-DD] [--top 20000] [--limit 1000]
+hf-data-crawl fetch-sizes  [--date YYYY-MM-DD] [--top 20000] [--workers 16] [--retry-unavailable]
+hf-data-crawl reconcile    [--date YYYY-MM-DD] [--limit 1000] [--max-pages N]
+hf-data-crawl query        [--board growth|growth_pct|downloads|alltime|categories] [--limit 50] [--sql "..."]
+hf-data-crawl report       [--out PATH] [--top 20]
 ```
 
 全局参数 `--data-dir` 需放在子命令之前，默认取 `HF_DATA_DIR`，否则 `./data`。
@@ -58,11 +60,14 @@ hf-data-crawl report    [--out PATH] [--top 20]
 data/
 ├── raw/dt=YYYY-MM-DD/part-<页号>-<内容摘要>.json.gz   # 原始响应，永久保留
 ├── bronze/dt=YYYY-MM-DD/bronze.parquet                # 一行一条，含 raw 列
-├── silver/dt=YYYY-MM-DD/silver.parquet                # 标签已拆维度
+├── silver/dt=YYYY-MM-DD/silver.parquet                # 标签已拆 16 类维度
 ├── state/
 │   ├── current.parquet                                # 每库一行最新态
 │   └── observations/dt=YYYY-MM-DD/obs.parquet         # 指标变化流水
-├── enrich/carddata.parquet                            # 卡片字段（按需补齐）
+├── enrich/
+│   ├── carddata.parquet                               # 卡片宽表（22 列）
+│   ├── card_configs.parquet                           # config/split 明细
+│   └── size.parquet                                   # 行数/列数/内存（datasets-server）
 ├── reports/reconcile-YYYY-MM-DD.csv                   # 对账差异清单
 └── runs/YYYYMMDDTHHMMSS-<command>.json                # 每轮运行摘要
 ```
@@ -71,7 +76,7 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 
 ## 设计要点
 
-- **两档采样**：日增量走 lean 档（不含 `cardData`，约 1.6 KB/条）；`cardData` 只在需要时单独取。实测 full 档约 6 KB/条，全站日拉会白白多传数倍字节。
+- **两档采样**：日增量走 lean 档（不含 `cardData`，16 字段约 980 B/条）；`cardData` 只在需要时单独取。实测 full 档约 6 KB/条，全站日拉会白白多传数倍字节。补齐 `private`/`disabled`/`mainSize` 只让 lean 档从 923 涨到 980 B/条（+6.2%）。
 - **排序必须显式**：不传 `sort` 时 HF 的游标基于 `trendingScore`，会随时间漂移，翻页必漏。全量用 `createdAt`（不可变），增量用 `lastModified`。
 - **水位线不用 `max(lastModified)`**：实测存在 2028 年的异常时间戳，任何单调性假设都会失效。改为「连续 N 页无新记录」。
 - **下架判定只在扫完时做**：`reconcile` 用 `--max-pages` 有界跑时不会标记下架，否则未扫到的部分会被整片误判。
@@ -79,6 +84,10 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 - **顶部池刷新**：`collect --refresh-top 20000` 在增量之后按 `sort=downloads` 补扫前 2 万名。日增量只覆盖「最近更新的万把条」，若不补这一趟，增速榜长期只有零星读数。成本约 20 页。
 - **`downloads` 非实时**：实测同一集相隔 9 小时读数完全相同，故增速必须跨日观测；同日重复扫描不产生新读数。
 - **卡片只能按榜单补**：单库详情即使带 `blobs=false` 仍达 1.17MB（含 `siblings`），逐条补不可行。`enrich` 走列表接口带 `expand[]=cardData` 取前 N 名，2 万条约 22 秒；实测前 2 万名中约 68% 带卡片。卡片表落 `enrich/carddata.parquet`，`datasets` 视图已左连其字段。
+- **`expand[]` 是白名单裁剪，不是增补**（2026-11-04 踩过的坑）：传了它就只返回列出的字段，连默认响应里本就有的 `private` / `disabled` 都会被裁掉。此前 `LEAN_EXPAND` 没请求 `private`，而 Bronze 已声明该列，结果 111.5 万行整列为空且管线照常报成功。现由 `tests/test_schema_contract.py` 把「表结构的列」与「请求的字段」钉成唯一真相源，另有 16 项断言防止再次漂移。
+- **卡片抽取看 `dataset_info`**：它带每个 config 的 `dataset_size` / `download_size` / `features`（列名+dtype）/ `splits`（`num_examples`），是整条管线里唯一能回答「多少行、多少列」的来源。宽表抽 22 列，另落 `card_configs.parquet`（一行一个 config/split，实测 13,651 张卡展开 142,552 行）。
+- **标签维度拆 16 类**：按全站 950 万条标签实测频次补齐 `modality`（12.7%）/`region`（11.7%）/`format`（8.6%）等；无前缀标签单列 `plain_tags`（13.7%，旧式 `text`/`image` 标记都在这里）。维度覆盖率 51.5% → 99.9%。`tag_values` 长表视图由映射表自动生成，新增维度不必改 SQL。
+- **规模数据走 datasets-server**：列表接口的 `mainSize` 是仓库字节，卡片行数只覆盖 7.3%。`fetch-sizes` 打 `/size` 拿 `num_rows` 与 `num_columns`。实测成功率约 80%，并发 16 稳定 26 req/s，两万条约 790 秒。失败分类处理：500/401/501 记 `unavailable` 落库并默认跳过（永久缺失，重试只会白烧 30% 预算）；429/502/503 退避重试且不落库（下轮自然重试）。
 
 ## 定时
 
@@ -95,7 +104,7 @@ schtasks /Query /TN hf-collect /V /FO LIST         # 核对
 ## 开发
 
 ```bash
-uv run pytest          # 63 项，全部离线
+uv run pytest          # 149 项，全部离线
 ```
 
 测试只在一条缝上打桩：`HfDatasetApi` 的 transport。除此之外全部走真实代码路径。

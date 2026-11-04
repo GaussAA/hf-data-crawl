@@ -177,6 +177,21 @@ def _num(value: object) -> str:
     return _esc(value)
 
 
+def _compact(value: object) -> str:
+    """大数字压成 T/B/M，附完整值供悬停查看。
+
+    行数动辄万亿，写成 4,131,984,348,623 既占宽又难比大小；而只给 4.1T
+    又会丢掉精度——两者都给，谁需要哪个自己取。
+    """
+    if not isinstance(value, (int, float)):
+        return "—" if value is None else _esc(value)
+    exact = f"{value:,.0f}"
+    for unit, scale in (("T", 1e12), ("B", 1e9), ("M", 1e6), ("K", 1e3)):
+        if abs(value) >= scale:
+            return f'<span title="{exact}">{value / scale:.2f}{unit}</span>'
+    return exact
+
+
 def _table(
     table_id: str,
     frame: pl.DataFrame,
@@ -203,6 +218,8 @@ def _table(
             value = record.get(name)
             if kind == "num":
                 cells.append(f'<td class="num">{_num(value)}</td>')
+            elif kind == "compact":
+                cells.append(f'<td class="num">{_compact(value)}</td>')
             elif kind == "code":
                 cells.append(f'<td class="id">{_esc(value)}</td>')
             elif kind == "name":
@@ -231,6 +248,7 @@ class Reporter:
             SELECT (SELECT count(*) FROM current) AS datasets,
                    (SELECT count(*) FROM current WHERE status = 'disappeared') AS gone,
                    (SELECT count(*) FROM card) AS cards,
+                   (SELECT count(*) FROM dataset_size WHERE status = 'ok') AS sized,
                    (SELECT count(*) FROM v_growth) AS growth_ready,
                    (SELECT count(*) FROM observations
                      WHERE snapshot_date = (SELECT max(snapshot_date) FROM observations)) AS moved,
@@ -275,6 +293,26 @@ class Reporter:
             """,
             [top],
         )
+        volume = catalog.run(
+            """
+            SELECT d.id, ds.num_rows, ds.num_columns_max,
+                   round(ds.num_bytes_memory / 1024.0 / 1024 / 1024) AS mem_gb
+            FROM dataset_size AS ds
+            JOIN datasets AS d ON d.id = ds.id
+            WHERE ds.status = 'ok' AND ds.num_rows IS NOT NULL
+            ORDER BY ds.num_rows DESC NULLS LAST
+            LIMIT ?
+            """,
+            [top],
+        )
+        modalities = catalog.run(
+            """
+            SELECT unnest(modalities) AS modality, count(*) AS datasets,
+                   sum(downloads) AS downloads
+            FROM datasets GROUP BY 1 ORDER BY datasets DESC NULLS LAST LIMIT ?
+            """,
+            [top],
+        )
 
         if growth.height:
             growth_html = _table(
@@ -301,7 +339,8 @@ class Reporter:
         stats = [
             ("数据集", f"{int(overview['datasets']):,}", f"其中已下架 {int(overview['gone']):,}"),
             ("今日变动", f"{int(overview['moved']):,}", "指标发生变化的集数"),
-            ("卡片覆盖", f"{int(overview['cards']):,}", "有正式名或许可证"),
+            ("卡片覆盖", f"{int(overview['cards']):,}", "有正式名或标签声明"),
+            ("规模覆盖", f"{int(overview['sized']):,}", "已取到行数与列数"),
             ("可测增速", f"{int(overview['growth_ready']):,}", "具备两次跨日读数"),
         ]
         stat_html = "".join(
@@ -355,6 +394,24 @@ class Reporter:
 </section>
 
 <section>
+  <div class="sec-head"><div><h2>规模榜</h2>
+    <p class="sec-note">行数与列数取自 datasets-server，覆盖按下载量排序的头部两万名。</p></div></div>
+  {_table("volume", volume, [
+      ("id", "数据集", "code"), ("num_rows", "行数", "compact"),
+      ("num_columns_max", "列数", "num"), ("mem_gb", "内存(GB)", "num")],
+      caption="行数与列数由 HF 转换后的 parquet 统计，与仓库原始体积不是一回事。")}
+</section>
+
+<section>
+  <div class="sec-head"><div><h2>模态分布</h2>
+    <p class="sec-note">按 modality 标签展开；只列已标注该维度的数据集。</p></div></div>
+  {_table("modalities", modalities, [
+      ("modality", "模态", "text"), ("datasets", "集数", "num"),
+      ("downloads", "下载", "num")],
+      caption="旧式数据集用无前缀标签（text/image/audio）标注，归入 plain_tags，不计入本表。")}
+</section>
+
+<section>
   <div class="sec-head"><div><h2>任务类别</h2>
     <p class="sec-note">按类别汇总集数与下载量，用于判断哪些方向正在被集中使用。</p></div></div>
   {_table("categories", categories, [
@@ -372,7 +429,8 @@ class Reporter:
 
 <footer>
   由 <code>hf-data-crawl report</code> 生成 · 视图 <code>current</code> / <code>datasets</code> /
-  <code>card</code> / <code>v_growth</code> · 口径改动只需改 SQL，不重跑采集。
+  <code>card</code> / <code>card_config</code> / <code>dataset_size</code> /
+  <code>tag_values</code> / <code>v_growth</code> · 口径改动只需改 SQL，不重跑采集。
 </footer>
 </main><script>{_JS}</script></body></html>
 """
