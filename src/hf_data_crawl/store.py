@@ -19,6 +19,7 @@ from typing import Any
 
 import polars as pl
 
+from .card import ENRICH_SCHEMA, extract_card_row
 from .silver import SILVER_SCHEMA, derive_row
 
 BRONZE_SCHEMA: dict[str, pl.DataType] = {
@@ -171,6 +172,54 @@ class DatasetStore:
     @property
     def state_dir(self) -> Path:
         return self._root / "state"
+
+    @property
+    def enrich_dir(self) -> Path:
+        return self._root / "enrich"
+
+    def build_enrich(self, snapshot_date: date) -> int:
+        """把该日期的 card 批次抽成卡片表，按 id 覆盖旧值。"""
+        partition = self.raw_dir / f"dt={snapshot_date.isoformat()}"
+        found = list(partition.glob("card-*.json.gz")) if partition.exists() else []
+        # 按修改时间排序：同一日内多次补齐时，后跑的那批必须胜出，
+        # 文件名里的页码与摘要都不带时序，靠字典序会随机取到旧卡片。
+        files = sorted(found, key=lambda path: path.stat().st_mtime)
+        if not files:
+            return self.read_enrich().height
+
+        rows: list[dict[str, Any]] = []
+        for path in files:
+            payload = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+            for record in payload.get("records", []):
+                row = extract_card_row(record, snapshot_date)
+                if row is not None:
+                    rows.append(row)
+
+        if not rows:
+            return self.read_enrich().height
+
+        fresh = pl.DataFrame(rows, schema=ENRICH_SCHEMA).unique(
+            subset=["id"], keep="last", maintain_order=True
+        )
+        target = self.enrich_dir / "carddata.parquet"
+        if target.exists():
+            previous = pl.read_parquet(target)
+            merged = pl.concat(
+                [previous.filter(~pl.col("id").is_in(fresh["id"].to_list())), fresh],
+                how="vertical_relaxed",
+            )
+        else:
+            merged = fresh
+
+        merged = merged.select(list(ENRICH_SCHEMA)).sort("id")
+        _write_parquet(merged, target)
+        return merged.height
+
+    def read_enrich(self) -> pl.DataFrame:
+        target = self.enrich_dir / "carddata.parquet"
+        if not target.exists():
+            return pl.DataFrame(schema=ENRICH_SCHEMA)
+        return pl.read_parquet(target)
 
     def build_silver(self, snapshot_date: date) -> int:
         """由 Bronze 派生 Silver 分区，返回行数。"""

@@ -14,6 +14,7 @@ from typing import Any
 
 from .api import MAX_LIMIT, HfDatasetApi
 from .collect import CollectSummary, Collector
+from .enrich import EnrichSummary, Enricher
 from .gold import BOARDS, GoldCatalog, GoldNotReady
 from .rebuild import RebuildSummary, rebuild_from_raw
 from .reconcile import ReconcileSummary, Reconciler
@@ -64,6 +65,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("build", help="从 Raw 重建全部派生层（不联网）")
 
+    enrich = subparsers.add_parser("enrich", help="按下载量取头部，补抓 cardData")
+    enrich.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
+    enrich.add_argument("--top", type=int, default=20_000, help="补抓前多少名")
+    enrich.add_argument("--limit", type=int, default=MAX_LIMIT, help="每页条数，上限 1000")
+
     return parser
 
 
@@ -77,6 +83,8 @@ def main(argv: list[str] | None = None) -> int:
         return _execute(store, "reconcile", lambda: _reconcile(args, store))
     if args.command == "build":
         return _execute(store, "build", lambda: _build(store))
+    if args.command == "enrich":
+        return _execute(store, "enrich", lambda: _enrich(args, store))
     if args.command == "query":
         return _query(args, store)
 
@@ -136,6 +144,14 @@ def _reconcile(args: argparse.Namespace, store: DatasetStore) -> tuple[int, Any]
 def _build(store: DatasetStore) -> tuple[int, Any]:
     summary = rebuild_from_raw(store)
     _print_build(summary)
+    return 0, summary
+
+
+def _enrich(args: argparse.Namespace, store: DatasetStore) -> tuple[int, Any]:
+    snapshot = date.fromisoformat(args.date) if args.date else date.today()
+    enricher = Enricher(api=HfDatasetApi(transport=HttpxTransport()), store=store)
+    summary = enricher.run(snapshot, top=args.top, limit=args.limit)
+    _print_enrich(summary)
     return 0, summary
 
 
@@ -210,3 +226,11 @@ def _print_build(summary: RebuildSummary) -> None:
         f"  bronze {summary.bronze_rows} 行 · silver {summary.silver_rows} 行 · "
         f"观测 {summary.observations} 行 · current {summary.current_rows} 行"
     )
+
+
+def _print_enrich(summary: EnrichSummary) -> None:
+    print(
+        f"{summary.snapshot_date} 卡片补齐：{summary.pages} 页 / {summary.records} 条"
+        f" / 耗时 {summary.elapsed_seconds:.1f}s"
+    )
+    print(f"  含卡片 {summary.with_card} 条 · 卡片表累计 {summary.table_rows} 行")

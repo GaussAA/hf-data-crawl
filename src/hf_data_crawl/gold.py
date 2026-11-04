@@ -73,6 +73,18 @@ _EMPTY_SILVER = """
 """
 
 
+_EMPTY_CARD = """
+    SELECT CAST(NULL AS VARCHAR) AS id,
+           CAST(NULL AS VARCHAR) AS pretty_name,
+           CAST(NULL AS VARCHAR) AS paperswithcode_id,
+           CAST(NULL AS VARCHAR) AS arxiv,
+           CAST(NULL AS VARCHAR) AS license_name,
+           CAST(NULL AS VARCHAR) AS citation,
+           CAST(NULL AS VARCHAR) AS card_description
+    WHERE false
+"""
+
+
 class GoldNotReady(RuntimeError):
     """尚无采集数据，无法建立视图。"""
 
@@ -114,6 +126,7 @@ class GoldCatalog:
         )
         self._create_file_view("observations", "state/observations/dt=*/obs.parquet", _EMPTY_OBSERVATIONS)
         self._create_file_view("silver", "silver/dt=*/silver.parquet", _EMPTY_SILVER)
+        self._create_file_view("card", "enrich/carddata.parquet", _EMPTY_CARD)
         self._connection.execute(
             """
             CREATE VIEW latest_silver AS
@@ -125,9 +138,12 @@ class GoldCatalog:
             """
             CREATE VIEW datasets AS
             SELECT c.*, s.task_categories, s.languages, s.size_categories,
-                   s.licenses, s.libraries, s.tags, s.description
+                   s.licenses, s.libraries, s.tags, s.description,
+                   cd.pretty_name, cd.paperswithcode_id, cd.arxiv,
+                   cd.license_name, cd.citation, cd.card_description
             FROM current AS c
             LEFT JOIN latest_silver AS s ON c.id = s.id
+            LEFT JOIN card AS cd ON c.id = cd.id
             """
         )
         # 增速取「最近两个观测点」，而不是固定 7 日窗口：

@@ -23,6 +23,7 @@ uv run hf-data-crawl query --board downloads --limit 20
 | 命令 | 作用 | 联网 |
 |---|---|---|
 | `collect` | 日增量：按 `lastModified` 倒序扫到水位线 | 是 |
+| `enrich` | 按下载量取头部，补抓 `cardData`（正式名/许可证/论文关联） | 是 |
 | `reconcile` | 全量对账：按 `createdAt` 稳定序扫全站，产出新增/下架/sha 变更 | 是 |
 | `build` | 从 Raw 重建全部派生层 | 否 |
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
@@ -31,6 +32,7 @@ uv run hf-data-crawl query --board downloads --limit 20
 
 ```bash
 hf-data-crawl collect   [--date YYYY-MM-DD] [--limit 1000] [--max-pages N] [--pages-without-new 3] [--refresh-top 20000] [--dry-run]
+hf-data-crawl enrich    [--date YYYY-MM-DD] [--top 20000] [--limit 1000]
 hf-data-crawl reconcile [--date YYYY-MM-DD] [--limit 1000] [--max-pages N]
 hf-data-crawl query     [--board growth|growth_pct|downloads|alltime|categories] [--limit 50] [--sql "..."]
 ```
@@ -57,6 +59,7 @@ data/
 ├── state/
 │   ├── current.parquet                                # 每库一行最新态
 │   └── observations/dt=YYYY-MM-DD/obs.parquet         # 指标变化流水
+├── enrich/carddata.parquet                            # 卡片字段（按需补齐）
 ├── reports/reconcile-YYYY-MM-DD.csv                   # 对账差异清单
 └── runs/YYYYMMDDTHHMMSS-<command>.json                # 每轮运行摘要
 ```
@@ -72,6 +75,7 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 - **派生层可重建**：`build` 只读 Raw，断网即可回填。派生规则变更后一条命令重算历史。
 - **顶部池刷新**：`collect --refresh-top 20000` 在增量之后按 `sort=downloads` 补扫前 2 万名。日增量只覆盖「最近更新的万把条」，若不补这一趟，增速榜长期只有零星读数。成本约 20 页。
 - **`downloads` 非实时**：实测同一集相隔 9 小时读数完全相同，故增速必须跨日观测；同日重复扫描不产生新读数。
+- **卡片只能按榜单补**：单库详情即使带 `blobs=false` 仍达 1.17MB（含 `siblings`），逐条补不可行。`enrich` 走列表接口带 `expand[]=cardData` 取前 N 名，2 万条约 22 秒；实测前 2 万名中约 68% 带卡片。卡片表落 `enrich/carddata.parquet`，`datasets` 视图已左连其字段。
 
 ## 定时
 
