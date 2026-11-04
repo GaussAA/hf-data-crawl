@@ -18,6 +18,7 @@ from .enrich import EnrichSummary, Enricher
 from .gold import BOARDS, GoldCatalog, GoldNotReady
 from .rebuild import RebuildSummary, rebuild_from_raw
 from .reconcile import ReconcileSummary, Reconciler
+from .report import Reporter
 from .runs import write_run
 from .store import DatasetStore
 from .transport import HttpxTransport
@@ -70,6 +71,10 @@ def build_parser() -> argparse.ArgumentParser:
     enrich.add_argument("--top", type=int, default=20_000, help="补抓前多少名")
     enrich.add_argument("--limit", type=int, default=MAX_LIMIT, help="每页条数，上限 1000")
 
+    report = subparsers.add_parser("report", help="生成静态榜单页（不联网）")
+    report.add_argument("--out", default=None, help="输出路径，默认 data/reports/dashboard.html")
+    report.add_argument("--top", type=int, default=20, help="每张榜单条数")
+
     return parser
 
 
@@ -85,6 +90,8 @@ def main(argv: list[str] | None = None) -> int:
         return _execute(store, "build", lambda: _build(store))
     if args.command == "enrich":
         return _execute(store, "enrich", lambda: _enrich(args, store))
+    if args.command == "report":
+        return _execute(store, "report", lambda: _report(args, store))
     if args.command == "query":
         return _query(args, store)
 
@@ -177,6 +184,26 @@ def _query(args: argparse.Namespace, store: DatasetStore) -> int:
 
     print(frame)
     return 0
+
+
+def _report(args: argparse.Namespace, store: DatasetStore) -> tuple[int, Any]:
+    try:
+        catalog = GoldCatalog(store)
+    except GoldNotReady as error:
+        print(error)
+        return 1, {"error": str(error)}
+
+    try:
+        target = Path(args.out) if args.out else store.root / "reports" / "dashboard.html"
+        summary = Reporter(catalog).write(target, top=args.top)
+    finally:
+        catalog.close()
+
+    print(
+        f"榜单页已生成：{summary.path}"
+        f"（{summary.bytes / 1024:.0f} KB · {summary.datasets:,} 个数据集）"
+    )
+    return 0, summary
 
 
 def _print_collect(summary: CollectSummary) -> None:
