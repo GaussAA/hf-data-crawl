@@ -10,6 +10,8 @@ import shutil
 from dataclasses import dataclass
 from datetime import date
 
+import polars as pl
+
 from .store import DatasetStore
 
 
@@ -46,6 +48,14 @@ def rebuild_from_raw(store: DatasetStore) -> RebuildSummary:
     if not dates:
         return RebuildSummary(dates=[], bronze_rows=0, silver_rows=0, observations=0, current_rows=0)
 
+    # 失效状态不是从 raw 派生的：它来自对账时的单库探测（404/401/307），
+    # 而 update_state 会把本轮出现的每条记录都置为 active——直接重建等于把
+    # 全部 restricted / renamed 判断清零。2026-11-05 实测踩到：463 条失效标记
+    # 在一次 build 后归零，页面上「已失效」变成 0。
+    # 故重建前留存，重建后写回。这是「Raw 是唯一事实来源」的一个例外，
+    # 例外的边界写在 docs/CONTEXT.md 第 15 条。
+    carried_status = _failed_status(store)
+
     for derived in (store.bronze_dir, store.silver_dir, store.state_dir):
         shutil.rmtree(derived, ignore_errors=True)
     # enrich 下有两类产物，待遇不同：
@@ -63,6 +73,9 @@ def rebuild_from_raw(store: DatasetStore) -> RebuildSummary:
         store.build_enrich(snapshot)
         store.update_state(snapshot)
 
+    if carried_status:
+        store.mark_status(carried_status)
+
     return RebuildSummary(
         dates=dates,
         bronze_rows=bronze_rows,
@@ -72,3 +85,12 @@ def rebuild_from_raw(store: DatasetStore) -> RebuildSummary:
         card_rows=store.read_enrich().height,
         config_rows=store.read_card_configs().height,
     )
+
+
+def _failed_status(store: DatasetStore) -> dict[str, str]:
+    """重建前留存「非在架」状态，供重建后写回。"""
+    current = store.read_current()
+    if current.height == 0:
+        return {}
+    stale = current.filter(pl.col("status") != "active")
+    return dict(zip(stale["id"].to_list(), stale["status"].to_list()))

@@ -13,7 +13,7 @@ import hashlib
 import json
 import os
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -166,11 +166,19 @@ class DatasetStore:
         records: list[dict[str, Any]],
         meta: dict[str, Any] | None = None,
         label: str = "part",
+        written_at: str | None = None,
     ) -> Path:
         """落一页原始响应，返回文件路径。同内容重复写不新增文件。
 
-        `label` 参与文件名，用于让不同扫描批次的顺序可辨（"top" 排在 "part" 之后，
-        因此同一 id 在 Bronze 去重时以刷新批次的新值胜出）。
+        **排序的唯一依据是 `written_at`，它必须落在 payload 里。** 不能交给
+        文件系统：mtime 在复制目录、解压归档、换机迁移后都会变，届时同一批
+        Raw 会推出不同的 Bronze——而 `rebuild` 声称「Raw 是唯一事实来源」，
+        两者不能同时为真。（2026-11-04 实测：字典序让旧批次压住新批次，
+        头部两万名的 main_size 只剩 11,552 条。）
+
+        `label` 只用于让人一眼看出是哪一批（part / top / card），**不参与排序**。
+        同内容重写会复用已有文件，其 written_at 保持首次写入时刻——内容相同，
+        谁胜出都不影响结果。
         """
         payload = {
             "meta": {
@@ -178,11 +186,28 @@ class DatasetStore:
                 "snapshot_date": snapshot_date.isoformat(),
                 "page_index": page_index,
                 "record_count": len(records),
+                "written_at": written_at or _utc_now(),
             },
             "records": records,
         }
         body = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-        digest = hashlib.sha256(body).hexdigest()[:8]
+        # 摘要**不含**写入时刻：否则同一页每跑一次就多一个文件，幂等性失效。
+        # 排除后，「同内容重写复用已有文件」照旧成立，其 written_at 保持首次写入
+        # 时刻——内容相同，谁胜出都不影响结果。历史文件本就没有该字段，故同一规则
+        # 算出的摘要与从前一致，老文件仍能被复用。
+        digest_source = json.dumps(
+            {
+                **payload,
+                "meta": {
+                    key: value
+                    for key, value in payload["meta"].items()
+                    if key != "written_at"
+                },
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
+        digest = hashlib.sha256(digest_source).hexdigest()[:8]
 
         target_dir = self.raw_dir / f"dt={snapshot_date.isoformat()}"
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -199,15 +224,14 @@ class DatasetStore:
     def build_bronze(self, snapshot_date: date) -> int:
         """从该日期的 Raw 整体重建 Bronze 分区，返回写入标量行数。"""
         partition = self.raw_dir / f"dt={snapshot_date.isoformat()}"
-        files = self._ordered_raw_files(partition)
-        if not files:
+        batches = self._read_raw_batches(partition)
+        if not batches:
             return 0
 
         rows: list[dict[str, Any]] = []
-        for path in files:
-            payload = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
-            for record in payload.get("records", []):
-                row = self._to_row(record, snapshot_date, path.name)
+        for _key, records, page_file in batches:
+            for record in records:
+                row = self._to_row(record, snapshot_date, page_file)
                 if row is not None:
                     rows.append(row)
 
@@ -226,22 +250,35 @@ class DatasetStore:
         return frame.height
 
     @staticmethod
-    def _ordered_raw_files(partition: Path) -> list[Path]:
-        """按写入时间升序返回 Raw 分块，同 id 以最后写入者为准。
+    def _read_raw_batches(
+        partition: Path, pattern: str = "*.json.gz"
+    ) -> list[tuple[tuple[Any, ...], list[dict[str, Any]], str]]:
+        """读出分块并按写入时刻升序排列，同 id 以最后写入者为准。
 
-        不能用文件名字典序：同一页在不同批次会因内容变化而存成不同摘要的文件，
-        而摘要是随机哈希，谁排前面纯属偶然。2026-11-04 实测因此丢过一半数据——
-        今早的 `top-*`（旧字段集）压住了刚写的 `top-*`（含 mainSize），
-        表现为 main_size 只覆盖了 11,552/20,000，且不报任何错。
+        排序发生在**解压之后**：序存在 payload 的 `written_at` 里，文件名与文件
+        属性都不作数。build 本来就要解压全部文件，因此这不是额外成本。
 
-        mtime 才是真实的写入序。同名文件被复用（幂等）时 mtime 保持首次写入时间，
-        这正是「同内容谁胜出都一样」的语义。
+        旧分块（此字段引入之前）回退到 mtime——它们已经稳定、不会再变，
+        影响锁在历史里；键首位的 0/1 保证新分块永远排在其后，迁移期不会出现
+        「新写的数据输给历史数据」。
         """
         if not partition.exists():
             return []
-        return sorted(
-            partition.glob("*.json.gz"), key=lambda path: (path.stat().st_mtime, path.name)
-        )
+
+        batches: list[tuple[tuple[Any, ...], list[dict[str, Any]], str]] = []
+        for path in partition.glob(pattern):
+            payload = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+            meta = payload.get("meta") or {}
+            stamp = meta.get("written_at")
+            if isinstance(stamp, str) and stamp:
+                key: tuple[Any, ...] = (1, stamp, path.name)
+            else:
+                # 定宽浮点串，保证字典序等于数值序。
+                key = (0, "", f"{path.stat().st_mtime:020.6f}", path.name)
+            batches.append((key, payload.get("records", []), path.name))
+
+        batches.sort(key=lambda item: item[0])
+        return batches
 
     def read_bronze(self, snapshot_date: date) -> pl.DataFrame:
         target = self.bronze_dir / f"dt={snapshot_date.isoformat()}" / "bronze.parquet"
@@ -268,18 +305,14 @@ class DatasetStore:
         重扫两次的代价（重复解压 25 个分块）没有必要。
         """
         partition = self.raw_dir / f"dt={snapshot_date.isoformat()}"
-        found = list(partition.glob("card-*.json.gz")) if partition.exists() else []
-        # 按修改时间排序：同一日内多次补齐时，后跑的那批必须胜出，
-        # 文件名里的页码与摘要都不带时序，靠字典序会随机取到旧卡片。
-        files = sorted(found, key=lambda path: path.stat().st_mtime)
-        if not files:
+        batches = self._read_raw_batches(partition, pattern="card-*.json.gz")
+        if not batches:
             return self.read_enrich().height, self.read_card_configs().height
 
         card_rows: list[dict[str, Any]] = []
         config_rows: list[dict[str, Any]] = []
-        for path in files:
-            payload = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
-            for record in payload.get("records", []):
+        for _key, records, _name in batches:
+            for record in records:
                 row = extract_card_row(record, snapshot_date)
                 if row is not None:
                     card_rows.append(row)
@@ -597,6 +630,15 @@ def _as_structured_text(value: Any) -> str | None:
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
     return _as_text(value)
+
+
+def _utc_now() -> str:
+    """带微秒的 UTC 时刻，作为 Raw 的写入序。
+
+    微秒足够：每页之间至少隔着一次网络往返，不可能同微秒落两次盘。
+    用 UTC 而非本地时间，避免跨时区迁移后序颠倒。
+    """
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def _align_frame(frame: pl.DataFrame, schema: dict[str, pl.DataType]) -> pl.DataFrame:

@@ -34,8 +34,10 @@ def write_run(
     body = {
         "command": command,
         "status": status,
-        "started_at": started_at.isoformat(timespec="seconds"),
-        "finished_at": datetime.now().isoformat(timespec="seconds"),
+        # 精度到微秒：同一秒内连跑两轮时，秒级时间戳无法区分先后，
+        # 而「连续两轮对比」正是靠这个顺序成立的。
+        "started_at": started_at.isoformat(timespec="microseconds"),
+        "finished_at": datetime.now().isoformat(timespec="microseconds"),
         "payload": _jsonable(payload),
     }
     path.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -50,7 +52,12 @@ def _jsonable(value: Any) -> Any:
 
 
 def read_runs(store: DatasetStore) -> list[dict[str, Any]]:
-    """按时间升序读取全部运行摘要。"""
+    """按时间升序读取全部运行摘要。
+
+    排序依据是记录里的 `started_at`，**不是文件名**：同一秒内的第二轮会被写成
+    `...-build-2.json`，而 `-` 的字典序排在 `.` 之前，按文件名排会把后一轮
+    排到前一轮之前——「连续两轮对比」于是读到颠倒的一对。
+    """
     runs_dir = store.root / "runs"
     if not runs_dir.exists():
         return []
@@ -61,4 +68,5 @@ def read_runs(store: DatasetStore) -> list[dict[str, Any]]:
         except (json.JSONDecodeError, OSError):
             # 单条损坏不影响其余摘要的读取
             continue
+    records.sort(key=lambda item: (str(item.get("started_at") or ""), str(item.get("finished_at") or "")))
     return records

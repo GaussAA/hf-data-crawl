@@ -56,3 +56,5 @@
    - 卡片的 `data_files` 仅 4,797 个库有值（占 13,651 张卡的 35%），覆盖太窄；
    - **格式信息已有更优来源**：`format:` 标签覆盖 parquet 53.3 万、json 10.0 万、optimized-parquet 6.8 万、csv 5.2 万、imagefolder 3.3 万，量级远超两万条 siblings；
    - 体积信息已由 `mainSize`（100% 覆盖）与 datasets-server 的 `num_bytes_original` 双重覆盖，`usedStorage` 的差值仅是 git 历史开销。
+17. **写入序是 Raw 的不变量**（2026-11-05）：`write_raw` 把 `written_at`（UTC、微秒）写进 payload 的 `meta`，Bronze 去重按它排序。**文件名摘要、mtime、`label` 的字母序都不参与排序**——mtime 在复制目录、解压归档、换机迁移后都会变，届时同一批 Raw 会推出不同 Bronze，与 `rebuild` 的承诺直接冲突。摘要**不含** `written_at`，否则同内容重写会不断产生新文件、幂等失效。旧分块无此字段，回退 mtime（影响锁在历史里；键首位 0/1 保证新分块永远排在其后）。
+18. **`rebuild` 有两处不来自 Raw 的例外**，重建时须特殊对待：① `enrich/size.parquet` 来自 datasets-server，删了无法重算，故只删卡片表；② `current.status` 的失效值来自单库探测，重建前留存、重建后写回，否则一次 build 就把全部 restricted / renamed 清零（2026-11-05 实测 463 条归零）。

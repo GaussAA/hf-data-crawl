@@ -9,6 +9,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 import pytest
 
 from hf_data_crawl.rebuild import discover_raw_dates, rebuild_from_raw
@@ -145,3 +146,32 @@ def test_重建会重算卡片表(store: DatasetStore) -> None:
 
     assert store.read_enrich().height == 1
     assert store.read_enrich().row(0, named=True)["pretty_name"] == "正式名"
+
+
+def test_重建保留对账探测出的失效状态(store: DatasetStore) -> None:
+    """失效状态来自单库探测，不在 raw 里，重建不得抹掉。
+
+    2026-11-05 实测踩到：463 条 restricted / renamed 在一次 build 后全部变回
+    active，页面上「已失效」直接归零，且不报任何错。
+    """
+    store.mark_status({"acme/ds-2": "restricted"})
+
+    rebuild_from_raw(store)
+
+    assert status_of(store, "acme/ds-2") == "restricted"
+    assert status_of(store, "acme/ds-1") == "active"
+
+
+def test_重建后新增数据仍为在架(store: DatasetStore) -> None:
+    """留存失效状态不等于把所有库钉死在旧状态。"""
+    store.mark_status({"acme/ds-1": "renamed"})
+
+    rebuild_from_raw(store)
+
+    assert status_of(store, "acme/ds-1") == "renamed"
+    assert store.read_current().filter(pl.col("status") == "active").height == 1
+
+
+def status_of(store: DatasetStore, dataset_id: str) -> str:
+    frame = store.read_current().filter(pl.col("id") == dataset_id)
+    return frame.row(0, named=True)["status"]

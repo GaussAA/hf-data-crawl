@@ -96,6 +96,48 @@ def test_损坏的摘要文件不阻断其余读取(tmp_path: Path) -> None:
     assert len(runs) == 1
 
 
+def test_同一秒内两轮的顺序按内容而非文件名(tmp_path: Path) -> None:
+    """撞名文件 `-build-2.json` 的字典序排在 `-build.json` 之前。
+
+    若按文件名排序，后一轮会被读到前面，「连续两轮对比」于是读到颠倒的一对，
+    而且不报错——只是 finished_at <= started_at 这条检查突然不成立。
+    """
+    store = DatasetStore(tmp_path / "data")
+    runs_dir = store.root / "runs"
+    runs_dir.mkdir(parents=True)
+    (runs_dir / "20261105T001500-build.json").write_text(
+        json.dumps(
+            {
+                "command": "build",
+                "status": "success",
+                "started_at": "2026-11-05T00:15:00.000000",
+                "finished_at": "2026-11-05T00:15:09.000000",
+                "payload": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runs_dir / "20261105T001500-build-2.json").write_text(
+        json.dumps(
+            {
+                "command": "build",
+                "status": "success",
+                "started_at": "2026-11-05T00:15:20.000000",
+                "finished_at": "2026-11-05T00:15:29.000000",
+                "payload": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runs = read_runs(store)
+
+    assert [item["started_at"] for item in runs] == [
+        "2026-11-05T00:15:00.000000",
+        "2026-11-05T00:15:20.000000",
+    ]
+
+
 def test_摘要中日期与路径被序列化为字符串(tmp_path: Path) -> None:
     root = tmp_path / "data"
     seed(DatasetStore(root))

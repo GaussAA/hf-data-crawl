@@ -149,38 +149,30 @@ def test_bronze被polars直接可读(store: DatasetStore) -> None:
     assert frame.height == 1
 
 
-def test_同页多次写入以最后写入者为准而非文件名字典序(store: DatasetStore) -> None:
-    """回归：2026-11-04 因按文件名字典序排序，旧批次压住新批次，丢了半数字段。
+def test_同页多次写入以后写者为准(store: DatasetStore) -> None:
+    """同 id 去重的基本语义：最后写入的那份胜出。
 
-    同一页内容变了会另存为不同摘要的文件（这是对的，不丢数据），但摘要是随机
-    哈希，字典序谁先谁后纯属偶然。mtime 才是真实的写入序。
-
-    这里刻意把「字典序」与「写入序」调成相反方向，否则两种实现恰好都答对，
-    测试就什么也没验证。
+    「不依赖文件名字典序」「不依赖 mtime」这两条更强的保证由
+    tests/test_raw_order.py 负责；此处只守住最基础的一条。
     """
-    import os
-    import time
-
-    directory = store.raw_dir / f"dt={SNAPSHOT.isoformat()}"
     store.write_raw(
-        snapshot_date=SNAPSHOT, page_index=1, records=[record(1) | {"mainSize": 111}], meta={}
+        snapshot_date=SNAPSHOT,
+        page_index=1,
+        records=[record(1) | {"mainSize": 111}],
+        meta={},
+        written_at="2026-11-04T09:00:00.000000+00:00",
     )
-    later = next(directory.glob("*.json.gz"))
     store.write_raw(
-        snapshot_date=SNAPSHOT, page_index=1, records=[record(1) | {"mainSize": 222}], meta={}
+        snapshot_date=SNAPSHOT,
+        page_index=1,
+        records=[record(1) | {"mainSize": 222}],
+        meta={},
+        written_at="2026-11-04T10:00:00.000000+00:00",
     )
-    earlier = next(path for path in directory.glob("*.json.gz") if path != later)
-
-    # later 写入更晚，但让它字典序靠前；earlier 相反。字典序会选错，mtime 才对。
-    later.rename(directory / "part-000001-00000000.json.gz")
-    earlier.rename(directory / "part-000001-ffffffff.json.gz")
-    now = time.time()
-    os.utime(directory / "part-000001-00000000.json.gz", (now, now))
-    os.utime(directory / "part-000001-ffffffff.json.gz", (now - 30, now - 30))
 
     store.build_bronze(SNAPSHOT)
 
-    assert store.read_bronze(SNAPSHOT).row(0, named=True)["main_size"] == 111
+    assert store.read_bronze(SNAPSHOT).row(0, named=True)["main_size"] == 222
 
 
 def test_后写入的新字段不会被先写入的空值覆盖(store: DatasetStore) -> None:
