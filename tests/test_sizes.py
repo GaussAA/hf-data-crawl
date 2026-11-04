@@ -265,3 +265,28 @@ def test_空候选时不报错() -> None:
 @pytest.mark.parametrize("count,total,expected", [(0, 10, 0), (5, 10, 50), (10, 10, 100), (3, 0, 0)])
 def test_进度百分比边界(count: int, total: int, expected: int) -> None:
     assert tail(count, total) == expected
+
+
+def test_分批落库让中断不只损失全部成果() -> None:
+    """十万条跑一小时，只在末尾写一次等于把一小时押在最后一个字节上。"""
+    ids = [f"acme/ds-{index}" for index in range(12)]
+    transport = FakeSizeTransport({i: payload(index) for index, i in enumerate(ids)})
+    batches: list[pl.DataFrame] = []
+
+    summary, frame = SizeFetcher(api=api(transport), workers=4).run(
+        DAY, dataset_ids=ids, top=12, flush=batches.append, flush_every=5
+    )
+
+    assert len(batches) == 2, "12 条按 5 条一批应交付 2 批，余下 2 条随最终结果返回"
+    assert all(batch.height == 5 for batch in batches)
+    assert frame.height == 12
+    assert summary.fetched == 12
+
+
+def test_不传flush时行为不变() -> None:
+    ids = [f"acme/ds-{index}" for index in range(3)]
+    transport = FakeSizeTransport({i: payload(1) for i in ids})
+
+    _, frame = SizeFetcher(api=api(transport), workers=2).run(DAY, dataset_ids=ids, top=3)
+
+    assert frame.height == 3

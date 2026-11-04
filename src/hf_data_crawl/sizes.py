@@ -210,8 +210,16 @@ class SizeFetcher:
         top: int = 20_000,
         retry_unavailable: bool = False,
         existing: pl.DataFrame | None = None,
+        flush: Callable[[pl.DataFrame], None] | None = None,
+        flush_every: int = 5_000,
     ) -> tuple[SizeSummary, pl.DataFrame]:
-        """返回 (摘要, 新结果表)。落库由调用方负责，便于纯函数式测试。"""
+        """返回 (摘要, 结果表)。
+
+        `flush` 用于边跑边落库：十万条要跑一小时，只在末尾写一次等于把一小时
+        的成果押在最后一个字节上——中断、断电、进程被杀都会全丢。给了 flush
+        就每攒满 `flush_every` 条先交出去一次，最坏损失一个批次。
+        返回值仍是完整结果，调用方照常整体并入（按 id 覆盖，重复合并无副作用）。
+        """
         started = time.monotonic()
         candidates = list(dataset_ids or [])[:top]
         done = _resolved_ids(existing, retry_unavailable=retry_unavailable)
@@ -219,6 +227,8 @@ class SizeFetcher:
         skipped = len(candidates) - len(pending)
 
         results: list[SizeResult] = []
+        rows: list[dict[str, Any]] = []
+        buffer: list[dict[str, Any]] = []
         completed = 0
         with ThreadPoolExecutor(max_workers=self._workers) as pool:
             futures = {
@@ -226,12 +236,21 @@ class SizeFetcher:
                 for dataset_id in pending
             }
             for future in as_completed(futures):
-                results.append(future.result())
+                result = future.result()
+                results.append(result)
+                if result.row:
+                    rows.append(result.row)
+                    buffer.append(result.row)
                 completed += 1
-                if self._progress is not None and (completed % 100 == 0 or completed == len(pending)):
+
+                if flush is not None and len(buffer) >= max(1, flush_every):
+                    flush(pl.DataFrame(buffer, schema=SIZE_SCHEMA))
+                    buffer.clear()
+                if self._progress is not None and (
+                    completed % 100 == 0 or completed == len(pending)
+                ):
                     self._progress(completed, len(pending))
 
-        rows = [result.row for result in results if result.row]
         frame = (
             pl.DataFrame(rows, schema=SIZE_SCHEMA)
             if rows

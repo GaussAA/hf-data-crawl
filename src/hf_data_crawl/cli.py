@@ -82,6 +82,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="重试上次标记为不可用的数据集（默认跳过，因为它们多为永久缺失）",
     )
+    sizes.add_argument(
+        "--flush-every",
+        type=int,
+        default=5000,
+        help="每处理多少条就落一次库，中断时最多损失这一批",
+    )
 
     report = subparsers.add_parser("report", help="生成静态榜单页（不联网）")
     report.add_argument("--out", default=None, help="输出路径，默认 data/reports/dashboard.html")
@@ -195,10 +201,14 @@ def _fetch_sizes(args: argparse.Namespace, store: DatasetStore) -> tuple[int, An
         top=max(1, args.top),
         retry_unavailable=args.retry_unavailable,
         existing=store.read_sizes(),
+        # 边跑边落库：十万条要跑一小时，不能把一小时的成果押在最后一次写入上。
+        flush=store.merge_sizes,
+        flush_every=args.flush_every,
     )
     # 进度条走的是 \r 原地刷新，收尾必须换行，否则摘要会贴在同一行上。
     print()
-    store.merge_sizes(frame)
+    if frame.height:
+        store.merge_sizes(frame)
     _print_sizes(summary, store.read_sizes().height)
     return 0, summary
 
