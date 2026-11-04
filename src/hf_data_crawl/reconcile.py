@@ -41,6 +41,7 @@ class ReconcileSummary:
     report_path: Path | None
     stopped_reason: str
     elapsed_seconds: float
+    resumed: bool = False
 
 
 class Reconciler:
@@ -68,6 +69,7 @@ class Reconciler:
     ) -> ReconcileSummary:
         started = time.monotonic()
         checkpoint = FileCheckpoint(self._store.state_dir / self._checkpoint_filename)
+        resumed = checkpoint.cursor is not None
 
         before = self._store.read_current()
         before_ids = set(before["id"].to_list())
@@ -149,6 +151,7 @@ class Reconciler:
             report_path=report_path,
             stopped_reason=stopped_reason,
             elapsed_seconds=time.monotonic() - started,
+            resumed=resumed,
         )
 
     @staticmethod

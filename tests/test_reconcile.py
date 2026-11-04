@@ -160,6 +160,7 @@ def test_续跑后不把前半段已扫过的判成下架(store: DatasetStore) -
     resumed = FakeCursorTransport([[record("a", "sha-a1")], [record("c", "sha-c1")]])
     summary = reconciler(resumed, store).run(DAY2, limit=100)
 
+    assert summary.resumed is True
     assert summary.disappeared == 1
     assert status_of(store, "acme/a") == "active"
     assert status_of(store, "acme/c") == "active"

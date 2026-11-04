@@ -185,8 +185,9 @@ def _print_collect(summary: CollectSummary) -> None:
 
 
 def _print_reconcile(summary: ReconcileSummary) -> None:
+    tag = "（续跑，页数为本轮）" if summary.resumed else ""
     print(
-        f"{summary.snapshot_date} 对账完成："
+        f"{summary.snapshot_date} 对账完成{tag}："
         f"{summary.pages} 页 / {summary.records} 条 / 耗时 {summary.elapsed_seconds:.1f}s"
     )
     print(
