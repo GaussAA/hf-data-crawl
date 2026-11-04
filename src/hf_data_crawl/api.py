@@ -126,6 +126,31 @@ def _parse_rate_limit(headers: Mapping[str, str]) -> tuple[int | None, int | Non
     return remaining, reset_in
 
 
+@dataclass(frozen=True)
+class Probe:
+    """单库探测结果：究竟是不见了，还是藏起来了。"""
+
+    status: int
+    resolved_id: str | None = None
+
+    @property
+    def verdict(self) -> str:
+        """把 HTTP 状态翻译成业务语义。
+
+        - 200：库还在，只是 id 变了（HF 支持改名，会 307 到新地址，
+          transport 已跟随重定向，故这里看到的是最终的 200）；
+        - 401/403：转为私有或需授权，数据仍在，不该算「消失」；
+        - 404：真的没了。
+        """
+        if self.status == 200:
+            return "renamed" if self.resolved_id else "present"
+        if self.status in {401, 403}:
+            return "restricted"
+        if self.status == 404:
+            return "deleted"
+        return "unknown"
+
+
 class HfDatasetApi:
     """按显式排序稳定遍历数据集列表。"""
 
@@ -208,6 +233,35 @@ class HfDatasetApi:
                 self._sleeper(float(reset_in))
 
             params["cursor"] = next_cursor
+
+    def probe(self, dataset_id: str) -> Probe:
+        """单库探测，用于复核下架判定。
+
+        列表扫描里「没扫到」有三种可能：删除、转私有、改名。三者对历史数据的
+        含义完全不同——转私有不该从统计里消失，改名的则要能续上原有观测史。
+        问一次详情接口是唯一可靠的分辨方式：改名会 307 到新地址（transport
+        已跟随重定向，最终看到 200 与新 id），转私有返回 401，真删除返回 404。
+
+        成本约 1.8 KB/次，只在每轮判定下架后对那几十上百条做，不用于批量。
+        """
+        try:
+            response = self._transport.get(
+                f"{self._base_url}/{dataset_id}",
+                {"blobs": "false"},
+                {"Accept": "application/json"},
+            )
+        except TransportError:
+            # 探测失败不等于数据集消失，留待下轮再判。
+            return Probe(status=0)
+
+        if response.status != 200:
+            return Probe(status=response.status)
+        try:
+            payload = json.loads(response.body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return Probe(status=response.status)
+        resolved = payload.get("id") if isinstance(payload, dict) else None
+        return Probe(status=200, resolved_id=resolved)
 
     def _request(self, params: dict[str, Any]) -> HfResponse:
         attempt = 0

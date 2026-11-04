@@ -401,16 +401,29 @@ class DatasetStore:
 
     def mark_disappeared(self, dataset_ids: list[str]) -> int:
         """把指定数据集标为下架。只改状态，不动观测史与 last_seen_at。"""
-        if not dataset_ids:
+        return self.mark_status({dataset_id: "disappeared" for dataset_id in dataset_ids})
+
+    def mark_status(self, updates: dict[str, str]) -> int:
+        """按 id 批量改状态，返回实际发生变化的行数。
+
+        状态不再只有「在架/下架」两极：`restricted` 表示转为私有、`renamed` 表示
+        改名（原 id 失效但库还在）。把它们一律记成 disappeared，会让下架数虚高，
+        也让改名后的库在下轮变成「新增」而丢掉原有观测史。
+        """
+        if not updates:
             return 0
         current = self.read_current()
         if current.height == 0:
             return 0
-        updated = current.with_columns(
-            pl.when(pl.col("id").is_in(dataset_ids))
-            .then(pl.lit("disappeared"))
-            .otherwise(pl.col("status"))
-            .alias("status")
+
+        patch = pl.DataFrame(
+            {"id": list(updates), "next_status": list(updates.values())},
+            schema={"id": pl.Utf8, "next_status": pl.Utf8},
+        )
+        updated = (
+            current.join(patch, on="id", how="left")
+            .with_columns(pl.coalesce(["next_status", "status"]).alias("status"))
+            .drop("next_status")
         )
         changed = int((updated["status"] != current["status"]).sum())
         if changed:

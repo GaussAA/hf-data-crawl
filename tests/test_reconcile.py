@@ -23,9 +23,15 @@ DAY3 = date(2026, 11, 3)
 
 
 class FakeCursorTransport:
-    def __init__(self, pages: list[list[dict[str, Any]]]) -> None:
+    def __init__(
+        self,
+        pages: list[list[dict[str, Any]]],
+        detail: dict[str, Any] | None = None,
+    ) -> None:
         self.pages = pages
         self.calls: list[dict[str, Any]] = []
+        #: 详情探测的预设回应：id → 状态码 或 {"id": 新id}。缺省一律 404（真删了）。
+        self.detail = detail or {}
         base = "https://huggingface.co/api/datasets"
         self._links = [f"{base}?cursor=c{index + 2}" for index in range(len(pages) - 1)] + [None]
         self._map = {
@@ -35,6 +41,18 @@ class FakeCursorTransport:
         }
 
     def get(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> HfResponse:
+        import json
+
+        # 带 blobs 的是单库详情探测，与列表分页走不同分支。
+        if "blobs" in params:
+            dataset_id = url.split("/api/datasets/", 1)[-1]
+            value = self.detail.get(dataset_id, 404)
+            if isinstance(value, int):
+                return HfResponse(status=value, headers={}, body=b"{}")
+            return HfResponse(
+                status=200, headers={}, body=json.dumps(value, ensure_ascii=False).encode()
+            )
+
         self.calls.append(dict(params))
         cursor = params.get("cursor")
         index = 0 if cursor is None else self._map[str(cursor)]
@@ -42,7 +60,6 @@ class FakeCursorTransport:
         response_headers = {"RateLimit": '"api";r=480;t=180'}
         if link is not None:
             response_headers["Link"] = f'<{link}>; rel="next"'
-        import json
 
         return HfResponse(
             status=200,
@@ -182,3 +199,82 @@ def test_全量扫描使用createdAt稳定序(store: DatasetStore) -> None:
 
     assert transport.calls[0]["sort"] == "createdAt"
     assert transport.calls[0]["direction"] == "-1"
+
+
+# ---------------------------------------------------------------- 下架原因复核
+
+def test_转私有的不算删除(store: DatasetStore) -> None:
+    """实测 463 条「下架」里约有两成是 401——库还在，只是不让看了。
+
+    把它们记成 disappeared，会让下架数虚高，也让这类库在恢复公开时被当成「新增」。
+    """
+    transport = FakeCursorTransport(
+        [[record("a", "sha-a2")]], detail={"acme/b": 401}
+    )
+
+    summary = reconciler(transport, store).run(DAY2, limit=100)
+
+    assert summary.restricted == 1
+    assert summary.disappeared == 0
+    assert status_of(store, "acme/b") == "restricted"
+
+
+def test_改名的标记为renamed(store: DatasetStore) -> None:
+    transport = FakeCursorTransport(
+        [[record("a", "sha-a2")]], detail={"acme/b": {"id": "acme/b-v2"}}
+    )
+
+    summary = reconciler(transport, store).run(DAY2, limit=100)
+
+    assert summary.renamed == 1
+    assert status_of(store, "acme/b") == "renamed"
+
+
+def test_真删除才标disappeared(store: DatasetStore) -> None:
+    transport = FakeCursorTransport([[record("a", "sha-a2")]], detail={"acme/b": 404})
+
+    summary = reconciler(transport, store).run(DAY2, limit=100)
+
+    assert summary.disappeared == 1
+    assert status_of(store, "acme/b") == "disappeared"
+
+
+def test_探测异常不标记留待下轮(store: DatasetStore) -> None:
+    """网络抖动不等于数据集消失，把抖动写成下架是不可逆的脏数据。"""
+    transport = FakeCursorTransport([[record("a", "sha-a2")]], detail={"acme/b": 0})
+
+    summary = reconciler(transport, store).run(DAY2, limit=100)
+
+    assert summary.disappeared == 0
+    assert summary.restricted == 0
+    assert status_of(store, "acme/b") == "active"
+
+
+def test_差异清单区分三种消失方式(store: DatasetStore) -> None:
+    seed(store, DAY1, [record("c", "sha-c1"), record("d", "sha-d1")])
+    transport = FakeCursorTransport(
+        [[record("a", "sha-a2")]],
+        detail={"acme/b": 404, "acme/c": 401, "acme/d": {"id": "acme/d-v2"}},
+    )
+
+    summary = reconciler(transport, store).run(DAY2, limit=100)
+
+    kinds = pl.read_csv(summary.report_path)["kind"].to_list()
+    assert "disappeared" in kinds
+    assert "restricted" in kinds
+    assert "renamed" in kinds
+
+
+def test_恢复判定覆盖私有与改名(store: DatasetStore) -> None:
+    """上轮被标成 restricted / renamed 的库重新出现时，要能被识别为恢复。"""
+    reconciler(
+        FakeCursorTransport([[record("a", "sha-a1")]], detail={"acme/b": 401}), store
+    ).run(DAY2, limit=100)
+    assert status_of(store, "acme/b") == "restricted"
+
+    summary = reconciler(
+        FakeCursorTransport([[record("a", "sha-a1"), record("b", "sha-b1")]]), store
+    ).run(DAY3, limit=100)
+
+    assert summary.reactivated == 1
+    assert status_of(store, "acme/b") == "active"

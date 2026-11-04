@@ -302,7 +302,8 @@ def _print_reconcile(summary: ReconcileSummary) -> None:
         f"{summary.pages} 页 / {summary.records} 条 / 耗时 {summary.elapsed_seconds:.1f}s"
     )
     print(
-        f"  新增 {summary.new_ids} · 下架 {summary.disappeared} · "
+        f"  新增 {summary.new_ids} · 删除 {summary.disappeared} · "
+        f"转私有 {summary.restricted} · 改名 {summary.renamed} · "
         f"sha 变更 {summary.sha_changed} · 恢复 {summary.reactivated}"
     )
     print(f"  差异清单 {summary.report_path} · 停止原因 {summary.stopped_reason}")

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -21,6 +22,13 @@ from .collect import LEAN_EXPAND
 from .store import DatasetStore
 
 RECONCILE_CHECKPOINT = "reconcile-checkpoint.json"
+
+#: 探测结论 → 落库状态。`present` / `unknown` 不在表内，表示「先别动」。
+_STATUS_BY_VERDICT: dict[str, str] = {
+    "deleted": "disappeared",
+    "restricted": "restricted",
+    "renamed": "renamed",
+}
 
 REPORT_SCHEMA: dict[str, pl.DataType] = {
     "kind": pl.Utf8,
@@ -42,6 +50,8 @@ class ReconcileSummary:
     stopped_reason: str
     elapsed_seconds: float
     resumed: bool = False
+    restricted: int = 0
+    renamed: int = 0
 
 
 class Reconciler:
@@ -54,11 +64,13 @@ class Reconciler:
         *,
         report_dir: Path | None = None,
         checkpoint_filename: str = RECONCILE_CHECKPOINT,
+        probe_workers: int = 8,
     ) -> None:
         self._api = api
         self._store = store
         self._report_dir = report_dir or (store.root / "reports")
         self._checkpoint_filename = checkpoint_filename
+        self._probe_workers = max(1, probe_workers)
 
     def run(
         self,
@@ -116,7 +128,9 @@ class Reconciler:
 
         new_ids = sorted(seen - before_ids)
         reactivated = sorted(
-            dataset_id for dataset_id in seen if before_status.get(dataset_id) == "disappeared"
+            dataset_id
+            for dataset_id in seen
+            if before_status.get(dataset_id) in {"disappeared", "restricted", "renamed"}
         )
         sha_changed = sorted(
             dataset_id
@@ -125,9 +139,15 @@ class Reconciler:
         )
 
         disappeared: list[str] = []
+        restricted: list[str] = []
+        renamed: list[str] = []
         if stopped_reason == "end":
-            disappeared = sorted(before_ids - seen)
-            self._store.mark_disappeared(disappeared)
+            missing = sorted(before_ids - seen)
+            verdicts = self._classify_missing(missing)
+            disappeared = [item for item, status in verdicts.items() if status == "disappeared"]
+            restricted = [item for item, status in verdicts.items() if status == "restricted"]
+            renamed = [item for item, status in verdicts.items() if status == "renamed"]
+            self._store.mark_status(verdicts)
             checkpoint.save(None)
             session_path.unlink(missing_ok=True)
 
@@ -138,6 +158,8 @@ class Reconciler:
             disappeared,
             sha_changed,
             reactivated,
+            restricted=restricted,
+            renamed=renamed,
         )
 
         return ReconcileSummary(
@@ -152,7 +174,29 @@ class Reconciler:
             stopped_reason=stopped_reason,
             elapsed_seconds=time.monotonic() - started,
             resumed=resumed,
+            restricted=len(restricted),
+            renamed=len(renamed),
         )
+
+    def _classify_missing(self, missing: list[str]) -> dict[str, str]:
+        """复核「没扫到」的真实原因，返回 id → 状态。
+
+        列表扫描看不见一个库，可能是删除、转私有或改名。直接问一次详情接口即可
+        分辨：404 是删除，401 是转私有，307 跟随到 200 则是改名。
+        463 条并发探测约 20 秒，比把三种情况混成一个数字便宜得多。
+
+        探测失败（网络异常）不标记，留待下轮——把网络抖动写成「下架」是不可逆的脏数据。
+        """
+        if not missing:
+            return {}
+
+        verdicts: dict[str, str] = {}
+        with ThreadPoolExecutor(max_workers=self._probe_workers) as pool:
+            for dataset_id, probe in zip(missing, pool.map(self._api.probe, missing)):
+                status = _STATUS_BY_VERDICT.get(probe.verdict)
+                if status is not None:
+                    verdicts[dataset_id] = status
+        return verdicts
 
     @staticmethod
     def _append_session(path: Path, records: list[dict[str, Any]]) -> None:
@@ -186,12 +230,17 @@ class Reconciler:
         disappeared: list[str],
         sha_changed: list[str],
         reactivated: list[str],
+        *,
+        restricted: list[str] | None = None,
+        renamed: list[str] | None = None,
     ) -> Path:
         rows: list[dict[str, Any]] = [
             {"kind": "run", "id": "", "detail": f"stopped_reason={stopped_reason}"}
         ]
         rows += [{"kind": "new", "id": item, "detail": ""} for item in new_ids]
-        rows += [{"kind": "disappeared", "id": item, "detail": ""} for item in disappeared]
+        rows += [{"kind": "disappeared", "id": item, "detail": "404"} for item in disappeared]
+        rows += [{"kind": "restricted", "id": item, "detail": "401"} for item in restricted or []]
+        rows += [{"kind": "renamed", "id": item, "detail": ""} for item in renamed or []]
         rows += [{"kind": "sha_changed", "id": item, "detail": ""} for item in sha_changed]
         rows += [{"kind": "reactivated", "id": item, "detail": ""} for item in reactivated]
 
