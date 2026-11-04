@@ -48,3 +48,11 @@
 13. **HF 没有下载量时序接口**：`/api/datasets/{id}/downloads` 返回 404。增速只能靠自建观测流水累积，这是本项目保留 `observations` 分区的根本原因。
 14. **`trendingScore` 是整数且可为 null**，`gated` 取值是 `false` / `"manual"` / `"auto"` 三种，`mainSize` 最大观测到 489 GB。
 15. **列表里「没扫到」≠ 已删除**（2026-11-04 抽查 3 条实测）：对失效 id 请求单库详情，走 `follow_redirects` 后可分辨三种情况——**404 真删除、401 转私有（库还在）、307 改名（跟随到 200，返回新 id）**。三者对历史的意义完全不同，故 `current.status` 取 `active` / `disappeared` / `restricted` / `renamed` 四值。
+16. **单库详情不能用于批量补 `siblings` / `usedStorage`**（2026-11-04 实测 12 条抽样，已放弃）：
+   - 详情接口的 `expand[]` 是**增补**语义，与列表接口相反——传 `expand[]=usedStorage` 仍会带回 `siblings`，响应 12,488,000 B，无法裁剪；
+   - 体量分布：中位 **346 KB**、平均 **6.7 MB**、最大 **28.4 MB**（`siblings` 在 10 万个文件处截断，大库清单本就不完整）；
+   - 据此推算两万条约 **133 GB**，按实测 130 KB/s 需 **280 小时**；
+   - `/tree/main` 顶层只要 589 B，但只给顶层，拿不到分片文件的扩展名；
+   - 卡片的 `data_files` 仅 4,797 个库有值（占 13,651 张卡的 35%），覆盖太窄；
+   - **格式信息已有更优来源**：`format:` 标签覆盖 parquet 53.3 万、json 10.0 万、optimized-parquet 6.8 万、csv 5.2 万、imagefolder 3.3 万，量级远超两万条 siblings；
+   - 体积信息已由 `mainSize`（100% 覆盖）与 datasets-server 的 `num_bytes_original` 双重覆盖，`usedStorage` 的差值仅是 git 历史开销。
