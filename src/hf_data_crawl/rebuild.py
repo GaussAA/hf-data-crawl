@@ -20,6 +20,8 @@ class RebuildSummary:
     silver_rows: int
     observations: int
     current_rows: int
+    card_rows: int = 0
+    config_rows: int = 0
 
 
 def discover_raw_dates(store: DatasetStore) -> list[date]:
@@ -44,7 +46,9 @@ def rebuild_from_raw(store: DatasetStore) -> RebuildSummary:
     if not dates:
         return RebuildSummary(dates=[], bronze_rows=0, silver_rows=0, observations=0, current_rows=0)
 
-    for derived in (store.bronze_dir, store.silver_dir, store.state_dir):
+    # enrich 同样是派生层：卡片抽取规则一改（如本次从 6 字段扩到 22 字段），
+    # 必须能从 raw 的 card-*.json.gz 整体重算，而不是只能重跑一次联网的 enrich。
+    for derived in (store.bronze_dir, store.silver_dir, store.state_dir, store.enrich_dir):
         shutil.rmtree(derived, ignore_errors=True)
 
     bronze_rows = 0
@@ -52,6 +56,7 @@ def rebuild_from_raw(store: DatasetStore) -> RebuildSummary:
     for snapshot in dates:
         bronze_rows += store.build_bronze(snapshot)
         silver_rows += store.build_silver(snapshot)
+        store.build_enrich(snapshot)
         store.update_state(snapshot)
 
     return RebuildSummary(
@@ -60,4 +65,6 @@ def rebuild_from_raw(store: DatasetStore) -> RebuildSummary:
         silver_rows=silver_rows,
         observations=store.read_observations().height,
         current_rows=store.read_current().height,
+        card_rows=store.read_enrich().height,
+        config_rows=store.read_card_configs().height,
     )

@@ -19,7 +19,7 @@ from typing import Any
 
 import polars as pl
 
-from .card import ENRICH_SCHEMA, extract_card_row
+from .card import CARD_CONFIGS_SCHEMA, ENRICH_SCHEMA, extract_card_row, extract_config_rows
 from .silver import SILVER_SCHEMA, derive_row
 
 BRONZE_SCHEMA: dict[str, pl.DataType] = {
@@ -239,49 +239,82 @@ class DatasetStore:
     def enrich_dir(self) -> Path:
         return self._root / "enrich"
 
-    def build_enrich(self, snapshot_date: date) -> int:
-        """把该日期的 card 批次抽成卡片表，按 id 覆盖旧值。"""
+    def build_enrich(self, snapshot_date: date) -> tuple[int, int]:
+        """把该日期的 card 批次抽成两张表，按 id 覆盖旧值。
+
+        返回 (宽表行数, 明细行数)。一次扫描产出两张表：卡片体量小但字段多，
+        重扫两次的代价（重复解压 25 个分块）没有必要。
+        """
         partition = self.raw_dir / f"dt={snapshot_date.isoformat()}"
         found = list(partition.glob("card-*.json.gz")) if partition.exists() else []
         # 按修改时间排序：同一日内多次补齐时，后跑的那批必须胜出，
         # 文件名里的页码与摘要都不带时序，靠字典序会随机取到旧卡片。
         files = sorted(found, key=lambda path: path.stat().st_mtime)
         if not files:
-            return self.read_enrich().height
+            return self.read_enrich().height, self.read_card_configs().height
 
-        rows: list[dict[str, Any]] = []
+        card_rows: list[dict[str, Any]] = []
+        config_rows: list[dict[str, Any]] = []
         for path in files:
             payload = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
             for record in payload.get("records", []):
                 row = extract_card_row(record, snapshot_date)
                 if row is not None:
-                    rows.append(row)
+                    card_rows.append(row)
+                config_rows.extend(extract_config_rows(record, snapshot_date))
 
-        if not rows:
-            return self.read_enrich().height
-
-        fresh = pl.DataFrame(rows, schema=ENRICH_SCHEMA).unique(
-            subset=["id"], keep="last", maintain_order=True
+        table_rows = self._merge_cards(card_rows, ENRICH_SCHEMA, "carddata.parquet")
+        config_count = self._merge_cards(
+            config_rows,
+            CARD_CONFIGS_SCHEMA,
+            "card_configs.parquet",
+            dedupe=["id", "config_name", "split"],
         )
-        target = self.enrich_dir / "carddata.parquet"
+        return table_rows, config_count
+
+    def _merge_cards(
+        self,
+        rows: list[dict[str, Any]],
+        schema: dict[str, pl.DataType],
+        filename: str,
+        *,
+        dedupe: list[str] | None = None,
+    ) -> int:
+        """把本批卡片并入既有表：同 id 以新值为准，其余保留。"""
+        target = self.enrich_dir / filename
+        if not rows:
+            return self.read_card_table(filename, schema).height
+
+        fresh = pl.DataFrame(rows, schema=schema).unique(
+            subset=dedupe or ["id"], keep="last", maintain_order=True
+        )
         if target.exists():
-            previous = pl.read_parquet(target)
+            # 旧表是上一次规则下的产物，可能缺新列——先对齐再拼，否则直接抛错。
+            previous = _align_frame(pl.read_parquet(target), schema)
             merged = pl.concat(
-                [previous.filter(~pl.col("id").is_in(fresh["id"].to_list())), fresh],
+                [
+                    previous.filter(~pl.col("id").is_in(fresh["id"].unique().to_list())),
+                    fresh,
+                ],
                 how="vertical_relaxed",
             )
         else:
             merged = fresh
 
-        merged = merged.select(list(ENRICH_SCHEMA)).sort("id")
-        _write_parquet(merged, target)
+        _write_parquet(merged.select(list(schema)).sort("id"), target)
         return merged.height
 
     def read_enrich(self) -> pl.DataFrame:
-        target = self.enrich_dir / "carddata.parquet"
+        return self.read_card_table("carddata.parquet", ENRICH_SCHEMA)
+
+    def read_card_configs(self) -> pl.DataFrame:
+        return self.read_card_table("card_configs.parquet", CARD_CONFIGS_SCHEMA)
+
+    def read_card_table(self, filename: str, schema: dict[str, pl.DataType]) -> pl.DataFrame:
+        target = self.enrich_dir / filename
         if not target.exists():
-            return pl.DataFrame(schema=ENRICH_SCHEMA)
-        return pl.read_parquet(target)
+            return pl.DataFrame(schema=schema)
+        return _align_frame(pl.read_parquet(target), schema)
 
     def build_silver(self, snapshot_date: date) -> int:
         """由 Bronze 派生 Silver 分区，返回行数。"""

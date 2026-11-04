@@ -35,6 +35,8 @@ class EnrichSummary:
     with_card: int
     table_rows: int
     elapsed_seconds: float
+    config_rows: int = 0
+    with_structure: int = 0
 
 
 class Enricher:
@@ -51,6 +53,7 @@ class Enricher:
         pages = 0
         records = 0
         with_card = 0
+        with_structure = 0
 
         for index, page in enumerate(
             self._api.scan(
@@ -64,11 +67,14 @@ class Enricher:
         ):
             pages = index
             records += len(page.records)
-            with_card += sum(
-                1
-                for record in page.records
-                if isinstance(record.get("cardData"), dict) and record["cardData"]
-            )
+            for record in page.records:
+                card = record.get("cardData")
+                if not isinstance(card, dict) or not card:
+                    continue
+                with_card += 1
+                # 只有 dataset_info 才带行数与列结构，这是明细表的唯一来源。
+                if isinstance(card.get("dataset_info"), list) and card["dataset_info"]:
+                    with_structure += 1
             self._store.write_raw(
                 snapshot_date=snapshot_date,
                 page_index=index,
@@ -77,7 +83,7 @@ class Enricher:
                 label="card",
             )
 
-        table_rows = self._store.build_enrich(snapshot_date)
+        table_rows, config_rows = self._store.build_enrich(snapshot_date)
 
         return EnrichSummary(
             snapshot_date=snapshot_date,
@@ -86,4 +92,6 @@ class Enricher:
             with_card=with_card,
             table_rows=table_rows,
             elapsed_seconds=time.monotonic() - started,
+            config_rows=config_rows,
+            with_structure=with_structure,
         )

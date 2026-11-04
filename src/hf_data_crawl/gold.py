@@ -10,7 +10,9 @@ from typing import Any
 import duckdb
 import polars as pl
 
-from .store import DatasetStore
+from .card import CARD_CONFIGS_SCHEMA, ENRICH_SCHEMA
+from .silver import SILVER_SCHEMA
+from .store import OBSERVATIONS_SCHEMA, DatasetStore
 
 #: 内置榜单。`?` 为条数上限占位。
 BOARDS: dict[str, str] = {
@@ -50,39 +52,36 @@ BOARDS: dict[str, str] = {
     """,
 }
 
-_EMPTY_OBSERVATIONS = """
-    SELECT CAST(NULL AS VARCHAR) AS id,
-           CAST(NULL AS DATE) AS snapshot_date,
-           CAST(NULL AS BIGINT) AS downloads,
-           CAST(NULL AS BIGINT) AS downloads_all_time,
-           CAST(NULL AS BIGINT) AS likes
-    WHERE false
-"""
-
-_EMPTY_SILVER = """
-    SELECT CAST(NULL AS VARCHAR) AS id,
-           CAST(NULL AS VARCHAR[]) AS task_categories,
-           CAST(NULL AS VARCHAR[]) AS languages,
-           CAST(NULL AS VARCHAR[]) AS size_categories,
-           CAST(NULL AS VARCHAR[]) AS licenses,
-           CAST(NULL AS VARCHAR[]) AS libraries,
-           CAST(NULL AS VARCHAR[]) AS tags,
-           CAST(NULL AS VARCHAR) AS description,
-           CAST(NULL AS DATE) AS snapshot_date
-    WHERE false
-"""
+_DUCKDB_TYPES: dict[pl.DataType, str] = {
+    pl.Utf8: "VARCHAR",
+    pl.Int64: "BIGINT",
+    pl.Float64: "DOUBLE",
+    pl.Boolean: "BOOLEAN",
+    pl.Date: "DATE",
+}
 
 
-_EMPTY_CARD = """
-    SELECT CAST(NULL AS VARCHAR) AS id,
-           CAST(NULL AS VARCHAR) AS pretty_name,
-           CAST(NULL AS VARCHAR) AS paperswithcode_id,
-           CAST(NULL AS VARCHAR) AS arxiv,
-           CAST(NULL AS VARCHAR) AS license_name,
-           CAST(NULL AS VARCHAR) AS citation,
-           CAST(NULL AS VARCHAR) AS card_description
-    WHERE false
-"""
+def _duckdb_type(dtype: pl.DataType) -> str:
+    if dtype == pl.List(pl.Utf8):
+        return "VARCHAR[]"
+    try:
+        return _DUCKDB_TYPES[dtype]
+    except KeyError as error:
+        # 新增字段类型时在此显式失败，好过让它静默退化成 VARCHAR 再在查询时出错。
+        raise ValueError(f"Gold 空视图未映射的 dtype: {dtype}") from error
+
+
+def _empty_view(schema: dict[str, pl.DataType]) -> str:
+    """按 schema 自动生成空视图。
+
+    手写空视图是第三份会漂移的清单（另两份是表结构与请求字段）：扩列时忘了
+    同步，表现为「库为空时查询报列不存在，有数据时却正常」，只在初次安装或
+    清库后暴露。改为从 schema 生成，从根上消除这一类漏改。
+    """
+    columns = ",\n           ".join(
+        f"CAST(NULL AS {_duckdb_type(dtype)}) AS {name}" for name, dtype in schema.items()
+    )
+    return f"SELECT {columns}\n    WHERE false"
 
 
 class GoldNotReady(RuntimeError):
@@ -124,9 +123,14 @@ class GoldCatalog:
         self._connection.execute(
             f"CREATE VIEW current AS SELECT * FROM read_parquet('{root}/state/current.parquet')"
         )
-        self._create_file_view("observations", "state/observations/dt=*/obs.parquet", _EMPTY_OBSERVATIONS)
-        self._create_file_view("silver", "silver/dt=*/silver.parquet", _EMPTY_SILVER)
-        self._create_file_view("card", "enrich/carddata.parquet", _EMPTY_CARD)
+        self._create_file_view(
+            "observations", "state/observations/dt=*/obs.parquet", _empty_view(OBSERVATIONS_SCHEMA)
+        )
+        self._create_file_view("silver", "silver/dt=*/silver.parquet", _empty_view(SILVER_SCHEMA))
+        self._create_file_view("card", "enrich/carddata.parquet", _empty_view(ENRICH_SCHEMA))
+        self._create_file_view(
+            "card_config", "enrich/card_configs.parquet", _empty_view(CARD_CONFIGS_SCHEMA)
+        )
         self._connection.execute(
             """
             CREATE VIEW latest_silver AS
@@ -140,7 +144,13 @@ class GoldCatalog:
             SELECT c.*, s.task_categories, s.languages, s.size_categories,
                    s.licenses, s.libraries, s.tags, s.description,
                    cd.pretty_name, cd.paperswithcode_id, cd.arxiv,
-                   cd.license_name, cd.citation, cd.card_description
+                   cd.license_name, cd.license_link, cd.citation, cd.card_description,
+                   cd.card_tags, cd.card_task_categories, cd.card_languages,
+                   cd.card_size_categories, cd.card_multilinguality,
+                   cd.card_annotations_creators, cd.card_language_creators,
+                   cd.card_source_datasets, cd.card_homepage,
+                   cd.card_config_count, cd.card_num_rows,
+                   cd.card_dataset_bytes, cd.card_download_bytes
             FROM current AS c
             LEFT JOIN latest_silver AS s ON c.id = s.id
             LEFT JOIN card AS cd ON c.id = cd.id

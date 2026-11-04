@@ -253,6 +253,11 @@ def _print_build(summary: RebuildSummary) -> None:
         f"  bronze {summary.bronze_rows} 行 · silver {summary.silver_rows} 行 · "
         f"观测 {summary.observations} 行 · current {summary.current_rows} 行"
     )
+    if summary.card_rows or summary.config_rows:
+        print(
+            f"  卡片 {summary.card_rows} 行 · config 明细 {summary.config_rows} 行"
+            f"（已按新规则从 raw 重算）"
+        )
 
 
 def _print_enrich(summary: EnrichSummary) -> None:
@@ -260,4 +265,7 @@ def _print_enrich(summary: EnrichSummary) -> None:
         f"{summary.snapshot_date} 卡片补齐：{summary.pages} 页 / {summary.records} 条"
         f" / 耗时 {summary.elapsed_seconds:.1f}s"
     )
-    print(f"  含卡片 {summary.with_card} 条 · 卡片表累计 {summary.table_rows} 行")
+    print(
+        f"  含卡片 {summary.with_card} 条 · 其中带结构明细 {summary.with_structure} 条"
+        f" · 卡片表累计 {summary.table_rows} 行 · config 明细 {summary.config_rows} 行"
+    )
