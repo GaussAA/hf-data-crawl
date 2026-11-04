@@ -9,14 +9,34 @@ from typing import Any
 
 import polars as pl
 
-#: 标签前缀 → Silver 维度列名。未列出的前缀（format/modality/arxiv 等）只留在 tags 原列。
+#: 标签前缀 → Silver 维度列名。
+#:
+#: 取值依据是全站 950 万条标签的实测频次：`library` 31.1%、`modality` 12.7%、
+#: `region` 11.7%、`format` 8.6%、`size_categories` 8.4%、`license` 4.2%、
+#: `language` 4.1%、`task_categories` 3.7%。此前只拆了 5 类，覆盖 51.5%，
+#: `modality` / `region` / `format` 这三个高频维度全被丢在原 tags 列里，
+#: 导致「多模态数据集有多少」这类问题无法用结构化字段回答。
 TAG_DIMENSIONS: dict[str, str] = {
     "task_categories": "task_categories",
+    "task_ids": "task_ids",
     "language": "languages",
     "size_categories": "size_categories",
     "license": "licenses",
     "library": "libraries",
+    "modality": "modalities",
+    "format": "formats",
+    "region": "regions",
+    "multilinguality": "multilinguality",
+    "source_datasets": "source_datasets",
+    "annotations_creators": "annotations_creators",
+    "language_creators": "language_creators",
+    "arxiv": "arxiv_ids",
+    "doi": "dois",
 }
+
+#: 无前缀标签。占全部标签的 13.7%（130 万条），旧式模态标记（`text` / `image` /
+#: `audio` / `tabular`）都在这里——不单独成列，等于把模态信息砍掉一半。
+PLAIN_TAG_COLUMN = "plain_tags"
 
 SILVER_SCHEMA: dict[str, pl.DataType] = {
     "id": pl.Utf8,
@@ -37,10 +57,21 @@ SILVER_SCHEMA: dict[str, pl.DataType] = {
     "description": pl.Utf8,
     "tags": pl.List(pl.Utf8),
     "task_categories": pl.List(pl.Utf8),
+    "task_ids": pl.List(pl.Utf8),
     "languages": pl.List(pl.Utf8),
     "size_categories": pl.List(pl.Utf8),
     "licenses": pl.List(pl.Utf8),
     "libraries": pl.List(pl.Utf8),
+    "modalities": pl.List(pl.Utf8),
+    "formats": pl.List(pl.Utf8),
+    "regions": pl.List(pl.Utf8),
+    "multilinguality": pl.List(pl.Utf8),
+    "source_datasets": pl.List(pl.Utf8),
+    "annotations_creators": pl.List(pl.Utf8),
+    "language_creators": pl.List(pl.Utf8),
+    "arxiv_ids": pl.List(pl.Utf8),
+    "dois": pl.List(pl.Utf8),
+    "plain_tags": pl.List(pl.Utf8),
     "raw": pl.Utf8,
     "snapshot_date": pl.Date,
 }
@@ -49,9 +80,13 @@ SILVER_SCHEMA: dict[str, pl.DataType] = {
 def split_tag_dimensions(tags: list[str]) -> dict[str, list[str]]:
     """按前缀把标签归入维度列，保持原序并去重。"""
     buckets: dict[str, list[str]] = {column: [] for column in TAG_DIMENSIONS.values()}
+    buckets[PLAIN_TAG_COLUMN] = []
     for tag in tags:
         prefix, separator, value = tag.partition(":")
         if not separator or not value:
+            plain = tag.strip()
+            if plain and plain not in buckets[PLAIN_TAG_COLUMN]:
+                buckets[PLAIN_TAG_COLUMN].append(plain)
             continue
         column = TAG_DIMENSIONS.get(prefix)
         if column is None:

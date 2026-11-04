@@ -175,3 +175,62 @@ def test_本轮未出现的数据集在current中保持原状(store: DatasetStor
     assert current.height == 2
     kept = current.filter(pl.col("id") == "acme/ds-2").row(0, named=True)
     assert kept["last_seen_at"] == DAY1
+
+
+def test_高频维度modality与format不再丢在原始tags里(store: DatasetStore) -> None:
+    """这两个前缀合计占全站标签 21.3%，此前只留在 tags 原列无法结构化查询。"""
+    seed(
+        store,
+        DAY1,
+        [
+            record(
+                1,
+                tags=[
+                    "modality:text",
+                    "modality:image",
+                    "format:parquet",
+                    "region:us",
+                    "arxiv:2401.00001",
+                    "doi:10.1000/xyz",
+                    "task_ids:question-answering",
+                    "multilinguality:multilingual",
+                ],
+            )
+        ],
+    )
+
+    row = store.read_silver(DAY1).row(0, named=True)
+
+    assert row["modalities"] == ["text", "image"]
+    assert row["formats"] == ["parquet"]
+    assert row["regions"] == ["us"]
+    assert row["arxiv_ids"] == ["2401.00001"]
+    assert row["dois"] == ["10.1000/xyz"]
+    assert row["task_ids"] == ["question-answering"]
+    assert row["multilinguality"] == ["multilingual"]
+
+
+def test_无前缀标签单独成列(store: DatasetStore) -> None:
+    """旧式模态标记（text/image/audio/tabular）没有前缀，占全部标签 13.7%。"""
+    seed(store, DAY1, [record(1, tags=["text", "image", "language:en"])])
+
+    row = store.read_silver(DAY1).row(0, named=True)
+
+    assert row["plain_tags"] == ["text", "image"]
+    assert row["languages"] == ["en"]
+
+
+def test_未知前缀只留在原始tags不进任何维度(store: DatasetStore) -> None:
+    seed(store, DAY1, [record(1, tags=["某个自定义前缀:值", "language:en"])])
+
+    row = store.read_silver(DAY1).row(0, named=True)
+
+    assert "某个自定义前缀:值" in row["tags"]
+    assert row["languages"] == ["en"]
+    assert row["plain_tags"] == []
+
+
+def test_同一维度内重复标签只保留一次(store: DatasetStore) -> None:
+    seed(store, DAY1, [record(1, tags=["modality:text", "modality:text", "modality:image"])])
+
+    assert store.read_silver(DAY1).row(0, named=True)["modalities"] == ["text", "image"]

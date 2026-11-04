@@ -24,7 +24,7 @@ import pytest
 from hf_data_crawl.api import EXPAND_WHITELIST
 from hf_data_crawl.collect import LEAN_EXPAND
 from hf_data_crawl.enrich import ENRICH_EXPAND
-from hf_data_crawl.silver import SILVER_SCHEMA, TAG_DIMENSIONS
+from hf_data_crawl.silver import PLAIN_TAG_COLUMN, SILVER_SCHEMA, TAG_DIMENSIONS
 from hf_data_crawl.store import (
     BRONZE_DERIVED_COLUMNS,
     BRONZE_SCHEMA,
@@ -75,10 +75,17 @@ def test_enrich请求是lean的超集() -> None:
 
 def test_silver每一列都能由bronze或标签维度得到() -> None:
     """Silver 是 Bronze 的纯派生层，不许引入无来源的列。"""
-    derivable = set(BRONZE_SCHEMA) | set(TAG_DIMENSIONS.values())
+    derivable = set(BRONZE_SCHEMA) | set(TAG_DIMENSIONS.values()) | {PLAIN_TAG_COLUMN}
     missing = set(SILVER_SCHEMA) - derivable
 
     assert not missing, f"Silver 有列在 Bronze 与标签维度里都找不到来源：{sorted(missing)}"
+
+
+def test_每个标签维度都在silver里有对应列() -> None:
+    """TAG_DIMENSIONS 加了映射却不加列，拆分结果会静默丢失。"""
+    missing = set(TAG_DIMENSIONS.values()) - set(SILVER_SCHEMA)
+
+    assert not missing, f"这些标签维度没有对应的 Silver 列：{sorted(missing)}"
 
 
 def test_current每一列都能由silver或本地计算得到() -> None:

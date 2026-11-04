@@ -11,7 +11,7 @@ import duckdb
 import polars as pl
 
 from .card import CARD_CONFIGS_SCHEMA, ENRICH_SCHEMA
-from .silver import SILVER_SCHEMA
+from .silver import PLAIN_TAG_COLUMN, SILVER_SCHEMA, TAG_DIMENSIONS
 from .store import OBSERVATIONS_SCHEMA, DatasetStore
 
 #: 内置榜单。`?` 为条数上限占位。
@@ -141,8 +141,11 @@ class GoldCatalog:
         self._connection.execute(
             """
             CREATE VIEW datasets AS
-            SELECT c.*, s.task_categories, s.languages, s.size_categories,
-                   s.licenses, s.libraries, s.tags, s.description,
+            SELECT c.*, s.task_categories, s.task_ids, s.languages, s.size_categories,
+                   s.licenses, s.libraries, s.modalities, s.formats, s.regions,
+                   s.multilinguality, s.source_datasets, s.annotations_creators,
+                   s.language_creators, s.arxiv_ids, s.dois, s.plain_tags,
+                   s.tags, s.description,
                    cd.pretty_name, cd.paperswithcode_id, cd.arxiv,
                    cd.license_name, cd.license_link, cd.citation, cd.card_description,
                    cd.card_tags, cd.card_task_categories, cd.card_languages,
@@ -155,6 +158,16 @@ class GoldCatalog:
             LEFT JOIN latest_silver AS s ON c.id = s.id
             LEFT JOIN card AS cd ON c.id = cd.id
             """
+        )
+        # 长表视图：一行一个 (数据集, 维度, 取值)。宽表便于 join 榜单，长表便于
+        # 任意维度聚合而不必改 SQL——「按模态统计」「按格式统计」都是同一句。
+        # 由 TAG_DIMENSIONS 生成，新增维度自动进入，不必再手写一段 UNION。
+        tag_selects = [
+            f"SELECT id, '{column}' AS dimension, unnest({column}) AS value FROM latest_silver"
+            for column in (*TAG_DIMENSIONS.values(), PLAIN_TAG_COLUMN)
+        ]
+        self._connection.execute(
+            "CREATE VIEW tag_values AS " + " UNION ALL ".join(tag_selects)
         )
         # 增速取「最近两个观测点」，而不是固定 7 日窗口：
         # 日增量只扫最新更新的万把条，全站指标靠周对账刷新，7 日窗口在周节奏下几乎取不到两点。
