@@ -63,6 +63,7 @@ def catalog(tmp_path: Path) -> GoldCatalog:
             record(1, downloads=100, licenses=["mit"]),
             record(2, downloads=50, licenses=["apache-2.0"], languages=["zh", "en"]),
             record(3, downloads=1000, licenses=["gpl-3.0"], gated=True),
+            record(4, downloads=200, licenses=["cc0-1.0"]),
         ],
     )
     seed(
@@ -71,22 +72,37 @@ def catalog(tmp_path: Path) -> GoldCatalog:
         [
             record(1, downloads=260, licenses=["mit"]),
             record(2, downloads=60, licenses=["apache-2.0"], languages=["zh", "en"]),
+            record(4, downloads=150, licenses=["cc0-1.0"]),
         ],
     )
     return GoldCatalog(store)
 
 
-def test_增速榜只计两个及以上观测点(catalog: GoldCatalog) -> None:
+def test_增速榜只计有两次读数的集(catalog: GoldCatalog) -> None:
     rows = catalog.board("growth", limit=50)
 
     assert rows["id"].to_list() == ["acme/ds-1", "acme/ds-2"]
+
+
+def test_下跌的集不出现在增速榜(catalog: GoldCatalog) -> None:
+    rows = catalog.board("growth", limit=50)
+
+    assert "acme/ds-4" not in rows["id"].to_list()
 
 
 def test_增速数值与金标一致(catalog: GoldCatalog) -> None:
     rows = catalog.board("growth", limit=50)
 
     assert rows["growth"].to_list() == [160, 10]
-    assert rows["growth_pct"].to_list() == [160.0, 20.0]
+    assert rows["span_days"].to_list() == [3, 3]
+
+
+def test_百分比榜排除基数过小的集(catalog: GoldCatalog) -> None:
+    """起始下载不足 100 时百分比会被小数放大，噪声盖过真实信号。"""
+    rows = catalog.board("growth_pct", limit=50)
+
+    assert rows["id"].to_list() == ["acme/ds-1"]
+    assert rows["growth_pct"].to_list() == [160.0]
 
 
 def test_当前态榜按三十天下载降序(catalog: GoldCatalog) -> None:
@@ -125,7 +141,10 @@ def test_新增数据在同一连接内即时可见(catalog: GoldCatalog) -> Non
     seed(catalog.store, DAY5, [record(1, downloads=300, licenses=["mit"])])
 
     after = catalog.board("growth", limit=50)
-    assert after.filter(after["id"] == "acme/ds-1")["growth"].to_list() == [200]
+    ds1 = after.filter(after["id"] == "acme/ds-1").row(0, named=True)
+    # 新口径取最近两点：DAY4(260) → DAY5(300)，而非首次读数起的累计差
+    assert ds1["growth"] == 40
+    assert ds1["span_days"] == 1
 
 
 def test_无数据时给出可读错误(tmp_path: Path) -> None:

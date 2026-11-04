@@ -39,10 +39,13 @@ hf-data-crawl query     [--board growth|downloads|alltime|categories] [--limit 5
 
 内置榜单：
 
-- `growth` 近 7 日 downloads 增量（需至少两天观测）
+- `growth` 最近两个观测点的 downloads 增量（只列正增长，附 `span_days` 说明跨度）
+- `growth_pct` 增幅百分比（要求起始下载 ≥ 100，避免小数被放大成噪声）
 - `downloads` 30 天下载榜
 - `alltime` 累计下载榜
 - `categories` 任务类别聚合
+
+增速取「最近两个观测点」而非固定 7 日窗口：日增量只扫最新更新的万把条，全站指标靠周对账刷新，固定窗口在周节奏下取不到两点。
 
 ## 数据布局
 

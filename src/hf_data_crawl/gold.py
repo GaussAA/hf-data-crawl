@@ -15,10 +15,18 @@ from .store import DatasetStore
 #: 内置榜单。`?` 为条数上限占位。
 BOARDS: dict[str, str] = {
     "growth": """
-        SELECT id, downloads_start, downloads_now, growth,
-               round(growth_rate * 100, 1) AS growth_pct, from_date, to_date
-        FROM v_growth_7d
+        SELECT id, downloads_start, downloads_now, growth, span_days, from_date, to_date
+        FROM v_growth
+        WHERE growth > 0
         ORDER BY growth DESC
+        LIMIT ?
+    """,
+    "growth_pct": """
+        SELECT id, downloads_start, downloads_now, growth,
+               round(growth_rate * 100, 1) AS growth_pct, span_days
+        FROM v_growth
+        WHERE growth > 0 AND downloads_start >= 100
+        ORDER BY growth_rate DESC
         LIMIT ?
     """,
     "downloads": """
@@ -122,32 +130,36 @@ class GoldCatalog:
             LEFT JOIN latest_silver AS s ON c.id = s.id
             """
         )
+        # 增速取「最近两个观测点」，而不是固定 7 日窗口：
+        # 日增量只扫最新更新的万把条，全站指标靠周对账刷新，7 日窗口在周节奏下几乎取不到两点。
+        # 间隔上限 35 天，避免跨季度比较；跨度以 span_days 明示，读榜的人自己判断。
         self._connection.execute(
             """
-            CREATE VIEW v_growth_7d AS
-            WITH bounds AS (SELECT max(snapshot_date) AS as_of FROM observations),
-            recent AS (
-                SELECT o.id, o.snapshot_date, o.downloads
-                FROM observations AS o, bounds AS b
-                WHERE o.snapshot_date >= b.as_of - INTERVAL 7 DAY
+            CREATE VIEW v_growth AS
+            WITH ranked AS (
+                SELECT id, snapshot_date, downloads,
+                       row_number() OVER (PARTITION BY id ORDER BY snapshot_date DESC) AS rn
+                FROM observations
             ),
-            agg AS (
+            last_two AS (
                 SELECT id,
-                       count(*) AS points,
-                       min(snapshot_date) AS from_date,
-                       max(snapshot_date) AS to_date,
-                       arg_min(downloads, snapshot_date) AS downloads_start,
-                       arg_max(downloads, snapshot_date) AS downloads_now
-                FROM recent
+                       max(CASE WHEN rn = 2 THEN snapshot_date END) AS from_date,
+                       max(CASE WHEN rn = 1 THEN snapshot_date END) AS to_date,
+                       max(CASE WHEN rn = 2 THEN downloads END) AS downloads_start,
+                       max(CASE WHEN rn = 1 THEN downloads END) AS downloads_now
+                FROM ranked
+                WHERE rn <= 2
                 GROUP BY id
             )
-            SELECT id, points, from_date, to_date, downloads_start, downloads_now,
+            SELECT id, from_date, to_date, downloads_start, downloads_now,
                    downloads_now - downloads_start AS growth,
                    CASE WHEN downloads_start > 0
                         THEN (downloads_now - downloads_start)::DOUBLE / downloads_start
-                        ELSE NULL END AS growth_rate
-            FROM agg
-            WHERE points >= 2
+                        ELSE NULL END AS growth_rate,
+                   date_diff('day', from_date, to_date) AS span_days
+            FROM last_two
+            WHERE downloads_start IS NOT NULL
+              AND date_diff('day', from_date, to_date) <= 35
             """
         )
 
