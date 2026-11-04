@@ -17,10 +17,28 @@ from .gold import GoldCatalog
 
 _CSS = """
 :root{
+  color-scheme:dark;
   --bg:#0a0a12; --panel:rgba(255,255,255,.045); --line:rgba(255,255,255,.09);
   --fg:#e9e9f2; --dim:#9a9ab0; --violet:#a78bfa; --cyan:#67e8f9; --lime:#bef264;
 }
 *{box-sizing:border-box}
+/* 原生控件造境：不写这一层，滚动条与输入框内建按钮会露出系统亮色，割裂整个页面 */
+*{scrollbar-width:thin;scrollbar-color:rgba(167,139,250,.45) transparent}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(167,139,250,.38);border-radius:999px;border:2px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:rgba(167,139,250,.65);background-clip:content-box}
+::-webkit-scrollbar-corner{background:transparent}
+::selection{background:rgba(167,139,250,.32);color:#fff}
+body{caret-color:var(--violet)}
+input,select,button,textarea{font:inherit;color:inherit}
+input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid rgba(167,139,250,.55);outline-offset:2px}
+input[type=search]::-webkit-search-cancel-button{
+  -webkit-appearance:none;appearance:none;height:12px;width:12px;margin-right:4px;
+  color:var(--dim);cursor:pointer;background:currentColor;
+  -webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M1 1l10 10M11 1L1 11' stroke='%23000' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E") center/contain no-repeat;
+}
+input[type=search]::-webkit-search-cancel-button:hover{color:var(--violet)}
 body{margin:0;background:
    radial-gradient(900px 600px at 12% -8%, rgba(167,139,250,.20), transparent 60%),
    radial-gradient(760px 520px at 88% 0%, rgba(103,232,249,.14), transparent 58%),
@@ -56,7 +74,7 @@ tbody tr:hover{background:rgba(167,139,250,.06)}
 .pill.up{color:var(--lime);border-color:rgba(190,242,100,.35)}
 .note{color:var(--dim);font-size:13px;background:var(--panel);border:1px solid var(--line);
   border-radius:12px;padding:14px 16px}
-.table-wrap{max-height:520px;overflow:auto;border:1px solid var(--line);border-radius:14px;
+.table-wrap{max-height:520px;overflow:auto;overscroll-behavior:contain;border:1px solid var(--line);border-radius:14px;
   background:rgba(255,255,255,.018)}
 footer{margin-top:48px;color:var(--dim);font-size:12px;text-align:center}
 """

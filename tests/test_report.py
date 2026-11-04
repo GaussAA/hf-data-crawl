@@ -73,6 +73,22 @@ def test_生成单文件页面且含关键数据(store: DatasetStore, tmp_path: 
     assert "text-classification" in content
 
 
+def test_页面包含原生控件基线样式(store: DatasetStore, tmp_path: Path) -> None:
+    """滚动条、选区、焦点环等原生控件必须一起造境，否则在深色页面里格外突兀。"""
+    content = Reporter(GoldCatalog(store)).write(tmp_path / "dashboard.html").path.read_text(
+        encoding="utf-8"
+    )
+
+    for token in (
+        "color-scheme:dark",
+        "scrollbar-color",
+        "::-webkit-scrollbar-thumb",
+        "caret-color",
+        "::-webkit-search-cancel-button",
+    ):
+        assert token in content
+
+
 def test_增速为空时给出可读说明(store: DatasetStore, tmp_path: Path) -> None:
     reporter = Reporter(GoldCatalog(store))
 
