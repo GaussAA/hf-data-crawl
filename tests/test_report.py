@@ -94,7 +94,31 @@ def test_增速为空时给出可读说明(store: DatasetStore, tmp_path: Path) 
 
     summary = reporter.write(tmp_path / "dashboard.html")
 
-    assert "增速榜暂为空" in summary.path.read_text(encoding="utf-8")
+    assert "暂无正增长可比" in summary.path.read_text(encoding="utf-8")
+
+
+def test_具备可访问性语义(store: DatasetStore, tmp_path: Path) -> None:
+    content = Reporter(GoldCatalog(store)).write(tmp_path / "dashboard.html").path.read_text(
+        encoding="utf-8"
+    )
+
+    assert 'scope="col"' in content
+    assert "<caption>" in content
+    assert 'aria-pressed="true"' in content
+    assert 'aria-live="polite"' in content
+
+
+def test_不含已知反模式(store: DatasetStore, tmp_path: Path) -> None:
+    """这份清单来自 2026-11-04 的复盘，防止改版时又把雷踩回去。"""
+    content = Reporter(GoldCatalog(store)).write(tmp_path / "dashboard.html").path.read_text(
+        encoding="utf-8"
+    )
+
+    assert "background-clip:text" not in content  # 渐变文字
+    assert "◆" not in content  # 装饰符号
+    assert ".pill" not in content  # 死代码
+    assert 'colspan="99"' not in content  # 写死列数
+    assert ".table-wrap" not in content  # 嵌套滚动容器
 
 
 def test_数据里的尖括号被转义(store: DatasetStore, tmp_path: Path) -> None:
