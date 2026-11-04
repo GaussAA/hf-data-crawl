@@ -16,6 +16,7 @@ export HF_TOKEN=hf_xxx          # 可选；匿名额度为 5 分钟 500 次
 uv run hf-data-crawl collect --dry-run          # 先探一页，确认连通与字段
 uv run hf-data-crawl collect --max-pages 30     # 有界试跑 3 万条
 uv run hf-data-crawl query --board downloads --limit 20
+uv run hf-data-crawl report                     # 生成 data/reports/dashboard.html
 ```
 
 ## 命令
@@ -27,6 +28,7 @@ uv run hf-data-crawl query --board downloads --limit 20
 | `reconcile` | 全量对账：按 `createdAt` 稳定序扫全站，产出新增/下架/sha 变更 | 是 |
 | `build` | 从 Raw 重建全部派生层 | 否 |
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
+| `report` | 生成单文件榜单页（离线可看） | 否 |
 
 常用参数：
 
@@ -35,6 +37,7 @@ hf-data-crawl collect   [--date YYYY-MM-DD] [--limit 1000] [--max-pages N] [--pa
 hf-data-crawl enrich    [--date YYYY-MM-DD] [--top 20000] [--limit 1000]
 hf-data-crawl reconcile [--date YYYY-MM-DD] [--limit 1000] [--max-pages N]
 hf-data-crawl query     [--board growth|growth_pct|downloads|alltime|categories] [--limit 50] [--sql "..."]
+hf-data-crawl report    [--out PATH] [--top 20]
 ```
 
 全局参数 `--data-dir` 需放在子命令之前，默认取 `HF_DATA_DIR`，否则 `./data`。
