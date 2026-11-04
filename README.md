@@ -26,7 +26,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `collect` | 日增量：按 `lastModified` 倒序扫到水位线 | 是 |
 | `enrich` | 按下载量取头部，补抓 `cardData`（标签、config/split 明细、行数列数） | 是 |
 | `fetch-sizes` | 经 datasets-server 补规模与列数（`num_rows` / `num_columns_max`） | 是 |
-| `reconcile` | 全量对账：按 `createdAt` 稳定序扫全站，产出新增/下架/sha 变更 | 是 |
+| `reconcile` | 全量对账：按 `createdAt` 稳定序扫全站，产出新增/删除/转私有/改名/sha 变更 | 是 |
 | `build` | 从 Raw 重建全部派生层（含卡片与明细） | 否 |
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
 | `report` | 生成单文件榜单页（离线可看） | 否 |

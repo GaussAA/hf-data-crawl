@@ -246,7 +246,7 @@ class Reporter:
         return self._catalog.run(
             """
             SELECT (SELECT count(*) FROM current) AS datasets,
-                   (SELECT count(*) FROM current WHERE status = 'disappeared') AS gone,
+                   (SELECT count(*) FROM current WHERE status <> 'active') AS gone,
                    (SELECT count(*) FROM card) AS cards,
                    (SELECT count(*) FROM dataset_size WHERE status = 'ok') AS sized,
                    (SELECT count(*) FROM v_growth) AS growth_ready,
@@ -337,7 +337,7 @@ class Reporter:
 
         as_of = overview["as_of"]
         stats = [
-            ("数据集", f"{int(overview['datasets']):,}", f"其中已下架 {int(overview['gone']):,}"),
+            ("数据集", f"{int(overview['datasets']):,}", f"其中已失效 {int(overview['gone']):,}"),
             ("今日变动", f"{int(overview['moved']):,}", "指标发生变化的集数"),
             ("卡片覆盖", f"{int(overview['cards']):,}", "有正式名或标签声明"),
             ("规模覆盖", f"{int(overview['sized']):,}", "已取到行数与列数"),

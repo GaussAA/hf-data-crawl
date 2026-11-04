@@ -47,3 +47,4 @@
 12. **`datasets-server.huggingface.co`** 提供 `/size`（`num_rows`、`num_columns`、`num_bytes_memory`）、`/splits`、`/statistics`、`/is-valid`。`/size` 实测成功率约 80%，未转 parquet 返回 500、受保护返回 401、不支持返回 501——**均属永久缺失，不该重试**；并发 16 稳定 26 req/s，未见 429。
 13. **HF 没有下载量时序接口**：`/api/datasets/{id}/downloads` 返回 404。增速只能靠自建观测流水累积，这是本项目保留 `observations` 分区的根本原因。
 14. **`trendingScore` 是整数且可为 null**，`gated` 取值是 `false` / `"manual"` / `"auto"` 三种，`mainSize` 最大观测到 489 GB。
+15. **列表里「没扫到」≠ 已删除**（2026-11-04 抽查 3 条实测）：对失效 id 请求单库详情，走 `follow_redirects` 后可分辨三种情况——**404 真删除、401 转私有（库还在）、307 改名（跟随到 200，返回新 id）**。三者对历史的意义完全不同，故 `current.status` 取 `active` / `disappeared` / `restricted` / `renamed` 四值。
