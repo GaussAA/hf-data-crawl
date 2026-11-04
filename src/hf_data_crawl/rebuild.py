@@ -46,10 +46,14 @@ def rebuild_from_raw(store: DatasetStore) -> RebuildSummary:
     if not dates:
         return RebuildSummary(dates=[], bronze_rows=0, silver_rows=0, observations=0, current_rows=0)
 
-    # enrich 同样是派生层：卡片抽取规则一改（如本次从 6 字段扩到 22 字段），
-    # 必须能从 raw 的 card-*.json.gz 整体重算，而不是只能重跑一次联网的 enrich。
-    for derived in (store.bronze_dir, store.silver_dir, store.state_dir, store.enrich_dir):
+    for derived in (store.bronze_dir, store.silver_dir, store.state_dir):
         shutil.rmtree(derived, ignore_errors=True)
+    # enrich 下有两类产物，待遇不同：
+    # - carddata / card_configs 可由 raw 里的 card-*.json.gz 重算，删了能重建；
+    # - size.parquet 来自 datasets-server，raw 里没有对应数据，删了就白丢一轮抓取
+    #   （两万条约 13 分钟）。故只删前者。
+    for filename in ("carddata.parquet", "card_configs.parquet"):
+        (store.enrich_dir / filename).unlink(missing_ok=True)
 
     bronze_rows = 0
     silver_rows = 0

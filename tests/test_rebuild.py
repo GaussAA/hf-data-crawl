@@ -91,3 +91,57 @@ def test_不规范的raw目录名被忽略(tmp_path: Path) -> None:
     (store.raw_dir / "dt=garbage").mkdir(parents=True)
 
     assert discover_raw_dates(store) == []
+
+
+def test_重建不清除规模表(store: DatasetStore) -> None:
+    """规模表来自 datasets-server，raw 里没有对应数据，删掉就白丢一轮抓取。
+
+    2026-11-04 实测踩过：build 把 enrich 整个删掉，两万条规模数据（约 13 分钟）
+    无声消失，页面上的「规模覆盖」直接归零。
+    """
+    import polars as pl
+
+    from hf_data_crawl.sizes import SIZE_SCHEMA
+
+    store.merge_sizes(
+        pl.DataFrame(
+            [
+                {
+                    "id": "acme/ds-1",
+                    "snapshot_date": DAY2,
+                    "status": "ok",
+                    "num_rows": 42,
+                    "estimated_num_rows": None,
+                    "num_bytes_original": 10,
+                    "num_bytes_parquet": 9,
+                    "num_bytes_memory": 8,
+                    "config_count": 1,
+                    "num_columns_max": 3,
+                    "configs": None,
+                }
+            ],
+            schema=SIZE_SCHEMA,
+        )
+    )
+
+    rebuild_from_raw(store)
+
+    kept = store.read_sizes()
+    assert kept.height == 1
+    assert kept.row(0, named=True)["num_rows"] == 42
+
+
+def test_重建会重算卡片表(store: DatasetStore) -> None:
+    """卡片表可由 raw 重算，规则一改就该整体重来，旧的必须被清掉。"""
+    store.write_raw(
+        snapshot_date=DAY2,
+        page_index=1,
+        records=[{"id": "acme/ds-1", "cardData": {"pretty_name": "正式名"}}],
+        meta={},
+        label="card",
+    )
+
+    rebuild_from_raw(store)
+
+    assert store.read_enrich().height == 1
+    assert store.read_enrich().row(0, named=True)["pretty_name"] == "正式名"
