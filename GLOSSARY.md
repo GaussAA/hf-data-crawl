@@ -1,4 +1,4 @@
-# CONTEXT — hf-data-crawl 领域词表
+# GLOSSARY — hf-data-crawl 领域词表
 
 > 本项目所有代码、测试名、issue 措辞一律使用本表词汇。新词先入表，再用。
 

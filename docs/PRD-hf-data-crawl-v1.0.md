@@ -43,7 +43,7 @@
 
 ## Implementation Decisions
 
-- **分层固定为 Raw → Bronze → Silver → Current/Observations → Gold(视图)**，各层职责见 `docs/CONTEXT.md`。
+- **分层固定为 Raw → Bronze → Silver → Current/Observations → Gold(视图)**，各层职责见 `GLOSSARY.md`。
 - **两档采样**：`collect` 日跑用 Lean 档（无 `cardData`）；`cardData` 与新记录详情在 Silver 构建阶段按需补齐。理由：实测 full 档 5.9 MB/千条、90–170 KB/s 带宽下全量要数小时，而日增量的信息量几乎全在身份与指标字段。
 - **排序显式化**：任何遍历都必须传 `sort`。全量核对用 `createdAt`（不可变，游标稳定）；日增量用 `lastModified&direction=-1`。禁止依赖默认序。
 - **Watermark 采用「连续 N 页无新记录」判定**，而非 `max(lastModified)`。实测存在 2028 年异常时间戳，任何单调性假设都会导致漏抓或空转。
