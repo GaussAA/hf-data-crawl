@@ -12,8 +12,9 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from .api import MAX_LIMIT, HfDatasetApi
+from .api import MAX_LIMIT, HfDatasetApi, Page
 from .checkpoint import FileCheckpoint
+from .scan import ScanRun, ScanSpec, ScanSummary
 from .store import DatasetStore
 
 #: 身份与指标基座：一次请求拿全。含体积（mainSize）、私有与禁用标记、趋势分。
@@ -98,68 +99,47 @@ class Collector:
         refresh_top: int = 0,
         dry_run: bool = False,
     ) -> CollectSummary:
-        threshold = max(1, pages_without_new if pages_without_new is not None else self._pages_without_new)
+        threshold = max(
+            1, pages_without_new if pages_without_new is not None else self._pages_without_new
+        )
         started = time.monotonic()
         checkpoint = (
-            None
-            if dry_run
-            else FileCheckpoint(self._store.state_dir / self._checkpoint_filename)
+            None if dry_run else FileCheckpoint(self._store.state_dir / self._checkpoint_filename)
         )
         known: set[str] = set() if dry_run else set(self._store.read_current()["id"].to_list())
 
-        pages = 0
-        records = 0
-        skipped = 0
         new_ids = 0
         streak = 0
-        rate_remaining: int | None = None
         preview: list[dict[str, Any]] | None = None
-        stopped_reason = "end"
 
-        for current_page in self._api.scan(
-            sort="lastModified",
-            direction="-1",
-            limit=limit,
-            expand=LEAN_EXPAND,
-            checkpoint=checkpoint,
-        ):
-            if current_page.rate_remaining is not None:
-                rate_remaining = current_page.rate_remaining
-
-            if dry_run:
-                preview = current_page.records[:5]
-                stopped_reason = "dry_run"
-                break
-
-            pages += 1
-            records += len(current_page.records)
-            skipped += current_page.skipped
-
-            self._store.write_raw(
-                snapshot_date=snapshot_date,
-                page_index=pages,
-                records=current_page.records,
-                meta={"sort": "lastModified", "direction": "-1", "mode": "lean"},
-            )
-
-            fresh = sum(1 for record in current_page.records if record["id"] not in known)
-            known.update(record["id"] for record in current_page.records)
+        def track(page: Page, _index: int) -> str | None:
+            """维护 watermark：连续 threshold 页没有新 id 就停。"""
+            nonlocal new_ids, streak
+            fresh = sum(1 for record in page.records if record["id"] not in known)
+            known.update(record["id"] for record in page.records)
             new_ids += fresh
             streak = 0 if fresh else streak + 1
+            return "watermark" if streak >= threshold else None
 
-            # 游标由本层保存而非依赖生成器恢复时保存：中途 break 时生成器已暂停，
-            # 若等它自己落盘就会少记一页，导致续跑重抓上一页。
-            if checkpoint is not None:
-                checkpoint.save(current_page.next_cursor)
+        def capture(page: Page, _index: int) -> str | None:
+            nonlocal preview
+            preview = page.records[:5]
+            return "dry_run"
 
-            if streak >= threshold:
-                stopped_reason = "watermark"
-                break
-            if max_pages is not None and pages >= max_pages:
-                stopped_reason = "max_pages"
-                break
+        runner = ScanRun(self._api, self._store)
 
         if dry_run:
+            scan = runner.run(
+                snapshot_date,
+                ScanSpec(
+                    sort="lastModified",
+                    expand=LEAN_EXPAND,
+                    mode="dry-run",
+                    limit=limit,
+                    write=False,
+                    on_page=capture,
+                ),
+            )
             return CollectSummary(
                 snapshot_date=snapshot_date,
                 pages=0,
@@ -170,60 +150,63 @@ class Collector:
                 silver_rows=0,
                 appended_observations=0,
                 current_rows=0,
-                rate_remaining=rate_remaining,
-                stopped_reason=stopped_reason,
+                rate_remaining=scan.rate_remaining,
+                stopped_reason=scan.stopped_reason,
                 elapsed_seconds=time.monotonic() - started,
                 preview=preview,
             )
 
-        # 顶部池刷新：按全站下载量取前 N 名补扫一遍。
-        # 日增量只覆盖「最近更新的万把条」，增速榜因此长期取不到第二个点；
-        # 补这一趟，头部集每天都有新读数，而成本只有二十来页。
-        top_pages_done = 0
-        refreshed = 0
+        scan = runner.run(
+            snapshot_date,
+            ScanSpec(
+                sort="lastModified",
+                expand=LEAN_EXPAND,
+                mode="lean",
+                limit=limit,
+                max_pages=max_pages,
+                checkpoint=checkpoint,
+                on_page=track,
+            ),
+        )
+
+        # 顶部池刷新：日增量只覆盖「最近更新的万把条」，增速榜因此长期取不到
+        # 第二个观测点；补这一趟，头部集每天都有新读数，成本只有二十来页。
+        top = ScanSummary(pages=0, records=0, skipped=0, rate_remaining=None, stopped_reason="skipped")
         if refresh_top > 0:
             page_budget = max(1, math.ceil(refresh_top / max(1, limit)))
-            for top_index, top_page in enumerate(
-                self._api.scan(
+            top = runner.run(
+                snapshot_date,
+                ScanSpec(
                     sort="downloads",
-                    direction="-1",
-                    limit=limit,
                     expand=LEAN_EXPAND,
+                    mode="top-refresh",
+                    label="top",
+                    limit=limit,
                     max_pages=page_budget,
                 ),
-                1,
-            ):
-                top_pages_done = top_index
-                refreshed += len(top_page.records)
-                self._store.write_raw(
-                    snapshot_date=snapshot_date,
-                    page_index=top_index,
-                    records=top_page.records,
-                    meta={"sort": "downloads", "direction": "-1", "mode": "top-refresh"},
-                    label="top",
-                )
+            )
 
         bronze_rows = self._store.build_bronze(snapshot_date)
         silver_rows = self._store.build_silver(snapshot_date)
         state = self._store.update_state(snapshot_date)
 
         # 只有「走到末页」与「触发 watermark」算本轮完成；有界停止要保住游标。
-        if checkpoint is not None and stopped_reason in {"end", "watermark"}:
+        if checkpoint is not None and scan.stopped_reason in {"end", "watermark"}:
             checkpoint.save(None)
 
         return CollectSummary(
             snapshot_date=snapshot_date,
-            pages=pages,
-            records=records,
-            skipped=skipped,
+            pages=scan.pages,
+            records=scan.records,
+            skipped=scan.skipped,
             new_ids=new_ids,
             bronze_rows=bronze_rows,
             silver_rows=silver_rows,
             appended_observations=state.appended,
             current_rows=state.current_rows,
-            rate_remaining=rate_remaining,
-            stopped_reason=stopped_reason,
+            rate_remaining=scan.rate_remaining,
+            stopped_reason=scan.stopped_reason,
             elapsed_seconds=time.monotonic() - started,
-            top_pages=top_pages_done,
-            refreshed=refreshed,
+            top_pages=top.pages,
+            refreshed=top.records,
         )

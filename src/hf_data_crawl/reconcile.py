@@ -16,9 +16,10 @@ from typing import Any
 
 import polars as pl
 
-from .api import MAX_LIMIT, HfDatasetApi
+from .api import MAX_LIMIT, HfDatasetApi, Page
 from .checkpoint import FileCheckpoint
 from .collect import LEAN_EXPAND
+from .scan import ScanRun, ScanSpec
 from .store import DatasetStore
 
 RECONCILE_CHECKPOINT = "reconcile-checkpoint.json"
@@ -98,27 +99,26 @@ class Reconciler:
         records = 0
         stopped_reason = "end"
 
-        for current_page in self._api.scan(
-            sort="createdAt",
-            direction="-1",
-            limit=limit,
-            expand=LEAN_EXPAND,
-            checkpoint=checkpoint,
-        ):
-            pages += 1
-            records += len(current_page.records)
-            self._store.write_raw(
-                snapshot_date=snapshot_date,
-                page_index=pages,
-                records=current_page.records,
-                meta={"sort": "createdAt", "direction": "-1", "mode": "reconcile"},
-            )
-            self._append_session(session_path, current_page.records)
-            checkpoint.save(current_page.next_cursor)
+        def remember(page: Page, _index: int) -> str | None:
+            """把本页 id 追加进会话文件。续跑时靠它知道「前半段见过谁」。"""
+            self._append_session(session_path, page.records)
+            return None
 
-            if max_pages is not None and pages >= max_pages:
-                stopped_reason = "max_pages"
-                break
+        scan = ScanRun(self._api, self._store).run(
+            snapshot_date,
+            ScanSpec(
+                sort="createdAt",
+                expand=LEAN_EXPAND,
+                mode="reconcile",
+                limit=limit,
+                max_pages=max_pages,
+                checkpoint=checkpoint,
+                on_page=remember,
+            ),
+        )
+        pages = scan.pages
+        records = scan.records
+        stopped_reason = scan.stopped_reason
 
         self._store.build_bronze(snapshot_date)
         self._store.build_silver(snapshot_date)

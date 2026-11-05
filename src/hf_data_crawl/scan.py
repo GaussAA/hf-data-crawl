@@ -1,0 +1,126 @@
+"""一轮扫描：翻页 → 落盘 → 存游标 → 判停止。
+
+为什么需要它
+------------
+这条时序原本有四份实现（日增量、顶部刷新、全量对账、卡片补齐），差异只存在于
+代码顺序里——页码从 `pages += 1` 还是 `enumerate(..., 1)` 起、什么时候保存游标、
+结束后清不清、`label` 用哪个、跑哪几步派生。于是读「collect 到底做了什么」
+必须同时打开四个文件。
+
+更实际的问题是：游标必须在**每页写完盘之后立刻保存**。调用方一旦在下一页
+之前 `break`，生成器就停在那里，等它自己落盘会少记一页，续跑时重抓上一页
+（`api.scan` 里那句 `checkpoint.save` 在 `yield` 之后才执行）。这条知识原本
+靠 collect.py 的一段注释维系，另外三份实现各写各的。
+
+本轮 ScanRun 把时序收到一处，四个调用方只提供策略。
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import date
+
+from .api import MAX_LIMIT, HfDatasetApi, Page
+from .checkpoint import Checkpoint
+from .store import DatasetStore
+
+#: 每页钩子。返回非 None 表示「到此为止」，返回值即停止原因。
+PageHook = Callable[[Page, int], str | None]
+
+
+@dataclass(frozen=True)
+class ScanSpec:
+    """一轮扫描的策略。
+
+    差异只有这十个字段，全部是调用方真正需要决定的事；时序本身不在此列。
+    """
+
+    sort: str
+    expand: tuple[str, ...]
+    #: 语义名，落进 raw 的 meta，便于日后看出这一批是怎么扫出来的。
+    mode: str
+    label: str = "part"
+    direction: str = "-1"
+    limit: int = MAX_LIMIT
+    #: 页数上限；None 表示扫到末页。由上层的 ScanRun 判定而非交给生成器，
+    #: 这样才能给出准确的停止原因（生成器只会在到限时静默 return）。
+    max_pages: int | None = None
+    #: 游标；None 表示这类重扫不需要续跑（顶部刷新、卡片补齐都是幂等的）。
+    checkpoint: Checkpoint | None = None
+    #: 是否落盘。唯一的 False 用途是 dry-run 预览。
+    write: bool = True
+    on_page: PageHook | None = None
+
+
+@dataclass(frozen=True)
+class ScanSummary:
+    pages: int
+    records: int
+    skipped: int
+    rate_remaining: int | None
+    stopped_reason: str
+
+
+class ScanRun:
+    """翻页扫描的唯一实现。"""
+
+    def __init__(self, api: HfDatasetApi, store: DatasetStore) -> None:
+        self.api = api
+        self.store = store
+
+    def run(self, snapshot_date: date, spec: ScanSpec) -> ScanSummary:
+        pages = 0
+        records = 0
+        skipped = 0
+        rate_remaining: int | None = None
+        stopped_reason = "end"
+
+        for page in self.api.scan(
+            sort=spec.sort,
+            direction=spec.direction,
+            limit=spec.limit,
+            expand=spec.expand,
+            checkpoint=spec.checkpoint,
+        ):
+            pages += 1
+            records += len(page.records)
+            skipped += page.skipped
+            if page.rate_remaining is not None:
+                rate_remaining = page.rate_remaining
+
+            if spec.write:
+                self.store.write_raw(
+                    snapshot_date=snapshot_date,
+                    page_index=pages,
+                    records=page.records,
+                    meta={
+                        "sort": spec.sort,
+                        "direction": spec.direction,
+                        "mode": spec.mode,
+                    },
+                    label=spec.label,
+                )
+
+            # 必须在写盘之后、任何可能 break 的判断之前保存：调用方随时可能
+            # 在下一页之前停下，而生成器此刻已暂停。
+            if spec.checkpoint is not None:
+                spec.checkpoint.save(page.next_cursor)
+
+            if spec.on_page is not None:
+                hint = spec.on_page(page, pages)
+                if hint is not None:
+                    stopped_reason = hint
+                    break
+
+            if spec.max_pages is not None and pages >= spec.max_pages:
+                stopped_reason = "max_pages"
+                break
+
+        return ScanSummary(
+            pages=pages,
+            records=records,
+            skipped=skipped,
+            rate_remaining=rate_remaining,
+            stopped_reason=stopped_reason,
+        )

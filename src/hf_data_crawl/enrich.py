@@ -12,8 +12,9 @@ import time
 from dataclasses import dataclass
 from datetime import date
 
-from .api import MAX_LIMIT, HfDatasetApi
+from .api import MAX_LIMIT, HfDatasetApi, Page
 from .collect import IDENTITY_EXPAND
+from .scan import ScanRun, ScanSpec
 from .store import DatasetStore
 
 #: 比 lean 档多要三样：卡片本体、论文关联、引用文本。
@@ -50,45 +51,40 @@ class Enricher:
         started = time.monotonic()
         page_budget = max(1, math.ceil(top / max(1, limit)))
 
-        pages = 0
-        records = 0
         with_card = 0
         with_structure = 0
 
-        for index, page in enumerate(
-            self._api.scan(
-                sort="downloads",
-                direction="-1",
-                limit=limit,
-                expand=ENRICH_EXPAND,
-                max_pages=page_budget,
-            ),
-            1,
-        ):
-            pages = index
-            records += len(page.records)
+        def tally(page: Page, _index: int) -> str | None:
+            """统计有卡片的条数，顺带记下多少带结构明细（行数/列结构的唯一来源）。"""
+            nonlocal with_card, with_structure
             for record in page.records:
                 card = record.get("cardData")
                 if not isinstance(card, dict) or not card:
                     continue
                 with_card += 1
-                # 只有 dataset_info 才带行数与列结构，这是明细表的唯一来源。
                 if isinstance(card.get("dataset_info"), list) and card["dataset_info"]:
                     with_structure += 1
-            self._store.write_raw(
-                snapshot_date=snapshot_date,
-                page_index=index,
-                records=page.records,
-                meta={"sort": "downloads", "direction": "-1", "mode": "enrich"},
+            return None
+
+        scan = ScanRun(self._api, self._store).run(
+            snapshot_date,
+            ScanSpec(
+                sort="downloads",
+                expand=ENRICH_EXPAND,
+                mode="enrich",
                 label="card",
-            )
+                limit=limit,
+                max_pages=page_budget,
+                on_page=tally,
+            ),
+        )
 
         table_rows, config_rows = self._store.build_enrich(snapshot_date)
 
         return EnrichSummary(
             snapshot_date=snapshot_date,
-            pages=pages,
-            records=records,
+            pages=scan.pages,
+            records=scan.records,
             with_card=with_card,
             table_rows=table_rows,
             elapsed_seconds=time.monotonic() - started,
