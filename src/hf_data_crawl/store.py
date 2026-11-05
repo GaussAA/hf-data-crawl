@@ -40,23 +40,16 @@ from .tables import (
 
 
 #: current 中由 Silver 直接带过来、不需要额外计算的列。
-_CURRENT_CARRIED: tuple[str, ...] = (
-    "id",
-    "author",
-    "sha",
-    "created_at",
-    "last_modified",
-    "downloads",
-    "downloads_all_time",
-    "likes",
-    "trending_score",
-    "gated",
-    "private",
-    "disabled",
-    "main_size",
-    "xet_enabled",
-    "resource_group",
+#:
+#: 由 schema 求交而非手抄：往 Silver 加一个指标列、同时在 CURRENT_SCHEMA 里声明，
+#: 这里自动跟上。手抄的版本会漏——而漏掉的表现是「视图里查得到、物化表里是
+#: null」，不报错，只是同一数据集在两个视图里的字段完整度不同。
+_CURRENT_CARRIED: tuple[str, ...] = tuple(
+    column for column in SILVER_SCHEMA if column in CURRENT_SCHEMA
 )
+
+#: current 里由本地计算、不来自 Silver 的列。
+_CURRENT_COMPUTED: frozenset[str] = frozenset({"first_seen_at", "last_seen_at", "status"})
 
 METRIC_COLUMNS: tuple[str, ...] = ("downloads", "downloads_all_time", "likes")
 

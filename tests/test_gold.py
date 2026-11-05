@@ -208,3 +208,19 @@ def test_重名列以实际数据为准取current的那一份(catalog: GoldCatal
     row = catalog.run("SELECT status FROM datasets LIMIT 1").row(0, named=True)
 
     assert row["status"] == "active"
+
+
+# ---------------------------------------------------------------- 最新一行只有一个定义
+
+def test_current与latest_silver对同一时刻取值一致(catalog: GoldCatalog) -> None:
+    """「最新一行」有两套实现：物化的 current 与窗口视图 latest_silver。
+
+    两者必须永远一致，否则同一数据集在不同视图里会给出不同的数字，
+    而没有任何东西会报错。
+    """
+    current = catalog.run("SELECT * FROM current ORDER BY id")
+    latest = catalog.run("SELECT * FROM latest_silver ORDER BY id")
+    common = [column for column in current.columns if column in latest.columns]
+
+    assert common, "两者没有可比列，说明视图结构已严重漂移"
+    assert current.select(common).equals(latest.select(common))

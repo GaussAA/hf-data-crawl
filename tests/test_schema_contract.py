@@ -221,3 +221,25 @@ def test_事故列不再恒空(column: str, tmp_path: Path) -> None:
     store.build_bronze(DAY)
 
     assert store.read_bronze(DAY)[column].null_count() == 0
+
+
+# ---------------------------------------------------------------- 最新一行的两种实现
+
+def test_current的带入列由schema求交而来() -> None:
+    """手抄的子集一定会漏，而漏掉的表现是「视图有、物化表是 null」，不报错。"""
+    from hf_data_crawl.store import _CURRENT_CARRIED, _CURRENT_COMPUTED
+
+    expected = set(CURRENT_SCHEMA) - _CURRENT_COMPUTED
+
+    assert set(_CURRENT_CARRIED) == expected
+    assert set(CURRENT_SCHEMA) == set(_CURRENT_CARRIED) | _CURRENT_COMPUTED
+
+
+def test_current的计算列不出现在silver里() -> None:
+    """status / first_seen_at / last_seen_at 是本地判断的结果，不属于源数据。
+
+    若把它们混进 Silver，就会出现两个 status 各说各话的局面。
+    """
+    from hf_data_crawl.store import _CURRENT_COMPUTED
+
+    assert _CURRENT_COMPUTED.isdisjoint(SILVER_SCHEMA)
