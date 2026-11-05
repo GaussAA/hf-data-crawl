@@ -58,3 +58,6 @@
    - 体积信息已由 `mainSize`（100% 覆盖）与 datasets-server 的 `num_bytes_original` 双重覆盖，`usedStorage` 的差值仅是 git 历史开销。
 17. **写入序是 Raw 的不变量**（2026-11-05）：`write_raw` 把 `written_at`（UTC、微秒）写进 payload 的 `meta`，Bronze 去重按它排序。**文件名摘要、mtime、`label` 的字母序都不参与排序**——mtime 在复制目录、解压归档、换机迁移后都会变，届时同一批 Raw 会推出不同 Bronze，与 `rebuild` 的承诺直接冲突。摘要**不含** `written_at`，否则同内容重写会不断产生新文件、幂等失效。旧分块无此字段，回退 mtime（影响锁在历史里；键首位 0/1 保证新分块永远排在其后）。
 18. **`rebuild` 有两处不来自 Raw 的例外**，重建时须特殊对待：① `enrich/size.parquet` 来自 datasets-server，删了无法重算，故只删卡片表；② `current.status` 的失效值来自单库探测，重建前留存、重建后写回，否则一次 build 就把全部 restricted / renamed 清零（2026-11-05 实测 463 条归零）。
+19. **表身份登记在 `tables.py`**（2026-11-05）：每个 `TableSpec` 记录名字、路径模板（`{dt}` 表示按日分区）、schema 与 `Origin`（`RAW` / `NETWORK` / `STATE`）。读写、Gold 视图、重建清理一律从它派生。
+    **`Origin` 决定重建时该不该删**——`NETWORK` 表（目前只有 `size`）删了就得重抓，必须保留；`RAW` 与 `STATE` 可重算，重建时清除。
+    此前这门知识散在五处（store 的文件名常量、各模块的 schema、gold 的硬编码路径、rebuild 的删除清单、README 的目录树），任一处改名都不报错：gold 的 glob 落空会静默退化成空视图，rebuild 曾因此误删两万条规模数据。

@@ -10,10 +10,23 @@ from typing import Any
 import duckdb
 import polars as pl
 
-from .card import CARD_CONFIGS_SCHEMA, ENRICH_SCHEMA
-from .silver import PLAIN_TAG_COLUMN, SILVER_SCHEMA, TAG_DIMENSIONS
-from .sizes import SIZE_SCHEMA
-from .store import OBSERVATIONS_SCHEMA, DatasetStore
+from .silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
+from .store import DatasetStore
+from .tables import table
+
+#: 视图名 → 登记表名。两者不必同名（`card` 视图读的是 `carddata` 表）。
+#:
+#: 路径、schema 一律取自登记表：此前这里硬编码了五个相对路径，一旦某张表改名，
+#: `_create_file_view` 的 glob 落空就会**静默退化成一个空视图**——查询照常返回
+#: 0 行，没有任何报错。
+_VIEWS: tuple[tuple[str, str], ...] = (
+    ("current", "current"),
+    ("observations", "observations"),
+    ("silver", "silver"),
+    ("card", "carddata"),
+    ("card_config", "card_configs"),
+    ("dataset_size", "size"),
+)
 
 #: 内置榜单。`?` 为条数上限占位。
 BOARDS: dict[str, str] = {
@@ -120,19 +133,10 @@ class GoldCatalog:
         self._connection.close()
 
     def _register(self) -> None:
-        root = self._store.root.as_posix()
-        self._connection.execute(
-            f"CREATE VIEW current AS SELECT * FROM read_parquet('{root}/state/current.parquet')"
-        )
-        self._create_file_view(
-            "observations", "state/observations/dt=*/obs.parquet", _empty_view(OBSERVATIONS_SCHEMA)
-        )
-        self._create_file_view("silver", "silver/dt=*/silver.parquet", _empty_view(SILVER_SCHEMA))
-        self._create_file_view("card", "enrich/carddata.parquet", _empty_view(ENRICH_SCHEMA))
-        self._create_file_view(
-            "card_config", "enrich/card_configs.parquet", _empty_view(CARD_CONFIGS_SCHEMA)
-        )
-        self._create_file_view("dataset_size", "enrich/size.parquet", _empty_view(SIZE_SCHEMA))
+        # 视图的连接路径与空视图 schema 全部取自登记表，不再硬编码。
+        for view, name in _VIEWS:
+            spec = table(name)
+            self._create_file_view(view, spec.glob(), _empty_view(spec.schema))
         self._connection.execute(
             """
             CREATE VIEW latest_silver AS

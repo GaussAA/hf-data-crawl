@@ -9,6 +9,8 @@ from typing import Any
 
 import polars as pl
 
+from .tables import SILVER_SCHEMA
+
 #: 标签前缀 → Silver 维度列名。
 #:
 #: 取值依据是全站 950 万条标签的实测频次：`library` 31.1%、`modality` 12.7%、
@@ -37,45 +39,6 @@ TAG_DIMENSIONS: dict[str, str] = {
 #: 无前缀标签。占全部标签的 13.7%（130 万条），旧式模态标记（`text` / `image` /
 #: `audio` / `tabular`）都在这里——不单独成列，等于把模态信息砍掉一半。
 PLAIN_TAG_COLUMN = "plain_tags"
-
-SILVER_SCHEMA: dict[str, pl.DataType] = {
-    "id": pl.Utf8,
-    "author": pl.Utf8,
-    "sha": pl.Utf8,
-    "created_at": pl.Utf8,
-    "last_modified": pl.Utf8,
-    "downloads": pl.Int64,
-    "downloads_all_time": pl.Int64,
-    "likes": pl.Int64,
-    "trending_score": pl.Float64,
-    "gated": pl.Utf8,
-    "private": pl.Boolean,
-    "disabled": pl.Boolean,
-    "main_size": pl.Int64,
-    "xet_enabled": pl.Boolean,
-    "resource_group": pl.Utf8,
-    "description": pl.Utf8,
-    "tags": pl.List(pl.Utf8),
-    "task_categories": pl.List(pl.Utf8),
-    "task_ids": pl.List(pl.Utf8),
-    "languages": pl.List(pl.Utf8),
-    "size_categories": pl.List(pl.Utf8),
-    "licenses": pl.List(pl.Utf8),
-    "libraries": pl.List(pl.Utf8),
-    "modalities": pl.List(pl.Utf8),
-    "formats": pl.List(pl.Utf8),
-    "regions": pl.List(pl.Utf8),
-    "multilinguality": pl.List(pl.Utf8),
-    "source_datasets": pl.List(pl.Utf8),
-    "annotations_creators": pl.List(pl.Utf8),
-    "language_creators": pl.List(pl.Utf8),
-    "arxiv_ids": pl.List(pl.Utf8),
-    "dois": pl.List(pl.Utf8),
-    "plain_tags": pl.List(pl.Utf8),
-    "raw": pl.Utf8,
-    "snapshot_date": pl.Date,
-}
-
 
 def split_tag_dimensions(tags: list[str]) -> dict[str, list[str]]:
     """按前缀把标签归入维度列，保持原序并去重。"""

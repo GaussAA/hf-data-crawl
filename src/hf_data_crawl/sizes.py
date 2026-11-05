@@ -33,6 +33,7 @@ from typing import Any
 import polars as pl
 
 from .api import Transport, TransportError
+from .tables import SIZE_SCHEMA
 
 DEFAULT_SIZE_URL = "https://datasets-server.huggingface.co/size"
 
@@ -41,21 +42,6 @@ UNAVAILABLE_STATUS: frozenset[int] = frozenset({401, 403, 404, 500, 501})
 
 #: 值得重试的状态码：限流与网关抖动。
 RETRYABLE_STATUS: frozenset[int] = frozenset({429, 502, 503, 504})
-
-SIZE_SCHEMA: dict[str, pl.DataType] = {
-    "id": pl.Utf8,
-    "snapshot_date": pl.Date,
-    "status": pl.Utf8,
-    "num_rows": pl.Int64,
-    "estimated_num_rows": pl.Int64,
-    "num_bytes_original": pl.Int64,
-    "num_bytes_parquet": pl.Int64,
-    "num_bytes_memory": pl.Int64,
-    "config_count": pl.Int64,
-    "num_columns_max": pl.Int64,
-    "configs": pl.Utf8,
-}
-
 
 @dataclass(frozen=True)
 class SizeResult:

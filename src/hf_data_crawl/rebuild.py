@@ -13,6 +13,7 @@ from datetime import date
 import polars as pl
 
 from .store import DatasetStore
+from .tables import TABLES, Origin, TableSpec
 
 
 @dataclass(frozen=True)
@@ -56,14 +57,20 @@ def rebuild_from_raw(store: DatasetStore) -> RebuildSummary:
     # 例外的边界写在 docs/CONTEXT.md 第 15 条。
     carried_status = _failed_status(store)
 
-    for derived in (store.bronze_dir, store.silver_dir, store.state_dir):
-        shutil.rmtree(derived, ignore_errors=True)
-    # enrich 下有两类产物，待遇不同：
-    # - carddata / card_configs 可由 raw 里的 card-*.json.gz 重算，删了能重建；
-    # - size.parquet 来自 datasets-server，raw 里没有对应数据，删了就白丢一轮抓取
-    #   （两万条约 13 分钟）。故只删前者。
-    for filename in ("carddata.parquet", "card_configs.parquet"):
-        (store.enrich_dir / filename).unlink(missing_ok=True)
+    # 清不清除，由登记表的 origin 决定，不再靠手工清单：
+    # RAW / STATE 都能从 Raw 重算，NETWORK 删了就得重抓（size.parquet 两万条约 13 分钟）。
+    # 2026-11-05 的「build 误删规模表」就是因为这张清单写在 rebuild 里，而
+    # 「该表不从 raw 派生」这个事实写在 sizes.py，两边都不知道对方。
+    for spec in TABLES.values():
+        if spec.origin is Origin.NETWORK:
+            continue
+        _clear(store, spec)
+
+    # state 目录下还散落着游标与会话文件，它们不属于任何表，重建后同样作废。
+    for stale in list(store.state_dir.glob("*.json")) + list(
+        store.state_dir.glob("reconcile-seen-*.csv")
+    ):
+        stale.unlink(missing_ok=True)
 
     bronze_rows = 0
     silver_rows = 0
@@ -85,6 +92,15 @@ def rebuild_from_raw(store: DatasetStore) -> RebuildSummary:
         card_rows=store.read_enrich().height,
         config_rows=store.read_card_configs().height,
     )
+
+
+def _clear(store: DatasetStore, spec: TableSpec) -> None:
+    """按表的形态清除：分区表删其父目录，单文件表删文件本身。"""
+    if spec.partitioned:
+        parent = store.root / spec.path.split("/dt={dt}", 1)[0]
+        shutil.rmtree(parent, ignore_errors=True)
+    else:
+        (store.root / spec.path).unlink(missing_ok=True)
 
 
 def _failed_status(store: DatasetStore) -> dict[str, str]:

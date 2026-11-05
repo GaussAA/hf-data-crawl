@@ -19,96 +19,25 @@ from typing import Any
 
 import polars as pl
 
-from .card import CARD_CONFIGS_SCHEMA, ENRICH_SCHEMA, extract_card_row, extract_config_rows
-from .silver import SILVER_SCHEMA, derive_row
-from .sizes import SIZE_SCHEMA
+from .card import extract_card_row, extract_config_rows
+from .silver import derive_row
+from .tables import (
+    BRONZE_DERIVED_COLUMNS,
+    BRONZE_SCHEMA,
+    BRONZE_SOURCE_FIELDS,
+    CARD_CONFIGS_SCHEMA,
+    CURRENT_SCHEMA,
+    ENRICH_SCHEMA,
+    OBSERVATIONS_SCHEMA,
+    SILVER_SCHEMA,
+    SIZE_SCHEMA,
+    UNCONDITIONAL_FIELDS,
+    table,
+)
 
-#: 规模表文件名。与卡片表同放 enrich/，因为它同样是「按需补齐」的产物。
-SIZE_FILENAME = "size.parquet"
+# 上述 schema 常量在 tables.py 中定义，此处重新导出：旧调用方（含测试）仍可
+# `from hf_data_crawl.store import BRONZE_SCHEMA`，但定义只有一份。
 
-BRONZE_SCHEMA: dict[str, pl.DataType] = {
-    "id": pl.Utf8,
-    "author": pl.Utf8,
-    "sha": pl.Utf8,
-    "created_at": pl.Utf8,
-    "last_modified": pl.Utf8,
-    "downloads": pl.Int64,
-    "downloads_all_time": pl.Int64,
-    "likes": pl.Int64,
-    "trending_score": pl.Float64,
-    "gated": pl.Utf8,
-    "private": pl.Boolean,
-    "disabled": pl.Boolean,
-    "main_size": pl.Int64,
-    "xet_enabled": pl.Boolean,
-    "resource_group": pl.Utf8,
-    "tags": pl.List(pl.Utf8),
-    "description": pl.Utf8,
-    "raw": pl.Utf8,
-    "page_file": pl.Utf8,
-    "snapshot_date": pl.Date,
-}
-
-#: 由本地派生、不对应 HF 响应字段的列。契约测试据此反推源字段清单。
-BRONZE_DERIVED_COLUMNS: frozenset[str] = frozenset({"raw", "page_file", "snapshot_date"})
-
-#: Bronze 列名 → HF 响应字段名。**契约的唯一真相源**。
-#:
-#: 存在的理由：HF 的 `expand[]` 是白名单裁剪，列与请求清单是两份会各自漂移的
-#: 声明。2026-11-04 实测事故即由此而来——`private` 列已声明、请求里却没带，
-#: 于是 111.5 万行整列为空且无任何报错。此表把两者钉在一起，
-#: 由 `tests/test_schema_contract.py` 双向校验。
-BRONZE_SOURCE_FIELDS: dict[str, str] = {
-    "id": "id",
-    "author": "author",
-    "sha": "sha",
-    "created_at": "createdAt",
-    "last_modified": "lastModified",
-    "downloads": "downloads",
-    "downloads_all_time": "downloadsAllTime",
-    "likes": "likes",
-    "trending_score": "trendingScore",
-    "gated": "gated",
-    "private": "private",
-    "disabled": "disabled",
-    "main_size": "mainSize",
-    "xet_enabled": "xetEnabled",
-    "resource_group": "resourceGroup",
-    "tags": "tags",
-    "description": "description",
-}
-
-#: 列表接口无条件返回、无需写进 `expand[]` 的字段。
-UNCONDITIONAL_FIELDS: frozenset[str] = frozenset({"id"})
-
-OBSERVATIONS_SCHEMA: dict[str, pl.DataType] = {
-    "id": pl.Utf8,
-    "snapshot_date": pl.Date,
-    "downloads": pl.Int64,
-    "downloads_all_time": pl.Int64,
-    "likes": pl.Int64,
-}
-
-CURRENT_SCHEMA: dict[str, pl.DataType] = {
-    "id": pl.Utf8,
-    "author": pl.Utf8,
-    "sha": pl.Utf8,
-    "created_at": pl.Utf8,
-    "last_modified": pl.Utf8,
-    "downloads": pl.Int64,
-    "downloads_all_time": pl.Int64,
-    "likes": pl.Int64,
-    "trending_score": pl.Float64,
-    "gated": pl.Utf8,
-    "private": pl.Boolean,
-    "disabled": pl.Boolean,
-    "main_size": pl.Int64,
-    "xet_enabled": pl.Boolean,
-    "resource_group": pl.Utf8,
-    "first_seen_at": pl.Date,
-    "last_seen_at": pl.Date,
-    "status": pl.Utf8,
-}
 
 #: current 中由 Silver 直接带过来、不需要额外计算的列。
 _CURRENT_CARRIED: tuple[str, ...] = (
@@ -372,14 +301,16 @@ class DatasetStore:
         return _align_frame(pl.read_parquet(target), schema)
 
     def read_sizes(self) -> pl.DataFrame:
-        return self.read_card_table(SIZE_FILENAME, SIZE_SCHEMA)
+        spec = table("size")
+        return self.read_card_table(spec.filename, spec.schema)
 
     def merge_sizes(self, frame: pl.DataFrame) -> int:
         """把新一批规模数据并入总表，同 id 以新值为准。
 
         不可用的记录也一并落库：不记下来，下一轮还得为它们重烧 30% 的请求预算。
         """
-        target = self.enrich_dir / SIZE_FILENAME
+        spec = table("size")
+        target = self.root / spec.path
         fresh = frame.unique(subset=["id"], keep="last")
         if target.exists() and fresh.height:
             previous = _align_frame(pl.read_parquet(target), SIZE_SCHEMA)

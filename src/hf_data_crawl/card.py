@@ -19,47 +19,7 @@ from typing import Any
 
 import polars as pl
 
-ENRICH_SCHEMA: dict[str, pl.DataType] = {
-    "id": pl.Utf8,
-    "snapshot_date": pl.Date,
-    "pretty_name": pl.Utf8,
-    "paperswithcode_id": pl.Utf8,
-    "arxiv": pl.Utf8,
-    "license_name": pl.Utf8,
-    "license_link": pl.Utf8,
-    "citation": pl.Utf8,
-    "card_description": pl.Utf8,
-    # 以下带 card_ 前缀：它们来自卡片 YAML，与 Silver 里由 tags 拆出的同名维度
-    # 是两套口径（卡片是作者声明，tags 是平台规范化）。不加前缀会在 datasets
-    # 视图 join 时撞名，让查询者分不清看的是哪一套。
-    "card_tags": pl.List(pl.Utf8),
-    "card_task_categories": pl.List(pl.Utf8),
-    "card_languages": pl.List(pl.Utf8),
-    "card_size_categories": pl.List(pl.Utf8),
-    "card_multilinguality": pl.Utf8,
-    "card_annotations_creators": pl.List(pl.Utf8),
-    "card_language_creators": pl.List(pl.Utf8),
-    "card_source_datasets": pl.List(pl.Utf8),
-    "card_homepage": pl.Utf8,
-    # 汇总指标：由 dataset_info 跨 config 累加，取不到则为空而非 0。
-    "card_config_count": pl.Int64,
-    "card_num_rows": pl.Int64,
-    "card_dataset_bytes": pl.Int64,
-    "card_download_bytes": pl.Int64,
-}
-
-CARD_CONFIGS_SCHEMA: dict[str, pl.DataType] = {
-    "id": pl.Utf8,
-    "snapshot_date": pl.Date,
-    "config_name": pl.Utf8,
-    "split": pl.Utf8,
-    "num_bytes": pl.Int64,
-    "num_examples": pl.Int64,
-    "dataset_size": pl.Int64,
-    "download_size": pl.Int64,
-    "features": pl.Utf8,
-    "data_files": pl.Utf8,
-}
+from .tables import CARD_CONFIGS_SCHEMA, ENRICH_SCHEMA
 
 #: 卡片里可直接取出的标量/列表字段：卡片键 → 宽表列。
 _CARD_LIST_FIELDS: dict[str, str] = {
