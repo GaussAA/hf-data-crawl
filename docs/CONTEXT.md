@@ -73,3 +73,8 @@
     - `_CURRENT_CARRIED` 由 `CURRENT_SCHEMA` 与 `SILVER_SCHEMA` **求交**而来，不再手抄——手抄会漏，而漏掉的表现是「视图里查得到、物化表里是 null」。
     - `_CURRENT_COMPUTED`（`first_seen_at` / `last_seen_at` / `status`）是本地判断，**不得出现在 Silver 里**，否则会出现两个 status 各说各话。
     - 两者的一致性由测试守护：实测 111.7 万行、15 个公共列取值完全相同。
+24. **原子写只有一个入口**（`atomic.py`）：`write_bytes` / `write_text` / `write_parquet` / `write_csv`。临时文件必须与目标**同目录**——`os.replace` 的原子性依赖同一文件系统，跨盘会退化成「复制 + 删除」。六个写点曾只做三处，遗漏的恰是面向用户的三个（榜单页、运行记录、对账清单）。
+25. **列编码规则只有一套**（`coerce.py`）：`as_int` / `as_float` / `as_bool` / `as_text` / `as_list` / `as_json`。
+    铁律是**取不到留 None，绝不猜**：`private: "true"` 是字符串不是布尔，猜成 True 会让「是否受限」失去可信度。此前 `_as_int` 在三处逐字相同、`_as_text` 同名而异义（一处 `str()`、一处逗号拼接）。
+26. **`rebuild` 不是事务性的**（2026-11-05 实测）：它在「清除 state」与「写回失效状态」之间被打断时，那些不来自 raw 的判断会**永久丢失**——一次 build 被 SIGTERM 杀掉，456 条 `restricted` / `renamed` 全部归零。
+    故状态在清理**之前**写入 `meta/failed-status.json`（不属于任何登记表，清理够不到），下次 build 从快照接上。
