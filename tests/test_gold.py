@@ -152,3 +152,59 @@ def test_无数据时给出可读错误(tmp_path: Path) -> None:
 
     with pytest.raises(GoldNotReady, match="collect"):
         GoldCatalog(DatasetStore(tmp_path / "empty"))
+
+
+# ---------------------------------------------------------------- 宽视图由 schema 拼装
+
+def test_宽视图不含原始JSON与分区列(catalog: GoldCatalog) -> None:
+    """`raw` 是整行 JSON（每行数 KB），带进视图会让每次查询都拖着它走。"""
+    columns = catalog.run("SELECT * FROM datasets LIMIT 0").columns
+
+    assert "raw" not in columns
+    assert "snapshot_date" not in columns
+
+
+def test_宽视图包含附表的全部有效列(catalog: GoldCatalog) -> None:
+    """手抄列清单的代价是漂移：附表加了列，宽视图安静地少一列。"""
+    from hf_data_crawl.gold import _VIEW_RENAMES
+    from hf_data_crawl.tables import table
+
+    columns = set(catalog.run("SELECT * FROM datasets LIMIT 0").columns)
+    for name, excluded in (
+        ("silver", {"raw", "snapshot_date"}),
+        ("carddata", {"snapshot_date"}),
+        ("size", {"snapshot_date"}),
+    ):
+        renames = _VIEW_RENAMES.get(name, {})
+        expected = {
+            renames.get(column, column)
+            for column in set(table(name).schema) - excluded
+        }
+        # 与 current 重名的列由先到先得跳过，不算缺失
+        missing = {
+            column
+            for column in expected
+            if column not in columns and column not in table("current").schema
+        }
+        assert not missing, f"{name} 的这些列没进宽视图：{sorted(missing)}"
+
+
+def test_宽视图列名唯一(catalog: GoldCatalog) -> None:
+    """两张附表有同名列时，不加区分会让查询者拿到不确定的那一个。"""
+    columns = catalog.run("SELECT * FROM datasets LIMIT 0").columns
+
+    assert len(columns) == len(set(columns))
+
+
+def test_规模口径带server前缀以免与卡片口径混淆(catalog: GoldCatalog) -> None:
+    columns = set(catalog.run("SELECT * FROM datasets LIMIT 0").columns)
+
+    assert "server_num_rows" in columns
+    assert "card_num_rows" in columns, "卡片口径的行数应同时存在，两者含义不同"
+
+
+def test_重名列以实际数据为准取current的那一份(catalog: GoldCatalog) -> None:
+    """status 在 current 与 size 里都有，视图里必须是 current 的。"""
+    row = catalog.run("SELECT status FROM datasets LIMIT 1").row(0, named=True)
+
+    assert row["status"] == "active"

@@ -14,6 +14,41 @@ from .silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
 from .store import DatasetStore
 from .tables import table
 
+#: 宽视图里需要改名的列：来源表 → {原列名: 视图里的名字}。
+#:
+#: 只写真正需要区分的：`size.num_rows` 若原样进视图，与卡片口径的
+#: `card_num_rows` 并排时，读者分不清哪个是作者声明的、哪个是 datasets-server
+#: 统计的。其余同名列由「先到先得」自动跳过。
+_VIEW_RENAMES: dict[str, dict[str, str]] = {
+    "size": {
+        "num_rows": "server_num_rows",
+        "num_columns_max": "server_num_columns",
+        "num_bytes_memory": "server_num_bytes_memory",
+        "estimated_num_rows": "server_estimated_rows",
+        "config_count": "server_config_count",
+        "num_bytes_original": "server_num_bytes_original",
+        "num_bytes_parquet": "server_num_bytes_parquet",
+        "configs": "server_configs",
+    }
+}
+
+#: 宽视图里刻意不带的列。
+#:
+#: `raw` 是整行原始 JSON（每行数 KB），带进来会让每一次查询都拖着它走；
+#: `snapshot_date` 在各表重复且对查询无意义——它属于分区，不属于分析维度。
+_VIEW_EXCLUDED: dict[str, frozenset[str]] = {
+    "silver": frozenset({"raw", "snapshot_date"}),
+    "carddata": frozenset({"snapshot_date"}),
+    "size": frozenset({"snapshot_date"}),
+}
+
+#: 宽视图的附表：(别名, 登记表名, 视图名)，按此顺序拼接，重名列先到先得。
+_VIEW_SOURCES: tuple[tuple[str, str, str], ...] = (
+    ("s", "silver", "latest_silver"),
+    ("cd", "carddata", "card"),
+    ("ds", "size", "dataset_size"),
+)
+
 #: 视图名 → 登记表名。两者不必同名（`card` 视图读的是 `carddata` 表）。
 #:
 #: 路径、schema 一律取自登记表：此前这里硬编码了五个相对路径，一旦某张表改名，
@@ -144,32 +179,7 @@ class GoldCatalog:
             QUALIFY row_number() OVER (PARTITION BY id ORDER BY snapshot_date DESC) = 1
             """
         )
-        self._connection.execute(
-            """
-            CREATE VIEW datasets AS
-            SELECT c.*, s.task_categories, s.task_ids, s.languages, s.size_categories,
-                   s.licenses, s.libraries, s.modalities, s.formats, s.regions,
-                   s.multilinguality, s.source_datasets, s.annotations_creators,
-                   s.language_creators, s.arxiv_ids, s.dois, s.plain_tags,
-                   s.tags, s.description,
-                   cd.pretty_name, cd.paperswithcode_id, cd.arxiv,
-                   cd.license_name, cd.license_link, cd.citation, cd.card_description,
-                   cd.card_tags, cd.card_task_categories, cd.card_languages,
-                   cd.card_size_categories, cd.card_multilinguality,
-                   cd.card_annotations_creators, cd.card_language_creators,
-                   cd.card_source_datasets, cd.card_homepage,
-                   cd.card_config_count, cd.card_num_rows,
-                   cd.card_dataset_bytes, cd.card_download_bytes,
-                   ds.num_rows AS server_num_rows,
-                   ds.num_columns_max AS server_num_columns,
-                   ds.num_bytes_memory AS server_num_bytes_memory,
-                   ds.estimated_num_rows AS server_estimated_rows
-            FROM current AS c
-            LEFT JOIN latest_silver AS s ON c.id = s.id
-            LEFT JOIN card AS cd ON c.id = cd.id
-            LEFT JOIN dataset_size AS ds ON c.id = ds.id
-            """
-        )
+        self._connection.execute(self._wide_view_sql())
         # 长表视图：一行一个 (数据集, 维度, 取值)。宽表便于 join 榜单，长表便于
         # 任意维度聚合而不必改 SQL——「按模态统计」「按格式统计」都是同一句。
         # 由 TAG_DIMENSIONS 生成，新增维度自动进入，不必再手写一段 UNION。
@@ -211,6 +221,46 @@ class GoldCatalog:
             WHERE downloads_start IS NOT NULL
               AND date_diff('day', from_date, to_date) <= 35
             """
+        )
+
+    def _wide_view_sql(self) -> str:
+        """由登记表拼出宽视图，而不是手抄一份列清单。
+
+        手抄的代价是漂移：加一个卡片字段，`card` 视图由 schema 生成、自动就有，
+        `datasets` 却安静地少一列——查询照常跑，只是那一列不存在。同一份文件里
+        `_empty_view` 与 `tag_values` 早就示范了正确做法，唯独最常被查的这个视图
+        是例外。
+
+        规则：current 的列原样作基底；附表按 `_VIEW_SOURCES` 顺序追加，**重名先到
+        先得**；需要区分口径的列在 `_VIEW_RENAMES` 里改名；大列与分区列在
+        `_VIEW_EXCLUDED` 里排除。
+        """
+        used: set[str] = set(table("current").schema)
+        parts: list[str] = ["c.*"]
+
+        for alias, name, _view in _VIEW_SOURCES:
+            spec = table(name)
+            excluded = _VIEW_EXCLUDED.get(name, frozenset())
+            renames = _VIEW_RENAMES.get(name, {})
+            for column in spec.schema:
+                if column in excluded or column in used:
+                    continue
+                target = renames.get(column, column)
+                if target in used:
+                    continue
+                parts.append(f"{alias}.{column} AS {target}")
+                used.add(target)
+
+        columns = ",\n                   ".join(parts)
+        joins = "\n            ".join(
+            f"LEFT JOIN {view} AS {alias} ON c.id = {alias}.id"
+            for alias, _name, view in _VIEW_SOURCES
+        )
+        return (
+            "CREATE VIEW datasets AS\n"
+            f"            SELECT {columns}\n"
+            "            FROM current AS c\n"
+            f"            {joins}\n"
         )
 
     def _create_file_view(self, name: str, relative_pattern: str, empty_sql: str) -> None:

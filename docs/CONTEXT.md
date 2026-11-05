@@ -67,3 +67,5 @@
     ② **页数上限由本层判定而非传给生成器**——生成器到限时是静默 `return`，只有本层判才能说出准确的停止原因（`max_pages` 与 `end` 必须能区分，前者要保住游标）。
 21. **命令的成败只有一个判定点**（`runs.Outcome`，2026-11-05）：命令返回 `Outcome(payload, code, reason)`，`_execute` 据 `failed` 写唯一一份运行记录，`write_run` **不接受外部传入的 status**——可传的 status 一定有传错的那天。
     此前异常路径写 `failed`、正常返回一律写 `success`，于是 `report` 在无数据时退出码 1、`runs/` 里却是成功记录：同一条命令的结局被劈成两半。
+22. **宽视图 `datasets` 由 schema 拼装**（2026-11-05）：列不再手抄，按 `_VIEW_SOURCES` 顺序拼接，**重名先到先得**；需区分口径的列在 `_VIEW_RENAMES` 改名（`size.num_rows → server_num_rows`，与卡片口径的 `card_num_rows` 并存）；`raw`（每行数 KB 的整行 JSON）与重复的 `snapshot_date` 在 `_VIEW_EXCLUDED` 排除。
+    此前手抄 42 列，加一个卡片字段时 `card` 视图由 schema 生成、自动就有，`datasets` 却安静地少一列——查询照常跑，只是那一列不存在。
