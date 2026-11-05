@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import html
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
 import polars as pl
@@ -203,7 +202,7 @@ def _table(
 ) -> str:
     """columns: (字段名, 表头, 类型)，类型取 text / num / code / name。"""
     head = "".join(
-        f'<th scope="col"{f' class="num"' if kind == "num" else ""}>{_esc(title)}</th>'
+        f'<th scope="col"{' class="num"' if kind == "num" else ""}>{_esc(title)}</th>'
         for _, title, kind in columns
     )
     rows: list[str] = []

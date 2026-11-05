@@ -15,7 +15,6 @@ import pytest
 
 from hf_data_crawl.coerce import as_bool, as_float, as_int, as_json, as_list, as_text
 
-
 # ---------------------------------------------------------------- 整数
 
 

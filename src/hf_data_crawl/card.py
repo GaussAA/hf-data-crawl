@@ -14,12 +14,8 @@ HF 卡片结构不统一：license 可能是字符串或列表，arxiv 同理，
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-import polars as pl
-
-from .tables import CARD_CONFIGS_SCHEMA, ENRICH_SCHEMA
 from .coerce import as_int, as_json, as_list, as_text
 
 #: 卡片里可直接取出的标量/列表字段：卡片键 → 宽表列。

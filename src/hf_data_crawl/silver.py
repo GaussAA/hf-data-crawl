@@ -7,10 +7,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import polars as pl
-
-from .tables import SILVER_SCHEMA
-
 #: 标签前缀 → Silver 维度列名。
 #:
 #: 取值依据是全站 950 万条标签的实测频次：`library` 31.1%、`modality` 12.7%、

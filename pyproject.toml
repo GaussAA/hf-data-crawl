@@ -34,3 +34,9 @@ dev = [
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
+# 保守规则集：pycodestyle 错误、pyflakes、isort、pyupgrade。
+select = ["E", "F", "I", "UP"]
+# 行宽交给 ruff format；它不折行的长注释和字符串，不当作 lint 错误。
+ignore = ["E501"]

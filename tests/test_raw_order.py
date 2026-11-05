@@ -206,7 +206,6 @@ def test_旧raw没有写入时刻时回退文件修改时间(tmp_path: Path) -> 
     它们已经稳定、不会再变，故回退到 mtime 是安全的：影响锁在历史里。
     """
     import os
-    import time
 
     store = DatasetStore(tmp_path / "legacy")
     partition = store.raw_dir / f"dt={DAY.isoformat()}"

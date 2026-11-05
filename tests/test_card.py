@@ -15,13 +15,9 @@ from typing import Any
 import polars as pl
 import pytest
 
-from hf_data_crawl.card import (
-    CARD_CONFIGS_SCHEMA,
-    ENRICH_SCHEMA,
-    extract_card_row,
-    extract_config_rows,
-)
+from hf_data_crawl.card import extract_card_row, extract_config_rows
 from hf_data_crawl.store import DatasetStore
+from hf_data_crawl.tables import CARD_CONFIGS_SCHEMA, ENRICH_SCHEMA
 
 DAY = date(2026, 11, 4)
 

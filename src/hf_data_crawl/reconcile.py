@@ -16,8 +16,8 @@ from typing import Any
 
 import polars as pl
 
-from .atomic import write_csv
 from .api import MAX_LIMIT, HfDatasetApi, Page
+from .atomic import write_csv
 from .checkpoint import FileCheckpoint
 from .collect import LEAN_EXPAND
 from .scan import ScanRun, ScanSpec

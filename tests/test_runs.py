@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import gzip
 import json
 from datetime import date
 from pathlib import Path
@@ -190,6 +189,5 @@ def test_摘要中日期与路径被序列化为字符串(tmp_path: Path) -> Non
 
     payload = read_runs(DatasetStore(root))[0]["payload"]
 
-    body = json.dumps(payload, ensure_ascii=False)
     assert isinstance(payload["dates"], list)
     assert isinstance(payload["dates"][0], str)

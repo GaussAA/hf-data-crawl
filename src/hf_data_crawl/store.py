@@ -12,27 +12,24 @@ import gzip
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
 import polars as pl
 
 from .atomic import write_bytes, write_parquet
-from .coerce import as_bool, as_float, as_int, as_json, as_text
 from .card import extract_card_row, extract_config_rows
+from .coerce import as_bool, as_float, as_int, as_json, as_text
 from .silver import derive_row
 from .tables import (
-    BRONZE_DERIVED_COLUMNS,
     BRONZE_SCHEMA,
-    BRONZE_SOURCE_FIELDS,
     CARD_CONFIGS_SCHEMA,
     CURRENT_SCHEMA,
     ENRICH_SCHEMA,
     OBSERVATIONS_SCHEMA,
     SILVER_SCHEMA,
     SIZE_SCHEMA,
-    UNCONDITIONAL_FIELDS,
     table,
 )
 
@@ -497,7 +494,7 @@ def _utc_now() -> str:
     微秒足够：每页之间至少隔着一次网络往返，不可能同微秒落两次盘。
     用 UTC 而非本地时间，避免跨时区迁移后序颠倒。
     """
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    return datetime.now(UTC).isoformat(timespec="microseconds")
 
 
 def _align_frame(frame: pl.DataFrame, schema: dict[str, pl.DataType]) -> pl.DataFrame:

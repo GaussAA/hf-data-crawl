@@ -24,14 +24,15 @@ import pytest
 from hf_data_crawl.api import EXPAND_WHITELIST
 from hf_data_crawl.collect import LEAN_EXPAND
 from hf_data_crawl.enrich import ENRICH_EXPAND
-from hf_data_crawl.silver import PLAIN_TAG_COLUMN, SILVER_SCHEMA, TAG_DIMENSIONS
-from hf_data_crawl.store import (
+from hf_data_crawl.silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
+from hf_data_crawl.store import DatasetStore
+from hf_data_crawl.tables import (
     BRONZE_DERIVED_COLUMNS,
     BRONZE_SCHEMA,
     BRONZE_SOURCE_FIELDS,
     CURRENT_SCHEMA,
+    SILVER_SCHEMA,
     UNCONDITIONAL_FIELDS,
-    DatasetStore,
 )
 
 DAY = date(2026, 11, 4)

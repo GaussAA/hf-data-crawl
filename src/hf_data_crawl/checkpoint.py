@@ -6,10 +6,10 @@ checkpoint 只记一件事：下一页该从哪个游标开始。
 from __future__ import annotations
 
 import json
-import os
-from .atomic import write_text
 from pathlib import Path
 from typing import Protocol
+
+from .atomic import write_text
 
 
 class Checkpoint(Protocol):
