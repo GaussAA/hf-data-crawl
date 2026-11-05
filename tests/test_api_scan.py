@@ -124,7 +124,11 @@ def test_expand含白名单外字段时立即报错() -> None:
 
 
 def test_缺id或lastModified的记录被跳过并计数() -> None:
-    bad = [{"lastModified": "2026-11-01T00:00:00.000Z"}, {"id": "a/nolmod"}, {"id": "", "lastModified": "x"}]
+    bad = [
+        {"lastModified": "2026-11-01T00:00:00.000Z"},
+        {"id": "a/nolmod"},
+        {"id": "", "lastModified": "x"},
+    ]
     transport = FakeTransport([[record("a/ok"), *bad]], [None])
     api = HfDatasetApi(transport=transport)
 
@@ -198,7 +202,11 @@ def test_中断后从checkpoint续跑不重复入库() -> None:
     pages = [[record("a/1")], [record("a/2")], [record("a/3")]]
     links = [f"{base}?cursor=c2", f"{base}?cursor=c3", None]
 
-    full = [r["id"] for page in HfDatasetApi(transport=FakeTransport(pages, links)).scan(sort="createdAt") for r in page.records]
+    full = [
+        r["id"]
+        for page in HfDatasetApi(transport=FakeTransport(pages, links)).scan(sort="createdAt")
+        for r in page.records
+    ]
 
     checkpoint = MemoryCheckpoint()
     first_half = [
@@ -210,7 +218,9 @@ def test_中断后从checkpoint续跑不重复入库() -> None:
     ]
     resumed = [
         r["id"]
-        for page in HfDatasetApi(transport=FakeTransport(pages, links)).scan(sort="createdAt", checkpoint=checkpoint)
+        for page in HfDatasetApi(transport=FakeTransport(pages, links)).scan(
+            sort="createdAt", checkpoint=checkpoint
+        )
         for r in page.records
     ]
 

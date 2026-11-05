@@ -60,6 +60,7 @@ def store(tmp_path: Path) -> DatasetStore:
 
 # ---------------------------------------------------------------- 落盘
 
+
 def test_写入时刻落进raw的meta(store: DatasetStore) -> None:
     """序必须在数据里，才能在复制、迁移、归档之后依然成立。"""
     store.write_raw(snapshot_date=DAY, page_index=1, records=[record(1)], meta={})
@@ -84,6 +85,7 @@ def test_写入时刻可注入以便确定性测试(store: DatasetStore) -> None
 
 
 # ---------------------------------------------------------------- 排序
+
 
 def test_胜出者由写入时刻决定而不是文件名(store: DatasetStore) -> None:
     """摘要值是随机哈希，字典序谁先谁后纯属偶然。"""
@@ -146,6 +148,7 @@ def test_胜出者由写入时刻决定而不是文件修改时间(store: Datase
 
 # ---------------------------------------------------------------- 可复现
 
+
 def test_复制raw目录后重建结果完全一致(tmp_path: Path) -> None:
     """rebuild 的承诺：Raw 是唯一事实来源。
 
@@ -196,6 +199,7 @@ def test_复制raw目录后重建结果完全一致(tmp_path: Path) -> None:
 
 # ---------------------------------------------------------------- 向后兼容
 
+
 def test_旧raw没有写入时刻时回退文件修改时间(tmp_path: Path) -> None:
     """历史分块没有这个字段，不能因此把顺序丢掉。
 
@@ -213,8 +217,10 @@ def test_旧raw没有写入时刻时回退文件修改时间(tmp_path: Path) -> 
         ("part-000001-bbbb.json.gz", 222, 20),
     ]:
         body = json.dumps(
-            {"meta": {"snapshot_date": DAY.isoformat(), "page_index": 1},
-             "records": [record(1, main_size=main_size)]},
+            {
+                "meta": {"snapshot_date": DAY.isoformat(), "page_index": 1},
+                "records": [record(1, main_size=main_size)],
+            },
             ensure_ascii=False,
             sort_keys=True,
         ).encode("utf-8")
@@ -236,8 +242,10 @@ def test_新分块永远压过没有时刻的旧分块(store: DatasetStore) -> N
     partition = store.raw_dir / f"dt={DAY.isoformat()}"
     partition.mkdir(parents=True, exist_ok=True)
     body = json.dumps(
-        {"meta": {"snapshot_date": DAY.isoformat(), "page_index": 1},
-         "records": [record(1, main_size=111)]},
+        {
+            "meta": {"snapshot_date": DAY.isoformat(), "page_index": 1},
+            "records": [record(1, main_size=111)],
+        },
         ensure_ascii=False,
         sort_keys=True,
     ).encode("utf-8")

@@ -68,6 +68,7 @@ def spec(**overrides: Any) -> ScanSpec:
 
 # ---------------------------------------------------------------- 计数与落盘
 
+
 def test_逐页落盘并累计计数(store: DatasetStore) -> None:
     api = FakeScanApi([page("a", "b"), page("c", cursor=None)])
 
@@ -119,6 +120,7 @@ def test_label与mode落进raw的meta(store: DatasetStore) -> None:
 
 # ---------------------------------------------------------------- 游标
 
+
 def test_每页写完盘就保存游标(store: DatasetStore) -> None:
     checkpoint = RecordingCheckpoint()
     api = FakeScanApi([page("a", cursor="c2"), page("b", cursor="c3"), page("c", cursor=None)])
@@ -152,6 +154,7 @@ def test_不传游标时不保存任何东西(store: DatasetStore) -> None:
 
 
 # ---------------------------------------------------------------- 停止规则
+
 
 def test_页数上限停在准确的原因上(store: DatasetStore) -> None:
     """生成器到限时是静默 return，只有本层判才能说出为什么停。"""

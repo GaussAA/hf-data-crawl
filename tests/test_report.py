@@ -75,8 +75,10 @@ def test_生成单文件页面且含关键数据(store: DatasetStore, tmp_path: 
 
 def test_页面包含原生控件基线样式(store: DatasetStore, tmp_path: Path) -> None:
     """滚动条、选区、焦点环等原生控件必须一起造境，否则在深色页面里格外突兀。"""
-    content = Reporter(GoldCatalog(store)).write(tmp_path / "dashboard.html").path.read_text(
-        encoding="utf-8"
+    content = (
+        Reporter(GoldCatalog(store))
+        .write(tmp_path / "dashboard.html")
+        .path.read_text(encoding="utf-8")
     )
 
     for token in (
@@ -98,8 +100,10 @@ def test_增速为空时给出可读说明(store: DatasetStore, tmp_path: Path) 
 
 
 def test_具备可访问性语义(store: DatasetStore, tmp_path: Path) -> None:
-    content = Reporter(GoldCatalog(store)).write(tmp_path / "dashboard.html").path.read_text(
-        encoding="utf-8"
+    content = (
+        Reporter(GoldCatalog(store))
+        .write(tmp_path / "dashboard.html")
+        .path.read_text(encoding="utf-8")
     )
 
     assert 'scope="col"' in content
@@ -110,8 +114,10 @@ def test_具备可访问性语义(store: DatasetStore, tmp_path: Path) -> None:
 
 def test_不含已知反模式(store: DatasetStore, tmp_path: Path) -> None:
     """这份清单来自 2026-11-04 的复盘，防止改版时又把雷踩回去。"""
-    content = Reporter(GoldCatalog(store)).write(tmp_path / "dashboard.html").path.read_text(
-        encoding="utf-8"
+    content = (
+        Reporter(GoldCatalog(store))
+        .write(tmp_path / "dashboard.html")
+        .path.read_text(encoding="utf-8")
     )
 
     assert "background-clip:text" not in content  # 渐变文字

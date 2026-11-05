@@ -171,7 +171,9 @@ class Collector:
 
         # 顶部池刷新：日增量只覆盖「最近更新的万把条」，增速榜因此长期取不到
         # 第二个观测点；补这一趟，头部集每天都有新读数，成本只有二十来页。
-        top = ScanSummary(pages=0, records=0, skipped=0, rate_remaining=None, stopped_reason="skipped")
+        top = ScanSummary(
+            pages=0, records=0, skipped=0, rate_remaining=None, stopped_reason="skipped"
+        )
         if refresh_top > 0:
             page_budget = max(1, math.ceil(refresh_top / max(1, limit)))
             top = runner.run(

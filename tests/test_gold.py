@@ -156,6 +156,7 @@ def test_无数据时给出可读错误(tmp_path: Path) -> None:
 
 # ---------------------------------------------------------------- 宽视图由 schema 拼装
 
+
 def test_宽视图不含原始JSON与分区列(catalog: GoldCatalog) -> None:
     """`raw` 是整行 JSON（每行数 KB），带进视图会让每次查询都拖着它走。"""
     columns = catalog.run("SELECT * FROM datasets LIMIT 0").columns
@@ -176,10 +177,7 @@ def test_宽视图包含附表的全部有效列(catalog: GoldCatalog) -> None:
         ("size", {"snapshot_date"}),
     ):
         renames = _VIEW_RENAMES.get(name, {})
-        expected = {
-            renames.get(column, column)
-            for column in set(table(name).schema) - excluded
-        }
+        expected = {renames.get(column, column) for column in set(table(name).schema) - excluded}
         # 与 current 重名的列由先到先得跳过，不算缺失
         missing = {
             column
@@ -211,6 +209,7 @@ def test_重名列以实际数据为准取current的那一份(catalog: GoldCatal
 
 
 # ---------------------------------------------------------------- 最新一行只有一个定义
+
 
 def test_current与latest_silver对同一时刻取值一致(catalog: GoldCatalog) -> None:
     """「最新一行」有两套实现：物化的 current 与窗口视图 latest_silver。

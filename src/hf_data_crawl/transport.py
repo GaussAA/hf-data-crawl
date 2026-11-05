@@ -32,7 +32,9 @@ class HttpxTransport:
         if self._token:
             request_headers["Authorization"] = f"Bearer {self._token}"
         try:
-            with httpx.Client(proxy=self._proxy, timeout=self._timeout, follow_redirects=True) as client:
+            with httpx.Client(
+                proxy=self._proxy, timeout=self._timeout, follow_redirects=True
+            ) as client:
                 response = client.get(url, params=params, headers=request_headers)
         except httpx.HTTPError as error:
             # 统一成 TransportError，让上层只依赖一种失败类型，且无需 import httpx。

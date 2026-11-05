@@ -79,6 +79,7 @@ def wikitext_style() -> dict[str, Any]:
 
 # ---------------------------------------------------------------- 宽表
 
+
 def test_卡片标量与列表字段全部抽出() -> None:
     row = extract_card_row(wikitext_style(), DAY)
 
@@ -131,6 +132,7 @@ def test_无卡片返回空() -> None:
 
 
 # ---------------------------------------------------------------- 明细表
+
 
 def test_明细表按config与split展开() -> None:
     rows = extract_config_rows(wikitext_style(), DAY)
@@ -205,13 +207,16 @@ def test_明细表产出的键与schema一致() -> None:
 
 # ---------------------------------------------------------------- 落表
 
+
 @pytest.fixture()
 def store(tmp_path: Path) -> DatasetStore:
     return DatasetStore(tmp_path / "data")
 
 
 def test_两张表都落盘且行数正确(store: DatasetStore) -> None:
-    store.write_raw(snapshot_date=DAY, page_index=1, records=[wikitext_style()], meta={}, label="card")
+    store.write_raw(
+        snapshot_date=DAY, page_index=1, records=[wikitext_style()], meta={}, label="card"
+    )
 
     card_rows, config_rows = store.build_enrich(DAY)
 
@@ -223,9 +228,13 @@ def test_两张表都落盘且行数正确(store: DatasetStore) -> None:
 
 
 def test_重复补齐不产生重复明细行(store: DatasetStore) -> None:
-    store.write_raw(snapshot_date=DAY, page_index=1, records=[wikitext_style()], meta={}, label="card")
+    store.write_raw(
+        snapshot_date=DAY, page_index=1, records=[wikitext_style()], meta={}, label="card"
+    )
     store.build_enrich(DAY)
-    store.write_raw(snapshot_date=DAY, page_index=2, records=[wikitext_style()], meta={}, label="card")
+    store.write_raw(
+        snapshot_date=DAY, page_index=2, records=[wikitext_style()], meta={}, label="card"
+    )
 
     store.build_enrich(DAY)
 
@@ -242,7 +251,9 @@ def test_旧版卡片表缺列时能继续并入(store: DatasetStore) -> None:
         {"id": ["acme/old"], "pretty_name": ["旧集"], "license_name": ["mit"]}
     ).write_parquet(target)
 
-    store.write_raw(snapshot_date=DAY, page_index=1, records=[wikitext_style()], meta={}, label="card")
+    store.write_raw(
+        snapshot_date=DAY, page_index=1, records=[wikitext_style()], meta={}, label="card"
+    )
     store.build_enrich(DAY)
 
     table = store.read_enrich()

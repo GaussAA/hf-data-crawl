@@ -216,9 +216,7 @@ def test_未指定顶部刷新时只扫一趟(store: DatasetStore) -> None:
 
 
 def test_顶部刷新使用下载量排序(store: DatasetStore) -> None:
-    transport = SortAwareTransport(
-        {"lastModified": [page("a", 1)], "downloads": [page("t", 1)]}
-    )
+    transport = SortAwareTransport({"lastModified": [page("a", 1)], "downloads": [page("t", 1)]})
 
     collector(transport, store).run(DAY1, limit=100, refresh_top=100, pages_without_new=5)
 

@@ -122,9 +122,7 @@ class DatasetStore:
             {
                 **payload,
                 "meta": {
-                    key: value
-                    for key, value in payload["meta"].items()
-                    if key != "written_at"
+                    key: value for key, value in payload["meta"].items() if key != "written_at"
                 },
             },
             ensure_ascii=False,
@@ -399,12 +397,7 @@ class DatasetStore:
             existing.filter(pl.col("snapshot_date") < snapshot_date)
             .sort("snapshot_date")
             .group_by("id", maintain_order=True)
-            .agg(
-                [
-                    pl.col(column).last().alias(f"{column}_prev")
-                    for column in METRIC_COLUMNS
-                ]
-            )
+            .agg([pl.col(column).last().alias(f"{column}_prev") for column in METRIC_COLUMNS])
         )
         joined = silver.select(["id", *METRIC_COLUMNS]).join(previous, on="id", how="left")
 
@@ -422,9 +415,7 @@ class DatasetStore:
             ]
         )
 
-        target = (
-            self.state_dir / "observations" / f"dt={snapshot_date.isoformat()}" / "obs.parquet"
-        )
+        target = self.state_dir / "observations" / f"dt={snapshot_date.isoformat()}" / "obs.parquet"
         if new_observations.height == 0:
             if target.exists():
                 target.unlink()
@@ -451,8 +442,10 @@ class DatasetStore:
             pl.lit("active").alias("status"),
         )
 
-        first_seen = self.read_observations().group_by("id").agg(
-            pl.col("snapshot_date").min().alias("first_seen_at")
+        first_seen = (
+            self.read_observations()
+            .group_by("id")
+            .agg(pl.col("snapshot_date").min().alias("first_seen_at"))
         )
 
         combined = pl.concat(
@@ -461,9 +454,7 @@ class DatasetStore:
         )
         return (
             combined.join(first_seen, on="id", how="left")
-            .with_columns(
-                pl.col("first_seen_at").fill_null(pl.lit(snapshot_date, dtype=pl.Date))
-            )
+            .with_columns(pl.col("first_seen_at").fill_null(pl.lit(snapshot_date, dtype=pl.Date)))
             .select(list(CURRENT_SCHEMA))
             .sort("id")
         )
@@ -523,5 +514,3 @@ def _align_frame(frame: pl.DataFrame, schema: dict[str, pl.DataType]) -> pl.Data
         )
     extra = [name for name in frame.columns if name not in schema]
     return frame.drop(extra).select(list(schema))
-
-

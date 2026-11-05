@@ -1,0 +1,15 @@
+# 本地 hook：直接用 uv 锁定的 ruff / pytest，版本与 uv.lock 保持一致，不另拉远端仓库。
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+      - id: pytest
+        name: pytest
+        entry: uv run pytest
+        language: system
+        pass_filenames: false
+        always_run: true

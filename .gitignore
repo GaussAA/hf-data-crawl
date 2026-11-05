@@ -19,8 +19,9 @@ runs/
 # 本地密钥与代理配置
 .env
 
-# 测试缓存
+# 测试与格式化缓存
 .pytest_cache/
+.ruff_cache/
 
 # 本机 agent 记忆（本地状态，不入库）
 .workbuddy/

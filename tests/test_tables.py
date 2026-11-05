@@ -21,6 +21,7 @@ from hf_data_crawl.tables import TABLES, Origin, TableSpec, table
 
 # ---------------------------------------------------------------- 登记完整性
 
+
 def test_每张登记表的名字与键一致() -> None:
     """键名与 spec.name 分叉后，按名字取表会拿到另一张表。"""
     for key, spec in TABLES.items():
@@ -72,6 +73,7 @@ def test_当前态与观测属于运行态而非裸数据() -> None:
 
 # ---------------------------------------------------------------- 消费者一致
 
+
 def test_视图引用的表都已登记() -> None:
     """视图名单里出现未登记的表，等于又回到硬编码的老路。"""
     for view, name in gold._VIEWS:  # noqa: SLF001 - 契约测试需要看这份名单
@@ -87,7 +89,9 @@ def test_重建只跳过网络来源的表(tmp_path: Path) -> None:
     """规模表删了要重抓两万条，重建必须放过它；其余一律清除重算。"""
     store = DatasetStore(tmp_path / "data")
     for spec in TABLES.values():
-        target = store.root / spec.relative("2026-11-04") if spec.partitioned else store.root / spec.path
+        target = (
+            store.root / spec.relative("2026-11-04") if spec.partitioned else store.root / spec.path
+        )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"placeholder")
 
@@ -99,7 +103,9 @@ def test_重建只跳过网络来源的表(tmp_path: Path) -> None:
     surviving = [
         spec.name
         for spec in TABLES.values()
-        if (store.root / spec.relative("2026-11-04") if spec.partitioned else store.root / spec.path).exists()
+        if (
+            store.root / spec.relative("2026-11-04") if spec.partitioned else store.root / spec.path
+        ).exists()
     ]
     assert surviving == ["size"]
 

@@ -203,7 +203,7 @@ def _table(
 ) -> str:
     """columns: (字段名, 表头, 类型)，类型取 text / num / code / name。"""
     head = "".join(
-        f'<th scope="col"{f" class=\"num\"" if kind == "num" else ""}>{_esc(title)}</th>'
+        f'<th scope="col"{f' class="num"' if kind == "num" else ""}>{_esc(title)}</th>'
         for _, title, kind in columns
     )
     rows: list[str] = []
@@ -225,14 +225,14 @@ def _table(
                 cells.append(f'<td class="id">{_esc(value)}</td>')
             elif kind == "name":
                 text = _esc(value)
-                cells.append(f'<td class="name">{text if text else "<span class=dim>—</span>"}</td>')
+                cells.append(
+                    f'<td class="name">{text if text else "<span class=dim>—</span>"}</td>'
+                )
             else:
                 cells.append(f"<td>{_esc(value)}</td>")
         rows.append(f"<tr {attrs}>".replace(" >", ">") + "".join(cells) + "</tr>")
 
-    body = "".join(rows) or (
-        f'<tr><td colspan="{len(columns)}" class="dim">无匹配记录</td></tr>'
-    )
+    body = "".join(rows) or (f'<tr><td colspan="{len(columns)}" class="dim">无匹配记录</td></tr>')
     return (
         f'<table id="{table_id}"><caption>{_esc(caption)}</caption>'
         f"<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
@@ -357,7 +357,8 @@ class Reporter:
 <body><main class="wrap">
 <header>
   <h1>Hugging Face 数据集底座</h1>
-  <p class="lede">数据截至 <b>{_esc(as_of)}</b>，共 <b>{int(overview['datasets']):,}</b> 个公开数据集。
+  <p class="lede">数据截至 <b>{_esc(as_of)}</b>，共 <b>{
+            int(overview["datasets"]):,}</b> 个公开数据集。
   指标取自 HF 列表接口，下载量为 30 天口径，累计另列；增速按最近两个观测点计算。</p>
 </header>
 
@@ -380,12 +381,22 @@ class Reporter:
       <span class="counter" id="ranking-count" aria-live="polite"></span>
     </div>
   </div>
-  {_table("ranking", ranking, [
-      ("id", "数据集", "code"), ("pretty_name", "正式名", "name"),
-      ("downloads", "30 天", "num"), ("downloads_all_time", "累计", "num"),
-      ("likes", "点赞", "num"), ("license_name", "许可证", "text")],
-      caption=f"按 30 天下载排序的前 {top} 名。",
-      sort_keys=["downloads", "downloads_all_time"])}
+  {
+            _table(
+                "ranking",
+                ranking,
+                [
+                    ("id", "数据集", "code"),
+                    ("pretty_name", "正式名", "name"),
+                    ("downloads", "30 天", "num"),
+                    ("downloads_all_time", "累计", "num"),
+                    ("likes", "点赞", "num"),
+                    ("license_name", "许可证", "text"),
+                ],
+                caption=f"按 30 天下载排序的前 {top} 名。",
+                sort_keys=["downloads", "downloads_all_time"],
+            )
+        }
 </section>
 
 <section>
@@ -397,35 +408,66 @@ class Reporter:
 <section>
   <div class="sec-head"><div><h2>规模榜</h2>
     <p class="sec-note">行数与列数取自 datasets-server，覆盖按下载量排序的头部两万名。</p></div></div>
-  {_table("volume", volume, [
-      ("id", "数据集", "code"), ("num_rows", "行数", "compact"),
-      ("num_columns_max", "列数", "num"), ("mem_gb", "内存(GB)", "num")],
-      caption="行数与列数由 HF 转换后的 parquet 统计，与仓库原始体积不是一回事。")}
+  {
+            _table(
+                "volume",
+                volume,
+                [
+                    ("id", "数据集", "code"),
+                    ("num_rows", "行数", "compact"),
+                    ("num_columns_max", "列数", "num"),
+                    ("mem_gb", "内存(GB)", "num"),
+                ],
+                caption="行数与列数由 HF 转换后的 parquet 统计，与仓库原始体积不是一回事。",
+            )
+        }
 </section>
 
 <section>
   <div class="sec-head"><div><h2>模态分布</h2>
     <p class="sec-note">按 modality 标签展开；只列已标注该维度的数据集。</p></div></div>
-  {_table("modalities", modalities, [
-      ("modality", "模态", "text"), ("datasets", "集数", "num"),
-      ("downloads", "下载", "num")],
-      caption="旧式数据集用无前缀标签（text/image/audio）标注，归入 plain_tags，不计入本表。")}
+  {
+            _table(
+                "modalities",
+                modalities,
+                [
+                    ("modality", "模态", "text"),
+                    ("datasets", "集数", "num"),
+                    ("downloads", "下载", "num"),
+                ],
+                caption="旧式数据集用无前缀标签（text/image/audio）标注，归入 plain_tags，不计入本表。",
+            )
+        }
 </section>
 
 <section>
   <div class="sec-head"><div><h2>任务类别</h2>
     <p class="sec-note">按类别汇总集数与下载量，用于判断哪些方向正在被集中使用。</p></div></div>
-  {_table("categories", categories, [
-      ("category", "类别", "text"), ("datasets", "集数", "num"), ("downloads", "下载", "num")],
-      caption="取标签 task_categories 展开后聚合。")}
+  {
+            _table(
+                "categories",
+                categories,
+                [
+                    ("category", "类别", "text"),
+                    ("datasets", "集数", "num"),
+                    ("downloads", "下载", "num"),
+                ],
+                caption="取标签 task_categories 展开后聚合。",
+            )
+        }
 </section>
 
 <section>
   <div class="sec-head"><div><h2>许可证分布</h2>
     <p class="sec-note">仅统计已补齐卡片的数据集，未补齐者不计入分母。</p></div></div>
-  {_table("licenses", licenses, [
-      ("license_name", "许可证", "text"), ("datasets", "集数", "num")],
-      caption="卡片 license 字段归一后的分布。")}
+  {
+            _table(
+                "licenses",
+                licenses,
+                [("license_name", "许可证", "text"), ("datasets", "集数", "num")],
+                caption="卡片 license 字段归一后的分布。",
+            )
+        }
 </section>
 
 <footer>

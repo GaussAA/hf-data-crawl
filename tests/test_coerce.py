@@ -18,6 +18,7 @@ from hf_data_crawl.coerce import as_bool, as_float, as_int, as_json, as_list, as
 
 # ---------------------------------------------------------------- 整数
 
+
 @pytest.mark.parametrize("value", [42, 0, -7])
 def test_整数原样保留(value: int) -> None:
     assert as_int(value) == value
@@ -40,6 +41,7 @@ def test_非整数一律留空(value: object) -> None:
 
 # ---------------------------------------------------------------- 布尔
 
+
 def test_只认同真正的布尔() -> None:
     assert as_bool(True) is True
     assert as_bool(False) is False
@@ -53,6 +55,7 @@ def test_字符串与数字都不当布尔(value: object) -> None:
 
 # ---------------------------------------------------------------- 浮点
 
+
 def test_趋势分取浮点() -> None:
     assert as_float(483) == 483.0
     assert as_float(1.5) == 1.5
@@ -63,6 +66,7 @@ def test_布尔不算浮点() -> None:
 
 
 # ---------------------------------------------------------------- 文本
+
 
 def test_列表用逗号拼接() -> None:
     """`license` 常见多值，直接 str() 会得到 "['mit', 'cc0']"。"""
@@ -86,6 +90,7 @@ def test_缺失留空() -> None:
 
 # ---------------------------------------------------------------- 列表
 
+
 def test_标量包成单元素列表() -> None:
     assert as_list("en") == ["en"]
 
@@ -98,6 +103,7 @@ def test_空列表与缺失同义() -> None:
 
 
 # ---------------------------------------------------------------- 复合结构
+
 
 def test_复合结构编码为可再解析的json() -> None:
     """绝不用 str()：那会产出单引号字面量，json.loads 必然失败。"""

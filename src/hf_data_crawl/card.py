@@ -277,5 +277,3 @@ def _add(total: int | None, value: int | None) -> int | None:
     if value is None:
         return total
     return value if total is None else total + value
-
-

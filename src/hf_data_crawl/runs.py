@@ -89,5 +89,7 @@ def read_runs(store: DatasetStore) -> list[dict[str, Any]]:
         except (json.JSONDecodeError, OSError):
             # 单条损坏不影响其余摘要的读取
             continue
-    records.sort(key=lambda item: (str(item.get("started_at") or ""), str(item.get("finished_at") or "")))
+    records.sort(
+        key=lambda item: (str(item.get("started_at") or ""), str(item.get("finished_at") or ""))
+    )
     return records

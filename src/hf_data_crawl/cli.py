@@ -59,7 +59,9 @@ def build_parser() -> argparse.ArgumentParser:
     reconcile = subparsers.add_parser("reconcile", help="全量对账（按 createdAt 稳定序）")
     reconcile.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
     reconcile.add_argument("--limit", type=int, default=MAX_LIMIT, help="每页条数，上限 1000")
-    reconcile.add_argument("--max-pages", type=int, default=None, help="本轮最多抓几页（未扫完不判下架）")
+    reconcile.add_argument(
+        "--max-pages", type=int, default=None, help="本轮最多抓几页（未扫完不判下架）"
+    )
 
     query = subparsers.add_parser("query", help="查询 Gold 视图或执行任意 SQL")
     query.add_argument("--board", default=None, choices=sorted(BOARDS), help="内置榜单")
@@ -251,9 +253,7 @@ def _query(args: argparse.Namespace, store: DatasetStore) -> int:
 
     try:
         frame = (
-            catalog.run(args.sql)
-            if args.sql
-            else catalog.board(args.board or "growth", args.limit)
+            catalog.run(args.sql) if args.sql else catalog.board(args.board or "growth", args.limit)
         )
     finally:
         catalog.close()
@@ -288,7 +288,9 @@ def _report(args: argparse.Namespace, store: DatasetStore) -> Outcome:
 
 def _print_collect(summary: CollectSummary) -> None:
     if summary.stopped_reason == "dry_run":
-        print(f"dry-run：探得 {len(summary.preview or [])} 条样本，配额余量 {summary.rate_remaining}")
+        print(
+            f"dry-run：探得 {len(summary.preview or [])} 条样本，配额余量 {summary.rate_remaining}"
+        )
         for record in summary.preview or []:
             print(f"  {record.get('id')}  字段={sorted(record.keys())}")
         return

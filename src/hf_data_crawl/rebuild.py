@@ -50,14 +50,16 @@ def rebuild_from_raw(store: DatasetStore) -> RebuildSummary:
     """按日期顺序重放全部派生层，结果与逐日跑 collect 一致。"""
     dates = discover_raw_dates(store)
     if not dates:
-        return RebuildSummary(dates=[], bronze_rows=0, silver_rows=0, observations=0, current_rows=0)
+        return RebuildSummary(
+            dates=[], bronze_rows=0, silver_rows=0, observations=0, current_rows=0
+        )
 
     # 失效状态不是从 raw 派生的：它来自对账时的单库探测（404/401/307），
     # 而 update_state 会把本轮出现的每条记录都置为 active——直接重建等于把
     # 全部 restricted / renamed 判断清零。2026-11-05 实测踩到：463 条失效标记
     # 在一次 build 后归零，页面上「已失效」变成 0。
     # 故重建前留存，重建后写回。这是「Raw 是唯一事实来源」的一个例外，
-    # 例外的边界写在 docs/CONTEXT.md 第 15 条。
+    # 例外的边界写在 GLOSSARY.md 第 15 条。
     #
     # 留存分两步：先读（current 优先，为空则读上次的快照），再立刻把快照写盘。
     # 光读内存不够——rebuild 不是事务性的，清除 state 与写回状态之间若被打断
@@ -139,7 +141,11 @@ def _read_status_snapshot(store: DatasetStore) -> dict[str, str]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
-    return {str(key): str(value) for key, value in payload.items()} if isinstance(payload, dict) else {}
+    return (
+        {str(key): str(value) for key, value in payload.items()}
+        if isinstance(payload, dict)
+        else {}
+    )
 
 
 def _write_status_snapshot(store: DatasetStore, status: dict[str, str]) -> None:

@@ -77,6 +77,7 @@ def api(transport: FakeSizeTransport) -> HfSizeApi:
 
 # ---------------------------------------------------------------- 解析
 
+
 def test_成功响应解析出规模与列数() -> None:
     transport = FakeSizeTransport({"acme/x": payload(52002)})
 
@@ -127,6 +128,7 @@ def test_畸形响应体记为临时失败() -> None:
 
 # ---------------------------------------------------------------- 失败分类
 
+
 @pytest.mark.parametrize("status", [401, 403, 404, 500, 501])
 def test_永久缺失不重试(status: int) -> None:
     """重试永久缺失等于白烧预算——30% 的候选都是这一类。"""
@@ -168,14 +170,19 @@ def test_传输异常也会退避重试() -> None:
 
 # ---------------------------------------------------------------- 批量
 
-def run_batch(transport: FakeSizeTransport, ids: list[str], **kwargs: Any) -> tuple[SizeSummary, pl.DataFrame]:
+
+def run_batch(
+    transport: FakeSizeTransport, ids: list[str], **kwargs: Any
+) -> tuple[SizeSummary, pl.DataFrame]:
     fetcher = SizeFetcher(api=api(transport), workers=4)
     return fetcher.run(DAY, dataset_ids=ids, top=len(ids), **kwargs)
 
 
 def test_批量并发不丢结果() -> None:
     ids = [f"acme/ds-{index}" for index in range(20)]
-    transport = FakeSizeTransport({dataset_id: payload(index) for index, dataset_id in enumerate(ids)})
+    transport = FakeSizeTransport(
+        {dataset_id: payload(index) for index, dataset_id in enumerate(ids)}
+    )
 
     summary, frame = run_batch(transport, ids)
 
@@ -262,7 +269,9 @@ def test_空候选时不报错() -> None:
     assert frame.height == 0
 
 
-@pytest.mark.parametrize("count,total,expected", [(0, 10, 0), (5, 10, 50), (10, 10, 100), (3, 0, 0)])
+@pytest.mark.parametrize(
+    "count,total,expected", [(0, 10, 0), (5, 10, 50), (10, 10, 100), (3, 0, 0)]
+)
 def test_进度百分比边界(count: int, total: int, expected: int) -> None:
     assert tail(count, total) == expected
 

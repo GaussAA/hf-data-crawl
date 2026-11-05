@@ -34,9 +34,7 @@ class SeqTransport:
         self._index = index + 1
         headers_out = {"RateLimit": '"api";r=480;t=180'}
         if index + 1 < len(self.pages):
-            headers_out["Link"] = (
-                '<https://huggingface.co/api/datasets?cursor=next>; rel="next"'
-            )
+            headers_out["Link"] = '<https://huggingface.co/api/datasets?cursor=next>; rel="next"'
         page = self.pages[min(index, len(self.pages) - 1)]
         return HfResponse(status=200, headers=headers_out, body=json.dumps(page).encode())
 

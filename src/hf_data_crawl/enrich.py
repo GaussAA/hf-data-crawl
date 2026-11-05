@@ -47,7 +47,9 @@ class Enricher:
         self._api = api
         self._store = store
 
-    def run(self, snapshot_date: date, *, top: int = 20_000, limit: int = MAX_LIMIT) -> EnrichSummary:
+    def run(
+        self, snapshot_date: date, *, top: int = 20_000, limit: int = MAX_LIMIT
+    ) -> EnrichSummary:
         started = time.monotonic()
         page_budget = max(1, math.ceil(top / max(1, limit)))
 

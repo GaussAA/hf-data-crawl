@@ -40,6 +40,7 @@ TAG_DIMENSIONS: dict[str, str] = {
 #: `audio` / `tabular`）都在这里——不单独成列，等于把模态信息砍掉一半。
 PLAIN_TAG_COLUMN = "plain_tags"
 
+
 def split_tag_dimensions(tags: list[str]) -> dict[str, list[str]]:
     """按前缀把标签归入维度列，保持原序并去重。"""
     buckets: dict[str, list[str]] = {column: [] for column in TAG_DIMENSIONS.values()}

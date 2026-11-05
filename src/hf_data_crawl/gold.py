@@ -187,9 +187,7 @@ class GoldCatalog:
             f"SELECT id, '{column}' AS dimension, unnest({column}) AS value FROM latest_silver"
             for column in (*TAG_DIMENSIONS.values(), PLAIN_TAG_COLUMN)
         ]
-        self._connection.execute(
-            "CREATE VIEW tag_values AS " + " UNION ALL ".join(tag_selects)
-        )
+        self._connection.execute("CREATE VIEW tag_values AS " + " UNION ALL ".join(tag_selects))
         # 增速取「最近两个观测点」，而不是固定 7 日窗口：
         # 日增量只扫最新更新的万把条，全站指标靠周对账刷新，7 日窗口在周节奏下几乎取不到两点。
         # 间隔上限 35 天，避免跨季度比较；跨度以 span_days 明示，读榜的人自己判断。

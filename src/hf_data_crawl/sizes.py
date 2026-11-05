@@ -44,6 +44,7 @@ UNAVAILABLE_STATUS: frozenset[int] = frozenset({401, 403, 404, 500, 501})
 #: 值得重试的状态码：限流与网关抖动。
 RETRYABLE_STATUS: frozenset[int] = frozenset({429, 502, 503, 504})
 
+
 @dataclass(frozen=True)
 class SizeResult:
     """单库规模查询结果。"""
@@ -156,11 +157,7 @@ def _failure(dataset_id: str, status: str, snapshot_date: date | None = None) ->
 
 
 def _max_columns(configs: Sequence[Any]) -> int | None:
-    values = [
-        as_int(config.get("num_columns"))
-        for config in configs
-        if isinstance(config, dict)
-    ]
+    values = [as_int(config.get("num_columns")) for config in configs if isinstance(config, dict)]
     present = [value for value in values if value is not None]
     return max(present) if present else None
 
@@ -228,11 +225,7 @@ class SizeFetcher:
                 ):
                     self._progress(completed, len(pending))
 
-        frame = (
-            pl.DataFrame(rows, schema=SIZE_SCHEMA)
-            if rows
-            else pl.DataFrame(schema=SIZE_SCHEMA)
-        )
+        frame = pl.DataFrame(rows, schema=SIZE_SCHEMA) if rows else pl.DataFrame(schema=SIZE_SCHEMA)
         ok = sum(1 for result in results if result.status == "ok")
         unavailable = sum(1 for result in results if result.status == "unavailable")
 

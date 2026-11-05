@@ -132,13 +132,15 @@ def test_有界扫描不得判定下架(store: DatasetStore) -> None:
 
 
 def test_重新出现恢复在架状态(store: DatasetStore) -> None:
-    reconciler(
-        FakeCursorTransport([[record("a", "sha-a2"), record("c", "sha-c1")]]), store
-    ).run(DAY2, limit=100)
+    reconciler(FakeCursorTransport([[record("a", "sha-a2"), record("c", "sha-c1")]]), store).run(
+        DAY2, limit=100
+    )
     assert status_of(store, "acme/b") == "disappeared"
 
     summary = reconciler(
-        FakeCursorTransport([[record("a", "sha-a2"), record("b", "sha-b1"), record("c", "sha-c1")]]),
+        FakeCursorTransport(
+            [[record("a", "sha-a2"), record("b", "sha-b1"), record("c", "sha-c1")]]
+        ),
         store,
     ).run(DAY3, limit=100)
 
@@ -203,14 +205,13 @@ def test_全量扫描使用createdAt稳定序(store: DatasetStore) -> None:
 
 # ---------------------------------------------------------------- 下架原因复核
 
+
 def test_转私有的不算删除(store: DatasetStore) -> None:
     """实测 463 条「下架」里约有两成是 401——库还在，只是不让看了。
 
     把它们记成 disappeared，会让下架数虚高，也让这类库在恢复公开时被当成「新增」。
     """
-    transport = FakeCursorTransport(
-        [[record("a", "sha-a2")]], detail={"acme/b": 401}
-    )
+    transport = FakeCursorTransport([[record("a", "sha-a2")]], detail={"acme/b": 401})
 
     summary = reconciler(transport, store).run(DAY2, limit=100)
 
@@ -267,9 +268,9 @@ def test_差异清单区分三种消失方式(store: DatasetStore) -> None:
 
 def test_恢复判定覆盖私有与改名(store: DatasetStore) -> None:
     """上轮被标成 restricted / renamed 的库重新出现时，要能被识别为恢复。"""
-    reconciler(
-        FakeCursorTransport([[record("a", "sha-a1")]], detail={"acme/b": 401}), store
-    ).run(DAY2, limit=100)
+    reconciler(FakeCursorTransport([[record("a", "sha-a1")]], detail={"acme/b": 401}), store).run(
+        DAY2, limit=100
+    )
     assert status_of(store, "acme/b") == "restricted"
 
     summary = reconciler(

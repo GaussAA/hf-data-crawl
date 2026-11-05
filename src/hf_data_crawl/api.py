@@ -203,7 +203,11 @@ class HfDatasetApi:
         if expand:
             params["expand[]"] = list(expand)
 
-        cursor = start_cursor if start_cursor is not None else (checkpoint.cursor if checkpoint else None)
+        cursor = (
+            start_cursor
+            if start_cursor is not None
+            else (checkpoint.cursor if checkpoint else None)
+        )
         if cursor:
             params["cursor"] = cursor
 

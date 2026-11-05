@@ -39,6 +39,7 @@ DAY = date(2026, 11, 4)
 
 # ---------------------------------------------------------------- 清单互洽
 
+
 def test_bronze每一列都有明确的来源() -> None:
     """列集合必须恰好等于「源字段映射 + 本地派生列」，不许有来历不明的列。"""
     assert set(BRONZE_SCHEMA) == set(BRONZE_SOURCE_FIELDS) | set(BRONZE_DERIVED_COLUMNS)
@@ -53,8 +54,7 @@ def test_bronze的源字段必须全部写进lean请求() -> None:
     missing = required - set(LEAN_EXPAND)
 
     assert not missing, (
-        f"这些字段在 BRONZE_SCHEMA 中有列，却没写进 LEAN_EXPAND，"
-        f"整列将恒为空：{sorted(missing)}"
+        f"这些字段在 BRONZE_SCHEMA 中有列，却没写进 LEAN_EXPAND，整列将恒为空：{sorted(missing)}"
     )
 
 
@@ -97,6 +97,7 @@ def test_current每一列都能由silver或本地计算得到() -> None:
 
 # ---------------------------------------------------------------- 映射落地
 
+
 def test_to_row产出的键与bronze_schema完全一致() -> None:
     """映射表改了但 _to_row 没跟上（或反之），会在这里立刻暴露。"""
     record = {
@@ -126,6 +127,7 @@ def test_to_row产出的键与bronze_schema完全一致() -> None:
 
 
 # ---------------------------------------------------------------- 端到端
+
 
 def _full_record() -> dict[str, Any]:
     """一条字段全满的记录，覆盖 HF 列表接口 20 个白名单字段里的可批量部分。"""
@@ -203,9 +205,9 @@ def test_旧分区缺列时读出来补空而不是报错(tmp_path: Path) -> Non
     store = DatasetStore(tmp_path / "data")
     target = store.bronze_dir / f"dt={DAY.isoformat()}" / "bronze.parquet"
     target.parent.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame(
-        {"id": ["acme/old"], "downloads": [1], "snapshot_date": [DAY]}
-    ).write_parquet(target)
+    pl.DataFrame({"id": ["acme/old"], "downloads": [1], "snapshot_date": [DAY]}).write_parquet(
+        target
+    )
 
     frame = store.read_bronze(DAY)
 
@@ -224,6 +226,7 @@ def test_事故列不再恒空(column: str, tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------- 最新一行的两种实现
+
 
 def test_current的带入列由schema求交而来() -> None:
     """手抄的子集一定会漏，而漏掉的表现是「视图有、物化表是 null」，不报错。"""
