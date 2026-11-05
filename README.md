@@ -68,6 +68,7 @@ data/
 │   ├── carddata.parquet                               # 卡片宽表（22 列）
 │   ├── card_configs.parquet                           # config/split 明细
 │   └── size.parquet                                   # 行数/列数/内存（datasets-server）
+├── meta/failed-status.json                            # 失效状态快照，重建中断后靠它接上
 ├── reports/reconcile-YYYY-MM-DD.csv                   # 对账差异清单
 └── runs/YYYYMMDDTHHMMSS-<command>.json                # 每轮运行摘要
 ```
@@ -92,6 +93,12 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 - **卡片抽取看 `dataset_info`**：它带每个 config 的 `dataset_size` / `download_size` / `features`（列名+dtype）/ `splits`（`num_examples`），是整条管线里唯一能回答「多少行、多少列」的来源。宽表抽 22 列，另落 `card_configs.parquet`（一行一个 config/split，实测 13,651 张卡展开 142,552 行）。
 - **标签维度拆 16 类**：按全站 950 万条标签实测频次补齐 `modality`（12.7%）/`region`（11.7%）/`format`（8.6%）等；无前缀标签单列 `plain_tags`（13.7%，旧式 `text`/`image` 标记都在这里）。维度覆盖率 51.5% → 99.9%。`tag_values` 长表视图由映射表自动生成，新增维度不必改 SQL。
 - **规模数据走 datasets-server**：列表接口的 `mainSize` 是仓库字节，卡片行数只覆盖 7.3%。`fetch-sizes` 打 `/size` 拿 `num_rows` 与 `num_columns`。实测成功率约 80%，并发 16 稳定 26 req/s，两万条约 790 秒。失败分类处理：500/401/501 记 `unavailable` 落库并默认跳过（永久缺失，重试只会白烧 30% 预算）；429/502/503 退避重试且不落库（下轮自然重试）。
+- **宽视图由 schema 拼装**：`datasets` 的列不再手抄，由 `tables.py` 的 schema 按固定顺序拼接，重名**先到先得**；需要区分口径的列改名（`size.num_rows → server_num_rows`，与卡片口径的 `card_num_rows` 并存）；`raw`（每行数 KB 的整行 JSON）与重复的 `snapshot_date` 排除在外。手抄的代价是漂移——加一个卡片字段，`card` 视图自动有，`datasets` 安静地少一列。
+- **「最新一行」有物化与视图两套实现，必须永远一致**：`current` 是物化表，`latest_silver` 是窗口视图。`current` 的带入列由两个 schema **求交**推导，不手抄；`status` / `first_seen_at` / `last_seen_at` 是本地判断，不得混进 Silver。一致性由测试守护（实测 111.7 万行、15 个公共列取值相同）。
+- **失效状态不是「删除」一种**：对账后逐条探测，404 才是删除，401 是转私有（库还在），307 是改名（跟随到 200 拿到新 id）。三者混记会让下架数虚高，也让改名后的库在下轮变成「新增」而丢掉观测史。
+- **命令成败只有一个判定点**：命令返回 `Outcome(payload, code, reason)`，退出码与 `runs/` 记录由同一处推出；`write_run` 不接受外部传入的 `status`——可传的 status 一定有传错的那天。
+- **原子写只有一个入口**：`atomic.py` 的四个函数管所有落盘，临时文件与目标同目录（跨盘替换会退化）。中断时不能留下半张 HTML——那比旧页面更糟。
+- **列编码只有一套规则**：`coerce.py` 管「一个 JSON 值怎么落进一列」。铁律是取不到留 None、绝不猜：`private: "true"` 是字符串不是布尔，猜成 True 会让「是否受限」失去可信度。
 
 ## 定时
 
@@ -108,7 +115,7 @@ schtasks /Query /TN hf-collect /V /FO LIST         # 核对
 ## 开发
 
 ```bash
-uv run pytest          # 149 项，全部离线
+uv run pytest          # 250 项，全部离线
 ```
 
 测试只在一条缝上打桩：`HfDatasetApi` 的 transport。除此之外全部走真实代码路径。
