@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -14,12 +15,29 @@ from typing import Any
 from .store import DatasetStore
 
 
+@dataclass(frozen=True)
+class Outcome:
+    """一条命令的结局。
+
+    **成败只有一个判定点**：`failed` 由 `code` 推出，调用方不再各自声明 status。
+    此前 `report` 在无数据时返回 1、`runs/` 里却写着 success——同一条命令的结局
+    被劈成两半，没有任何一处能回答「这轮到底成功了吗」。
+    """
+
+    payload: Any = None
+    code: int = 0
+    reason: str | None = None
+
+    @property
+    def failed(self) -> bool:
+        return self.code != 0
+
+
 def write_run(
     store: DatasetStore,
     command: str,
     started_at: datetime,
-    status: str,
-    payload: Any,
+    outcome: Outcome,
 ) -> Path:
     runs_dir = store.root / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
@@ -33,12 +51,14 @@ def write_run(
 
     body = {
         "command": command,
-        "status": status,
+        # status 由 outcome 推出，不接受外部传入：可传的 status 一定有传错的那天。
+        "status": "failed" if outcome.failed else "success",
+        "reason": outcome.reason,
         # 精度到微秒：同一秒内连跑两轮时，秒级时间戳无法区分先后，
         # 而「连续两轮对比」正是靠这个顺序成立的。
         "started_at": started_at.isoformat(timespec="microseconds"),
         "finished_at": datetime.now().isoformat(timespec="microseconds"),
-        "payload": _jsonable(payload),
+        "payload": _jsonable(outcome.payload),
     }
     path.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
     return path

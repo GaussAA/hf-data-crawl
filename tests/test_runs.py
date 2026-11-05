@@ -138,6 +138,51 @@ def test_同一秒内两轮的顺序按内容而非文件名(tmp_path: Path) -> 
     ]
 
 
+def test_业务失败记为failed而非success(tmp_path: Path) -> None:
+    """退出码 1 而记录 success，等于没有一处能回答「这轮成功了吗」。
+
+    2026-11-05 前：`_execute` 对正常返回一律写 success，于是 report 在无数据时
+    GoldNotReady、退出码 1，runs/ 里却是一份成功的记录。
+    """
+    root = tmp_path / "data"
+
+    code = main(["--data-dir", str(root), "report"])
+
+    runs = read_runs(DatasetStore(root))
+    assert code == 1
+    assert runs[0]["status"] == "failed"
+    assert runs[0]["reason"], "失败必须带可读原因"
+
+
+def test_无数据时补齐规模也记为失败(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+
+    code = main(["--data-dir", str(root), "fetch-sizes"])
+
+    runs = read_runs(DatasetStore(root))
+    assert code == 1
+    assert runs[0]["status"] == "failed"
+
+
+def test_成功与失败都走同一处记录(tmp_path: Path) -> None:
+    """异常与业务失败收敛成同一种结局，记录只写一次。"""
+    ok_root = tmp_path / "ok"
+    seed(DatasetStore(ok_root))
+    ok_code = main(["--data-dir", str(ok_root), "build"])
+
+    bad_root = tmp_path / "empty"
+    bad_code = main(["--data-dir", str(bad_root), "report"])
+
+    ok_runs = read_runs(DatasetStore(ok_root))
+    bad_runs = read_runs(DatasetStore(bad_root))
+
+    assert (ok_code, bad_code) == (0, 1)
+    assert ok_runs[0]["status"] == "success"
+    assert ok_runs[0]["reason"] is None, "成功不该带原因"
+    assert bad_runs[0]["status"] == "failed"
+    assert bad_runs[0]["reason"]
+
+
 def test_摘要中日期与路径被序列化为字符串(tmp_path: Path) -> None:
     root = tmp_path / "data"
     seed(DatasetStore(root))

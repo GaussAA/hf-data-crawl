@@ -20,7 +20,7 @@ from .gold import BOARDS, GoldCatalog, GoldNotReady
 from .rebuild import RebuildSummary, rebuild_from_raw
 from .reconcile import ReconcileSummary, Reconciler
 from .report import Reporter
-from .runs import write_run
+from .runs import Outcome, write_run
 from .sizes import HfSizeApi, SizeFetcher, SizeSummary, tail
 from .store import DatasetStore
 from .transport import HttpxTransport
@@ -121,27 +121,29 @@ def main(argv: list[str] | None = None) -> int:
 def _execute(
     store: DatasetStore,
     command: str,
-    action: Callable[[], tuple[int, Any]],
+    action: Callable[[], Outcome],
 ) -> int:
+    """执行一条命令并留下唯一一份运行记录。
+
+    成败只在这里判定一次：异常与业务失败都收敛成 `Outcome`，然后走同一条
+    `write_run`。此前异常路径写 failed、正常路径无条件写 success，于是
+    「退出码 1 但记录成功」成为可能。
+    """
     started = datetime.now()
     try:
-        code, payload = action()
+        outcome = action()
     except Exception as error:
-        write_run(
-            store,
-            command,
-            started,
-            "failed",
-            {"error": f"{type(error).__name__}: {error}"},
-        )
-        print(f"{command} 失败：{type(error).__name__}: {error}")
-        return 1
+        reason = f"{type(error).__name__}: {error}"
+        outcome = Outcome(payload={"error": reason}, code=1, reason=reason)
+        print(f"{command} 失败：{reason}")
 
-    write_run(store, command, started, "success", payload)
-    return code
+    write_run(store, command, started, outcome)
+    if outcome.failed and outcome.reason:
+        print(f"{command} 未完成：{outcome.reason}")
+    return outcome.code
 
 
-def _collect(args: argparse.Namespace, store: DatasetStore) -> tuple[int, Any]:
+def _collect(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     snapshot = date.fromisoformat(args.date) if args.date else date.today()
     collector = Collector(
         api=HfDatasetApi(transport=HttpxTransport()),
@@ -157,37 +159,37 @@ def _collect(args: argparse.Namespace, store: DatasetStore) -> tuple[int, Any]:
         dry_run=args.dry_run,
     )
     _print_collect(summary)
-    return 0, summary
+    return Outcome(summary)
 
 
-def _reconcile(args: argparse.Namespace, store: DatasetStore) -> tuple[int, Any]:
+def _reconcile(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     snapshot = date.fromisoformat(args.date) if args.date else date.today()
     reconciler = Reconciler(api=HfDatasetApi(transport=HttpxTransport()), store=store)
     summary = reconciler.run(snapshot, limit=args.limit, max_pages=args.max_pages)
     _print_reconcile(summary)
-    return 0, summary
+    return Outcome(summary)
 
 
-def _build(store: DatasetStore) -> tuple[int, Any]:
+def _build(store: DatasetStore) -> Outcome:
     summary = rebuild_from_raw(store)
     _print_build(summary)
-    return 0, summary
+    return Outcome(summary)
 
 
-def _enrich(args: argparse.Namespace, store: DatasetStore) -> tuple[int, Any]:
+def _enrich(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     snapshot = date.fromisoformat(args.date) if args.date else date.today()
     enricher = Enricher(api=HfDatasetApi(transport=HttpxTransport()), store=store)
     summary = enricher.run(snapshot, top=args.top, limit=args.limit)
     _print_enrich(summary)
-    return 0, summary
+    return Outcome(summary)
 
 
-def _fetch_sizes(args: argparse.Namespace, store: DatasetStore) -> tuple[int, Any]:
+def _fetch_sizes(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     snapshot = date.fromisoformat(args.date) if args.date else date.today()
     current = store.read_current()
     if current.height == 0:
         print("尚无采集数据，请先运行 `hf-data-crawl collect`。")
-        return 1, {"error": "empty"}
+        return Outcome({"error": "empty"}, code=1, reason="尚无采集数据，请先运行 collect")
 
     ordered = current.sort("downloads", descending=True, nulls_last=True)
     fetcher = SizeFetcher(
@@ -210,7 +212,7 @@ def _fetch_sizes(args: argparse.Namespace, store: DatasetStore) -> tuple[int, An
     if frame.height:
         store.merge_sizes(frame)
     _print_sizes(summary, store.read_sizes().height)
-    return 0, summary
+    return Outcome(summary)
 
 
 def _size_progress(done: int, total: int) -> None:
@@ -264,12 +266,12 @@ def _query(args: argparse.Namespace, store: DatasetStore) -> int:
     return 0
 
 
-def _report(args: argparse.Namespace, store: DatasetStore) -> tuple[int, Any]:
+def _report(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     try:
         catalog = GoldCatalog(store)
     except GoldNotReady as error:
         print(error)
-        return 1, {"error": str(error)}
+        return Outcome({"error": str(error)}, code=1, reason=str(error))
 
     try:
         target = Path(args.out) if args.out else store.root / "reports" / "dashboard.html"
@@ -281,7 +283,7 @@ def _report(args: argparse.Namespace, store: DatasetStore) -> tuple[int, Any]:
         f"榜单页已生成：{summary.path}"
         f"（{summary.bytes / 1024:.0f} KB · {summary.datasets:,} 个数据集）"
     )
-    return 0, summary
+    return Outcome(summary)
 
 
 def _print_collect(summary: CollectSummary) -> None:
