@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+from .atomic import write_text
 from pathlib import Path
 from typing import Protocol
 
@@ -46,10 +47,7 @@ class FileCheckpoint:
         return self._cursor
 
     def save(self, cursor: str | None) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        temp = self._path.with_suffix(self._path.suffix + ".tmp")
-        temp.write_text(json.dumps({"cursor": cursor}, ensure_ascii=False), encoding="utf-8")
-        os.replace(temp, self._path)
+        write_text(self._path, json.dumps({"cursor": cursor}, ensure_ascii=False))
         self._cursor = cursor
 
     def _read(self) -> str | None:

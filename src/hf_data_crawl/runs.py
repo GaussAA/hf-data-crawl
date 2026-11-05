@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .atomic import write_text
 from .store import DatasetStore
 
 
@@ -60,7 +61,7 @@ def write_run(
         "finished_at": datetime.now().isoformat(timespec="microseconds"),
         "payload": _jsonable(outcome.payload),
     }
-    path.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_text(path, json.dumps(body, ensure_ascii=False, indent=2))
     return path
 
 

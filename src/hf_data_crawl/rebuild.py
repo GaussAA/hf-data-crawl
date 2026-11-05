@@ -6,12 +6,15 @@ Raw 是唯一事实来源：派生规则变了、派生层坏了，都只需跑�
 
 from __future__ import annotations
 
+import json
 import shutil
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 
 import polars as pl
 
+from .atomic import write_text
 from .store import DatasetStore
 from .tables import TABLES, Origin, TableSpec
 
@@ -55,7 +58,13 @@ def rebuild_from_raw(store: DatasetStore) -> RebuildSummary:
     # 在一次 build 后归零，页面上「已失效」变成 0。
     # 故重建前留存，重建后写回。这是「Raw 是唯一事实来源」的一个例外，
     # 例外的边界写在 docs/CONTEXT.md 第 15 条。
-    carried_status = _failed_status(store)
+    #
+    # 留存分两步：先读（current 优先，为空则读上次的快照），再立刻把快照写盘。
+    # 光读内存不够——rebuild 不是事务性的，清除 state 与写回状态之间若被打断
+    # （实测：一次 build 被 SIGTERM 杀掉），那些判断就永久丢了。
+    carried_status = _failed_status(store) or _read_status_snapshot(store)
+    if carried_status:
+        _write_status_snapshot(store, carried_status)
 
     # 清不清除，由登记表的 origin 决定，不再靠手工清单：
     # RAW / STATE 都能从 Raw 重算，NETWORK 删了就得重抓（size.parquet 两万条约 13 分钟）。
@@ -110,3 +119,28 @@ def _failed_status(store: DatasetStore) -> dict[str, str]:
         return {}
     stale = current.filter(pl.col("status") != "active")
     return dict(zip(stale["id"].to_list(), stale["status"].to_list()))
+
+
+def _snapshot_path(store: DatasetStore) -> Path:
+    # 放在 meta/ 而非 state/：它不属于任何登记表，重建清不到它。
+    return store.root / "meta" / "failed-status.json"
+
+
+def _read_status_snapshot(store: DatasetStore) -> dict[str, str]:
+    """读上次留下的失效状态快照。
+
+    只在 current 里读不到时使用——典型场景是上一次 rebuild 在「已清空 state、
+    未写回状态」之间被打断。
+    """
+    path = _snapshot_path(store)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return {str(key): str(value) for key, value in payload.items()} if isinstance(payload, dict) else {}
+
+
+def _write_status_snapshot(store: DatasetStore, status: dict[str, str]) -> None:
+    write_text(_snapshot_path(store), json.dumps(status, ensure_ascii=False, sort_keys=True))

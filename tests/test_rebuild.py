@@ -175,3 +175,33 @@ def test_重建后新增数据仍为在架(store: DatasetStore) -> None:
 def status_of(store: DatasetStore, dataset_id: str) -> str:
     frame = store.read_current().filter(pl.col("id") == dataset_id)
     return frame.row(0, named=True)["status"]
+
+
+def test_上次重建中断时仍能从快照恢复状态(store: DatasetStore) -> None:
+    """rebuild 不是事务性的：清除 state 与写回状态之间被打断，判断就丢了。
+
+    2026-11-05 实测：一次 build 被 SIGTERM 杀掉，恰好死在两者之间，
+    463 条 restricted / renamed 全部归零。快照让下一次 build 还能接上。
+    """
+    import shutil
+
+    from hf_data_crawl.rebuild import _write_status_snapshot
+
+    store.mark_status({"acme/ds-2": "restricted"})
+    _write_status_snapshot(store, {"acme/ds-2": "restricted"})
+    # 模拟中断现场：快照已落盘，state 已被清空，状态还没写回
+    shutil.rmtree(store.state_dir)
+
+    rebuild_from_raw(store)
+
+    assert status_of(store, "acme/ds-2") == "restricted"
+
+
+def test_重建后快照仍保留以便再次中断时可用(store: DatasetStore) -> None:
+    store.mark_status({"acme/ds-1": "renamed"})
+
+    rebuild_from_raw(store)
+
+    snapshot = store.root / "meta" / "failed-status.json"
+    assert snapshot.exists()
+    assert "acme/ds-1" in snapshot.read_text(encoding="utf-8")

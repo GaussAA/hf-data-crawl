@@ -33,6 +33,7 @@ from typing import Any
 import polars as pl
 
 from .api import Transport, TransportError
+from .coerce import as_int
 from .tables import SIZE_SCHEMA
 
 DEFAULT_SIZE_URL = "https://datasets-server.huggingface.co/size"
@@ -129,11 +130,11 @@ def _success(dataset_id: str, snapshot_date: date, body: bytes) -> SizeResult:
             "id": dataset_id,
             "snapshot_date": snapshot_date,
             "status": "ok",
-            "num_rows": _as_int(dataset.get("num_rows")),
-            "estimated_num_rows": _as_int(dataset.get("estimated_num_rows")),
-            "num_bytes_original": _as_int(dataset.get("num_bytes_original_files")),
-            "num_bytes_parquet": _as_int(dataset.get("num_bytes_parquet_files")),
-            "num_bytes_memory": _as_int(dataset.get("num_bytes_memory")),
+            "num_rows": as_int(dataset.get("num_rows")),
+            "estimated_num_rows": as_int(dataset.get("estimated_num_rows")),
+            "num_bytes_original": as_int(dataset.get("num_bytes_original_files")),
+            "num_bytes_parquet": as_int(dataset.get("num_bytes_parquet_files")),
+            "num_bytes_memory": as_int(dataset.get("num_bytes_memory")),
             "config_count": len(configs) or None,
             "num_columns_max": _max_columns(configs),
             "configs": json.dumps(configs, ensure_ascii=False) if configs else None,
@@ -156,22 +157,12 @@ def _failure(dataset_id: str, status: str, snapshot_date: date | None = None) ->
 
 def _max_columns(configs: Sequence[Any]) -> int | None:
     values = [
-        _as_int(config.get("num_columns"))
+        as_int(config.get("num_columns"))
         for config in configs
         if isinstance(config, dict)
     ]
     present = [value for value in values if value is not None]
     return max(present) if present else None
-
-
-def _as_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    return None
 
 
 class SizeFetcher:

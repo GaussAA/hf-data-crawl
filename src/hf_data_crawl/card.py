@@ -20,6 +20,7 @@ from typing import Any
 import polars as pl
 
 from .tables import CARD_CONFIGS_SCHEMA, ENRICH_SCHEMA
+from .coerce import as_int, as_json, as_list, as_text
 
 #: 卡片里可直接取出的标量/列表字段：卡片键 → 宽表列。
 _CARD_LIST_FIELDS: dict[str, str] = {
@@ -48,24 +49,24 @@ def extract_card_row(record: dict[str, Any], snapshot_date: Any) -> dict[str, An
     row: dict[str, Any] = {
         "id": record["id"],
         "snapshot_date": snapshot_date,
-        "pretty_name": _as_text(card.get("pretty_name")),
-        "paperswithcode_id": _as_text(
+        "pretty_name": as_text(card.get("pretty_name")),
+        "paperswithcode_id": as_text(
             record.get("paperswithcode_id") or card.get("paperswithcode_id")
         ),
-        "arxiv": _as_text(card.get("arxiv") or record.get("arxiv")),
-        "license_name": _as_text(card.get("license")),
-        "license_link": _as_text(card.get("license_link")),
-        "citation": _as_text(card.get("citation") or record.get("citation")),
-        "card_description": _as_text(card.get("description")),
-        "card_multilinguality": _as_text(card.get("multilinguality")),
-        "card_homepage": _as_text(card.get("homepage")),
+        "arxiv": as_text(card.get("arxiv") or record.get("arxiv")),
+        "license_name": as_text(card.get("license")),
+        "license_link": as_text(card.get("license_link")),
+        "citation": as_text(card.get("citation") or record.get("citation")),
+        "card_description": as_text(card.get("description")),
+        "card_multilinguality": as_text(card.get("multilinguality")),
+        "card_homepage": as_text(card.get("homepage")),
         "card_config_count": totals["config_count"],
         "card_num_rows": totals["num_rows"],
         "card_dataset_bytes": totals["dataset_bytes"],
         "card_download_bytes": totals["download_bytes"],
     }
     for card_key, column in _CARD_LIST_FIELDS.items():
-        row[column] = _as_list(card.get(card_key))
+        row[column] = as_list(card.get(card_key))
     return row
 
 
@@ -85,30 +86,30 @@ def extract_config_rows(record: dict[str, Any], snapshot_date: Any) -> list[dict
         for info in infos:
             if not isinstance(info, dict):
                 continue
-            config_name = _as_text(info.get("config_name")) or "default"
+            config_name = as_text(info.get("config_name")) or "default"
             covered.add(config_name)
-            features = _dump(info.get("features"))
-            dataset_size = _as_int(info.get("dataset_size"))
-            download_size = _as_int(info.get("download_size"))
+            features = as_json(info.get("features"))
+            dataset_size = as_int(info.get("dataset_size"))
+            download_size = as_int(info.get("download_size"))
             splits = info.get("splits")
             emitted = False
             if isinstance(splits, list):
                 for split in splits:
                     if not isinstance(split, dict):
                         continue
-                    split_name = _as_text(split.get("name"))
+                    split_name = as_text(split.get("name"))
                     rows.append(
                         _config_row(
                             dataset_id,
                             snapshot_date,
                             config_name,
                             split_name,
-                            num_bytes=_as_int(split.get("num_bytes")),
-                            num_examples=_as_int(split.get("num_examples")),
+                            num_bytes=as_int(split.get("num_bytes")),
+                            num_examples=as_int(split.get("num_examples")),
                             dataset_size=dataset_size,
                             download_size=download_size,
                             features=features,
-                            data_files=_dump(files.get((config_name, split_name))),
+                            data_files=as_json(files.get((config_name, split_name))),
                         )
                     )
                     emitted = True
@@ -125,7 +126,7 @@ def extract_config_rows(record: dict[str, Any], snapshot_date: Any) -> list[dict
                         dataset_size=dataset_size,
                         download_size=download_size,
                         features=features,
-                        data_files=_dump(_all_paths(files, config_name)),
+                        data_files=as_json(_all_paths(files, config_name)),
                     )
                 )
 
@@ -144,7 +145,7 @@ def extract_config_rows(record: dict[str, Any], snapshot_date: Any) -> list[dict
                 dataset_size=None,
                 download_size=None,
                 features=None,
-                data_files=_dump(_all_paths(files, config_name)),
+                data_files=as_json(_all_paths(files, config_name)),
             )
         )
 
@@ -198,14 +199,14 @@ def _dataset_totals(card: dict[str, Any]) -> dict[str, int | None]:
     for info in infos:
         if not isinstance(info, dict):
             continue
-        dataset_bytes = _add(dataset_bytes, _as_int(info.get("dataset_size")))
-        download_bytes = _add(download_bytes, _as_int(info.get("download_size")))
+        dataset_bytes = _add(dataset_bytes, as_int(info.get("dataset_size")))
+        download_bytes = _add(download_bytes, as_int(info.get("download_size")))
         splits = info.get("splits")
         if not isinstance(splits, list):
             continue
         for split in splits:
             if isinstance(split, dict):
-                num_rows = _add(num_rows, _as_int(split.get("num_examples")))
+                num_rows = _add(num_rows, as_int(split.get("num_examples")))
 
     return {
         "config_count": _config_count(card, infos),
@@ -220,7 +221,7 @@ def _config_count(card: dict[str, Any], infos: list[Any] | None = None) -> int |
     names = set(_config_names(card))
     for info in infos or []:
         if isinstance(info, dict):
-            name = _as_text(info.get("config_name"))
+            name = as_text(info.get("config_name"))
             if name:
                 names.add(name)
     return len(names) or None
@@ -233,7 +234,7 @@ def _config_names(card: dict[str, Any]) -> list[str]:
     names: list[str] = []
     for config in configs:
         if isinstance(config, dict):
-            name = _as_text(config.get("config_name")) or "default"
+            name = as_text(config.get("config_name")) or "default"
             if name not in names:
                 names.append(name)
     return names
@@ -248,17 +249,17 @@ def _data_file_index(card: dict[str, Any]) -> dict[tuple[str, str | None], list[
     for config in configs:
         if not isinstance(config, dict):
             continue
-        name = _as_text(config.get("config_name")) or "default"
+        name = as_text(config.get("config_name")) or "default"
         files = config.get("data_files")
         if not isinstance(files, list):
             continue
         for entry in files:
             if not isinstance(entry, dict):
                 continue
-            path = _as_text(entry.get("path"))
+            path = as_text(entry.get("path"))
             if not path:
                 continue
-            index.setdefault((name, _as_text(entry.get("split"))), []).append(path)
+            index.setdefault((name, as_text(entry.get("split"))), []).append(path)
     return index
 
 
@@ -278,44 +279,3 @@ def _add(total: int | None, value: int | None) -> int | None:
     return value if total is None else total + value
 
 
-def _as_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    return None
-
-
-def _as_text(value: Any) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, list):
-        parts = [str(item) for item in value if item is not None]
-        return ",".join(parts) if parts else None
-    text = str(value).strip()
-    return text or None
-
-
-def _as_list(value: Any) -> list[str] | None:
-    """缺失与「存在但为空」在此合并为 None：空列表不携带信息，查询时二者等价。"""
-    if value is None:
-        return None
-    if isinstance(value, str):
-        text = value.strip()
-        return [text] if text else None
-    if isinstance(value, list):
-        items = [str(item).strip() for item in value if item is not None]
-        items = [item for item in items if item]
-        return items or None
-    return None
-
-
-def _dump(value: Any) -> str | None:
-    """复合结构落库一律走 JSON：str() 会产出单引号字面量，之后无法再解析。"""
-    if value is None:
-        return None
-    if isinstance(value, (dict, list)):
-        return json.dumps(value, ensure_ascii=False, sort_keys=True) if value else None
-    return _as_text(value)

@@ -16,6 +16,7 @@ from typing import Any
 
 import polars as pl
 
+from .atomic import write_csv
 from .api import MAX_LIMIT, HfDatasetApi, Page
 from .checkpoint import FileCheckpoint
 from .collect import LEAN_EXPAND
@@ -246,5 +247,5 @@ class Reconciler:
 
         self._report_dir.mkdir(parents=True, exist_ok=True)
         path = self._report_dir / f"reconcile-{snapshot_date.isoformat()}.csv"
-        pl.DataFrame(rows, schema=REPORT_SCHEMA).write_csv(path)
+        write_csv(pl.DataFrame(rows, schema=REPORT_SCHEMA), path)
         return path

@@ -11,7 +11,6 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
-import os
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -19,6 +18,8 @@ from typing import Any
 
 import polars as pl
 
+from .atomic import write_bytes, write_parquet
+from .coerce import as_bool, as_float, as_int, as_json, as_text
 from .card import extract_card_row, extract_config_rows
 from .silver import derive_row
 from .tables import (
@@ -137,10 +138,7 @@ class DatasetStore:
         if path.exists():
             return path
 
-        temp = path.with_suffix(".gz.tmp")
-        with gzip.open(temp, "wb") as handle:
-            handle.write(body)
-        os.replace(temp, path)
+        write_bytes(path, gzip.compress(body))
         return path
 
     def build_bronze(self, snapshot_date: date) -> int:
@@ -165,10 +163,7 @@ class DatasetStore:
 
         target_dir = self.bronze_dir / f"dt={snapshot_date.isoformat()}"
         target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / "bronze.parquet"
-        temp = target.with_suffix(".parquet.tmp")
-        frame.write_parquet(temp)
-        os.replace(temp, target)
+        write_parquet(frame, target_dir / "bronze.parquet")
         return frame.height
 
     @staticmethod
@@ -278,7 +273,7 @@ class DatasetStore:
         else:
             merged = fresh
 
-        _write_parquet(merged.select(list(schema)).sort("id"), target)
+        write_parquet(merged.select(list(schema)).sort("id"), target)
         return merged.height
 
     def read_enrich(self) -> pl.DataFrame:
@@ -319,7 +314,7 @@ class DatasetStore:
         else:
             merged = fresh
 
-        _write_parquet(merged.select(list(SIZE_SCHEMA)).sort("id"), target)
+        write_parquet(merged.select(list(SIZE_SCHEMA)).sort("id"), target)
         return merged.height
 
     def build_silver(self, snapshot_date: date) -> int:
@@ -330,7 +325,7 @@ class DatasetStore:
         rows = [derive_row(row, snapshot_date) for row in bronze.iter_rows(named=True)]
         frame = pl.DataFrame(rows, schema=SILVER_SCHEMA)
         target = self.silver_dir / f"dt={snapshot_date.isoformat()}" / "silver.parquet"
-        _write_parquet(frame, target)
+        write_parquet(frame, target)
         return frame.height
 
     def read_silver(self, snapshot_date: date) -> pl.DataFrame:
@@ -384,7 +379,7 @@ class DatasetStore:
         )
         changed = int((updated["status"] != current["status"]).sum())
         if changed:
-            _write_parquet(updated.select(list(CURRENT_SCHEMA)), self.state_dir / "current.parquet")
+            write_parquet(updated.select(list(CURRENT_SCHEMA)), self.state_dir / "current.parquet")
         return changed
 
     def update_state(self, snapshot_date: date) -> StateUpdate:
@@ -434,10 +429,10 @@ class DatasetStore:
             if target.exists():
                 target.unlink()
         else:
-            _write_parquet(new_observations.select(list(OBSERVATIONS_SCHEMA)), target)
+            write_parquet(new_observations.select(list(OBSERVATIONS_SCHEMA)), target)
 
         current = self._rebuild_current(snapshot_date, silver)
-        _write_parquet(current, self.state_dir / "current.parquet")
+        write_parquet(current, self.state_dir / "current.parquet")
 
         return StateUpdate(
             appended=max(0, new_observations.height - before),
@@ -483,77 +478,26 @@ class DatasetStore:
         tags = record.get("tags")
         return {
             "id": dataset_id,
-            "author": _as_text(record.get("author")),
-            "sha": _as_text(record.get("sha")),
-            "created_at": _as_text(record.get("createdAt")),
-            "last_modified": _as_text(record.get("lastModified")),
-            "downloads": _as_int(record.get("downloads")),
-            "downloads_all_time": _as_int(record.get("downloadsAllTime")),
-            "likes": _as_int(record.get("likes")),
-            "trending_score": _as_float(record.get("trendingScore")),
-            "gated": _as_text(record.get("gated")),
-            "private": _as_bool(record.get("private")),
-            "disabled": _as_bool(record.get("disabled")),
-            "main_size": _as_int(record.get("mainSize")),
-            "xet_enabled": _as_bool(record.get("xetEnabled")),
-            "resource_group": _as_structured_text(record.get("resourceGroup")),
+            "author": as_text(record.get("author")),
+            "sha": as_text(record.get("sha")),
+            "created_at": as_text(record.get("createdAt")),
+            "last_modified": as_text(record.get("lastModified")),
+            "downloads": as_int(record.get("downloads")),
+            "downloads_all_time": as_int(record.get("downloadsAllTime")),
+            "likes": as_int(record.get("likes")),
+            "trending_score": as_float(record.get("trendingScore")),
+            "gated": as_text(record.get("gated")),
+            "private": as_bool(record.get("private")),
+            "disabled": as_bool(record.get("disabled")),
+            "main_size": as_int(record.get("mainSize")),
+            "xet_enabled": as_bool(record.get("xetEnabled")),
+            "resource_group": as_json(record.get("resourceGroup")),
             "tags": [str(tag) for tag in tags] if isinstance(tags, list) else [],
-            "description": _as_text(record.get("description")),
+            "description": as_text(record.get("description")),
             "raw": json.dumps(record, ensure_ascii=False, sort_keys=True),
             "page_file": page_file,
             "snapshot_date": snapshot_date,
         }
-
-
-def _as_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    return None
-
-
-def _as_float(value: Any) -> float | None:
-    """趋势分取浮点：接口当前给整数，但不把「今天恰好是整数」当成契约。"""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    return None
-
-
-def _as_bool(value: Any) -> bool | None:
-    """只认同真正的布尔。
-
-    这里刻意不接受 "true"/"false" 字符串：`gated` 的 "manual"/"auto" 与
-    `private` 的 true/false 是两种语义，混用会让「是否受限」无法区分。
-    """
-    return value if isinstance(value, bool) else None
-
-
-def _as_text(value: Any) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return str(value)
-
-
-def _as_structured_text(value: Any) -> str | None:
-    """把可能是标量、对象或数组的字段压成可读文本。
-
-    `resourceGroup` 实测多为 null，少数场合是对象；直接 str() 会得到 Python
-    字典字面量（单引号，非 JSON），后续无法再解析，故对复合类型走 JSON。
-    """
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value or None
-    if isinstance(value, (dict, list)):
-        return json.dumps(value, ensure_ascii=False, sort_keys=True)
-    return _as_text(value)
 
 
 def _utc_now() -> str:
@@ -581,9 +525,3 @@ def _align_frame(frame: pl.DataFrame, schema: dict[str, pl.DataType]) -> pl.Data
     return frame.drop(extra).select(list(schema))
 
 
-def _write_parquet(frame: pl.DataFrame, target: Path) -> None:
-    """先写临时文件再替换，避免半截 parquet 被后续读取。"""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_suffix(".parquet.tmp")
-    frame.write_parquet(temp)
-    os.replace(temp, target)

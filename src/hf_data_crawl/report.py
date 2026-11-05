@@ -18,6 +18,7 @@ from pathlib import Path
 
 import polars as pl
 
+from .atomic import write_text
 from .gold import GoldCatalog
 
 _CSS = """
@@ -439,7 +440,7 @@ class Reporter:
         overview = self._overview()
         content = self.render(top=top, overview=overview)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        write_text(path, content)
         return ReportSummary(
             path=path,
             bytes=len(content.encode("utf-8")),
