@@ -22,7 +22,7 @@ import polars as pl
 
 from . import raw
 from .coerce import as_bool, as_float, as_int, as_json, as_text
-from .tables import BRONZE_SCHEMA, table
+from .tables import BRONZE_SCHEMA, table, url_for
 
 if TYPE_CHECKING:
     from .store import DatasetStore
@@ -42,6 +42,7 @@ def to_row(record: Any, snapshot_date: date, page_file: str) -> dict[str, Any] |
     tags = record.get("tags")
     return {
         "id": dataset_id,
+        "url": url_for(dataset_id),
         "author": as_text(record.get("author")),
         "sha": as_text(record.get("sha")),
         "created_at": as_text(record.get("createdAt")),
@@ -64,32 +65,38 @@ def to_row(record: Any, snapshot_date: date, page_file: str) -> dict[str, Any] |
     }
 
 
-def _load_rows(job: tuple[str, str]) -> tuple[tuple[Any, ...], pl.DataFrame]:
-    """一个分块 → (排序键, 该分块的 Bronze 行)。顶层函数，进程池可直接调用。"""
+def _load_rows(job: tuple[str, str]) -> list[tuple[tuple[Any, ...], pl.DataFrame]]:
+    """一个 Raw 文件 → [(排序键, 该分块的 Bronze 行)]。顶层函数，进程池可直接调用。
+
+    普通文件只有一个分块；归档分片按记录原来的分块切回多个。
+    """
     path, snapshot = job
     snapshot_date = date.fromisoformat(snapshot)
-    batch = raw.load_batch(Path(path))
-    rows = [
-        row
-        for record in batch.records
-        if (row := to_row(record, snapshot_date, batch.file)) is not None
-    ]
-    return batch.key, pl.DataFrame(rows, schema=BRONZE_SCHEMA)
+    parts: list[tuple[tuple[Any, ...], pl.DataFrame]] = []
+    for batch in raw.load_batches(Path(path)):
+        rows = [
+            row
+            for record in batch.records
+            if (row := to_row(record, snapshot_date, batch.file)) is not None
+        ]
+        parts.append((batch.key, pl.DataFrame(rows, schema=BRONZE_SCHEMA)))
+    return parts
 
 
 def _load_all(files: list[Path], snapshot_date: date) -> list[tuple[tuple[Any, ...], pl.DataFrame]]:
     jobs = [(str(path), snapshot_date.isoformat()) for path in files]
     if len(jobs) < PARALLEL_MIN_FILES:
-        return [_load_rows(job) for job in jobs]
+        return [part for job in jobs for part in _load_rows(job)]
     workers = max(1, min(MAX_WORKERS, os.cpu_count() or 1))
     try:
         with ProcessPoolExecutor(max_workers=workers) as pool:
-            return list(pool.map(_load_rows, jobs, chunksize=16))
+            results = list(pool.map(_load_rows, jobs, chunksize=16))
     except BrokenProcessPool:
         # 子进程异常终止（实测在副本上出现过一次，原因未查明）时，进程池整体作废。
         # 分块互不依赖、解析是纯函数，从头串行重算结果相同，只是慢；
         # 好过让一次可重算的 build 因为并行加速这个可选项而整体失败。
-        return [_load_rows(job) for job in jobs]
+        results = [_load_rows(job) for job in jobs]
+    return [part for result in results for part in result]
 
 
 def prune(store: DatasetStore) -> list[date]:
@@ -108,21 +115,29 @@ def prune(store: DatasetStore) -> list[date]:
     return removed
 
 
+def frame_from_files(files: list[Path], snapshot_date: date) -> pl.DataFrame | None:
+    """一组 Raw 分块 → 该日的 Bronze 表（同 id 以最后写入者为准）；无有效行返回 None。
+
+    与落盘分离，是为了让 Raw 归档能在不写 Bronze 的前提下，对归档前后的两组文件
+    各算一遍并比对。
+    """
+    parts = _load_all(files, snapshot_date)
+    parts.sort(key=lambda part: part[0])
+    frames = [frame for _key, frame in parts if frame.height]
+    if not frames:
+        return None
+    return pl.concat(frames, how="vertical").unique(subset=["id"], keep="last", maintain_order=True)
+
+
 def build(store: DatasetStore, snapshot_date: date) -> int:
     """从该日期的 Raw 整体重建 Bronze 分区，返回写入标量行数。"""
     files = raw.batch_files(store, snapshot_date)
     if not files:
         return 0
 
-    parts = _load_all(files, snapshot_date)
-    parts.sort(key=lambda part: part[0])
-    frames = [frame for _key, frame in parts if frame.height]
-    if not frames:
+    frame = frame_from_files(files, snapshot_date)
+    if frame is None:
         return 0
-
-    frame = pl.concat(frames, how="vertical").unique(
-        subset=["id"], keep="last", maintain_order=True
-    )
 
     store.write("bronze", frame, snapshot_date)
     return frame.height

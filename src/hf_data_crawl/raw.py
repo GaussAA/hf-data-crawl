@@ -108,31 +108,67 @@ def batch_files(
     return sorted(partition.glob(batch_pattern(label)))
 
 
-def load_batch(path: Path) -> Batch:
-    """解压并解析一个分块，算出它的排序键。
+def is_archive(path: Path) -> bool:
+    """归档分片的文件名形如 `part-archive-000001-<摘要>.json.gz`。"""
+    return "-archive-" in path.name
+
+
+def archive_name(label: str, index: int, digest: str) -> str:
+    return f"{label}-archive-{index:06d}-{digest}.json.gz"
+
+
+def label_of(path: Path) -> str:
+    """文件名首段即标签（part / top / card）。"""
+    return path.name.split("-", 1)[0]
+
+
+def load_batches(path: Path) -> list[Batch]:
+    """解压并解析一个 Raw 文件，还原成一个或多个带排序键的分块。
 
     独立成函数是为了能被进程池直接调用：解压加 `json.loads` 是 Bronze 重建里
     最重的一段纯 CPU 活，各文件互不依赖。
 
-    排序键取自 payload 的 `written_at`，文件名与文件属性都不作数。旧分块
-    （此字段引入之前）回退到 mtime——它们已经稳定、不会再变，影响锁在历史里；
-    键首位的 0/1 保证新分块永远排在其后，迁移期不会出现「新写的数据输给历史数据」。
+    普通分块一个文件对应一个 Batch。排序键取自 payload 的 `written_at`，文件名与
+    文件属性都不作数。旧分块（此字段引入之前）回退到 mtime——它们已经稳定、不会再变，
+    影响锁在历史里；键首位的 0/1 保证新分块永远排在其后，迁移期不会出现
+    「新写的数据输给历史数据」。
+
+    归档分片（见 `archive` 模块）把多个原分块去重后并在一起，但**每条记录原来的排序键
+    与来源文件名按段记在 `groups` 里**，这里按段切回多个 Batch——合并不改变任何
+    一条记录的胜负。
     """
     payload = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+    records = payload.get("records", [])
+    groups = payload.get("groups")
+    if isinstance(groups, list):
+        batches: list[Batch] = []
+        start = 0
+        for group in groups:
+            count = int(group["count"])
+            batches.append(
+                Batch(tuple(group["key"]), records[start : start + count], group["file"])
+            )
+            start += count
+        return batches
+
     stamp = (payload.get("meta") or {}).get("written_at")
     if isinstance(stamp, str) and stamp:
         key: tuple[Any, ...] = (1, stamp, path.name)
     else:
         # 定宽浮点串，保证字典序等于数值序。
         key = (0, "", f"{path.stat().st_mtime:020.6f}", path.name)
-    return Batch(key, payload.get("records", []), path.name)
+    return [Batch(key, records, path.name)]
 
 
 def read_batches(
     store: DatasetStore, snapshot_date: date, *, label: str | None = None
 ) -> list[Batch]:
     """读出某天的分块并按写入时刻升序排列，同 id 以最后写入者为准。"""
-    batches = [load_batch(path) for path in batch_files(store, snapshot_date, label=label)]
+    batches = [
+        batch
+        for path in batch_files(store, snapshot_date, label=label)
+        for batch in load_batches(path)
+    ]
     batches.sort(key=lambda batch: batch.key)
     return batches
 

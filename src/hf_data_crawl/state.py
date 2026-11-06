@@ -99,7 +99,7 @@ def update(store: DatasetStore, snapshot_date: date) -> StateUpdate:
         .group_by("id", maintain_order=True)
         .agg([pl.col(column).last().alias(f"{column}_prev") for column in METRIC_COLUMNS])
     )
-    joined = today_frame.select(["id", *METRIC_COLUMNS]).join(previous, on="id", how="left")
+    joined = today_frame.select(["id", "url", *METRIC_COLUMNS]).join(previous, on="id", how="left")
 
     changed = pl.col(f"{METRIC_COLUMNS[0]}_prev").is_null()
     for column in METRIC_COLUMNS:
@@ -108,6 +108,7 @@ def update(store: DatasetStore, snapshot_date: date) -> StateUpdate:
     new_observations = joined.filter(changed).select(
         [
             pl.col("id"),
+            pl.col("url"),
             pl.lit(snapshot_date, dtype=pl.Date).alias("snapshot_date"),
             *[pl.col(column) for column in METRIC_COLUMNS],
         ]

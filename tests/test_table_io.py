@@ -86,6 +86,7 @@ def test_旧分区缺列时观测表仍可读且补空(store: DatasetStore) -> N
     full = pl.DataFrame(
         {
             "id": ["a"],
+            "url": ["https://huggingface.co/datasets/a"],
             "snapshot_date": [DAY2],
             "downloads": [5],
             "downloads_all_time": [9],

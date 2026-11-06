@@ -34,7 +34,7 @@ import polars as pl
 
 from .api import Transport, TransportError
 from .coerce import as_int
-from .tables import SIZE_SCHEMA
+from .tables import SIZE_SCHEMA, url_for
 
 DEFAULT_SIZE_URL = "https://datasets-server.huggingface.co/size"
 
@@ -131,6 +131,7 @@ def _success(dataset_id: str, snapshot_date: date, body: bytes) -> SizeResult:
         status="ok",
         row={
             "id": dataset_id,
+            "url": url_for(dataset_id),
             "snapshot_date": snapshot_date,
             "status": "ok",
             "num_rows": as_int(dataset.get("num_rows")),
@@ -154,7 +155,14 @@ def _failure(dataset_id: str, status: str, snapshot_date: date | None = None) ->
     if status != "unavailable" or snapshot_date is None:
         return SizeResult(dataset_id=dataset_id, status=status, row={})
     row: dict[str, Any] = {name: None for name in SIZE_SCHEMA}
-    row.update({"id": dataset_id, "snapshot_date": snapshot_date, "status": "unavailable"})
+    row.update(
+        {
+            "id": dataset_id,
+            "url": url_for(dataset_id),
+            "snapshot_date": snapshot_date,
+            "status": "unavailable",
+        }
+    )
     return SizeResult(dataset_id=dataset_id, status=status, row=row)
 
 

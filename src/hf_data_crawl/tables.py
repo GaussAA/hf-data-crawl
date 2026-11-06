@@ -32,6 +32,21 @@ import polars as pl
 #: 统一用这个别名，运行时无影响。
 PolarsType = pl.DataType | type[pl.DataType]
 
+#: 数据集页面地址前缀。
+#:
+#: HF 接口**不返回 url**（原始响应里只有 `_id`，那是 MongoDB 内部主键）。
+#: 但地址由 `id` 唯一确定，所以每一层都可以直接带上一列——查看表的人
+#: 拿到 id 就能点开，不必再关心「视图里有没有」。
+#:
+#: 存这一列是有意的冗余：实测 111.7 万行只多 12.4 MB，而换来的是
+#: 「任何一张表、任何查看工具（DuckDB / polars / WhoDB）都能直接定位到网页」。
+DATASET_URL = "https://huggingface.co/datasets/"
+
+
+def url_for(dataset_id: str) -> str:
+    """数据集页面地址。"""
+    return f"{DATASET_URL}{dataset_id}"
+
 
 class Origin(StrEnum):
     """表的来源，决定重建时该不该清除。"""
@@ -81,6 +96,7 @@ class TableSpec:
 
 BRONZE_SCHEMA: dict[str, PolarsType] = {
     "id": pl.Utf8,
+    "url": pl.Utf8,
     "author": pl.Utf8,
     "sha": pl.Utf8,
     "created_at": pl.Utf8,
@@ -103,7 +119,9 @@ BRONZE_SCHEMA: dict[str, PolarsType] = {
 }
 
 #: 由本地派生、不对应 HF 响应字段的列。契约测试据此反推源字段清单。
-BRONZE_DERIVED_COLUMNS: frozenset[str] = frozenset({"raw", "page_file", "snapshot_date"})
+BRONZE_DERIVED_COLUMNS: frozenset[str] = frozenset(
+    {"raw", "page_file", "snapshot_date", "url"}
+)
 
 #: Bronze 列名 → HF 响应字段名。**契约的唯一真相源**。
 #:
@@ -138,6 +156,7 @@ UNCONDITIONAL_FIELDS: frozenset[str] = frozenset({"id"})
 # 历史由 observations 负责；放进来会让每天重复存一份近乎全量的快照。
 SILVER_SCHEMA: dict[str, PolarsType] = {
     "id": pl.Utf8,
+    "url": pl.Utf8,
     "author": pl.Utf8,
     "sha": pl.Utf8,
     "created_at": pl.Utf8,
@@ -172,6 +191,7 @@ SILVER_SCHEMA: dict[str, PolarsType] = {
 
 OBSERVATIONS_SCHEMA: dict[str, PolarsType] = {
     "id": pl.Utf8,
+    "url": pl.Utf8,
     "snapshot_date": pl.Date,
     "downloads": pl.Int64,
     "downloads_all_time": pl.Int64,
@@ -180,6 +200,7 @@ OBSERVATIONS_SCHEMA: dict[str, PolarsType] = {
 
 CURRENT_SCHEMA: dict[str, PolarsType] = {
     "id": pl.Utf8,
+    "url": pl.Utf8,
     "author": pl.Utf8,
     "sha": pl.Utf8,
     "created_at": pl.Utf8,
@@ -201,6 +222,7 @@ CURRENT_SCHEMA: dict[str, PolarsType] = {
 
 ENRICH_SCHEMA: dict[str, PolarsType] = {
     "id": pl.Utf8,
+    "url": pl.Utf8,
     "snapshot_date": pl.Date,
     "pretty_name": pl.Utf8,
     "paperswithcode_id": pl.Utf8,
@@ -229,6 +251,7 @@ ENRICH_SCHEMA: dict[str, PolarsType] = {
 
 CARD_CONFIGS_SCHEMA: dict[str, PolarsType] = {
     "id": pl.Utf8,
+    "url": pl.Utf8,
     "snapshot_date": pl.Date,
     "config_name": pl.Utf8,
     "split": pl.Utf8,
@@ -242,6 +265,7 @@ CARD_CONFIGS_SCHEMA: dict[str, PolarsType] = {
 
 SIZE_SCHEMA: dict[str, PolarsType] = {
     "id": pl.Utf8,
+    "url": pl.Utf8,
     "snapshot_date": pl.Date,
     "status": pl.Utf8,
     "num_rows": pl.Int64,

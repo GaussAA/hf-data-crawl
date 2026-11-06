@@ -21,7 +21,7 @@ import polars as pl
 
 from . import raw
 from .coerce import as_int, as_json, as_list, as_text
-from .tables import CARD_CONFIGS_SCHEMA, ENRICH_SCHEMA
+from .tables import CARD_CONFIGS_SCHEMA, ENRICH_SCHEMA, url_for
 
 if TYPE_CHECKING:
     from .store import DatasetStore
@@ -75,6 +75,7 @@ def extract_card_row(record: dict[str, Any], snapshot_date: Any) -> dict[str, An
     totals = _dataset_totals(card)
     row: dict[str, Any] = {
         "id": record["id"],
+        "url": url_for(record["id"]),
         "snapshot_date": snapshot_date,
         "pretty_name": as_text(card.get("pretty_name")),
         "paperswithcode_id": as_text(
@@ -194,6 +195,7 @@ def _config_row(
 ) -> dict[str, Any]:
     return {
         "id": dataset_id,
+        "url": url_for(dataset_id),
         "snapshot_date": snapshot_date,
         "config_name": config_name,
         "split": split,

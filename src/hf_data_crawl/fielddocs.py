@@ -19,6 +19,8 @@ from __future__ import annotations
 #: 多张表共用的列。
 COMMON: dict[str, str] = {
     "id": "数据集标识，形如 `作者/名称`，全库唯一",
+    "url": "数据集页面地址，形如 `https://huggingface.co/datasets/作者/名称`；"
+    "由 `id` 拼出，可直接点开",
     "author": "拥有者账号（`id` 的前半段）",
     "sha": "主分支最新提交哈希；仓库内容一变它就变",
     "created_at": "仓库创建时刻（ISO 8601，UTC）",

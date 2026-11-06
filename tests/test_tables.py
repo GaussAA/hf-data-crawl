@@ -155,3 +155,38 @@ def test_每张表都能构造出空帧(name: str) -> None:
     empty = pl.DataFrame(schema=spec.schema)
     assert empty.height == 0
     assert list(empty.columns) == list(spec.schema)
+
+
+# ---------------------------------------------------------------- 页面地址
+
+def test_每张表都登记了url列() -> None:
+    """翻表时拿到 id 就能点开，不必先想起「要 join 哪个视图」。"""
+    for name, spec in TABLES.items():
+        assert "url" in spec.schema, f"{name} 缺 url 列"
+
+
+def test_url由id严格拼出() -> None:
+    from hf_data_crawl.tables import DATASET_URL, url_for
+
+    assert url_for("acme/x") == DATASET_URL + "acme/x"
+    assert url_for("a/b-c_d") == "https://huggingface.co/datasets/a/b-c_d"
+
+
+def test_落盘后url与实际id对得上(tmp_path: Path) -> None:
+    """光有列不够，值必须真能拼对——这是「点开就是那个数据集」的前提。"""
+    from hf_data_crawl.tables import DATASET_URL
+
+    store = DatasetStore(tmp_path / "data")
+    store.write_raw(
+        snapshot_date=date(2026, 11, 4),
+        page_index=1,
+        records=[{"id": "acme/x", "author": "acme", "sha": "s"}],
+        meta={},
+    )
+    from hf_data_crawl.bronze import build as build_bronze
+
+    build_bronze(store, date(2026, 11, 4))
+
+    row = store.read_bronze(date(2026, 11, 4)).row(0, named=True)
+
+    assert row["url"] == f"{DATASET_URL}acme/x"

@@ -12,7 +12,7 @@ import polars as pl
 
 from .silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
 from .store import DatasetStore
-from .tables import PolarsType, table
+from .tables import DATASET_URL, PolarsType, table
 
 #: 宽视图里需要改名的列：来源表 → {原列名: 视图里的名字}。
 #:
@@ -62,14 +62,6 @@ _VIEWS: tuple[tuple[str, str], ...] = (
     ("card_config", "card_configs"),
     ("dataset_size", "size"),
 )
-
-#: 数据集页面地址前缀。
-#:
-#: HF 的接口**不返回 url 字段**（实测原始响应里只有 `_id`，那是 MongoDB 内部主键）。
-#: 但地址由 `id` 唯一确定，所以不需要抓、也不需要存进任何表——在这里派生即可。
-#: 只有这一处定义，榜单、视图、渲染都引用它。
-DATASET_URL = "https://huggingface.co/datasets/"
-
 
 def url_expr(column: str = "id") -> str:
     """生成 `... AS url` 的 SQL 片段。传入带别名的列名即可（如 `d.id`）。"""
@@ -284,10 +276,9 @@ class GoldCatalog:
         先得**；需要区分口径的列在 `_VIEW_RENAMES` 里改名；大列与分区列在
         `_VIEW_EXCLUDED` 里排除。
         """
-        used: set[str] = set(table("current").schema) | {"url"}
-        # url 由 id 派生，排在 c.* 之后：不影响既有列的位置，`SELECT *` 的读者
-        # 不会因为多了一列而对不上号。
-        parts: list[str] = ["c.*", url_expr("c.id")]
+        used: set[str] = set(table("current").schema)
+        # url 已随 current 的列一起进来（每张表都带），不必在这里再派生一次。
+        parts: list[str] = ["c.*"]
 
         for alias, name, _view in _VIEW_SOURCES:
             spec = table(name)
