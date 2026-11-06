@@ -108,7 +108,24 @@ def _stale_temp_files(store: DatasetStore, now: datetime) -> Finding:
     return Finding(False, "没有残留的临时文件")
 
 
+def _failure_reason(item: dict) -> str:
+    """失败原因。旧版本只把它写在 `payload.error`，`reason` 为空，两处都要看。"""
+    payload = item.get("payload")
+    fallback = payload.get("error") if isinstance(payload, dict) else None
+    return str(item.get("reason") or fallback or "未记录原因")
+
+
 def _recent_failures(runs: list[dict], now: datetime) -> Finding:
+    """近 7 天里**尚未被后来的成功运行覆盖**的失败。
+
+    同一命令失败后又成功了（例如对账断网后重跑），问题已经解决，再报只会让
+    告警文件长期有效而失去信号价值。
+    """
+    last_success: dict[str, str] = {}
+    for item in runs:
+        if item.get("status") == "success":
+            last_success[str(item.get("command"))] = str(item.get("started_at") or "")
+
     failed = []
     for item in runs:
         if item.get("status") != "failed":
@@ -117,16 +134,19 @@ def _recent_failures(runs: list[dict], now: datetime) -> Finding:
             started = datetime.fromisoformat(str(item.get("started_at")))
         except ValueError:
             continue
-        if now - started <= FAILURE_WINDOW:
-            failed.append(item)
+        if now - started > FAILURE_WINDOW:
+            continue
+        if last_success.get(str(item.get("command")), "") > str(item.get("started_at")):
+            continue
+        failed.append(item)
     if failed:
         last = failed[-1]
         return Finding(
             True,
-            f"近 7 天有 {len(failed)} 次失败运行，最近一次："
-            f"{last.get('command')} {last.get('started_at')} {last.get('reason')}",
+            f"近 7 天有 {len(failed)} 次未恢复的失败运行，最近一次："
+            f"{last.get('command')} {last.get('started_at')} {_failure_reason(last)}",
         )
-    return Finding(False, "近 7 天没有失败运行")
+    return Finding(False, "近 7 天没有未恢复的失败运行")
 
 
 def _lock_state(store: DatasetStore) -> Finding:

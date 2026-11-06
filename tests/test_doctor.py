@@ -117,6 +117,41 @@ def test_近期失败运行要报(tmp_path: Path) -> None:
     assert any("失败运行" in text and "LockBusy" in text for text in problems(store))
 
 
+def test_失败后同一命令又成功了就不再报(tmp_path: Path) -> None:
+    """断网后重跑成功，问题已解决；再报会让告警文件长期有效而失去信号价值。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    write_run(store, "build", NOW - timedelta(days=2), Outcome({}, code=1, reason="boom"))
+    make_run(store, "build", NOW - timedelta(days=1), "end")
+
+    assert not any("失败运行" in text for text in problems(store))
+
+
+def test_别的命令成功不能覆盖这条命令的失败(tmp_path: Path) -> None:
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    write_run(store, "build", NOW - timedelta(days=2), Outcome({}, code=1, reason="boom"))
+    make_run(store, "collect", NOW - timedelta(days=1), "watermark")
+
+    assert any("失败运行" in text and "boom" in text for text in problems(store))
+
+
+def test_失败原因为空时回退到payload里的error(tmp_path: Path) -> None:
+    """旧版本只把原因写在 payload.error，reason 是 null，告警里不能显示 None。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    write_run(
+        store,
+        "reconcile",
+        NOW - timedelta(days=1),
+        Outcome({"error": "ConnectError: eof"}, code=1, reason=None),
+    )
+
+    found = [text for text in problems(store) if "失败运行" in text]
+
+    assert found and "ConnectError: eof" in found[0] and "None" not in found[0]
+
+
 def test_告警文件有问题时写恢复后删(tmp_path: Path) -> None:
     store = DatasetStore(tmp_path / "data")
     sync_alert(store, diagnose(store, NOW), NOW)
