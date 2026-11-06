@@ -1,0 +1,6 @@
+# 仓库内一律 LF；Windows 检出也保持 LF，避免提交时出现 CRLF 提示与整文件差异。
+* text=auto eol=lf
+
+# 二进制不做行尾转换
+*.parquet binary
+*.gz binary
