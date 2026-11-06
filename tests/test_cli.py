@@ -1,0 +1,170 @@
+"""命令行整条路径的行为测试：参数 → 注入的传输 → 落盘 → 运行记录 → 退出码。
+
+`main(..., transport=...)` 是唯一的注入缝。这里不联网，只验四条联网命令各自
+走完后：退出码对不对、`runs/` 里记的是不是成败一致、数据表里有没有行。
+假传输各自在本文件里写小的，不依赖别的测试文件。
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from hf_data_crawl.api import HfResponse
+from hf_data_crawl.cli import main
+from hf_data_crawl.derive import derive_day
+from hf_data_crawl.runs import read_runs
+from hf_data_crawl.store import DatasetStore
+
+DAY = date(2026, 11, 4)
+DAY_ARG = DAY.isoformat()
+
+
+def record(index: int, *, with_card: bool = False) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "id": f"acme/ds-{index}",
+        "author": "acme",
+        "sha": f"sha-{index}",
+        "lastModified": "2026-11-01T00:00:00.000Z",
+        "createdAt": "2025-01-01T00:00:00.000Z",
+        "downloads": 100 - index,
+        "downloadsAllTime": 200,
+        "likes": 1,
+        "gated": False,
+        "private": False,
+        "description": "d",
+        "tags": ["language:en"],
+    }
+    if with_card:
+        payload["cardData"] = {"pretty_name": f"数据集 {index}", "license": "mit"}
+    return payload
+
+
+class PagedTransport:
+    """按游标回放列表接口的假传输；末页不带 Link。"""
+
+    def __init__(self, pages: list[list[dict[str, Any]]]) -> None:
+        self.pages = pages
+        self.calls: list[dict[str, Any]] = []
+
+    def get(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> HfResponse:
+        self.calls.append(dict(params))
+        cursor = params.get("cursor")
+        index = 0 if cursor is None else int(str(cursor).removeprefix("c")) - 1
+        response_headers = {"RateLimit": '"api";r=400;t=180'}
+        if index + 1 < len(self.pages):
+            link = f"https://huggingface.co/api/datasets?cursor=c{index + 2}"
+            response_headers["Link"] = f'<{link}>; rel="next"'
+        return HfResponse(
+            status=200, headers=response_headers, body=json.dumps(self.pages[index]).encode()
+        )
+
+
+class SizeTransport:
+    """规模接口的假传输：任何数据集都回一份有效规模。"""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def get(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> HfResponse:
+        self.calls.append(params["dataset"])
+        body = {
+            "size": {
+                "dataset": {"num_rows": 7, "num_bytes_original_files": 10},
+                "configs": [{"config": "default", "num_columns": 2}],
+            }
+        }
+        return HfResponse(status=200, headers={}, body=json.dumps(body).encode())
+
+
+@pytest.fixture()
+def root(tmp_path: Path) -> Path:
+    return tmp_path / "data"
+
+
+def run(root: Path, *argv: str, transport: Any) -> int:
+    return main(["--data-dir", str(root), *argv], transport=transport)
+
+
+def test_collect走完整条路径并留下成功记录(root: Path) -> None:
+    transport = PagedTransport([[record(1), record(2)], [record(3)]])
+
+    code = run(root, "collect", "--date", DAY_ARG, transport=transport)
+
+    store = DatasetStore(root)
+    runs = read_runs(store)
+    assert code == 0
+    assert len(transport.calls) == 2
+    assert [item["status"] for item in runs] == ["success"]
+    assert store.read_current().height == 3
+
+
+def test_reconcile对同一批数据不报差异且记成功(root: Path) -> None:
+    store = DatasetStore(root)
+    store.write_raw(snapshot_date=DAY, page_index=1, records=[record(1), record(2)], meta={})
+    derive_day(store, DAY)
+    transport = PagedTransport([[record(1), record(2)]])
+
+    code = run(root, "reconcile", "--date", DAY_ARG, transport=transport)
+
+    runs = read_runs(store)
+    assert code == 0
+    assert [item["status"] for item in runs] == ["success"]
+    assert store.read_current()["status"].to_list() == ["active", "active"]
+
+
+def test_enrich补齐卡片并落表(root: Path) -> None:
+    transport = PagedTransport([[record(1, with_card=True), record(2, with_card=True)]])
+
+    code = run(root, "enrich", "--date", DAY_ARG, "--top", "2", transport=transport)
+
+    store = DatasetStore(root)
+    assert code == 0
+    assert [item["status"] for item in read_runs(store)] == ["success"]
+    assert store.read_enrich().height == 2
+
+
+def test_fetch_sizes的尾批在flush_every不足时仍然落库(root: Path) -> None:
+    """`flush` 只在攒满一批时触发；不足一批的尾巴全靠收尾那次合并。"""
+    store = DatasetStore(root)
+    store.write_raw(
+        snapshot_date=DAY, page_index=1, records=[record(1), record(2), record(3)], meta={}
+    )
+    derive_day(store, DAY)
+    transport = SizeTransport()
+
+    code = run(
+        root,
+        "fetch-sizes",
+        "--date",
+        DAY_ARG,
+        "--top",
+        "3",
+        "--workers",
+        "2",
+        "--flush-every",
+        "1000",
+        transport=transport,
+    )
+
+    assert code == 0
+    assert sorted(transport.calls) == ["acme/ds-1", "acme/ds-2", "acme/ds-3"]
+    assert store.read_sizes().height == 3
+    assert [item["status"] for item in read_runs(store)] == ["success"]
+
+
+@pytest.mark.parametrize("command", ["collect", "reconcile", "enrich", "fetch-sizes"])
+def test_日期写错记成失败而不是抛到外面(root: Path, command: str) -> None:
+    transport = PagedTransport([[record(1)]])
+
+    code = run(root, command, "--date", "不是日期", transport=transport)
+
+    runs = read_runs(DatasetStore(root))
+    assert code == 1
+    assert [item["status"] for item in runs] == ["failed"]
+    assert "ValueError" in runs[0]["reason"]
+    assert transport.calls == [], "日期解析失败时不该发出任何请求"

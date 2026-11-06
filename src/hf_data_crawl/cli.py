@@ -12,7 +12,7 @@ from collections.abc import Callable
 from datetime import date, datetime
 from pathlib import Path
 
-from .api import MAX_LIMIT, HfDatasetApi
+from .api import MAX_LIMIT, HfDatasetApi, Transport
 from .collect import Collector, CollectSummary
 from .enrich import Enricher, EnrichSummary
 from .gold import BOARDS, GoldCatalog, GoldNotReady
@@ -97,20 +97,21 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, transport: Transport | None = None) -> int:
+    """命令行入口。`transport` 是唯一的注入缝：测试传假实现，生产不传。"""
     args = build_parser().parse_args(argv)
     store = DatasetStore(Path(args.data_dir))
 
     if args.command == "collect":
-        return _execute(store, "collect", lambda: _collect(args, store))
+        return _execute(store, "collect", lambda: _collect(args, store, transport))
     if args.command == "reconcile":
-        return _execute(store, "reconcile", lambda: _reconcile(args, store))
+        return _execute(store, "reconcile", lambda: _reconcile(args, store, transport))
     if args.command == "build":
         return _execute(store, "build", lambda: _build(store))
     if args.command == "enrich":
-        return _execute(store, "enrich", lambda: _enrich(args, store))
+        return _execute(store, "enrich", lambda: _enrich(args, store, transport))
     if args.command == "fetch-sizes":
-        return _execute(store, "fetch-sizes", lambda: _fetch_sizes(args, store))
+        return _execute(store, "fetch-sizes", lambda: _fetch_sizes(args, store, transport))
     if args.command == "report":
         return _execute(store, "report", lambda: _report(args, store))
     if args.command == "query":
@@ -144,10 +145,20 @@ def _execute(
     return outcome.code
 
 
-def _collect(args: argparse.Namespace, store: DatasetStore) -> Outcome:
-    snapshot = date.fromisoformat(args.date) if args.date else date.today()
+def _open_transport(transport: Transport | None) -> Transport:
+    """联网命令取传输的唯一入口：没注入才构造真实的 httpx 实现。"""
+    return transport if transport is not None else HttpxTransport()
+
+
+def _snapshot(args: argparse.Namespace) -> date:
+    """快照日期：给了就按 ISO 解析（写错抛 ValueError，由 `_execute` 记成失败），否则今天。"""
+    return date.fromisoformat(args.date) if args.date else date.today()
+
+
+def _collect(args: argparse.Namespace, store: DatasetStore, transport: Transport | None) -> Outcome:
+    snapshot = _snapshot(args)
     collector = Collector(
-        api=HfDatasetApi(transport=HttpxTransport()),
+        api=HfDatasetApi(transport=_open_transport(transport)),
         store=store,
         pages_without_new=args.pages_without_new,
     )
@@ -155,7 +166,6 @@ def _collect(args: argparse.Namespace, store: DatasetStore) -> Outcome:
         snapshot,
         limit=args.limit,
         max_pages=args.max_pages,
-        pages_without_new=args.pages_without_new,
         refresh_top=args.refresh_top,
         dry_run=args.dry_run,
     )
@@ -163,9 +173,11 @@ def _collect(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     return Outcome(summary)
 
 
-def _reconcile(args: argparse.Namespace, store: DatasetStore) -> Outcome:
-    snapshot = date.fromisoformat(args.date) if args.date else date.today()
-    reconciler = Reconciler(api=HfDatasetApi(transport=HttpxTransport()), store=store)
+def _reconcile(
+    args: argparse.Namespace, store: DatasetStore, transport: Transport | None
+) -> Outcome:
+    snapshot = _snapshot(args)
+    reconciler = Reconciler(api=HfDatasetApi(transport=_open_transport(transport)), store=store)
     summary = reconciler.run(snapshot, limit=args.limit, max_pages=args.max_pages)
     _print_reconcile(summary)
     return Outcome(summary)
@@ -177,16 +189,18 @@ def _build(store: DatasetStore) -> Outcome:
     return Outcome(summary)
 
 
-def _enrich(args: argparse.Namespace, store: DatasetStore) -> Outcome:
-    snapshot = date.fromisoformat(args.date) if args.date else date.today()
-    enricher = Enricher(api=HfDatasetApi(transport=HttpxTransport()), store=store)
+def _enrich(args: argparse.Namespace, store: DatasetStore, transport: Transport | None) -> Outcome:
+    snapshot = _snapshot(args)
+    enricher = Enricher(api=HfDatasetApi(transport=_open_transport(transport)), store=store)
     summary = enricher.run(snapshot, top=args.top, limit=args.limit)
     _print_enrich(summary)
     return Outcome(summary)
 
 
-def _fetch_sizes(args: argparse.Namespace, store: DatasetStore) -> Outcome:
-    snapshot = date.fromisoformat(args.date) if args.date else date.today()
+def _fetch_sizes(
+    args: argparse.Namespace, store: DatasetStore, transport: Transport | None
+) -> Outcome:
+    snapshot = _snapshot(args)
     current = store.read_current()
     if current.height == 0:
         print("尚无采集数据，请先运行 `hf-data-crawl collect`。")
@@ -194,7 +208,7 @@ def _fetch_sizes(args: argparse.Namespace, store: DatasetStore) -> Outcome:
 
     ordered = current.sort("downloads", descending=True, nulls_last=True)
     fetcher = SizeFetcher(
-        api=HfSizeApi(transport=HttpxTransport()),
+        api=HfSizeApi(transport=_open_transport(transport)),
         workers=args.workers,
         progress=_size_progress,
     )
