@@ -98,6 +98,33 @@ def test_增速为空时给出可读说明(store: DatasetStore, tmp_path: Path) 
     assert "暂无正增长可比" in summary.path.read_text(encoding="utf-8")
 
 
+def _table_html(content: str, table_id: str) -> str:
+    start = content.index(f'<table id="{table_id}"')
+    return content[start : content.index("</table>", start)]
+
+
+def test_增速榜有数据时列出起点当前与增量(store: DatasetStore, tmp_path: Path) -> None:
+    """页面的增速榜与 `query --board growth` 是同一口径，数值必须对得上。"""
+    store.write_raw(
+        snapshot_date=DAY2,
+        page_index=2,
+        records=[record("acme/alpha", 700)],
+        meta={},
+    )
+    derive_day(store, DAY2)
+    catalog = GoldCatalog(store)
+    board = catalog.board("growth", limit=10).row(0, named=True)
+
+    content = Reporter(catalog).write(tmp_path / "dashboard.html").path.read_text(encoding="utf-8")
+
+    assert "暂无正增长可比" not in content
+    growth_html = _table_html(content, "growth")
+    assert "acme/alpha" in growth_html
+    for value in (board["downloads_start"], board["downloads_now"], board["growth"]):
+        assert f"{value:,}" in growth_html or str(value) in growth_html
+    assert (board["downloads_start"], board["downloads_now"], board["growth"]) == (500, 700, 200)
+
+
 def test_具备可访问性语义(store: DatasetStore, tmp_path: Path) -> None:
     content = (
         Reporter(GoldCatalog(store))

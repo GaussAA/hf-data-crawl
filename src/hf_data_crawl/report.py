@@ -269,13 +269,9 @@ class Reporter:
             """,
             [top],
         )
-        categories = catalog.run(
-            """
-            SELECT unnest(task_categories) AS category, count(*) AS datasets, sum(downloads) AS downloads
-            FROM datasets GROUP BY 1 ORDER BY downloads DESC NULLS LAST LIMIT ?
-            """,
-            [top],
-        )
+        # 任务类别与增速两张榜和 `query --board` 是同一口径，直接取内置榜单，
+        # 不再另抄一份 SQL：口径只在 gold.BOARDS 改一处。
+        categories = catalog.board("categories", top)
         licenses = catalog.run(
             """
             SELECT license_name, count(*) AS datasets
@@ -284,15 +280,7 @@ class Reporter:
             """,
             [top],
         )
-        growth = catalog.run(
-            """
-            SELECT id, docs_start, docs_now, growth, span_days FROM (
-              SELECT id, downloads_start AS docs_start, downloads_now AS docs_now, growth, span_days
-              FROM v_growth WHERE growth > 0
-            ) ORDER BY growth DESC LIMIT ?
-            """,
-            [top],
-        )
+        growth = catalog.board("growth", top)
         volume = catalog.run(
             """
             SELECT d.id, ds.num_rows, ds.num_columns_max,
@@ -320,8 +308,8 @@ class Reporter:
                 growth,
                 [
                     ("id", "数据集", "code"),
-                    ("docs_start", "起点", "num"),
-                    ("docs_now", "当前", "num"),
+                    ("downloads_start", "起点", "num"),
+                    ("downloads_now", "当前", "num"),
                     ("growth", "增量", "num"),
                     ("span_days", "跨度(天)", "num"),
                 ],
