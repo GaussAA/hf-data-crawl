@@ -14,13 +14,14 @@ from pathlib import Path
 
 from .api import MAX_LIMIT, HfDatasetApi, Transport
 from .collect import Collector, CollectSummary
+from .doctor import diagnose, sync_alert
 from .enrich import Enricher, EnrichSummary
 from .gold import BOARDS, GoldCatalog, GoldNotReady
 from .lock import exclusive
 from .rebuild import RebuildSummary, rebuild_from_raw
 from .reconcile import Reconciler, ReconcileSummary
 from .report import Reporter
-from .runs import Outcome, write_run
+from .runs import Outcome, read_runs, write_run
 from .sizes import HfSizeApi, SizeFetcher, SizeSummary, tail
 from .store import DatasetStore
 from .transport import HttpxTransport
@@ -60,6 +61,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="额外按下载量补扫前 N 名（0 表示不补），用于让增速榜每天有新读数",
     )
 
+    collect.add_argument(
+        "--skip-if-done",
+        action="store_true",
+        help="该快照日已有一次完整采集就直接跳过（计划任务补跑用，避免同一天重复采）",
+    )
+
     reconcile = subparsers.add_parser("reconcile", help="全量对账（按 createdAt 稳定序）")
     reconcile.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
     reconcile.add_argument("--limit", type=int, default=MAX_LIMIT, help="每页条数，上限 1000")
@@ -95,6 +102,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="每处理多少条就落一次库，中断时最多损失这一批",
     )
 
+    subparsers.add_parser("doctor", help="体检：任务是否按时、Raw 是否断日、有无残留文件")
+
     report = subparsers.add_parser("report", help="生成静态榜单页（不联网）")
     report.add_argument("--out", default=None, help="输出路径，默认 data/reports/dashboard.html")
     report.add_argument("--top", type=int, default=20, help="每张榜单条数")
@@ -121,6 +130,8 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         return _execute(store, "report", lambda: _report(args, store))
     if args.command == "query":
         return _query(args, store)
+    if args.command == "doctor":
+        return _doctor(store)
 
     return 1
 
@@ -165,8 +176,24 @@ def _snapshot(args: argparse.Namespace) -> date:
     return date.fromisoformat(args.date) if args.date else date.today()
 
 
+def _collected_today(store: DatasetStore, snapshot: date) -> bool:
+    """该快照日是否已有一次完整采集（走到末页或触发水位线，且在这一天内完成）。"""
+    for item in read_runs(store):
+        if item.get("command") != "collect" or item.get("status") != "success":
+            continue
+        payload = item.get("payload") or {}
+        if payload.get("snapshot_date") != snapshot.isoformat():
+            continue
+        if payload.get("stopped_reason") in {"end", "watermark"}:
+            return True
+    return False
+
+
 def _collect(args: argparse.Namespace, store: DatasetStore, transport: Transport | None) -> Outcome:
     snapshot = _snapshot(args)
+    if args.skip_if_done and not args.dry_run and _collected_today(store, snapshot):
+        print(f"{snapshot} 已完整采集过，跳过。")
+        return Outcome({"snapshot_date": snapshot.isoformat(), "stopped_reason": "already_done"})
     collector = Collector(
         api=HfDatasetApi(transport=_open_transport(transport)),
         store=store,
@@ -287,6 +314,16 @@ def _query(args: argparse.Namespace, store: DatasetStore) -> int:
 
     print(frame)
     return 0
+
+
+def _doctor(store: DatasetStore) -> int:
+    """只读体检。有问题退出码为 1，并写 ALERT.txt；全部正常则删掉它。"""
+    now = datetime.now()
+    findings = diagnose(store, now)
+    sync_alert(store, findings, now)
+    for item in findings:
+        print(f"{'[!]' if item.problem else '[ok]'} {item.text}")
+    return 1 if any(item.problem for item in findings) else 0
 
 
 def _report(args: argparse.Namespace, store: DatasetStore) -> Outcome:
