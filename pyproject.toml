@@ -12,6 +12,7 @@ dependencies = [
     "httpx>=0.28.1",
     "polars>=2.1.0",
     "pyarrow>=26.0.1",
+    "tzdata>=2026.6",
 ]
 
 [project.scripts]

@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from . import raw
-from .coerce import as_bool, as_float, as_int, as_json, as_text
+from .coerce import as_bool, as_datetime, as_float, as_int, as_json, as_text
 from .tables import BRONZE_SCHEMA, table, url_for
 
 if TYPE_CHECKING:
@@ -45,8 +45,8 @@ def to_row(record: Any, snapshot_date: date, page_file: str) -> dict[str, Any] |
         "url": url_for(dataset_id),
         "author": as_text(record.get("author")),
         "sha": as_text(record.get("sha")),
-        "created_at": as_text(record.get("createdAt")),
-        "last_modified": as_text(record.get("lastModified")),
+        "created_at": as_datetime(record.get("createdAt")),
+        "last_modified": as_datetime(record.get("lastModified")),
         "downloads": as_int(record.get("downloads")),
         "downloads_all_time": as_int(record.get("downloadsAllTime")),
         "likes": as_int(record.get("likes")),

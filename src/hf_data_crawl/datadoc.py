@@ -75,6 +75,7 @@ def _type_name(dtype: Any) -> str:
         "Int64": "整数",
         "Float64": "浮点",
         "Date": "日期",
+        "Datetime(time_unit='us', time_zone='UTC')": "日期时间(UTC)",
         "List(String)": "字符串数组",
     }
     text = str(dtype)
@@ -226,6 +227,11 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "   一个 `_id`，那是 MongoDB 内部主键，不是网页地址。地址由 `id` 唯一确定，所以",
         "   每张表都存一列：翻表时拿到 id 就能点开，不必先想起「要 join 哪个视图」。",
         "   这是一处有意的冗余，实测 111.7 万行只多 12.4 MB。",
+        "8. **有几个「看着像结构、实际存成文本」的列**：`resource_group`、`features`、",
+        "   `data_files`、`configs`。它们的内容是嵌套 JSON，但形态不固定——`features` 的键",
+        "   随数据集而变，写成固定 struct 必然有一半字段落空。存文本是刻意的选择；",
+        "   需要拆开时用 DuckDB 的 `json_extract` 或 polars 的 `str.json_decode`，",
+        "   不必为了少数查询把结构硬编码进 schema。",
         "",
         "## 六、HF 页面上的数字，在表里是哪个字段",
         "",

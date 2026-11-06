@@ -32,6 +32,12 @@ import polars as pl
 #: 统一用这个别名，运行时无影响。
 PolarsType = pl.DataType | type[pl.DataType]
 
+#: 时间列的统一类型：带 UTC 时区、微秒精度。
+#:
+#: 用真正的类型而不是字符串：字符串排序只在格式永远规整时才等价于时间序，
+#: 一旦上游某天少写毫秒位，排序就会静默错位。
+TIMESTAMP = pl.Datetime(time_unit="us", time_zone="UTC")
+
 #: 数据集页面地址前缀。
 #:
 #: HF 接口**不返回 url**（原始响应里只有 `_id`，那是 MongoDB 内部主键）。
@@ -99,8 +105,8 @@ BRONZE_SCHEMA: dict[str, PolarsType] = {
     "url": pl.Utf8,
     "author": pl.Utf8,
     "sha": pl.Utf8,
-    "created_at": pl.Utf8,
-    "last_modified": pl.Utf8,
+    "created_at": TIMESTAMP,
+    "last_modified": TIMESTAMP,
     "downloads": pl.Int64,
     "downloads_all_time": pl.Int64,
     "likes": pl.Int64,
@@ -119,9 +125,7 @@ BRONZE_SCHEMA: dict[str, PolarsType] = {
 }
 
 #: 由本地派生、不对应 HF 响应字段的列。契约测试据此反推源字段清单。
-BRONZE_DERIVED_COLUMNS: frozenset[str] = frozenset(
-    {"raw", "page_file", "snapshot_date", "url"}
-)
+BRONZE_DERIVED_COLUMNS: frozenset[str] = frozenset({"raw", "page_file", "snapshot_date", "url"})
 
 #: Bronze 列名 → HF 响应字段名。**契约的唯一真相源**。
 #:
@@ -159,8 +163,8 @@ SILVER_SCHEMA: dict[str, PolarsType] = {
     "url": pl.Utf8,
     "author": pl.Utf8,
     "sha": pl.Utf8,
-    "created_at": pl.Utf8,
-    "last_modified": pl.Utf8,
+    "created_at": TIMESTAMP,
+    "last_modified": TIMESTAMP,
     "trending_score": pl.Float64,
     "gated": pl.Utf8,
     "private": pl.Boolean,
@@ -203,8 +207,8 @@ CURRENT_SCHEMA: dict[str, PolarsType] = {
     "url": pl.Utf8,
     "author": pl.Utf8,
     "sha": pl.Utf8,
-    "created_at": pl.Utf8,
-    "last_modified": pl.Utf8,
+    "created_at": TIMESTAMP,
+    "last_modified": TIMESTAMP,
     "downloads": pl.Int64,
     "downloads_all_time": pl.Int64,
     "likes": pl.Int64,

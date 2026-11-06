@@ -12,7 +12,7 @@ import polars as pl
 
 from .silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
 from .store import DatasetStore
-from .tables import DATASET_URL, PolarsType, table
+from .tables import DATASET_URL, TIMESTAMP, PolarsType, table
 
 #: 宽视图里需要改名的列：来源表 → {原列名: 视图里的名字}。
 #:
@@ -62,6 +62,7 @@ _VIEWS: tuple[tuple[str, str], ...] = (
     ("card_config", "card_configs"),
     ("dataset_size", "size"),
 )
+
 
 def url_expr(column: str = "id") -> str:
     """生成 `... AS url` 的 SQL 片段。传入带别名的列名即可（如 `d.id`）。"""
@@ -140,6 +141,8 @@ _DUCKDB_TYPES: dict[PolarsType, str] = {
     pl.Float64: "DOUBLE",
     pl.Boolean: "BOOLEAN",
     pl.Date: "DATE",
+    # 带时区的时间在 DuckDB 里是 TIMESTAMPTZ，不是 TIMESTAMP
+    TIMESTAMP: "TIMESTAMPTZ",
 }
 
 
