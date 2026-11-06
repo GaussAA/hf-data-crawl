@@ -25,10 +25,10 @@ from .fielddocs import describe
 from .tables import TABLES, Origin, TableSpec
 
 #: 由 raw 分块构成、不是登记表的东西。文档里单列一节说明它们的作用。
-RAW_KINDS: tuple[tuple[str, str], ...] = (
-    ("part-*.json.gz", "日增量扫描的分块（按 `lastModified` 倒序）"),
-    ("top-*.json.gz", "顶部池刷新的分块（按 `downloads` 倒序），让增速榜每天有新读数"),
-    ("card-*.json.gz", "卡片补齐的分块（带 `cardData`），派生 `carddata` 与 `card_configs`"),
+RAW_KINDS: tuple[tuple[str, str, str], ...] = (
+    ("part-*.json.gz", "日增量扫描的分块（按 `lastModified` 倒序）", "bronze → silver → state"),
+    ("top-*.json.gz", "顶部池刷新的分块（按 `downloads` 倒序）", "同上，让增速榜每天有新读数"),
+    ("card-*.json.gz", "卡片补齐的分块（带 `cardData`）", "carddata · card_configs"),
 )
 
 #: data/ 下不属于任何表的文件与目录。
@@ -51,11 +51,12 @@ SIDE_FILES: tuple[tuple[str, str, str], ...] = (
 
 
 def _human_bytes(size: int) -> str:
+    value = float(size)
     for unit in ("B", "KB", "MB", "GB", "TB"):
-        if size < 1024 or unit == "TB":
-            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} TB"
+        if value < 1024 or unit == "TB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
 
 
 def _row_count(path: Path) -> int | None:
@@ -67,8 +68,17 @@ def _row_count(path: Path) -> int | None:
 
 
 def _type_name(dtype: Any) -> str:
+    """类型名中文化。全表统一，避免「Float64」与「字符串」并排出现。"""
+    names = {
+        "String": "字符串",
+        "Boolean": "布尔",
+        "Int64": "整数",
+        "Float64": "浮点",
+        "Date": "日期",
+        "List(String)": "字符串数组",
+    }
     text = str(dtype)
-    return text.replace("List(String)", "字符串数组").replace("String", "字符串")
+    return names.get(text, text)
 
 
 def _table_stats(root: Path, spec: TableSpec) -> str:
@@ -186,8 +196,8 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "| 前缀 | 批次 | 派生去向 |",
         "| --- | --- | --- |",
     ]
-    for pattern, note in RAW_KINDS:
-        lines.append(f"| `{pattern}` | {note.split('，')[0]} | 见上方数据流 |")
+    for pattern, note, destination in RAW_KINDS:
+        lines.append(f"| `{pattern}` | {note} | {destination} |")
 
     lines += [
         "",

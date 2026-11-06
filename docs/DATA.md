@@ -1,6 +1,6 @@
 # data 目录说明
 
-> 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-07 01:15，**请勿手工编辑**。
+> 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-07 01:17，**请勿手工编辑**。
 > 表结构与行数由代码和实际文件算出；字段含义维护在 `src/hf_data_crawl/fielddocs.py`。
 > 改完代码后重新生成即可，`tests/test_docs.py` 会在忘记生成时报错。
 
@@ -54,21 +54,21 @@ data/
 | `sha` | 字符串 | 主分支最新提交哈希；仓库内容一变它就变 |
 | `created_at` | 字符串 | 仓库创建时刻（ISO 8601，UTC） |
 | `last_modified` | 字符串 | 最后一次提交的时刻；增量扫描按它排序 |
-| `downloads` | Int64 | **近 30 天**下载量。不是累计值，也不是当日增量 |
-| `downloads_all_time` | Int64 | 历史累计下载量，只增不减 |
-| `likes` | Int64 | 点赞数 |
-| `trending_score` | Float64 | HF 计算的趋势分，可为空；它随时间漂移，**不能用来排序翻页** |
+| `downloads` | 整数 | **近 30 天**下载量。不是累计值，也不是当日增量 |
+| `downloads_all_time` | 整数 | 历史累计下载量，只增不减 |
+| `likes` | 整数 | 点赞数 |
+| `trending_score` | 浮点 | HF 计算的趋势分，可为空；它随时间漂移，**不能用来排序翻页** |
 | `gated` | 字符串 | 访问门槛：`false` 公开、`manual` 需人工审批、`auto` 自动授权 |
-| `private` | Boolean | 是否私有。私有库对外不可见，但公开索引里可能仍留一条记录 |
-| `disabled` | Boolean | 是否被平台禁用 |
-| `main_size` | Int64 | 主分支的仓库字节数（含 LFS 指针指向的实际大小） |
-| `xet_enabled` | Boolean | 是否使用 Xet 存储后端 |
+| `private` | 布尔 | 是否私有。私有库对外不可见，但公开索引里可能仍留一条记录 |
+| `disabled` | 布尔 | 是否被平台禁用 |
+| `main_size` | 整数 | 主分支的仓库字节数（含 LFS 指针指向的实际大小） |
+| `xet_enabled` | 布尔 | 是否使用 Xet 存储后端 |
 | `resource_group` | 字符串 | 所属资源组；原值是复合结构，按 JSON 文本存储 |
 | `tags` | 字符串数组 | 原始标签全集，形如 `license:mit`、`language:en`；维度列都由它拆出 |
 | `description` | 字符串 | 仓库简介（作者填写，非卡片正文） |
 | `raw` | 字符串 | 该条记录对应的原始 JSON 整行——其余各层都能重算，只有它能回溯上游 |
 | `page_file` | 字符串 | 来源分块文件名，用于把一行追回到具体的 raw 文件 |
-| `snapshot_date` | Date | 快照日期，也是分区键——同一条记录落在哪个 `dt=` 目录 |
+| `snapshot_date` | 日期 | 快照日期，也是分区键——同一条记录落在哪个 `dt=` 目录 |
 
 ### `silver/dt={dt}/silver.parquet`
 
@@ -84,12 +84,12 @@ data/
 | `sha` | 字符串 | 主分支最新提交哈希；仓库内容一变它就变 |
 | `created_at` | 字符串 | 仓库创建时刻（ISO 8601，UTC） |
 | `last_modified` | 字符串 | 最后一次提交的时刻；增量扫描按它排序 |
-| `trending_score` | Float64 | HF 计算的趋势分，可为空；它随时间漂移，**不能用来排序翻页** |
+| `trending_score` | 浮点 | HF 计算的趋势分，可为空；它随时间漂移，**不能用来排序翻页** |
 | `gated` | 字符串 | 访问门槛：`false` 公开、`manual` 需人工审批、`auto` 自动授权 |
-| `private` | Boolean | 是否私有。私有库对外不可见，但公开索引里可能仍留一条记录 |
-| `disabled` | Boolean | 是否被平台禁用 |
-| `main_size` | Int64 | 主分支的仓库字节数（含 LFS 指针指向的实际大小） |
-| `xet_enabled` | Boolean | 是否使用 Xet 存储后端 |
+| `private` | 布尔 | 是否私有。私有库对外不可见，但公开索引里可能仍留一条记录 |
+| `disabled` | 布尔 | 是否被平台禁用 |
+| `main_size` | 整数 | 主分支的仓库字节数（含 LFS 指针指向的实际大小） |
+| `xet_enabled` | 布尔 | 是否使用 Xet 存储后端 |
 | `resource_group` | 字符串 | 所属资源组；原值是复合结构，按 JSON 文本存储 |
 | `description` | 字符串 | 仓库简介（作者填写，非卡片正文） |
 | `tags` | 字符串数组 | 原始标签全集，形如 `license:mit`、`language:en`；维度列都由它拆出 |
@@ -109,7 +109,7 @@ data/
 | `arxiv_ids` | 字符串数组 | 关联的 arXiv 论文编号 |
 | `dois` | 字符串数组 | 关联的 DOI |
 | `plain_tags` | 字符串数组 | 不带前缀的标签（旧式 `text`/`image` 标记都在这里） |
-| `snapshot_date` | Date | 该行**生效**的日期；同 id 取最新一行即为当前属性 |
+| `snapshot_date` | 日期 | 该行**生效**的日期；同 id 取最新一行即为当前属性 |
 
 ### `state/current.parquet`
 
@@ -125,18 +125,18 @@ data/
 | `sha` | 字符串 | 主分支最新提交哈希；仓库内容一变它就变 |
 | `created_at` | 字符串 | 仓库创建时刻（ISO 8601，UTC） |
 | `last_modified` | 字符串 | 最后一次提交的时刻；增量扫描按它排序 |
-| `downloads` | Int64 | **近 30 天**下载量。不是累计值，也不是当日增量 |
-| `downloads_all_time` | Int64 | 历史累计下载量，只增不减 |
-| `likes` | Int64 | 点赞数 |
-| `trending_score` | Float64 | HF 计算的趋势分，可为空；它随时间漂移，**不能用来排序翻页** |
+| `downloads` | 整数 | **近 30 天**下载量。不是累计值，也不是当日增量 |
+| `downloads_all_time` | 整数 | 历史累计下载量，只增不减 |
+| `likes` | 整数 | 点赞数 |
+| `trending_score` | 浮点 | HF 计算的趋势分，可为空；它随时间漂移，**不能用来排序翻页** |
 | `gated` | 字符串 | 访问门槛：`false` 公开、`manual` 需人工审批、`auto` 自动授权 |
-| `private` | Boolean | 是否私有。私有库对外不可见，但公开索引里可能仍留一条记录 |
-| `disabled` | Boolean | 是否被平台禁用 |
-| `main_size` | Int64 | 主分支的仓库字节数（含 LFS 指针指向的实际大小） |
-| `xet_enabled` | Boolean | 是否使用 Xet 存储后端 |
+| `private` | 布尔 | 是否私有。私有库对外不可见，但公开索引里可能仍留一条记录 |
+| `disabled` | 布尔 | 是否被平台禁用 |
+| `main_size` | 整数 | 主分支的仓库字节数（含 LFS 指针指向的实际大小） |
+| `xet_enabled` | 布尔 | 是否使用 Xet 存储后端 |
 | `resource_group` | 字符串 | 所属资源组；原值是复合结构，按 JSON 文本存储 |
-| `first_seen_at` | Date | 首次出现在库里的日期 |
-| `last_seen_at` | Date | 最后一次被扫描到的日期；停更不等于下架 |
+| `first_seen_at` | 日期 | 首次出现在库里的日期 |
+| `last_seen_at` | 日期 | 最后一次被扫描到的日期；停更不等于下架 |
 | `status` | 字符串 | `active` 在架 / `disappeared` 已删除 / `restricted` 转私有 / `renamed` 已改名 |
 
 ### `state/observations/dt={dt}/obs.parquet`
@@ -149,10 +149,10 @@ data/
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
 | `id` | 字符串 | 数据集标识，形如 `作者/名称`，全库唯一 |
-| `snapshot_date` | Date | 这次观测发生的日期 |
-| `downloads` | Int64 | **近 30 天**下载量。不是累计值，也不是当日增量 |
-| `downloads_all_time` | Int64 | 历史累计下载量，只增不减 |
-| `likes` | Int64 | 点赞数 |
+| `snapshot_date` | 日期 | 这次观测发生的日期 |
+| `downloads` | 整数 | **近 30 天**下载量。不是累计值，也不是当日增量 |
+| `downloads_all_time` | 整数 | 历史累计下载量，只增不减 |
+| `likes` | 整数 | 点赞数 |
 
 ### `enrich/carddata.parquet`
 
@@ -164,7 +164,7 @@ data/
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
 | `id` | 字符串 | 数据集标识，形如 `作者/名称`，全库唯一 |
-| `snapshot_date` | Date | 快照日期，也是分区键——同一条记录落在哪个 `dt=` 目录 |
+| `snapshot_date` | 日期 | 快照日期，也是分区键——同一条记录落在哪个 `dt=` 目录 |
 | `pretty_name` | 字符串 | 卡片里的展示名（可能与 `作者/名称` 完全不同） |
 | `paperswithcode_id` | 字符串 | Papers with Code 上的条目 id |
 | `arxiv` | 字符串 | 卡片声明的 arXiv 编号 |
@@ -181,10 +181,10 @@ data/
 | `card_language_creators` | 字符串数组 | 卡片声明的语料来源 |
 | `card_source_datasets` | 字符串数组 | 卡片声明的上游数据集 |
 | `card_homepage` | 字符串 | 项目主页 |
-| `card_config_count` | Int64 | 卡片里列出的 config 个数 |
-| `card_num_rows` | Int64 | **作者声明**的总行数（跨 config 累加），未必准 |
-| `card_dataset_bytes` | Int64 | 作者声明的数据体积 |
-| `card_download_bytes` | Int64 | 作者声明的下载体积（压缩后） |
+| `card_config_count` | 整数 | 卡片里列出的 config 个数 |
+| `card_num_rows` | 整数 | **作者声明**的总行数（跨 config 累加），未必准 |
+| `card_dataset_bytes` | 整数 | 作者声明的数据体积 |
+| `card_download_bytes` | 整数 | 作者声明的下载体积（压缩后） |
 
 ### `enrich/card_configs.parquet`
 
@@ -196,13 +196,13 @@ data/
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
 | `id` | 字符串 | 数据集标识，形如 `作者/名称`，全库唯一 |
-| `snapshot_date` | Date | 快照日期，也是分区键——同一条记录落在哪个 `dt=` 目录 |
+| `snapshot_date` | 日期 | 快照日期，也是分区键——同一条记录落在哪个 `dt=` 目录 |
 | `config_name` | 字符串 | 配置名（一个数据集可以有多个 config，如不同语言子集） |
 | `split` | 字符串 | 切分名（`train`、`test`、`validation`） |
-| `num_bytes` | Int64 | 该 split 的原始字节数 |
-| `num_examples` | Int64 | 该 split 的行数 |
-| `dataset_size` | Int64 | 生成 arrow 后的内存占用（卡片口径） |
-| `download_size` | Int64 | 下载体积（卡片口径） |
+| `num_bytes` | 整数 | 该 split 的原始字节数 |
+| `num_examples` | 整数 | 该 split 的行数 |
+| `dataset_size` | 整数 | 生成 arrow 后的内存占用（卡片口径） |
+| `download_size` | 整数 | 下载体积（卡片口径） |
 | `features` | 字符串 | 列名与数据类型的 JSON 描述——整条管线里唯一能回答「有哪些列」的来源 |
 | `data_files` | 字符串 | 该 split 由哪些文件构成（JSON 数组，可能是通配符） |
 
@@ -216,15 +216,15 @@ data/
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
 | `id` | 字符串 | 数据集标识，形如 `作者/名称`，全库唯一 |
-| `snapshot_date` | Date | 最近一次成功补抓的日期 |
+| `snapshot_date` | 日期 | 最近一次成功补抓的日期 |
 | `status` | 字符串 | `ok` 拿到数据 / `unavailable` 上游没有这份数据 / `error` 临时失败 |
-| `num_rows` | Int64 | datasets-server **实测**行数，与 `card_num_rows` 是两个口径 |
-| `estimated_num_rows` | Int64 | 上游给出的估算行数（未做精确统计时才有） |
-| `num_bytes_original` | Int64 | 原始文件字节数 |
-| `num_bytes_parquet` | Int64 | 转成 parquet 后的字节数 |
-| `num_bytes_memory` | Int64 | 载入内存后的估算占用 |
-| `config_count` | Int64 | 上游报告的 config 个数 |
-| `num_columns_max` | Int64 | 各 config 中列数的最大值 |
+| `num_rows` | 整数 | datasets-server **实测**行数，与 `card_num_rows` 是两个口径 |
+| `estimated_num_rows` | 整数 | 上游给出的估算行数（未做精确统计时才有） |
+| `num_bytes_original` | 整数 | 原始文件字节数 |
+| `num_bytes_parquet` | 整数 | 转成 parquet 后的字节数 |
+| `num_bytes_memory` | 整数 | 载入内存后的估算占用 |
+| `config_count` | 整数 | 上游报告的 config 个数 |
+| `num_columns_max` | 整数 | 各 config 中列数的最大值 |
 | `configs` | 字符串 | 各 config 的明细（JSON 文本） |
 
 ## 四、不属于表的东西
@@ -237,9 +237,9 @@ data/
 
 | 前缀 | 批次 | 派生去向 |
 | --- | --- | --- |
-| `part-*.json.gz` | 日增量扫描的分块（按 `lastModified` 倒序） | 见上方数据流 |
-| `top-*.json.gz` | 顶部池刷新的分块（按 `downloads` 倒序） | 见上方数据流 |
-| `card-*.json.gz` | 卡片补齐的分块（带 `cardData`） | 见上方数据流 |
+| `part-*.json.gz` | 日增量扫描的分块（按 `lastModified` 倒序） | bronze → silver → state |
+| `top-*.json.gz` | 顶部池刷新的分块（按 `downloads` 倒序） | 同上，让增速榜每天有新读数 |
+| `card-*.json.gz` | 卡片补齐的分块（带 `cardData`） | carddata · card_configs |
 
 ### 其他
 
