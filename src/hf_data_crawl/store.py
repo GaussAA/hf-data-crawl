@@ -44,20 +44,9 @@ class DatasetStore:
         return self._root / "raw"
 
     @property
-    def bronze_dir(self) -> Path:
-        return self._root / "bronze"
-
-    @property
-    def silver_dir(self) -> Path:
-        return self._root / "silver"
-
-    @property
     def state_dir(self) -> Path:
+        """游标与会话文件所在目录；表文件一律走 `path(name)`，不要在此拼。"""
         return self._root / "state"
-
-    @property
-    def enrich_dir(self) -> Path:
-        return self._root / "enrich"
 
     # ------------------------------------------------------------ 表读写
     #

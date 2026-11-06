@@ -205,7 +205,7 @@ def test_旧分区缺列时读出来补空而不是报错(tmp_path: Path) -> Non
     import polars as pl
 
     store = DatasetStore(tmp_path / "data")
-    target = store.bronze_dir / f"dt={DAY.isoformat()}" / "bronze.parquet"
+    target = store.path("bronze", DAY)
     target.parent.mkdir(parents=True, exist_ok=True)
     pl.DataFrame({"id": ["acme/old"], "downloads": [1], "snapshot_date": [DAY]}).write_parquet(
         target

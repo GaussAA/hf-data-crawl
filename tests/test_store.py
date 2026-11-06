@@ -136,15 +136,14 @@ def test_缺少可选字段的记录仍能入bronze(store: DatasetStore) -> None
 
 def test_空目录重建返回零且不产出空分区(store: DatasetStore) -> None:
     assert store.build_bronze(SNAPSHOT) == 0
-    assert not store.bronze_dir.exists() or store.read_bronze(SNAPSHOT).height == 0
+    assert not store.has("bronze", SNAPSHOT)
 
 
 def test_bronze被polars直接可读(store: DatasetStore) -> None:
     store.write_raw(snapshot_date=SNAPSHOT, page_index=1, records=[record(1)], meta={})
     store.build_bronze(SNAPSHOT)
 
-    path = next(store.bronze_dir.rglob("*.parquet"))
-    frame = pl.read_parquet(path)
+    frame = pl.read_parquet(store.path("bronze", SNAPSHOT))
 
     assert frame.height == 1
 

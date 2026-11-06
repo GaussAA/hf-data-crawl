@@ -69,8 +69,10 @@ def test_重建后的current与原结果完全一致(store: DatasetStore) -> Non
 def test_派生层被删光也能重建(store: DatasetStore) -> None:
     import shutil
 
-    for derived in (store.bronze_dir, store.silver_dir, store.state_dir):
-        shutil.rmtree(derived)
+    # 分区表的路径是 <表目录>/dt=<日期>/<文件>，往上两级就是整张表的目录。
+    for name in ("bronze", "silver"):
+        shutil.rmtree(store.path(name, DAY1).parents[1])
+    shutil.rmtree(store.state_dir)
 
     summary = rebuild_from_raw(store)
 

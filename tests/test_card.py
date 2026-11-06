@@ -241,7 +241,7 @@ def test_重复补齐不产生重复明细行(store: DatasetStore) -> None:
 
 def test_旧版卡片表缺列时能继续并入(store: DatasetStore) -> None:
     """升级后的第一次 enrich 会读到上一版只有 7 列的卡片表，不能直接抛错。"""
-    target = store.enrich_dir / "carddata.parquet"
+    target = store.path("carddata")
     target.parent.mkdir(parents=True, exist_ok=True)
     pl.DataFrame(
         {"id": ["acme/old"], "pretty_name": ["旧集"], "license_name": ["mit"]}

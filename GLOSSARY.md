@@ -72,8 +72,8 @@
 22. **宽视图 `datasets` 由 schema 拼装**（2026-11-05）：列不再手抄，按 `_VIEW_SOURCES` 顺序拼接，**重名先到先得**；需区分口径的列在 `_VIEW_RENAMES` 改名（`size.num_rows → server_num_rows`，与卡片口径的 `card_num_rows` 并存）；`raw`（每行数 KB 的整行 JSON）与重复的 `snapshot_date` 在 `_VIEW_EXCLUDED` 排除。
     此前手抄 42 列，加一个卡片字段时 `card` 视图由 schema 生成、自动就有，`datasets` 却安静地少一列——查询照常跑，只是那一列不存在。
 23. **「最新一行」有两套实现，必须永远一致**（2026-11-05）：`current` 是物化（18 列），`latest_silver` 是窗口视图（36 列，带全部维度）。
-    - `_CURRENT_CARRIED` 由 `CURRENT_SCHEMA` 与 `SILVER_SCHEMA` **求交**而来，不再手抄——手抄会漏，而漏掉的表现是「视图里查得到、物化表里是 null」。
-    - `_CURRENT_COMPUTED`（`first_seen_at` / `last_seen_at` / `status`）是本地判断，**不得出现在 Silver 里**，否则会出现两个 status 各说各话。
+    - `state.CARRIED_COLUMNS` 由 `CURRENT_SCHEMA` 与 `SILVER_SCHEMA` **求交**而来，不再手抄——手抄会漏，而漏掉的表现是「视图里查得到、物化表里是 null」。
+    - `state.COMPUTED_COLUMNS`（`first_seen_at` / `last_seen_at` / `status`）是本地判断，**不得出现在 Silver 里**，否则会出现两个 status 各说各话。
     - 两者的一致性由测试守护：实测 111.7 万行、15 个公共列取值完全相同。
 24. **原子写只有一个入口**（`atomic.py`）：`write_bytes` / `write_text` / `write_parquet` / `write_csv`。临时文件必须与目标**同目录**——`os.replace` 的原子性依赖同一文件系统，跨盘会退化成「复制 + 删除」。六个写点曾只做三处，遗漏的恰是面向用户的三个（榜单页、运行记录、对账清单）。
 25. **列编码规则只有一套**（`coerce.py`）：`as_int` / `as_float` / `as_bool` / `as_text` / `as_list` / `as_json`。
