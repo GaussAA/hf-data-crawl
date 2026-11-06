@@ -4,6 +4,7 @@
 
 - `raw`     原始响应落盘与按写入序读回
 - `bronze`  由 Raw 整体重建某天的标量表
+- `silver`  由 Bronze 派生某天的维度表
 - `card`    由卡片批次抽出宽表与明细表
 - `state`   观测流水、当前态、状态标记
 
@@ -19,12 +20,11 @@ from typing import Any
 
 import polars as pl
 
-from . import bronze, card, raw, state
+from . import bronze, card, raw, silver, state
 from .atomic import write_parquet
-from .silver import derive_row
 from .state import StateUpdate
 from .status import Status
-from .tables import SILVER_SCHEMA, table
+from .tables import table
 
 __all__ = ["DatasetStore", "StateUpdate"]
 
@@ -178,14 +178,7 @@ class DatasetStore:
         return bronze.build(self, snapshot_date)
 
     def build_silver(self, snapshot_date: date) -> int:
-        """由 Bronze 派生 Silver 分区，返回行数。"""
-        frame_in = self.read_bronze(snapshot_date)
-        if frame_in.height == 0:
-            return 0
-        rows = [derive_row(row, snapshot_date) for row in frame_in.iter_rows(named=True)]
-        frame = pl.DataFrame(rows, schema=SILVER_SCHEMA)
-        self.write("silver", frame, snapshot_date)
-        return frame.height
+        return silver.build(self, snapshot_date)
 
     def build_enrich(self, snapshot_date: date) -> tuple[int, int]:
         return card.build(self, snapshot_date)

@@ -66,11 +66,6 @@ def build(store: DatasetStore, snapshot_date: date) -> tuple[int, int]:
     return table_rows, config_count
 
 
-def has_card(record: dict[str, Any]) -> bool:
-    card = record.get("cardData")
-    return isinstance(card, dict) and bool(card)
-
-
 def extract_card_row(record: dict[str, Any], snapshot_date: Any) -> dict[str, Any] | None:
     """从一条完整记录里抽出卡片宽表行；无卡片则返回 None。"""
     card = record.get("cardData")

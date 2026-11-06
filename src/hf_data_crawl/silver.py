@@ -1,11 +1,21 @@
 """Silver 派生：把扁平标签拆成可 join 的维度。
 
-纯函数，不碰 IO——便于单独验证解析规则，也便于日后换规则回填历史。
+派生规则（`split_tag_dimensions`、`derive_row`）是纯函数，不碰 IO——便于单独验证
+解析规则，也便于日后换规则回填历史。唯一碰盘的是 `build`：读某天的 Bronze，
+套规则，写回 Silver 分区，与 `bronze.build` 对称。
 """
 
 from __future__ import annotations
 
-from typing import Any
+from datetime import date
+from typing import TYPE_CHECKING, Any
+
+import polars as pl
+
+from .tables import SILVER_SCHEMA
+
+if TYPE_CHECKING:
+    from .store import DatasetStore
 
 #: 标签前缀 → Silver 维度列名。
 #:
@@ -81,3 +91,14 @@ def derive_row(bronze_row: dict[str, Any], snapshot_date: Any) -> dict[str, Any]
         "raw": bronze_row.get("raw"),
         "snapshot_date": snapshot_date,
     }
+
+
+def build(store: DatasetStore, snapshot_date: date) -> int:
+    """由 Bronze 派生该日期的 Silver 分区，返回行数；无 Bronze 则不写。"""
+    bronze = store.read_bronze(snapshot_date)
+    if bronze.height == 0:
+        return 0
+    rows = [derive_row(row, snapshot_date) for row in bronze.iter_rows(named=True)]
+    frame = pl.DataFrame(rows, schema=SILVER_SCHEMA)
+    store.write("silver", frame, snapshot_date)
+    return frame.height
