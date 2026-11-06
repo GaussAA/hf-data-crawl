@@ -163,7 +163,6 @@ SILVER_SCHEMA: dict[str, pl.DataType] = {
     "arxiv_ids": pl.List(pl.Utf8),
     "dois": pl.List(pl.Utf8),
     "plain_tags": pl.List(pl.Utf8),
-    "raw": pl.Utf8,
     "snapshot_date": pl.Date,
 }
 

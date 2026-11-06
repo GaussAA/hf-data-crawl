@@ -37,7 +37,7 @@ _VIEW_RENAMES: dict[str, dict[str, str]] = {
 #: `raw` 是整行原始 JSON（每行数 KB），带进来会让每一次查询都拖着它走；
 #: `snapshot_date` 在各表重复且对查询无意义——它属于分区，不属于分析维度。
 _VIEW_EXCLUDED: dict[str, frozenset[str]] = {
-    "silver": frozenset({"raw", "snapshot_date"}),
+    "silver": frozenset({"snapshot_date"}),
     "carddata": frozenset({"snapshot_date"}),
     "size": frozenset({"snapshot_date"}),
 }

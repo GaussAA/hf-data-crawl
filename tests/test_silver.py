@@ -83,15 +83,16 @@ def test_silver把标签拆成可join的维度(store: DatasetStore) -> None:
     assert "format:csv" in row["tags"]
 
 
-def test_silver保留原始json与指标字段(store: DatasetStore) -> None:
+def test_silver保留指标字段且不再重复存原始json(store: DatasetStore) -> None:
+    """原始 JSON 只在 Bronze 存一份；Silver 再存一份是 320MB 的纯冗余。"""
     seed(store, DAY1, [record(1, downloads=42)])
 
-    row = store.read_silver(DAY1).row(0, named=True)
+    frame = store.read_silver(DAY1)
+    row = frame.row(0, named=True)
 
     assert row["downloads"] == 42
     assert row["downloads_all_time"] == 126
-    assert row["raw"].startswith("{")
-    assert '"id":"acme/ds-1"' in row["raw"].replace(" ", "")
+    assert "raw" not in frame.columns
 
 
 def test_首次运行每个数据集产生一条观测(store: DatasetStore) -> None:

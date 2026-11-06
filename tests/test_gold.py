@@ -171,7 +171,7 @@ def test_宽视图包含附表的全部有效列(catalog: GoldCatalog) -> None:
 
     columns = set(catalog.run("SELECT * FROM datasets LIMIT 0").columns)
     for name, excluded in (
-        ("silver", {"raw", "snapshot_date"}),
+        ("silver", {"snapshot_date"}),
         ("carddata", {"snapshot_date"}),
         ("size", {"snapshot_date"}),
     ):
