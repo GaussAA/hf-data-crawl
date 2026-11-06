@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from hf_data_crawl import bronze
 from hf_data_crawl.api import EXPAND_WHITELIST
 from hf_data_crawl.collect import LEAN_EXPAND
 from hf_data_crawl.enrich import ENRICH_EXPAND
@@ -121,7 +122,7 @@ def test_to_row产出的键与bronze_schema完全一致() -> None:
         "description": "x",
     }
 
-    row = DatasetStore._to_row(record, DAY, "part-1.json.gz")
+    row = bronze.to_row(record, DAY, "part-1.json.gz")
 
     assert row is not None
     assert set(row) == set(BRONZE_SCHEMA)
@@ -231,12 +232,12 @@ def test_事故列不再恒空(column: str, tmp_path: Path) -> None:
 
 def test_current的带入列由schema求交而来() -> None:
     """手抄的子集一定会漏，而漏掉的表现是「视图有、物化表是 null」，不报错。"""
-    from hf_data_crawl.store import _CURRENT_CARRIED, _CURRENT_COMPUTED
+    from hf_data_crawl.state import CARRIED_COLUMNS, COMPUTED_COLUMNS
 
-    expected = set(CURRENT_SCHEMA) - _CURRENT_COMPUTED
+    expected = set(CURRENT_SCHEMA) - COMPUTED_COLUMNS
 
-    assert set(_CURRENT_CARRIED) == expected
-    assert set(CURRENT_SCHEMA) == set(_CURRENT_CARRIED) | _CURRENT_COMPUTED
+    assert set(CARRIED_COLUMNS) == expected
+    assert set(CURRENT_SCHEMA) == set(CARRIED_COLUMNS) | COMPUTED_COLUMNS
 
 
 def test_current的计算列不出现在silver里() -> None:
@@ -244,6 +245,6 @@ def test_current的计算列不出现在silver里() -> None:
 
     若把它们混进 Silver，就会出现两个 status 各说各话的局面。
     """
-    from hf_data_crawl.store import _CURRENT_COMPUTED
+    from hf_data_crawl.state import COMPUTED_COLUMNS
 
-    assert _CURRENT_COMPUTED.isdisjoint(SILVER_SCHEMA)
+    assert COMPUTED_COLUMNS.isdisjoint(SILVER_SCHEMA)

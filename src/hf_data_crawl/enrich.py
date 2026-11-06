@@ -14,6 +14,7 @@ from datetime import date
 
 from .api import MAX_LIMIT, HfDatasetApi, Page
 from .collect import IDENTITY_EXPAND
+from .raw import CARD_LABEL
 from .scan import ScanRun, ScanSpec
 from .store import DatasetStore
 
@@ -74,7 +75,7 @@ class Enricher:
                 sort="downloads",
                 expand=ENRICH_EXPAND,
                 mode="enrich",
-                label="card",
+                label=CARD_LABEL,
                 limit=limit,
                 max_pages=page_budget,
                 on_page=tally,

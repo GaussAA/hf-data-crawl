@@ -14,9 +14,17 @@ HF 卡片结构不统一：license 可能是字符串或列表，arxiv 同理，
 
 from __future__ import annotations
 
-from typing import Any
+from datetime import date
+from typing import TYPE_CHECKING, Any
 
+import polars as pl
+
+from . import raw
 from .coerce import as_int, as_json, as_list, as_text
+from .tables import CARD_CONFIGS_SCHEMA, ENRICH_SCHEMA
+
+if TYPE_CHECKING:
+    from .store import DatasetStore
 
 #: 卡片里可直接取出的标量/列表字段：卡片键 → 宽表列。
 _CARD_LIST_FIELDS: dict[str, str] = {
@@ -28,6 +36,34 @@ _CARD_LIST_FIELDS: dict[str, str] = {
     "language_creators": "card_language_creators",
     "source_datasets": "card_source_datasets",
 }
+
+
+def build(store: DatasetStore, snapshot_date: date) -> tuple[int, int]:
+    """把该日期的 card 批次抽成两张表，按 id 覆盖旧值。
+
+    返回 (宽表行数, 明细行数)。一次扫描产出两张表：卡片体量小但字段多，
+    重扫两次的代价（重复解压 25 个分块）没有必要。
+    """
+    batches = raw.read_batches(store, snapshot_date, label=raw.CARD_LABEL)
+    if not batches:
+        return store.read_enrich().height, store.read_card_configs().height
+
+    card_rows: list[dict[str, Any]] = []
+    config_rows: list[dict[str, Any]] = []
+    for batch in batches:
+        for record in batch.records:
+            row = extract_card_row(record, snapshot_date)
+            if row is not None:
+                card_rows.append(row)
+            config_rows.extend(extract_config_rows(record, snapshot_date))
+
+    table_rows = store.upsert("carddata", pl.DataFrame(card_rows, schema=ENRICH_SCHEMA))
+    config_count = store.upsert(
+        "card_configs",
+        pl.DataFrame(config_rows, schema=CARD_CONFIGS_SCHEMA),
+        dedupe=["id", "config_name", "split"],
+    )
+    return table_rows, config_count
 
 
 def has_card(record: dict[str, Any]) -> bool:
