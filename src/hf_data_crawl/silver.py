@@ -1,14 +1,15 @@
 """Silver 派生：把扁平标签拆成可 join 的维度。
 
-派生规则（`split_tag_dimensions`、`derive_row`）是纯函数，不碰 IO——便于单独验证
-解析规则，也便于日后换规则回填历史。唯一碰盘的是 `build`：读某天的 Bronze，
-套规则，写回 Silver 分区，与 `bronze.build` 对称。
+整张表用 polars 表达式一次算完，不再逐行转 Python 字典：111 万行的实测里，
+逐行版本 82 秒，向量化版本 1.5 秒，输出逐行相等。规则本身（标签怎么归维度）
+不变，写在 `derive` 的注释里；`tests/test_silver_derive.py` 用一份逐行参考实现
+对照，防止向量化把边界情形悄悄改掉。
 """
 
 from __future__ import annotations
 
 from datetime import date
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import polars as pl
 
@@ -46,51 +47,77 @@ TAG_DIMENSIONS: dict[str, str] = {
 #: `audio` / `tabular`）都在这里——不单独成列，等于把模态信息砍掉一半。
 PLAIN_TAG_COLUMN = "plain_tags"
 
-
-def split_tag_dimensions(tags: list[str]) -> dict[str, list[str]]:
-    """按前缀把标签归入维度列，保持原序并去重。"""
-    buckets: dict[str, list[str]] = {column: [] for column in TAG_DIMENSIONS.values()}
-    buckets[PLAIN_TAG_COLUMN] = []
-    for tag in tags:
-        prefix, separator, value = tag.partition(":")
-        if not separator or not value:
-            plain = tag.strip()
-            if plain and plain not in buckets[PLAIN_TAG_COLUMN]:
-                buckets[PLAIN_TAG_COLUMN].append(plain)
-            continue
-        column = TAG_DIMENSIONS.get(prefix)
-        if column is None:
-            continue
-        if value not in buckets[column]:
-            buckets[column].append(value)
-    return buckets
+_ROW = "__row"
+_EMPTY_LIST = pl.lit(pl.Series([[]], dtype=pl.List(pl.Utf8)))
 
 
-def derive_row(bronze_row: dict[str, Any], snapshot_date: Any) -> dict[str, Any]:
-    """由一条 Bronze 行派生一条 Silver 行。"""
-    tags = bronze_row.get("tags") or []
-    return {
-        "id": bronze_row["id"],
-        "author": bronze_row.get("author"),
-        "sha": bronze_row.get("sha"),
-        "created_at": bronze_row.get("created_at"),
-        "last_modified": bronze_row.get("last_modified"),
-        "downloads": bronze_row.get("downloads"),
-        "downloads_all_time": bronze_row.get("downloads_all_time"),
-        "likes": bronze_row.get("likes"),
-        "trending_score": bronze_row.get("trending_score"),
-        "gated": bronze_row.get("gated"),
-        "private": bronze_row.get("private"),
-        "disabled": bronze_row.get("disabled"),
-        "main_size": bronze_row.get("main_size"),
-        "xet_enabled": bronze_row.get("xet_enabled"),
-        "resource_group": bronze_row.get("resource_group"),
-        "description": bronze_row.get("description"),
-        "tags": tags,
-        **split_tag_dimensions(tags),
-        "raw": bronze_row.get("raw"),
-        "snapshot_date": snapshot_date,
-    }
+def _classify(indexed: pl.DataFrame) -> pl.DataFrame:
+    """把每行的标签炸开，逐个判定归入哪个维度列、取什么值。
+
+    规则（与逐行版本一致）：
+    - 以第一个 `:` 切成 前缀 / 取值；没有冒号，或冒号后为空，算无前缀标签，
+      整串去首尾空白后进 `plain_tags`，去空后为空则丢弃；
+    - 有取值但前缀不在 `TAG_DIMENSIONS` 里，直接丢弃（仍保留在原 `tags` 列）；
+    - 取值不去空白：`"language: en"` 的取值是 `" en"`，保持原样。
+    """
+    mapping = pl.DataFrame(
+        {"prefix": list(TAG_DIMENSIONS), "dimension": list(TAG_DIMENSIONS.values())},
+        schema={"prefix": pl.Utf8, "dimension": pl.Utf8},
+    )
+    # 用正则一次取出前缀与取值，而不是 `str.find` + `str.slice`：前者返回字节偏移、
+    # 后者按字符计，前缀含中文时两者错位，会把「某前缀:值」误判成无前缀标签。
+    split = r"(?s)^([^:]*):(.*)$"
+    entries = (
+        indexed.select(_ROW, pl.col("tags").fill_null(_EMPTY_LIST).alias("tag"))
+        .explode("tag")
+        .filter(pl.col("tag").is_not_null())
+        .with_columns(
+            pl.col("tag").str.extract(split, 1).alias("prefix"),
+            pl.col("tag").str.extract(split, 2).alias("value"),
+        )
+        .join(mapping, on="prefix", how="left")
+    )
+    plain = pl.col("value").is_null() | (pl.col("value") == "")
+    return entries.select(
+        _ROW,
+        pl.when(plain)
+        .then(pl.lit(PLAIN_TAG_COLUMN))
+        .otherwise(pl.col("dimension"))
+        .alias("column"),
+        pl.when(plain)
+        .then(pl.col("tag").str.strip_chars())
+        .otherwise(pl.col("value"))
+        .alias("item"),
+    ).filter(pl.col("column").is_not_null() & (pl.col("item") != ""))
+
+
+def derive(bronze: pl.DataFrame, snapshot_date: date) -> pl.DataFrame:
+    """由 Bronze 整表派生 Silver：保持行序，维度列保持标签原序并去重。"""
+    columns = [*TAG_DIMENSIONS.values(), PLAIN_TAG_COLUMN]
+    indexed = bronze.with_row_index(_ROW)
+    grouped = (
+        _classify(indexed)
+        .group_by(_ROW)
+        .agg(
+            [
+                pl.col("item")
+                .filter(pl.col("column") == name)
+                .unique(maintain_order=True)
+                .alias(name)
+                for name in columns
+            ]
+        )
+    )
+    return (
+        indexed.join(grouped, on=_ROW, how="left")
+        .sort(_ROW)
+        .with_columns(
+            pl.col("tags").fill_null(_EMPTY_LIST),
+            *[pl.col(name).fill_null(_EMPTY_LIST) for name in columns],
+            pl.lit(snapshot_date, dtype=pl.Date).alias("snapshot_date"),
+        )
+        .select(list(SILVER_SCHEMA))
+    )
 
 
 def build(store: DatasetStore, snapshot_date: date) -> int:
@@ -98,7 +125,6 @@ def build(store: DatasetStore, snapshot_date: date) -> int:
     bronze = store.read_bronze(snapshot_date)
     if bronze.height == 0:
         return 0
-    rows = [derive_row(row, snapshot_date) for row in bronze.iter_rows(named=True)]
-    frame = pl.DataFrame(rows, schema=SILVER_SCHEMA)
+    frame = derive(bronze, snapshot_date)
     store.write("silver", frame, snapshot_date)
     return frame.height

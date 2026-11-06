@@ -98,34 +98,41 @@ def write(
     return path
 
 
-def read_batches(
+def batch_files(
     store: DatasetStore, snapshot_date: date, *, label: str | None = None
-) -> list[Batch]:
-    """读出某天的分块并按写入时刻升序排列，同 id 以最后写入者为准。
-
-    排序发生在**解压之后**：序存在 payload 的 `written_at` 里，文件名与文件
-    属性都不作数。build 本来就要解压全部文件，因此这不是额外成本。
-
-    旧分块（此字段引入之前）回退到 mtime——它们已经稳定、不会再变，
-    影响锁在历史里；键首位的 0/1 保证新分块永远排在其后，迁移期不会出现
-    「新写的数据输给历史数据」。
-    """
+) -> list[Path]:
+    """某天的分块文件，按文件名排序（仅为遍历稳定；写入序以 `Batch.key` 为准）。"""
     partition = partition_dir(store, snapshot_date)
     if not partition.exists():
         return []
+    return sorted(partition.glob(batch_pattern(label)))
 
-    batches: list[Batch] = []
-    for path in partition.glob(batch_pattern(label)):
-        payload = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
-        meta = payload.get("meta") or {}
-        stamp = meta.get("written_at")
-        if isinstance(stamp, str) and stamp:
-            key: tuple[Any, ...] = (1, stamp, path.name)
-        else:
-            # 定宽浮点串，保证字典序等于数值序。
-            key = (0, "", f"{path.stat().st_mtime:020.6f}", path.name)
-        batches.append(Batch(key, payload.get("records", []), path.name))
 
+def load_batch(path: Path) -> Batch:
+    """解压并解析一个分块，算出它的排序键。
+
+    独立成函数是为了能被进程池直接调用：解压加 `json.loads` 是 Bronze 重建里
+    最重的一段纯 CPU 活，各文件互不依赖。
+
+    排序键取自 payload 的 `written_at`，文件名与文件属性都不作数。旧分块
+    （此字段引入之前）回退到 mtime——它们已经稳定、不会再变，影响锁在历史里；
+    键首位的 0/1 保证新分块永远排在其后，迁移期不会出现「新写的数据输给历史数据」。
+    """
+    payload = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+    stamp = (payload.get("meta") or {}).get("written_at")
+    if isinstance(stamp, str) and stamp:
+        key: tuple[Any, ...] = (1, stamp, path.name)
+    else:
+        # 定宽浮点串，保证字典序等于数值序。
+        key = (0, "", f"{path.stat().st_mtime:020.6f}", path.name)
+    return Batch(key, payload.get("records", []), path.name)
+
+
+def read_batches(
+    store: DatasetStore, snapshot_date: date, *, label: str | None = None
+) -> list[Batch]:
+    """读出某天的分块并按写入时刻升序排列，同 id 以最后写入者为准。"""
+    batches = [load_batch(path) for path in batch_files(store, snapshot_date, label=label)]
     batches.sort(key=lambda batch: batch.key)
     return batches
 
