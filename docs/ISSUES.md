@@ -138,3 +138,48 @@ S1–S8 交付后的两轮工作，合计 15 个提交。此处只记「改了�
    456 条 `restricted`/`renamed` 归零。现清理前先写 `meta/failed-status.json`。
 2. 对账「下架」判定不准——463 条里真删除 **0** 条，实际是 401 转私有与 307 改名。
    状态扩为 `active` / `disappeared` / `restricted` / `renamed`。
+
+---
+
+# 第三轮 · 模块深化与存储重构（2026-11-06）
+
+测试数从 250 增至 **342**。破坏性变更（Silver / Bronze 结构）均先在真实数据副本上
+完整 `rebuild` 验证 `current`、`observations` 逐行相等，再迁移正式数据。
+
+## 模块深化
+
+| 提交 | 深化 | 消除的问题 |
+|---|---|---|
+| `d620537` | `status` 模块（状态词表、探测映射、重建留存） | 存活库被判 renamed；旧快照回灌 |
+| `b40dc5a` | `session` 模块（对账会话，基线随会话固定） | 续跑丢差异；隔天续跑误探测 |
+| `044dfee` `861ff20` `947731d` | 拆 `DatasetStore`：表读写走登记表，流程拆为 `raw` / `bronze` / `state`，卡片并入 `card` | 登记表不真正驱动读写；`store.py` 504 行混杂流程 |
+| `38330bd` | `derive_day` 单一入口 | 推导四步的顺序抄在 3 处 + 约 10 处测试 |
+| `5ef5268` | CLI 注入缝 `main(transport=)`，`_snapshot` | 四条联网命令无整路径测试 |
+| `02f2a77` `c5e1622` | 页面榜单全部取 `gold.BOARDS` | 榜单 SQL 两处各抄一份 |
+| `ce6a226` | 删除 `build_*` / `update_state` 转发 | 浅层转发 |
+| `f75e510` | `.gitattributes`，统一 LF | CRLF 噪声 |
+
+## 性能与存储（111 万行实测）
+
+| 步骤 | 前 | 后 | 做法 |
+|---|---|---|---|
+| `bronze.build` | 271.7s | 23.9s | 分块解压 + 逐条编码交进程池，合并前按排序键整体排序 |
+| `silver.build` | 82.1s | 4.2s | 逐行字典改 polars 整表表达式 |
+| 完整 `rebuild`（3 个日期） | 未测 | 56~62s | — |
+| 数据目录 | ~1.8GB | ~0.92GB | Silver 去 `raw`；Silver 改变更流水；Bronze 只留最新一天 |
+
+- **Silver 改为属性变更流水**：一个 id 仅在首次出现或属性变了才追加一行；不含指标
+  （指标每天约 53% 的行在变，历史由 `observations` 承担）。
+- **Bronze 只保留最新一天**：它是 Raw 的直接展开，可重建；`read_bronze(旧日期)` 因此为空。
+- **向量化时发现的坑**：`str.find` 返回字节偏移而 `str.slice` 按字符计，前缀含中文时错位，
+  已改正则并用逐行参考实现做对照测试。
+
+## 已知遗留
+
+- Silver 现有 2,234,640 行，未达预期压缩：11-03 的 `private` / `disabled` / `main_size` /
+  `xet_enabled` 四列全空，11-04 补齐，造成约 111 万行的一次性“属性变化”。11-05 仅 4,018 行；
+  长期稳态只有一天样本，未验证。
+- 首次在副本上并行 `rebuild` 出现过一次 `BrokenProcessPool`，之后两次正常，原因未查明
+  （怀疑内存压力）。复现时先降低 `bronze.MAX_WORKERS`。
+- `rebuild` 仍不增量：改动一天要全量重放全部日期。
+- `PRD-hf-data-crawl-v1.0.md` 里的接口名是历史文档，与代码不符，未改。
