@@ -28,7 +28,7 @@ from .transport import HttpxTransport
 
 #: 会改写数据目录的命令，执行期间持有独占锁。report 只写自己的 HTML（原子替换），
 #: query 只读，二者不需要。
-WRITE_COMMANDS = frozenset({"collect", "reconcile", "build", "enrich", "fetch-sizes"})
+WRITE_COMMANDS = frozenset({"collect", "reconcile", "build", "enrich", "fetch-sizes", "archive"})
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -104,6 +104,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("doctor", help="体检：任务是否按时、Raw 是否断日、有无残留文件")
 
+    archive = subparsers.add_parser(
+        "archive", help="归档早于 N 天的 Raw 分区：合并小分块并去重，原文件移入 backup/raw"
+    )
+    archive.add_argument(
+        "--older-than-days", type=int, default=30, help="只归档早于这么多天的日期（默认 30）"
+    )
+    archive.add_argument("--date", default=None, help="只归档指定日期 YYYY-MM-DD（忽略天数门槛）")
+
     report = subparsers.add_parser("report", help="生成静态榜单页（不联网）")
     report.add_argument("--out", default=None, help="输出路径，默认 data/reports/dashboard.html")
     report.add_argument("--top", type=int, default=20, help="每张榜单条数")
@@ -125,6 +133,8 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         return _execute(store, "reconcile", lambda: _reconcile(args, store, transport))
     if args.command == "build":
         return _execute(store, "build", lambda: _build(store))
+    if args.command == "archive":
+        return _execute(store, "archive", lambda: _archive(args, store))
     if args.command == "enrich":
         return _execute(store, "enrich", lambda: _enrich(args, store, transport))
     if args.command == "fetch-sizes":
@@ -229,6 +239,52 @@ def _build(store: DatasetStore) -> Outcome:
     summary = rebuild_from_raw(store)
     _print_build(summary)
     return Outcome(summary)
+
+
+def _archive(args: argparse.Namespace, store: DatasetStore) -> Outcome:
+    """归档符合条件的日期。某天验证失败就记为失败，但不影响已完成的其他日期。"""
+    from datetime import timedelta
+
+    from .archive import ArchiveMismatch, archive_day
+    from .rebuild import discover_raw_dates
+
+    if args.date:
+        days = [date.fromisoformat(args.date)]
+    else:
+        cutoff = date.today() - timedelta(days=args.older_than_days)
+        days = [day for day in discover_raw_dates(store) if day < cutoff]
+
+    done: list[dict[str, object]] = []
+    failures: list[str] = []
+    for day in days:
+        try:
+            result = archive_day(store, day)
+        except ArchiveMismatch as error:
+            failures.append(str(error))
+            print(f"  [!] {error}")
+            continue
+        if result is None:
+            continue
+        done.append(
+            {
+                "date": day.isoformat(),
+                "files": f"{result.source_files}→{result.shards}",
+                "records": f"{result.records_before}→{result.records_after}",
+                "bytes": f"{result.bytes_before}→{result.bytes_after}",
+            }
+        )
+        print(
+            f"{day} 归档：{result.source_files} 个文件→{result.shards} 个分片，"
+            f"记录 {result.records_before}→{result.records_after}，"
+            f"{result.bytes_before / 1e6:.1f}MB→{result.bytes_after / 1e6:.1f}MB，"
+            f"原文件在 {result.backup_dir}"
+        )
+    if not days:
+        print("没有符合条件的日期。")
+    payload = {"archived": done, "failures": failures}
+    if failures:
+        return Outcome(payload, code=1, reason=f"{len(failures)} 个日期归档验证失败")
+    return Outcome(payload)
 
 
 def _enrich(args: argparse.Namespace, store: DatasetStore, transport: Transport | None) -> Outcome:
