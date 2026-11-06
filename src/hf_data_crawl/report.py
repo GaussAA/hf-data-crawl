@@ -260,47 +260,14 @@ class Reporter:
         catalog = self._catalog
         overview = overview or self._overview()
 
-        ranking = catalog.run(
-            """
-            SELECT d.id, d.pretty_name, d.downloads, d.downloads_all_time, d.likes, d.license_name
-            FROM datasets AS d
-            ORDER BY d.downloads DESC NULLS LAST
-            LIMIT ?
-            """,
-            [top],
-        )
-        # 任务类别与增速两张榜和 `query --board` 是同一口径，直接取内置榜单，
-        # 不再另抄一份 SQL：口径只在 gold.BOARDS 改一处。
+        # 页面上的每张榜都取自内置榜单，和 `query --board` 同一口径：
+        # 口径只在 gold.BOARDS 改一处，不再各抄一份 SQL。
+        ranking = catalog.board("ranking", top)
         categories = catalog.board("categories", top)
-        licenses = catalog.run(
-            """
-            SELECT license_name, count(*) AS datasets
-            FROM card WHERE license_name IS NOT NULL
-            GROUP BY 1 ORDER BY datasets DESC LIMIT ?
-            """,
-            [top],
-        )
+        licenses = catalog.board("licenses", top)
         growth = catalog.board("growth", top)
-        volume = catalog.run(
-            """
-            SELECT d.id, ds.num_rows, ds.num_columns_max,
-                   round(ds.num_bytes_memory / 1024.0 / 1024 / 1024) AS mem_gb
-            FROM dataset_size AS ds
-            JOIN datasets AS d ON d.id = ds.id
-            WHERE ds.status = 'ok' AND ds.num_rows IS NOT NULL
-            ORDER BY ds.num_rows DESC NULLS LAST
-            LIMIT ?
-            """,
-            [top],
-        )
-        modalities = catalog.run(
-            """
-            SELECT unnest(modalities) AS modality, count(*) AS datasets,
-                   sum(downloads) AS downloads
-            FROM datasets GROUP BY 1 ORDER BY datasets DESC NULLS LAST LIMIT ?
-            """,
-            [top],
-        )
+        volume = catalog.board("volume", top)
+        modalities = catalog.board("modalities", top)
 
         if growth.height:
             growth_html = _table(

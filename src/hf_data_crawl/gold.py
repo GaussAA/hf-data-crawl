@@ -99,6 +99,31 @@ BOARDS: dict[str, str] = {
         ORDER BY downloads DESC NULLS LAST
         LIMIT ?
     """,
+    "ranking": """
+        SELECT d.id, d.pretty_name, d.downloads, d.downloads_all_time, d.likes, d.license_name
+        FROM datasets AS d
+        ORDER BY d.downloads DESC NULLS LAST
+        LIMIT ?
+    """,
+    "licenses": """
+        SELECT license_name, count(*) AS datasets
+        FROM card WHERE license_name IS NOT NULL
+        GROUP BY 1 ORDER BY datasets DESC LIMIT ?
+    """,
+    "volume": """
+        SELECT d.id, ds.num_rows, ds.num_columns_max,
+               round(ds.num_bytes_memory / 1024.0 / 1024 / 1024) AS mem_gb
+        FROM dataset_size AS ds
+        JOIN datasets AS d ON d.id = ds.id
+        WHERE ds.status = 'ok' AND ds.num_rows IS NOT NULL
+        ORDER BY ds.num_rows DESC NULLS LAST
+        LIMIT ?
+    """,
+    "modalities": """
+        SELECT unnest(modalities) AS modality, count(*) AS datasets,
+               sum(downloads) AS downloads
+        FROM datasets GROUP BY 1 ORDER BY datasets DESC NULLS LAST LIMIT ?
+    """,
 }
 
 _DUCKDB_TYPES: dict[pl.DataType, str] = {
