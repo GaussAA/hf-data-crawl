@@ -90,11 +90,19 @@ def test_每个标签维度都在silver里有对应列() -> None:
     assert not missing, f"这些标签维度没有对应的 Silver 列：{sorted(missing)}"
 
 
-def test_current每一列都能由silver或本地计算得到() -> None:
+def test_current每一列都能由bronze或本地计算得到() -> None:
+    """current 取当日 Bronze 的标量状态（含指标），Silver 只记属性变更、不含指标。"""
     computed = {"first_seen_at", "last_seen_at", "status"}
-    missing = set(CURRENT_SCHEMA) - (set(SILVER_SCHEMA) | computed)
+    missing = set(CURRENT_SCHEMA) - (set(BRONZE_SCHEMA) | computed)
 
-    assert not missing, f"Current 有列既不在 Silver 也非本地计算：{sorted(missing)}"
+    assert not missing, f"Current 有列既不在 Bronze 也非本地计算：{sorted(missing)}"
+
+
+def test_silver不含指标列() -> None:
+    """指标每天约一半的行在变，历史归 observations；放进 Silver 会重复存近乎全量快照。"""
+    from hf_data_crawl.state import METRIC_COLUMNS
+
+    assert set(METRIC_COLUMNS).isdisjoint(SILVER_SCHEMA)
 
 
 # ---------------------------------------------------------------- 映射落地

@@ -76,7 +76,8 @@ def test_派生层被删光也能重建(store: DatasetStore) -> None:
     summary = rebuild_from_raw(store)
 
     assert summary.current_rows == 2
-    assert store.read_silver(DAY2).height == 2
+    # Silver 是属性变更流水：两天属性没变，只有首日的两行。
+    assert store.read_all("silver").height == 2
     # 观测只有 ds-1 在 DAY2 变了，因此两条
     assert store.read_observations().height == 3
 

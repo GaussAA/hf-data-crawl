@@ -83,16 +83,61 @@ def test_silver把标签拆成可join的维度(store: DatasetStore) -> None:
     assert "format:csv" in row["tags"]
 
 
-def test_silver保留指标字段且不再重复存原始json(store: DatasetStore) -> None:
-    """原始 JSON 只在 Bronze 存一份；Silver 再存一份是 320MB 的纯冗余。"""
+def test_silver不存指标也不存原始json(store: DatasetStore) -> None:
+    """指标归 observations，整行 JSON 只在 Bronze；Silver 只记属性。"""
     seed(store, DAY1, [record(1, downloads=42)])
 
     frame = store.read_silver(DAY1)
-    row = frame.row(0, named=True)
 
-    assert row["downloads"] == 42
-    assert row["downloads_all_time"] == 126
-    assert "raw" not in frame.columns
+    assert frame.height == 1
+    for column in ("downloads", "downloads_all_time", "likes", "raw"):
+        assert column not in frame.columns
+
+
+def test_属性没变的数据集不再追加silver行(store: DatasetStore) -> None:
+    seed(store, DAY1, [record(1), record(2)])
+    seed(store, DAY2, [record(1, downloads=999), record(2)])
+
+    assert store.read_silver(DAY2).height == 0
+    assert store.read_all("silver").height == 2
+
+
+def test_属性变了只追加变化的那一行(store: DatasetStore) -> None:
+    seed(store, DAY1, [record(1), record(2)])
+    seed(store, DAY2, [record(1), record(2, tags=["license:apache-2.0"])])
+
+    day2 = store.read_silver(DAY2)
+
+    assert day2["id"].to_list() == ["acme/ds-2"]
+    assert day2.row(0, named=True)["licenses"] == ["apache-2.0"]
+    assert store.read_all("silver").height == 3
+
+
+def test_新增数据集追加首行属性(store: DatasetStore) -> None:
+    seed(store, DAY1, [record(1)])
+    seed(store, DAY2, [record(1), record(2)])
+
+    assert store.read_silver(DAY2)["id"].to_list() == ["acme/ds-2"]
+
+
+def test_同日重跑silver不重复(store: DatasetStore) -> None:
+    seed(store, DAY1, [record(1)])
+    seed(store, DAY2, [record(1, tags=["license:mit", "language:fr"])])
+    first = store.read_all("silver").height
+
+    silver.build(store, DAY2)
+
+    assert store.read_all("silver").height == first
+
+
+def test_silver_latest取每个id最近的属性(store: DatasetStore) -> None:
+    seed(store, DAY1, [record(1, tags=["license:mit"])])
+    seed(store, DAY2, [record(1, tags=["license:gpl"])])
+
+    latest = silver.latest(store).row(0, named=True)
+
+    assert latest["licenses"] == ["gpl"]
+    assert silver.latest(store, before=DAY2).row(0, named=True)["licenses"] == ["mit"]
 
 
 def test_首次运行每个数据集产生一条观测(store: DatasetStore) -> None:

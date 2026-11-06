@@ -127,3 +127,29 @@ def test_入口模块直接引用各步而非store转发() -> None:
     assert derive.silver is silver
     assert derive.card is card
     assert derive.state is state
+
+
+def test_只保留最新一天的bronze且旧分区可重建(store: DatasetStore) -> None:
+    day1, day2 = DAY, date(2026, 11, 4)
+    store.write_raw(snapshot_date=day1, page_index=1, records=[record(1), record(2)], meta={})
+    store.write_raw(snapshot_date=day2, page_index=1, records=[record(1)], meta={})
+
+    derive_day(store, day1)
+    derive_day(store, day2)
+
+    assert not store.has("bronze", day1)
+    assert store.has("bronze", day2)
+    # 旧分区从 Raw 秒级可得，内容与当初一致
+    assert bronze.build(store, day1) == 2
+
+
+def test_日增量只覆盖部分行时current不丢其余行(store: DatasetStore) -> None:
+    """Bronze 只留最新一天后，当天只含部分行；其余数据集必须靠 current 保住。"""
+    day2 = date(2026, 11, 4)
+    store.write_raw(snapshot_date=DAY, page_index=1, records=[record(1), record(2)], meta={})
+    store.write_raw(snapshot_date=day2, page_index=1, records=[record(1)], meta={})
+
+    derive_day(store, DAY)
+    derive_day(store, day2)
+
+    assert sorted(store.read_current()["id"].to_list()) == ["acme/ds-1", "acme/ds-2"]

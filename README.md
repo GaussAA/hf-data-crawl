@@ -59,8 +59,8 @@ hf-data-crawl report       [--out PATH] [--top 20]
 ```
 data/
 ├── raw/dt=YYYY-MM-DD/part-<页号>-<内容摘要>.json.gz   # 原始响应，永久保留
-├── bronze/dt=YYYY-MM-DD/bronze.parquet                # 一行一条，含 raw 列
-├── silver/dt=YYYY-MM-DD/silver.parquet                # 标签已拆 16 类维度
+├── bronze/dt=YYYY-MM-DD/bronze.parquet                # 一行一条，含 raw 列；只保留最新一天，旧分区可由 raw 重建
+├── silver/dt=YYYY-MM-DD/silver.parquet                # 属性变更流水：新增或属性变了才追加；标签已拆 16 类维度，不含指标
 ├── state/
 │   ├── current.parquet                                # 每库一行最新态
 │   └── observations/dt=YYYY-MM-DD/obs.parquet         # 指标变化流水

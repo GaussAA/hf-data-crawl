@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from concurrent.futures import ProcessPoolExecutor
 from datetime import date
 from pathlib import Path
@@ -20,7 +21,7 @@ import polars as pl
 
 from . import raw
 from .coerce import as_bool, as_float, as_int, as_json, as_text
-from .tables import BRONZE_SCHEMA
+from .tables import BRONZE_SCHEMA, table
 
 if TYPE_CHECKING:
     from .store import DatasetStore
@@ -82,6 +83,22 @@ def _load_all(files: list[Path], snapshot_date: date) -> list[tuple[tuple[Any, .
     workers = max(1, min(MAX_WORKERS, os.cpu_count() or 1))
     with ProcessPoolExecutor(max_workers=workers) as pool:
         return list(pool.map(_load_rows, jobs, chunksize=16))
+
+
+def prune(store: DatasetStore) -> list[date]:
+    """只保留最新一天的 Bronze 分区，返回被删的日期。
+
+    Bronze 是 Raw 的直接展开，随时可在秒级到半分钟内重建；历史上每天一份近乎
+    全量的拷贝只是占地方。属性历史由 Silver 变更流水承担，指标历史由观测流水
+    承担，当天的运行态更新只需要当天这一份。
+    """
+    files = sorted(store.root.glob(table("bronze").glob()))
+    removed: list[date] = []
+    for path in files[:-1]:
+        partition = path.parent
+        removed.append(date.fromisoformat(partition.name.removeprefix("dt=")))
+        shutil.rmtree(partition, ignore_errors=True)
+    return removed
 
 
 def build(store: DatasetStore, snapshot_date: date) -> int:

@@ -129,15 +129,15 @@ BRONZE_SOURCE_FIELDS: dict[str, str] = {
 #: 列表接口无条件返回、无需写进 `expand[]` 的字段。
 UNCONDITIONAL_FIELDS: frozenset[str] = frozenset({"id"})
 
+# Silver 是「属性变更流水」：一个 id 只在首次出现或属性变了才追加一行。
+# 指标（downloads / downloads_all_time / likes）不在其中，它们每天有一半的行在变，
+# 历史由 observations 负责；放进来会让每天重复存一份近乎全量的快照。
 SILVER_SCHEMA: dict[str, pl.DataType] = {
     "id": pl.Utf8,
     "author": pl.Utf8,
     "sha": pl.Utf8,
     "created_at": pl.Utf8,
     "last_modified": pl.Utf8,
-    "downloads": pl.Int64,
-    "downloads_all_time": pl.Int64,
-    "likes": pl.Int64,
     "trending_score": pl.Float64,
     "gated": pl.Utf8,
     "private": pl.Boolean,

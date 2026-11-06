@@ -42,6 +42,8 @@ def derive_day(store: DatasetStore, snapshot_date: date, *, enrich: bool = False
     if enrich:
         card_rows, config_rows = card.build(store, snapshot_date)
     update = state.update(store, snapshot_date)
+    # 运行态已经读完当天的 Bronze，旧分区不再有读者，且随时能从 Raw 重建。
+    bronze.prune(store)
     return DayResult(
         bronze_rows=bronze_rows,
         silver_rows=silver_rows,
