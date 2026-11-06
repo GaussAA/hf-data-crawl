@@ -7,6 +7,7 @@
                   当天已采过会直接跳过）。
     hf-reconcile  每周日 04:00 全量对账；错过则开机后补跑一次。
     hf-doctor     每日 09:00 体检，另在登录后 10 分钟再查一次；有问题写 data\ALERT.txt。
+    hf-sizes      每周日 06:00 补数据集规模（行数/列数），最慢的一步，增量可续。
 
     与旧版的差别（旧版是笔记本上三天漏采的原因）：
       - StartWhenAvailable：关机错过的任务，开机后补跑；
@@ -26,6 +27,7 @@ param(
     [string]$CollectTime = "03:10",
     [string]$ReconcileTime = "04:00",
     [string]$DoctorTime = "09:00",
+    [string]$SizesTime = "06:00",
     [switch]$Uninstall
 )
 
@@ -37,7 +39,7 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
-$taskNames = @("hf-collect", "hf-reconcile", "hf-doctor")
+$taskNames = @("hf-collect", "hf-reconcile", "hf-doctor", "hf-sizes")
 
 if ($Uninstall) {
     foreach ($name in $taskNames) {
@@ -65,7 +67,13 @@ $jobs = @(
        Triggers = @(
            (New-ScheduledTaskTrigger -Daily -At $DoctorTime),
            (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME)
-       ); LogonDelay = "PT10M" }
+       ); LogonDelay = "PT10M" },
+    # 规模补齐：全流程最慢的一步（每条单独请求，约 26 req/s），故一周一次，
+    # 放在对账之后两小时。给足 4 小时；中途被打断也不要紧——已抓到的都已落库，
+    # 下周从缺口接着补，不会重抓。
+    @{ Name = "hf-sizes"; Script = "sizes.cmd"; Hours = 4
+       Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At $SizesTime))
+       LogonDelay = $null }
 )
 
 foreach ($job in $jobs) {
@@ -104,6 +112,7 @@ Write-Host "已注册："
 Write-Host "  hf-collect    每日 $CollectTime + 登录后补跑（当天已采过则跳过）"
 Write-Host "  hf-reconcile  每周日 $ReconcileTime，错过则开机后补跑"
 Write-Host "  hf-doctor     每日 $DoctorTime + 登录后体检，问题写 data\ALERT.txt"
+Write-Host "  hf-sizes      每周日 $SizesTime 补规模数据，增量合并、中断可续"
 Write-Host "日志目录：$(Join-Path $root 'data\logs')"
 Write-Host "运行摘要：$(Join-Path $root 'data\runs')"
 Write-Host "核对：Get-ScheduledTask -TaskName hf-* | Get-ScheduledTaskInfo"
