@@ -108,6 +108,9 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--out", default=None, help="输出路径，默认 data/reports/dashboard.html")
     report.add_argument("--top", type=int, default=20, help="每张榜单条数")
 
+    docs = subparsers.add_parser("docs", help="生成 data 目录说明（结构·文件·字段含义）")
+    docs.add_argument("--out", default=None, help="输出路径，默认 docs/DATA.md")
+
     return parser
 
 
@@ -132,6 +135,8 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         return _query(args, store)
     if args.command == "doctor":
         return _doctor(store)
+    if args.command == "docs":
+        return _write_docs(args, store)
 
     return 1
 
@@ -313,6 +318,25 @@ def _query(args: argparse.Namespace, store: DatasetStore) -> int:
         return 0
 
     print(frame)
+    return 0
+
+
+def _write_docs(args: argparse.Namespace, store: DatasetStore) -> int:
+    """生成 data 目录说明。纯本地动作，不联网。
+
+    缺字段说明时退出码为 1：文档不完整等于没写，应当在生成那一刻就看见。
+    """
+    from .datadoc import missing_docs, write
+
+    target = Path(args.out) if args.out else Path("docs") / "DATA.md"
+    path = write(store.root, target)
+    gaps = missing_docs()
+    print(f"数据说明已生成：{path}")
+    if gaps:
+        preview = "、".join(f"{name}.{column}" for name, column in gaps[:6])
+        print(f"  [!] {len(gaps)} 个字段缺说明：{preview}{' …' if len(gaps) > 6 else ''}")
+        print("      补在 src/hf_data_crawl/fielddocs.py 里")
+        return 1
     return 0
 
 

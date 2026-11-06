@@ -30,6 +30,8 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `build` | 从 Raw 重建全部派生层（含卡片与明细） | 否 |
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
 | `report` | 生成单文件榜单页（离线可看） | 否 |
+| `doctor` | 体检：任务是否按时、Raw 是否断日、有无残留文件，异常写 `ALERT.txt` | 否 |
+| `docs` | 生成 `docs/DATA.md`：data 目录结构、各文件作用、全部字段含义 | 否 |
 
 常用参数：
 
@@ -40,6 +42,7 @@ hf-data-crawl fetch-sizes  [--date YYYY-MM-DD] [--top 20000] [--workers 16] [--r
 hf-data-crawl reconcile    [--date YYYY-MM-DD] [--limit 1000] [--max-pages N]
 hf-data-crawl query        [--board growth|growth_pct|downloads|alltime|categories] [--limit 50] [--sql "..."]
 hf-data-crawl report       [--out PATH] [--top 20]
+hf-data-crawl docs         [--out PATH]           # 默认 docs/DATA.md
 ```
 
 全局参数 `--data-dir` 需放在子命令之前，默认取 `HF_DATA_DIR`，否则 `./data`。
