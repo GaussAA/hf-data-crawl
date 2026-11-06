@@ -169,3 +169,22 @@ def test_数据里的尖括号被转义(store: DatasetStore, tmp_path: Path) -> 
     content = summary.path.read_text(encoding="utf-8")
     assert "acme/&lt;script&gt;" in content
     assert "acme/<script>" not in content
+
+
+def test_数据集名渲染成可点开的链接(store: DatasetStore, tmp_path: Path) -> None:
+    """榜单是拿来「找到东西」的，找到之后第一件事就是去页面看。"""
+    content = (
+        Reporter(GoldCatalog(store)).write(tmp_path / "link.html").path.read_text(encoding="utf-8")
+    )
+
+    assert 'href="https://huggingface.co/datasets/acme/alpha"' in content
+
+
+def test_外链带安全属性(store: DatasetStore, tmp_path: Path) -> None:
+    """新窗口打开且断开 opener，避免被打开方通过 window.opener 反向操作本页。"""
+    content = (
+        Reporter(GoldCatalog(store)).write(tmp_path / "safe.html").path.read_text(encoding="utf-8")
+    )
+
+    assert 'target="_blank"' in content
+    assert 'rel="noopener noreferrer"' in content

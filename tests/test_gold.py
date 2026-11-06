@@ -275,3 +275,28 @@ def test_tag_values每个维度都有数据时仍与旧写法一致(tmp_path: Pa
 
     assert dimensions == {*TAG_DIMENSIONS.values(), PLAIN_TAG_COLUMN}
     assert new.equals(old)
+
+
+# ---------------------------------------------------------------- 数据集页面地址
+
+
+def test_宽视图带可直接打开的地址(catalog: GoldCatalog) -> None:
+    """HF 不返回 url 字段，地址由 id 派生——但必须真能拼出来且拼得对。"""
+    row = catalog.run("SELECT id, url FROM datasets ORDER BY id LIMIT 1").row(0, named=True)
+
+    assert row["url"] == f"https://huggingface.co/datasets/{row['id']}"
+
+
+def test_带数据集列表的榜单都附地址(catalog: GoldCatalog) -> None:
+    for name in ("downloads", "alltime", "growth", "ranking"):
+        frame = catalog.board(name, 5)
+        assert frame.height > 0, f"{name} 应有数据"
+        assert "url" in frame.columns, f"{name} 缺 url 列"
+        assert frame["url"][0].startswith("https://huggingface.co/datasets/")
+
+
+def test_聚合类榜单不需要地址(catalog: GoldCatalog) -> None:
+    """分类榜一行是一个任务类别，没有单一数据集可指向。"""
+    frame = catalog.board("categories", 5)
+
+    assert "url" not in frame.columns

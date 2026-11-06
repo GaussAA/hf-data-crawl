@@ -19,7 +19,7 @@ from typing import Any
 import polars as pl
 
 from .atomic import write_text
-from .gold import GoldCatalog
+from .gold import DATASET_URL, GoldCatalog
 
 _ASSETS = Path(__file__).parent / "assets"
 
@@ -92,7 +92,13 @@ def _table(
             elif kind == "compact":
                 cells.append(f'<td class="num">{_compact(value)}</td>')
             elif kind == "code":
-                cells.append(f'<td class="id">{_esc(value)}</td>')
+                # 数据集名做成链接：榜单是拿来「找到东西」的，找到之后第一件事
+                # 就是去 HF 页面看。榜单 SQL 已带 url 列，缺失时按同一前缀兜底。
+                href = record.get("url") or f"{DATASET_URL}{value}"
+                cells.append(
+                    f'<td class="id"><a href="{_esc(href)}" target="_blank"'
+                    f' rel="noopener noreferrer">{_esc(value)}</a></td>'
+                )
             elif kind == "name":
                 text = _esc(value)
                 cells.append(

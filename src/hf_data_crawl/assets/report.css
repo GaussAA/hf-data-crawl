@@ -77,6 +77,11 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 tbody tr:hover{background:var(--surface)}
 tr[hidden]{display:none}
 .id{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:12px;color:#cfcfe2}
+/* 链接不使用浏览器默认蓝：整页只有一种强调色，下划线用低对比度细线，
+   hover 时才提亮——它首先是表格里的一个标识，其次才是可点的。 */
+.id a{color:inherit;text-decoration:none;border-bottom:1px solid rgba(255,255,255,.16);
+  transition:color .15s ease,border-color .15s ease}
+.id a:hover,.id a:focus-visible{color:#fff;border-bottom-color:rgba(255,255,255,.55);outline:none}
 .name{color:var(--fg)}
 .dim{color:var(--fg-mute)}
 .empty{background:var(--surface);border:1px solid var(--line);border-radius:12px;
