@@ -297,3 +297,50 @@ def test_响应头大小写不敏感() -> None:
     assert [r["id"] for page in pages for r in page.records] == ["a/1", "a/2"]
     assert pages[0].rate_remaining == 5
     assert sleeps == [11]
+
+
+# ---------------------------------------------------------------- 单库探测
+
+
+class DetailTransport:
+    """只回应单库详情：状态码或一个 JSON 体。"""
+
+    def __init__(self, status: int, body: Any = None) -> None:
+        self.status = status
+        self.body = body
+
+    def get(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> HfResponse:
+        payload = json.dumps(self.body).encode() if self.body is not None else b"{}"
+        return HfResponse(status=self.status, headers={}, body=payload)
+
+
+def test_详情返回自身id判为present而非renamed() -> None:
+    """库还在、id 没变时，详情接口返回的就是它自己的 id。
+
+    此前一律记成 resolved_id，存活的库会被标成 renamed。
+    """
+    api = HfDatasetApi(transport=DetailTransport(200, {"id": "acme/b"}))
+
+    probe = api.probe("acme/b")
+
+    assert probe.resolved_id is None
+    assert probe.verdict == "present"
+
+
+def test_详情返回新id判为renamed() -> None:
+    api = HfDatasetApi(transport=DetailTransport(200, {"id": "acme/b-v2"}))
+
+    probe = api.probe("acme/b")
+
+    assert probe.resolved_id == "acme/b-v2"
+    assert probe.verdict == "renamed"
+
+
+@pytest.mark.parametrize(
+    ("status", "verdict"),
+    [(404, "deleted"), (401, "restricted"), (403, "restricted"), (500, "unknown")],
+)
+def test_探测状态码翻译成业务结论(status: int, verdict: str) -> None:
+    api = HfDatasetApi(transport=DetailTransport(status))
+
+    assert api.probe("acme/b").verdict == verdict

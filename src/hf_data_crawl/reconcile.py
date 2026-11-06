@@ -21,16 +21,10 @@ from .atomic import write_csv
 from .checkpoint import FileCheckpoint
 from .collect import LEAN_EXPAND
 from .scan import ScanRun, ScanSpec
+from .status import INACTIVE, STATUS_BY_VERDICT, Status
 from .store import DatasetStore
 
 RECONCILE_CHECKPOINT = "reconcile-checkpoint.json"
-
-#: 探测结论 → 落库状态。`present` / `unknown` 不在表内，表示「先别动」。
-_STATUS_BY_VERDICT: dict[str, str] = {
-    "deleted": "disappeared",
-    "restricted": "restricted",
-    "renamed": "renamed",
-}
 
 REPORT_SCHEMA: dict[str, pl.DataType] = {
     "kind": pl.Utf8,
@@ -129,9 +123,7 @@ class Reconciler:
 
         new_ids = sorted(seen - before_ids)
         reactivated = sorted(
-            dataset_id
-            for dataset_id in seen
-            if before_status.get(dataset_id) in {"disappeared", "restricted", "renamed"}
+            dataset_id for dataset_id in seen if before_status.get(dataset_id) in INACTIVE
         )
         sha_changed = sorted(
             dataset_id
@@ -142,12 +134,19 @@ class Reconciler:
         disappeared: list[str] = []
         restricted: list[str] = []
         renamed: list[str] = []
+        probe_reactivated: list[str] = []
         if stopped_reason == "end":
             missing = sorted(before_ids - seen)
             verdicts = self._classify_missing(missing)
-            disappeared = [item for item, status in verdicts.items() if status == "disappeared"]
-            restricted = [item for item, status in verdicts.items() if status == "restricted"]
-            renamed = [item for item, status in verdicts.items() if status == "renamed"]
+            disappeared = [i for i, s in verdicts.items() if s is Status.DISAPPEARED]
+            restricted = [i for i, s in verdicts.items() if s is Status.RESTRICTED]
+            renamed = [i for i, s in verdicts.items() if s is Status.RENAMED]
+            # 探测证明库还在、id 没变：此前被标成非在架的，恢复为 active（自愈）。
+            probe_reactivated = [
+                i
+                for i, s in verdicts.items()
+                if s is Status.ACTIVE and before_status.get(i) in INACTIVE
+            ]
             self._store.mark_status(verdicts)
             checkpoint.save(None)
             session_path.unlink(missing_ok=True)
@@ -161,6 +160,7 @@ class Reconciler:
             reactivated,
             restricted=restricted,
             renamed=renamed,
+            probe_reactivated=probe_reactivated,
         )
 
         return ReconcileSummary(
@@ -170,7 +170,7 @@ class Reconciler:
             new_ids=len(new_ids),
             disappeared=len(disappeared),
             sha_changed=len(sha_changed),
-            reactivated=len(reactivated),
+            reactivated=len(reactivated) + len(probe_reactivated),
             report_path=report_path,
             stopped_reason=stopped_reason,
             elapsed_seconds=time.monotonic() - started,
@@ -179,7 +179,7 @@ class Reconciler:
             renamed=len(renamed),
         )
 
-    def _classify_missing(self, missing: list[str]) -> dict[str, str]:
+    def _classify_missing(self, missing: list[str]) -> dict[str, Status]:
         """复核「没扫到」的真实原因，返回 id → 状态。
 
         列表扫描看不见一个库，可能是删除、转私有或改名。直接问一次详情接口即可
@@ -191,10 +191,10 @@ class Reconciler:
         if not missing:
             return {}
 
-        verdicts: dict[str, str] = {}
+        verdicts: dict[str, Status] = {}
         with ThreadPoolExecutor(max_workers=self._probe_workers) as pool:
             for dataset_id, probe in zip(missing, pool.map(self._api.probe, missing)):
-                status = _STATUS_BY_VERDICT.get(probe.verdict)
+                status = STATUS_BY_VERDICT.get(probe.verdict)
                 if status is not None:
                     verdicts[dataset_id] = status
         return verdicts
@@ -234,6 +234,7 @@ class Reconciler:
         *,
         restricted: list[str] | None = None,
         renamed: list[str] | None = None,
+        probe_reactivated: list[str] | None = None,
     ) -> Path:
         rows: list[dict[str, Any]] = [
             {"kind": "run", "id": "", "detail": f"stopped_reason={stopped_reason}"}
@@ -244,6 +245,10 @@ class Reconciler:
         rows += [{"kind": "renamed", "id": item, "detail": ""} for item in renamed or []]
         rows += [{"kind": "sha_changed", "id": item, "detail": ""} for item in sha_changed]
         rows += [{"kind": "reactivated", "id": item, "detail": ""} for item in reactivated]
+        rows += [
+            {"kind": "reactivated", "id": item, "detail": "probe"}
+            for item in probe_reactivated or []
+        ]
 
         self._report_dir.mkdir(parents=True, exist_ok=True)
         path = self._report_dir / f"reconcile-{snapshot_date.isoformat()}.csv"

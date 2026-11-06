@@ -137,8 +137,10 @@ class Probe:
     def verdict(self) -> str:
         """把 HTTP 状态翻译成业务语义。
 
-        - 200：库还在，只是 id 变了（HF 支持改名，会 307 到新地址，
-          transport 已跟随重定向，故这里看到的是最终的 200）；
+        - 200 且 `resolved_id` 非空：库还在，只是 id 变了（HF 支持改名，会 307
+          到新地址，transport 已跟随重定向，故这里看到的是最终的 200）；
+          `resolved_id` 只在与请求的 id 不同时才有值；
+        - 200 且 `resolved_id` 为空：库还在，id 没变（present）；
         - 401/403：转为私有或需授权，数据仍在，不该算「消失」；
         - 404：真的没了。
         """
@@ -265,7 +267,10 @@ class HfDatasetApi:
         except (UnicodeDecodeError, json.JSONDecodeError):
             return Probe(status=response.status)
         resolved = payload.get("id") if isinstance(payload, dict) else None
-        return Probe(status=200, resolved_id=resolved)
+        # 只有返回的 id 与请求的不同才算改名：库还在、id 没变时详情返回的就是
+        # 它自己的 id，若一律记下，存活的库会被判成 renamed。
+        renamed_to = resolved if isinstance(resolved, str) and resolved != dataset_id else None
+        return Probe(status=200, resolved_id=renamed_to or None)
 
     def _request(self, params: dict[str, Any]) -> HfResponse:
         attempt = 0

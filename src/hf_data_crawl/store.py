@@ -22,6 +22,7 @@ from .atomic import write_bytes, write_parquet
 from .card import extract_card_row, extract_config_rows
 from .coerce import as_bool, as_float, as_int, as_json, as_text
 from .silver import derive_row
+from .status import Status
 from .tables import (
     BRONZE_SCHEMA,
     CARD_CONFIGS_SCHEMA,
@@ -343,22 +344,24 @@ class DatasetStore:
         # status 缺失时视为全部在架，沿用历史语义。
         frame = _align_frame(pl.read_parquet(target), CURRENT_SCHEMA)
         if frame["status"].null_count():
-            frame = frame.with_columns(pl.col("status").fill_null("active"))
+            frame = frame.with_columns(pl.col("status").fill_null(Status.ACTIVE.value))
         return frame
 
-    def mark_disappeared(self, dataset_ids: list[str]) -> int:
-        """把指定数据集标为下架。只改状态，不动观测史与 last_seen_at。"""
-        return self.mark_status({dataset_id: "disappeared" for dataset_id in dataset_ids})
-
     def mark_status(self, updates: dict[str, str]) -> int:
-        """按 id 批量改状态，返回实际发生变化的行数。
+        """按 id 批量改状态，返回实际发生变化的行数。只改状态，不动观测史。
 
         状态不再只有「在架/下架」两极：`restricted` 表示转为私有、`renamed` 表示
         改名（原 id 失效但库还在）。把它们一律记成 disappeared，会让下架数虚高，
         也让改名后的库在下轮变成「新增」而丢掉原有观测史。
+
+        取值必须在 `Status` 词表内，未知值直接报错而不是静默落库。
         """
         if not updates:
             return 0
+        known = {status.value for status in Status}
+        unknown = sorted({value for value in updates.values() if value not in known})
+        if unknown:
+            raise ValueError(f"未知的状态值: {unknown}，可选：{sorted(known)}")
         current = self.read_current()
         if current.height == 0:
             return 0
@@ -436,7 +439,7 @@ class DatasetStore:
 
         today = silver.select(list(_CURRENT_CARRIED)).with_columns(
             pl.lit(snapshot_date, dtype=pl.Date).alias("last_seen_at"),
-            pl.lit("active").alias("status"),
+            pl.lit(Status.ACTIVE.value).alias("status"),
         )
 
         first_seen = (

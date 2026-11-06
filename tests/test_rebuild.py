@@ -185,10 +185,10 @@ def test_上次重建中断时仍能从快照恢复状态(store: DatasetStore) -
     """
     import shutil
 
-    from hf_data_crawl.rebuild import _write_status_snapshot
+    from hf_data_crawl.status import retain
 
     store.mark_status({"acme/ds-2": "restricted"})
-    _write_status_snapshot(store, {"acme/ds-2": "restricted"})
+    retain(store)  # 重建的第一步：快照落盘
     # 模拟中断现场：快照已落盘，state 已被清空，状态还没写回
     shutil.rmtree(store.state_dir)
 
@@ -197,11 +197,21 @@ def test_上次重建中断时仍能从快照恢复状态(store: DatasetStore) -
     assert status_of(store, "acme/ds-2") == "restricted"
 
 
-def test_重建后快照仍保留以便再次中断时可用(store: DatasetStore) -> None:
+def test_重建成功后快照被删除(store: DatasetStore) -> None:
+    """快照只表示「重建进行中」；留着会被下一次重建当成「上次被打断」。"""
     store.mark_status({"acme/ds-1": "renamed"})
 
     rebuild_from_raw(store)
 
-    snapshot = store.root / "meta" / "failed-status.json"
-    assert snapshot.exists()
-    assert "acme/ds-1" in snapshot.read_text(encoding="utf-8")
+    assert not (store.root / "meta" / "failed-status.json").exists()
+    assert status_of(store, "acme/ds-1") == "renamed"
+
+
+def test_重建后已恢复的库不会被旧快照改回去(store: DatasetStore) -> None:
+    store.mark_status({"acme/ds-2": "restricted"})
+    rebuild_from_raw(store)
+    store.mark_status({"acme/ds-2": "active"})  # 之后对账把它恢复了
+
+    rebuild_from_raw(store)
+
+    assert status_of(store, "acme/ds-2") == "active"

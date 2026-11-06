@@ -14,7 +14,7 @@ import polars as pl
 import pytest
 
 from hf_data_crawl import gold
-from hf_data_crawl.rebuild import _clear
+from hf_data_crawl.rebuild import _clear, clear_derived
 from hf_data_crawl.store import DatasetStore
 from hf_data_crawl.tables import TABLES, Origin, TableSpec, table
 
@@ -94,10 +94,7 @@ def test_重建只跳过网络来源的表(tmp_path: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"placeholder")
 
-    for spec in TABLES.values():
-        if spec.origin is Origin.NETWORK:
-            continue
-        _clear(store, spec)
+    clear_derived(store)
 
     surviving = [
         spec.name

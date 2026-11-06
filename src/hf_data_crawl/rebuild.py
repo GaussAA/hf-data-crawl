@@ -6,15 +6,11 @@ Raw 是唯一事实来源：派生规则变了、派生层坏了，都只需跑�
 
 from __future__ import annotations
 
-import json
 import shutil
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
 
-import polars as pl
-
-from .atomic import write_text
+from .status import restore, retain
 from .store import DatasetStore
 from .tables import TABLES, Origin, TableSpec
 
@@ -57,31 +53,11 @@ def rebuild_from_raw(store: DatasetStore) -> RebuildSummary:
     # 失效状态不是从 raw 派生的：它来自对账时的单库探测（404/401/307），
     # 而 update_state 会把本轮出现的每条记录都置为 active——直接重建等于把
     # 全部 restricted / renamed 判断清零。2026-11-05 实测踩到：463 条失效标记
-    # 在一次 build 后归零，页面上「已失效」变成 0。
-    # 故重建前留存，重建后写回。这是「Raw 是唯一事实来源」的一个例外，
-    # 例外的边界写在 GLOSSARY.md 第 15 条。
-    #
-    # 留存分两步：先读（current 优先，为空则读上次的快照），再立刻把快照写盘。
-    # 光读内存不够——rebuild 不是事务性的，清除 state 与写回状态之间若被打断
-    # （实测：一次 build 被 SIGTERM 杀掉），那些判断就永久丢了。
-    carried_status = _failed_status(store) or _read_status_snapshot(store)
-    if carried_status:
-        _write_status_snapshot(store, carried_status)
+    # 在一次 build 后归零。故清理前留存、重建后写回，协议见 `status` 模块；
+    # 这是「Raw 是唯一事实来源」的一个例外，边界写在 GLOSSARY.md 第 15、18、26 条。
+    retained = retain(store)
 
-    # 清不清除，由登记表的 origin 决定，不再靠手工清单：
-    # RAW / STATE 都能从 Raw 重算，NETWORK 删了就得重抓（size.parquet 两万条约 13 分钟）。
-    # 2026-11-05 的「build 误删规模表」就是因为这张清单写在 rebuild 里，而
-    # 「该表不从 raw 派生」这个事实写在 sizes.py，两边都不知道对方。
-    for spec in TABLES.values():
-        if spec.origin is Origin.NETWORK:
-            continue
-        _clear(store, spec)
-
-    # state 目录下还散落着游标与会话文件，它们不属于任何表，重建后同样作废。
-    for stale in list(store.state_dir.glob("*.json")) + list(
-        store.state_dir.glob("reconcile-seen-*.csv")
-    ):
-        stale.unlink(missing_ok=True)
+    clear_derived(store)
 
     bronze_rows = 0
     silver_rows = 0
@@ -91,8 +67,7 @@ def rebuild_from_raw(store: DatasetStore) -> RebuildSummary:
         store.build_enrich(snapshot)
         store.update_state(snapshot)
 
-    if carried_status:
-        store.mark_status(carried_status)
+    restore(store, retained)
 
     return RebuildSummary(
         dates=dates,
@@ -105,6 +80,26 @@ def rebuild_from_raw(store: DatasetStore) -> RebuildSummary:
     )
 
 
+def clear_derived(store: DatasetStore) -> None:
+    """清除所有能从 Raw 重算的产物。
+
+    清不清除，由登记表的 origin 决定，不靠手工清单：RAW / STATE 都能重算，
+    NETWORK 删了就得重抓（size.parquet 两万条约 13 分钟）。2026-11-05 的
+    「build 误删规模表」就是因为这张清单写在 rebuild 里，而「该表不从 raw 派生」
+    这个事实写在 sizes.py，两边都不知道对方。
+    """
+    for spec in TABLES.values():
+        if spec.origin is Origin.NETWORK:
+            continue
+        _clear(store, spec)
+
+    # state 目录下还散落着游标与会话文件，它们不属于任何表，重建后同样作废。
+    for stale in list(store.state_dir.glob("*.json")) + list(
+        store.state_dir.glob("reconcile-seen-*.csv")
+    ):
+        stale.unlink(missing_ok=True)
+
+
 def _clear(store: DatasetStore, spec: TableSpec) -> None:
     """按表的形态清除：分区表删其父目录，单文件表删文件本身。"""
     if spec.partitioned:
@@ -112,41 +107,3 @@ def _clear(store: DatasetStore, spec: TableSpec) -> None:
         shutil.rmtree(parent, ignore_errors=True)
     else:
         (store.root / spec.path).unlink(missing_ok=True)
-
-
-def _failed_status(store: DatasetStore) -> dict[str, str]:
-    """重建前留存「非在架」状态，供重建后写回。"""
-    current = store.read_current()
-    if current.height == 0:
-        return {}
-    stale = current.filter(pl.col("status") != "active")
-    return dict(zip(stale["id"].to_list(), stale["status"].to_list()))
-
-
-def _snapshot_path(store: DatasetStore) -> Path:
-    # 放在 meta/ 而非 state/：它不属于任何登记表，重建清不到它。
-    return store.root / "meta" / "failed-status.json"
-
-
-def _read_status_snapshot(store: DatasetStore) -> dict[str, str]:
-    """读上次留下的失效状态快照。
-
-    只在 current 里读不到时使用——典型场景是上一次 rebuild 在「已清空 state、
-    未写回状态」之间被打断。
-    """
-    path = _snapshot_path(store)
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-    return (
-        {str(key): str(value) for key, value in payload.items()}
-        if isinstance(payload, dict)
-        else {}
-    )
-
-
-def _write_status_snapshot(store: DatasetStore, status: dict[str, str]) -> None:
-    write_text(_snapshot_path(store), json.dumps(status, ensure_ascii=False, sort_keys=True))

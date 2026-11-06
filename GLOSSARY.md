@@ -16,7 +16,8 @@
 | **Cursor page** | 一次列表请求的结果，下一页地址在响应头 `Link: rel="next"` 的 `cursor` 参数里 | 不是 offset 分页，HF 已无 `page` 参数 |
 | **Watermark** | 增量扫描的停止条件，表示「早于此刻的记录本轮不必再看」 | 不是 `max(lastModified)`——实测存在 2028 年的异常值 |
 | **Reconcile** | 全量核对：确认哪些 Dataset 仍在、哪些已下架、哪些字段被外部改动 | 不是重新抓一遍就完事，核心产出是差异 |
-| **Disappeared** | 曾入库、本轮全量核对未再出现的 Dataset | 不是删除——本地观测史必须保留 |
+| **Status** | `current.status` 的取值，四值：`active` / `disappeared` / `restricted` / `renamed`，词表即 `status.Status`，写入时校验。探测结论到状态的映射也在 `status.py`：`deleted→disappeared`、`restricted→restricted`、`renamed→renamed`、`present→active` | 不是 `Disappeared` 的同义词；「没扫到」不等于 `disappeared` |
+| **Disappeared** | 全量核对没扫到、且单库探测返回 404 的 Dataset（Status 的一个取值） | 不是删除——本地观测史必须保留；转私有是 `restricted`，改名是 `renamed` |
 | **Observation** | 某一轮对某 Dataset 指标的一次读数，带 `snapshot_date` | 不是当前态；当前态只有一行 |
 
 ## 分层
@@ -78,3 +79,5 @@
     铁律是**取不到留 None，绝不猜**：`private: "true"` 是字符串不是布尔，猜成 True 会让「是否受限」失去可信度。此前 `_as_int` 在三处逐字相同、`_as_text` 同名而异义（一处 `str()`、一处逗号拼接）。
 26. **`rebuild` 不是事务性的**（2026-11-05 实测）：它在「清除 state」与「写回失效状态」之间被打断时，那些不来自 raw 的判断会**永久丢失**——一次 build 被 SIGTERM 杀掉，456 条 `restricted` / `renamed` 全部归零。
     故状态在清理**之前**写入 `meta/failed-status.json`（不属于任何登记表，清理够不到），下次 build 从快照接上。
+    **快照只表示「重建进行中」**（`status.retain` / `status.restore`）：写回成功后立刻删除。留着的话，下一次重建会把它当成「上次被打断」，把期间已恢复的库改回旧状态。
+    已接受的缝隙：写回完成、快照尚未删除时被杀，且之后又有对账恢复了某个库，下次重建会被旧快照改回——窗口极窄，不做合并逻辑。

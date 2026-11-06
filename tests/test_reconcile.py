@@ -279,3 +279,30 @@ def test_恢复判定覆盖私有与改名(store: DatasetStore) -> None:
 
     assert summary.reactivated == 1
     assert status_of(store, "acme/b") == "active"
+
+
+# ---------------------------------------------------------------- 探测自愈
+
+
+def test_探测证明还在的误标库恢复在架并计入reactivated(store: DatasetStore) -> None:
+    """历史上被误标成 renamed 的存活库，下一次对账探测到 present 时自愈。"""
+    store.mark_status({"acme/b": "renamed"})
+    transport = FakeCursorTransport([[record("a", "sha-a1")]], detail={"acme/b": {"id": "acme/b"}})
+
+    summary = reconciler(transport, store).run(DAY2, limit=100)
+
+    assert status_of(store, "acme/b") == "active"
+    assert summary.reactivated == 1
+    assert summary.renamed == 0
+    report = pl.read_csv(summary.report_path)
+    probed = report.filter((pl.col("kind") == "reactivated") & (pl.col("detail") == "probe"))
+    assert probed["id"].to_list() == ["acme/b"]
+
+
+def test_探测证明还在但本就在架的库不计入reactivated(store: DatasetStore) -> None:
+    transport = FakeCursorTransport([[record("a", "sha-a1")]], detail={"acme/b": {"id": "acme/b"}})
+
+    summary = reconciler(transport, store).run(DAY2, limit=100)
+
+    assert status_of(store, "acme/b") == "active"
+    assert summary.reactivated == 0
