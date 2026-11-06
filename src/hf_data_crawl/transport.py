@@ -36,8 +36,10 @@ class HttpxTransport:
                 proxy=self._proxy, timeout=self._timeout, follow_redirects=True
             ) as client:
                 response = client.get(url, params=params, headers=request_headers)
-        except httpx.HTTPError as error:
+        except (httpx.HTTPError, httpx.InvalidURL) as error:
             # 统一成 TransportError，让上层只依赖一种失败类型，且无需 import httpx。
+            # InvalidURL 不是 HTTPError 的子类（实测 MRO：InvalidURL → Exception），
+            # 代理或 NO_PROXY 写坏时从这里抛出，漏掉它会绕过重试与失败留痕。
             raise TransportError(f"{type(error).__name__}: {error}") from error
         return HfResponse(
             status=response.status_code,

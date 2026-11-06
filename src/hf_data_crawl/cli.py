@@ -16,6 +16,7 @@ from .api import MAX_LIMIT, HfDatasetApi, Transport
 from .collect import Collector, CollectSummary
 from .enrich import Enricher, EnrichSummary
 from .gold import BOARDS, GoldCatalog, GoldNotReady
+from .lock import exclusive
 from .rebuild import RebuildSummary, rebuild_from_raw
 from .reconcile import Reconciler, ReconcileSummary
 from .report import Reporter
@@ -23,6 +24,10 @@ from .runs import Outcome, write_run
 from .sizes import HfSizeApi, SizeFetcher, SizeSummary, tail
 from .store import DatasetStore
 from .transport import HttpxTransport
+
+#: 会改写数据目录的命令，执行期间持有独占锁。report 只写自己的 HTML（原子替换），
+#: query 只读，二者不需要。
+WRITE_COMMANDS = frozenset({"collect", "reconcile", "build", "enrich", "fetch-sizes"})
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -133,7 +138,12 @@ def _execute(
     """
     started = datetime.now()
     try:
-        outcome = action()
+        if command in WRITE_COMMANDS:
+            # 写命令互斥：拿不到锁就如实失败并留下 runs 记录，而不是并发写坏 current。
+            with exclusive(store.root, command):
+                outcome = action()
+        else:
+            outcome = action()
     except Exception as error:
         reason = f"{type(error).__name__}: {error}"
         outcome = Outcome(payload={"error": reason}, code=1, reason=reason)
