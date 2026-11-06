@@ -2,11 +2,12 @@
 
 铁律：只有「扫到末页」才允许判定下架。有界扫描（max_pages）属于没扫完，
 此时若照常判定，会把整站未扫到的部分全标成下架——这是不可逆的误判。
+
+续跑所需的游标、已见集合与基线由 `session.ReconcileSession` 拥有，本模块不碰文件。
 """
 
 from __future__ import annotations
 
-import csv
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -18,9 +19,9 @@ import polars as pl
 
 from .api import MAX_LIMIT, HfDatasetApi, Page
 from .atomic import write_csv
-from .checkpoint import FileCheckpoint
 from .collect import LEAN_EXPAND
 from .scan import ScanRun, ScanSpec
+from .session import ReconcileSession
 from .status import INACTIVE, STATUS_BY_VERDICT, Status
 from .store import DatasetStore
 
@@ -35,6 +36,12 @@ REPORT_SCHEMA: dict[str, pl.DataType] = {
 
 @dataclass(frozen=True)
 class ReconcileSummary:
+    """一轮对账的摘要。
+
+    `pages` / `records` 是**本轮**的数；`new_ids` / `sha_changed` / `reactivated`
+    等差异计数反映**整个会话**（续跑时包含上半段），与单次跑完一致。
+    """
+
     snapshot_date: date
     pages: int
     records: int
@@ -48,6 +55,8 @@ class ReconcileSummary:
     resumed: bool = False
     restricted: int = 0
     renamed: int = 0
+    #: 发现了旧版本留下的会话（有游标、无基线），已丢弃并从头开始。
+    discarded_stale_session: bool = False
 
 
 class Reconciler:
@@ -76,27 +85,14 @@ class Reconciler:
         max_pages: int | None = None,
     ) -> ReconcileSummary:
         started = time.monotonic()
-        checkpoint = FileCheckpoint(self._store.state_dir / self._checkpoint_filename)
-        resumed = checkpoint.cursor is not None
 
-        before = self._store.read_current()
-        before_ids = set(before["id"].to_list())
-        before_sha = dict(zip(before["id"].to_list(), before["sha"].to_list()))
-        before_status = dict(zip(before["id"].to_list(), before["status"].to_list()))
-
-        # 已扫描过的 id 必须与游标一同持久化：只存游标的话，续跑后「见过谁」是空的，
-        # 前半段会被整片误判为下架（实测一次就误杀了 4.6 万条）。
-        session_path = self._store.state_dir / f"reconcile-seen-{snapshot_date.isoformat()}.csv"
-        if checkpoint.cursor is None:
-            session_path.unlink(missing_ok=True)
-
-        pages = 0
-        records = 0
-        stopped_reason = "end"
+        # 基线在会话开始时固定：有界停止那一轮也会更新 current，续跑若再读 current，
+        # 上半段的新增与 sha 变更就被当成「本来就有」而丢掉。
+        session = ReconcileSession.open(self._store, checkpoint_filename=self._checkpoint_filename)
 
         def remember(page: Page, _index: int) -> str | None:
-            """把本页 id 追加进会话文件。续跑时靠它知道「前半段见过谁」。"""
-            self._append_session(session_path, page.records)
+            """把本页 id 追加进已见集合。幂等：ScanRun 在存游标之前调用它。"""
+            session.remember(page.records)
             return None
 
         scan = ScanRun(self._api, self._store).run(
@@ -107,37 +103,27 @@ class Reconciler:
                 mode="reconcile",
                 limit=limit,
                 max_pages=max_pages,
-                checkpoint=checkpoint,
+                checkpoint=session.checkpoint,
                 on_page=remember,
             ),
         )
-        pages = scan.pages
-        records = scan.records
         stopped_reason = scan.stopped_reason
 
         self._store.build_bronze(snapshot_date)
         self._store.build_silver(snapshot_date)
         self._store.update_state(snapshot_date)
 
-        seen, seen_sha = self._load_session(session_path)
-
-        new_ids = sorted(seen - before_ids)
-        reactivated = sorted(
-            dataset_id for dataset_id in seen if before_status.get(dataset_id) in INACTIVE
-        )
-        sha_changed = sorted(
-            dataset_id
-            for dataset_id in seen & before_ids
-            if before_sha.get(dataset_id) != seen_sha.get(dataset_id)
-        )
+        diff = session.diff()
+        new_ids = diff.new
+        sha_changed = diff.sha_changed
+        reactivated = diff.reactivated
 
         disappeared: list[str] = []
         restricted: list[str] = []
         renamed: list[str] = []
         probe_reactivated: list[str] = []
         if stopped_reason == "end":
-            missing = sorted(before_ids - seen)
-            verdicts = self._classify_missing(missing)
+            verdicts = self._classify_missing(diff.missing)
             disappeared = [i for i, s in verdicts.items() if s is Status.DISAPPEARED]
             restricted = [i for i, s in verdicts.items() if s is Status.RESTRICTED]
             renamed = [i for i, s in verdicts.items() if s is Status.RENAMED]
@@ -145,11 +131,10 @@ class Reconciler:
             probe_reactivated = [
                 i
                 for i, s in verdicts.items()
-                if s is Status.ACTIVE and before_status.get(i) in INACTIVE
+                if s is Status.ACTIVE and session.status_before(i) in INACTIVE
             ]
             self._store.mark_status(verdicts)
-            checkpoint.save(None)
-            session_path.unlink(missing_ok=True)
+            session.close()
 
         report_path = self._write_report(
             snapshot_date,
@@ -165,8 +150,8 @@ class Reconciler:
 
         return ReconcileSummary(
             snapshot_date=snapshot_date,
-            pages=pages,
-            records=records,
+            pages=scan.pages,
+            records=scan.records,
             new_ids=len(new_ids),
             disappeared=len(disappeared),
             sha_changed=len(sha_changed),
@@ -174,9 +159,10 @@ class Reconciler:
             report_path=report_path,
             stopped_reason=stopped_reason,
             elapsed_seconds=time.monotonic() - started,
-            resumed=resumed,
+            resumed=session.resumed,
             restricted=len(restricted),
             renamed=len(renamed),
+            discarded_stale_session=session.discarded,
         )
 
     def _classify_missing(self, missing: list[str]) -> dict[str, Status]:
@@ -193,35 +179,11 @@ class Reconciler:
 
         verdicts: dict[str, Status] = {}
         with ThreadPoolExecutor(max_workers=self._probe_workers) as pool:
-            for dataset_id, probe in zip(missing, pool.map(self._api.probe, missing)):
+            for dataset_id, probe in zip(missing, pool.map(self._api.probe, missing), strict=True):
                 status = STATUS_BY_VERDICT.get(probe.verdict)
                 if status is not None:
                     verdicts[dataset_id] = status
         return verdicts
-
-    @staticmethod
-    def _append_session(path: Path, records: list[dict[str, Any]]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        write_header = not path.exists()
-        with path.open("a", encoding="utf-8", newline="") as handle:
-            writer = csv.writer(handle)
-            if write_header:
-                writer.writerow(["id", "sha"])
-            for record in records:
-                writer.writerow([record["id"], record.get("sha") or ""])
-
-    @staticmethod
-    def _load_session(path: Path) -> tuple[set[str], dict[str, str | None]]:
-        if not path.exists():
-            return set(), {}
-        frame = pl.read_csv(
-            path,
-            schema={"id": pl.Utf8, "sha": pl.Utf8},
-            truncate_ragged_lines=True,
-        )
-        ids = frame["id"].to_list()
-        shas = frame["sha"].to_list()
-        return set(ids), dict(zip(ids, [item or None for item in shas]))
 
     def _write_report(
         self,

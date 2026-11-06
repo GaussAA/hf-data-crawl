@@ -1,4 +1,4 @@
-"""一轮扫描：翻页 → 落盘 → 存游标 → 判停止。
+"""一轮扫描：翻页 → 落盘 → 钩子 → 存游标 → 判停止。
 
 为什么需要它
 ------------
@@ -26,6 +26,7 @@ from .checkpoint import Checkpoint
 from .store import DatasetStore
 
 #: 每页钩子。返回非 None 表示「到此为止」，返回值即停止原因。
+#: 钩子在保存游标之前执行，可能因续跑被重复调用，副作用须幂等。
 PageHook = Callable[[Page, int], str | None]
 
 
@@ -102,16 +103,20 @@ class ScanRun:
                     label=spec.label,
                 )
 
-            # 必须在写盘之后、任何可能 break 的判断之前保存：调用方随时可能
-            # 在下一页之前停下，而生成器此刻已暂停。
+            # 顺序：写盘 → 钩子 → 存游标 → 判停止。
+            # 钩子在存游标之前：钩子可能带副作用（如对账追加已见集合），若游标先存、
+            # 钩子后跑，两者之间被打断，续跑会从下一页开始而这一页的副作用丢了。
+            # 反过来最坏只是重做一页的副作用，要求钩子幂等即可。
+            hint = spec.on_page(page, pages) if spec.on_page is not None else None
+
+            # 必须在任何 break 之前保存：调用方随时可能在下一页之前停下，
+            # 而生成器此刻已暂停，它内部那句 save 不会执行。
             if spec.checkpoint is not None:
                 spec.checkpoint.save(page.next_cursor)
 
-            if spec.on_page is not None:
-                hint = spec.on_page(page, pages)
-                if hint is not None:
-                    stopped_reason = hint
-                    break
+            if hint is not None:
+                stopped_reason = hint
+                break
 
             if spec.max_pages is not None and pages >= spec.max_pages:
                 stopped_reason = "max_pages"

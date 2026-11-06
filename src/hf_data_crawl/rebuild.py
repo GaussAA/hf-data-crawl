@@ -94,9 +94,14 @@ def clear_derived(store: DatasetStore) -> None:
         _clear(store, spec)
 
     # state 目录下还散落着游标与会话文件，它们不属于任何表，重建后同样作废。
-    for stale in list(store.state_dir.glob("*.json")) + list(
-        store.state_dir.glob("reconcile-seen-*.csv")
-    ):
+    # 对账会话（已见集合、基线）同样作废：游标已被上面的 *.json 清掉，留着它们
+    # 会让下一次对账把残留当成续跑。
+    stale_files = [
+        *store.state_dir.glob("*.json"),
+        *store.state_dir.glob("reconcile-*.csv"),
+        *store.state_dir.glob("reconcile-baseline.parquet"),
+    ]
+    for stale in stale_files:
         stale.unlink(missing_ok=True)
 
 

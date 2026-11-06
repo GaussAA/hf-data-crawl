@@ -145,6 +145,53 @@ def test_中途停止时最后一页的游标也已保存(store: DatasetStore) -
     assert checkpoint.saved == ["c2", "c3"], "第二页的游标必须在 break 之前落盘"
 
 
+def test_钩子先于游标保存(store: DatasetStore) -> None:
+    """钩子带副作用时，先存游标会在两者之间留下「少做一页」的窗口。"""
+    events: list[str] = []
+
+    class OrderedCheckpoint:
+        @property
+        def cursor(self) -> str | None:
+            return None
+
+        def save(self, cursor: str | None) -> None:
+            events.append(f"save:{cursor}")
+
+    def hook(_page: Page, index: int) -> None:
+        events.append(f"hook:{index}")
+        return None
+
+    api = FakeScanApi([page("a", cursor="c2"), page("b", cursor=None)])
+
+    ScanRun(api, store).run(DAY, spec(checkpoint=OrderedCheckpoint(), on_page=hook))
+
+    assert events == ["hook:1", "save:c2", "hook:2", "save:None"]
+
+
+def test_钩子之后被打断时已见集合不缺页(store: DatasetStore) -> None:
+    """模拟被杀在「钩子」与「存游标」之间：续跑会重抓这一页，最坏是重复追加。"""
+    from hf_data_crawl.session import ReconcileSession
+
+    checkpoint_name = "reconcile-checkpoint.json"
+    session = ReconcileSession.open(store, checkpoint_filename=checkpoint_name)
+
+    def remember_then_die(page_obj: Page, index: int) -> None:
+        session.remember(page_obj.records)
+        if index == 2:
+            raise KeyboardInterrupt
+        return None
+
+    api = FakeScanApi([page("a", cursor="c2"), page("b", cursor="c3"), page("c", cursor=None)])
+    with pytest.raises(KeyboardInterrupt):
+        ScanRun(api, store).run(DAY, spec(checkpoint=session.checkpoint, on_page=remember_then_die))
+
+    resumed = ReconcileSession.open(store, checkpoint_filename=checkpoint_name)
+
+    assert resumed.resumed is True
+    assert resumed.checkpoint.cursor == "c2", "第 2 页的游标没存，续跑会重抓它"
+    assert set(resumed.seen()) == {"a", "b"}, "第 2 页的 id 已在钩子里记下，不缺页"
+
+
 def test_不传游标时不保存任何东西(store: DatasetStore) -> None:
     api = FakeScanApi([page("a", cursor=None)])
 

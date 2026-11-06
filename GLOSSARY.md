@@ -17,6 +17,7 @@
 | **Watermark** | 增量扫描的停止条件，表示「早于此刻的记录本轮不必再看」 | 不是 `max(lastModified)`——实测存在 2028 年的异常值 |
 | **Reconcile** | 全量核对：确认哪些 Dataset 仍在、哪些已下架、哪些字段被外部改动 | 不是重新抓一遍就完事，核心产出是差异 |
 | **Status** | `current.status` 的取值，四值：`active` / `disappeared` / `restricted` / `renamed`，词表即 `status.Status`，写入时校验。探测结论到状态的映射也在 `status.py`：`deleted→disappeared`、`restricted→restricted`、`renamed→renamed`、`present→active` | 不是 `Disappeared` 的同义词；「没扫到」不等于 `disappeared` |
+| **Reconcile session** | 一次（可能分段的）全量核对的游标、已见集合与基线，同键、同生命周期，由 `session.ReconcileSession` 拥有；基线固定在会话开始时，分段跑与单次跑的差异计数必须一致 | 不是 `Checkpoint`——后者只记游标一件事 |
 | **Disappeared** | 全量核对没扫到、且单库探测返回 404 的 Dataset（Status 的一个取值） | 不是删除——本地观测史必须保留；转私有是 `restricted`，改名是 `renamed` |
 | **Observation** | 某一轮对某 Dataset 指标的一次读数，带 `snapshot_date` | 不是当前态；当前态只有一行 |
 
@@ -62,9 +63,9 @@
 19. **表身份登记在 `tables.py`**（2026-11-05）：每个 `TableSpec` 记录名字、路径模板（`{dt}` 表示按日分区）、schema 与 `Origin`（`RAW` / `NETWORK` / `STATE`）。读写、Gold 视图、重建清理一律从它派生。
     **`Origin` 决定重建时该不该删**——`NETWORK` 表（目前只有 `size`）删了就得重抓，必须保留；`RAW` 与 `STATE` 可重算，重建时清除。
     此前这门知识散在五处（store 的文件名常量、各模块的 schema、gold 的硬编码路径、rebuild 的删除清单、README 的目录树），任一处改名都不报错：gold 的 glob 落空会静默退化成空视图，rebuild 曾因此误删两万条规模数据。
-20. **一轮扫描的时序只有一处实现**（`scan.ScanRun`，2026-11-05）：翻页 → 落盘 → 存游标 → 判停止。四个调用方（日增量、顶部刷新、全量对账、卡片补齐）只提供 `ScanSpec` 策略。
+20. **一轮扫描的时序只有一处实现**（`scan.ScanRun`，2026-11-05）：翻页 → 落盘 → 页钩子 → 存游标 → 判停止。四个调用方（日增量、顶部刷新、全量对账、卡片补齐）只提供 `ScanSpec` 策略。
     两条不变量写在这个 module 里而不交给调用方：
-    ① **游标必须在写盘之后、任何 break 判断之前保存**——调用方随时可能停在下一页之前，而 `api.scan` 的生成器此刻已暂停，它内部那句 `save` 不会执行，续跑会重抓上一页；
+    ① **游标必须在写盘之后、任何 break 判断之前保存**——调用方随时可能停在下一页之前，而 `api.scan` 的生成器此刻已暂停，它内部那句 `save` 不会执行，续跑会重抓上一页。**页钩子排在存游标之前**：钩子带副作用（对账追加已见集合），若游标先存，两者之间被杀，续跑会跳过这一页的副作用；反过来最坏只是重做一页，所以钩子必须幂等；
     ② **页数上限由本层判定而非传给生成器**——生成器到限时是静默 `return`，只有本层判才能说出准确的停止原因（`max_pages` 与 `end` 必须能区分，前者要保住游标）。
 21. **命令的成败只有一个判定点**（`runs.Outcome`，2026-11-05）：命令返回 `Outcome(payload, code, reason)`，`_execute` 据 `failed` 写唯一一份运行记录，`write_run` **不接受外部传入的 status**——可传的 status 一定有传错的那天。
     此前异常路径写 `failed`、正常返回一律写 `success`，于是 `report` 在无数据时退出码 1、`runs/` 里却是成功记录：同一条命令的结局被劈成两半。

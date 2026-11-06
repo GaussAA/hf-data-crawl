@@ -191,7 +191,8 @@ def test_完成后清理扫描会话文件(store: DatasetStore) -> None:
 
     reconciler(transport, store).run(DAY2, limit=100)
 
-    assert not list(store.state_dir.glob("reconcile-seen-*.csv"))
+    assert not list(store.state_dir.glob("reconcile-*.csv"))
+    assert not (store.state_dir / "reconcile-baseline.parquet").exists()
 
 
 def test_全量扫描使用createdAt稳定序(store: DatasetStore) -> None:
@@ -306,3 +307,82 @@ def test_探测证明还在但本就在架的库不计入reactivated(store: Data
 
     assert status_of(store, "acme/b") == "active"
     assert summary.reactivated == 0
+
+
+# ---------------------------------------------------------------- 续跑一致性
+
+
+class ProbeRecordingTransport(FakeCursorTransport):
+    """记下哪些 id 被送去单库探测。"""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.probed: list[str] = []
+
+    def get(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> HfResponse:
+        if "blobs" in params:
+            self.probed.append(url.split("/api/datasets/", 1)[-1])
+        return super().get(url, params, headers)
+
+
+def _pages() -> list[list[dict[str, Any]]]:
+    return [
+        [record("a", "sha-a2"), record("c", "sha-c1")],
+        [record("d", "sha-d1"), record("b", "sha-b1")],
+    ]
+
+
+def test_分段跑的差异与单次跑完全一致(store: DatasetStore, tmp_path: Path) -> None:
+    """有界停止那一轮也会更新 current；若续跑再读 current 当基线，上半段的
+    new / sha_changed 就丢了（实测：单次 new=2 sha_changed=1，分段 new=1 sha_changed=0）。"""
+    other = DatasetStore(tmp_path / "other")
+    seed(other, DAY1, [record("a", "sha-a1"), record("b", "sha-b1")])
+    single = reconciler(FakeCursorTransport(_pages()), other).run(DAY2, limit=100)
+
+    split_transport = FakeCursorTransport(_pages())
+    first = reconciler(split_transport, store).run(DAY2, limit=100, max_pages=1)
+    final = reconciler(split_transport, store).run(DAY2, limit=100)
+
+    assert first.stopped_reason == "max_pages"
+    assert final.resumed is True
+    assert (final.new_ids, final.sha_changed, final.reactivated, final.disappeared) == (
+        single.new_ids,
+        single.sha_changed,
+        single.reactivated,
+        single.disappeared,
+    )
+    assert (single.new_ids, single.sha_changed) == (2, 1)
+    single_rows = pl.read_csv(single.report_path).sort(["kind", "id"])
+    split_rows = pl.read_csv(final.report_path).sort(["kind", "id"])
+    assert split_rows.equals(single_rows)
+
+
+def test_隔天续跑不把上半段送去探测(store: DatasetStore) -> None:
+    """已见集合若按日期命名，隔天续跑时它是空的，上半段全被当成「没扫到」。"""
+    pages = [[record("a", "sha-a1")], [record("c", "sha-c1")]]
+    first = ProbeRecordingTransport(pages)
+    reconciler(first, store).run(DAY2, limit=100, max_pages=1)
+
+    second = ProbeRecordingTransport(pages)
+    summary = reconciler(second, store).run(DAY3, limit=100)
+
+    assert second.probed == ["acme/b"]
+    assert summary.disappeared == 1
+    assert status_of(store, "acme/a") == "active"
+
+
+def test_完成后基线与已见集合一并清除(store: DatasetStore) -> None:
+    reconciler(FakeCursorTransport([[record("a", "sha-a1")]]), store).run(DAY2, limit=100)
+
+    assert not list(store.state_dir.glob("reconcile-baseline*"))
+    assert not list(store.state_dir.glob("reconcile-seen*"))
+
+
+def test_旧会话被丢弃并在摘要中标明(store: DatasetStore) -> None:
+    store.state_dir.mkdir(parents=True, exist_ok=True)
+    (store.state_dir / "reconcile-checkpoint.json").write_text('{"cursor": "c2"}', encoding="utf-8")
+
+    summary = reconciler(FakeCursorTransport([[record("a", "sha-a1")]]), store).run(DAY2, limit=100)
+
+    assert summary.discarded_stale_session is True
+    assert summary.resumed is False
