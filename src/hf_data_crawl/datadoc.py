@@ -31,6 +31,17 @@ RAW_KINDS: tuple[tuple[str, str, str], ...] = (
     ("card-*.json.gz", "卡片补齐的分块（带 `cardData`）", "carddata · card_configs"),
 )
 
+#: 各表的粒度与它和 current 的关系。第七节据此逐行生成，行数实时计算。
+_TABLE_GRAIN: dict[str, tuple[str, str]] = {
+    "current": ("一个数据集一行", "**基准**——全站数据集总数"),
+    "silver": ("一次属性变更一行", "**多对一**：改过几次就有几行，比基准多"),
+    "observations": ("一次指标变化一行", "**多对一**：指标变过才追加"),
+    "bronze": ("某天扫到的一条记录", "**子集**：只留最新一天，历史由 `raw` 重算"),
+    "carddata": ("一个数据集一行", "**子集**：只补下载量前 2 万，约 68% 有卡片"),
+    "card_configs": ("一个 config/split 一行", "**展开**：卡片里的 config 逐条拆开"),
+    "size": ("一个数据集一行", "**子集**：只补了前 10 万"),
+}
+
 #: data/ 下不属于任何表的文件与目录。
 SIDE_FILES: tuple[tuple[str, str, str], ...] = (
     ("logs/", "计划任务的输出日志，按运行日期命名", "不参与任何派生"),
@@ -232,6 +243,10 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "   随数据集而变，写成固定 struct 必然有一半字段落空。存文本是刻意的选择；",
         "   需要拆开时用 DuckDB 的 `json_extract` 或 polars 的 `str.json_decode`，",
         "   不必为了少数查询把结构硬编码进 schema。",
+        "9. **`resource_group` 整列为空，不是抓漏了**。字段名在接口的 expand 白名单里，",
+        "   我们也确实在请求里带了它，但列表接口收到请求也不返回（实测 2 万条里连键都不存在）。",
+        "   它可能只在单库详情里出现，而逐库请求 112 万次不现实——所以这一列保留但为空，",
+        "   等上游哪天在列表里开放。",
         "",
         "## 六、HF 页面上的数字，在表里是哪个字段",
         "",
@@ -256,8 +271,37 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "",
         "页面上的卡片只在有数据时才显示——我们抓不到，通常意味着上游也没算出来。",
         "",
+        "## 七、各表行数为什么不一样",
+        "",
+        f"`current` 的 {_total_rows(store_root, 'current'):,} 行是全站数据集总数。看到别的表"
+        "「只有几万或十几万」时，",
+        "先看它是**什么粒度**——不是缺数据，是每行代表的不是同一个东西：",
+        "",
+        "| 表 | 行数 | 粒度 | 与 `current` 的关系 |",
+        "| --- | --- | --- | --- |",
+        *_grain_rows(store_root),
+        "",
+        "归纳起来只有三种：**一对一**（`current`，唯一全量）、**多对一**（流水，比基准多）、",
+        "**子集**（按天或按需补齐，比基准少）。想知道某个数据集的全部信息，",
+        "以 `current` 为主表 `LEFT JOIN` 其余各表即可——所有表的 id 都能在 `current` 里找到。",
+        "",
     ]
     return "\n".join(lines)
+
+
+def _total_rows(root: Path, name: str) -> int:
+    spec = TABLES[name]
+    files = [root / spec.path] if not spec.partitioned else list(root.glob(spec.glob()))
+    return sum(_row_count(path) or 0 for path in files if path.exists())
+
+
+def _grain_rows(root: Path) -> list[str]:
+    """第七节的表格行：行数实时算，粒度与关系取自常量。"""
+    rows = []
+    for name in _TABLE_GRAIN:
+        grain, relation = _TABLE_GRAIN[name]
+        rows.append(f"| `{name}` | {_total_rows(root, name):,} | {grain} | {relation} |")
+    return rows
 
 
 def _dir_summary(root: Path, name: str) -> str:

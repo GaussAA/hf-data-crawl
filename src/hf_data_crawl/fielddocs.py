@@ -35,7 +35,7 @@ COMMON: dict[str, str] = {
     "disabled": "是否被平台禁用",
     "main_size": "主分支的仓库字节数（含 LFS 指针指向的实际大小）",
     "xet_enabled": "是否使用 Xet 存储后端",
-    "resource_group": "所属资源组；原值是复合结构，按 JSON 文本存储",
+    "resource_group": "所属资源组；原值是复合结构，按 JSON 文本存储。**列表接口从不返回此字段**（实测请求了也拿不到），故整列为空",
     "description": "仓库简介（作者填写，非卡片正文）",
     "tags": "原始标签全集，形如 `license:mit`、`language:en`；维度列都由它拆出",
 }
