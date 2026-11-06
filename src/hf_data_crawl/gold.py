@@ -12,7 +12,7 @@ import polars as pl
 
 from .silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
 from .store import DatasetStore
-from .tables import table
+from .tables import PolarsType, table
 
 #: 宽视图里需要改名的列：来源表 → {原列名: 视图里的名字}。
 #:
@@ -126,7 +126,7 @@ BOARDS: dict[str, str] = {
     """,
 }
 
-_DUCKDB_TYPES: dict[pl.DataType, str] = {
+_DUCKDB_TYPES: dict[PolarsType, str] = {
     pl.Utf8: "VARCHAR",
     pl.Int64: "BIGINT",
     pl.Float64: "DOUBLE",
@@ -135,7 +135,7 @@ _DUCKDB_TYPES: dict[pl.DataType, str] = {
 }
 
 
-def _duckdb_type(dtype: pl.DataType) -> str:
+def _duckdb_type(dtype: PolarsType) -> str:
     if dtype == pl.List(pl.Utf8):
         return "VARCHAR[]"
     try:
@@ -145,7 +145,7 @@ def _duckdb_type(dtype: pl.DataType) -> str:
         raise ValueError(f"Gold 空视图未映射的 dtype: {dtype}") from error
 
 
-def _empty_view(schema: dict[str, pl.DataType]) -> str:
+def _empty_view(schema: dict[str, PolarsType]) -> str:
     """按 schema 自动生成空视图。
 
     手写空视图是第三份会漂移的清单（另两份是表结构与请求字段）：扩列时忘了

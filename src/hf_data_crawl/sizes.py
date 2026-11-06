@@ -121,8 +121,10 @@ def _success(dataset_id: str, snapshot_date: date, body: bytes) -> SizeResult:
     size = payload.get("size") if isinstance(payload, dict) else None
     if not isinstance(size, dict):
         return _failure(dataset_id, "error")
-    dataset = size.get("dataset") if isinstance(size.get("dataset"), dict) else {}
-    configs = size.get("configs") if isinstance(size.get("configs"), list) else []
+    raw_dataset = size.get("dataset")
+    raw_configs = size.get("configs")
+    dataset: dict[str, Any] = raw_dataset if isinstance(raw_dataset, dict) else {}
+    configs: list[Any] = raw_configs if isinstance(raw_configs, list) else []
 
     return SizeResult(
         dataset_id=dataset_id,
@@ -184,7 +186,7 @@ class SizeFetcher:
         top: int = 20_000,
         retry_unavailable: bool = False,
         existing: pl.DataFrame | None = None,
-        flush: Callable[[pl.DataFrame], None] | None = None,
+        flush: Callable[[pl.DataFrame], object] | None = None,
         flush_every: int = 5_000,
     ) -> tuple[SizeSummary, pl.DataFrame]:
         """返回 (摘要, 结果表)。

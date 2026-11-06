@@ -26,10 +26,11 @@ from .scan import ScanRun, ScanSpec
 from .session import ReconcileSession
 from .status import INACTIVE, STATUS_BY_VERDICT, Status
 from .store import DatasetStore
+from .tables import PolarsType
 
 RECONCILE_CHECKPOINT = "reconcile-checkpoint.json"
 
-REPORT_SCHEMA: dict[str, pl.DataType] = {
+REPORT_SCHEMA: dict[str, PolarsType] = {
     "kind": pl.Utf8,
     "id": pl.Utf8,
     "detail": pl.Utf8,

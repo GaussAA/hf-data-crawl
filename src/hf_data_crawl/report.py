@@ -14,6 +14,7 @@ from __future__ import annotations
 import html
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 
@@ -242,7 +243,7 @@ class Reporter:
     def __init__(self, catalog: GoldCatalog) -> None:
         self._catalog = catalog
 
-    def _overview(self) -> dict[str, object]:
+    def _overview(self) -> dict[str, Any]:
         return self._catalog.run(
             """
             SELECT (SELECT count(*) FROM current) AS datasets,
@@ -256,7 +257,7 @@ class Reporter:
             """
         ).row(0, named=True)
 
-    def render(self, *, top: int = 25, overview: dict[str, object] | None = None) -> str:
+    def render(self, *, top: int = 25, overview: dict[str, Any] | None = None) -> str:
         catalog = self._catalog
         overview = overview or self._overview()
 

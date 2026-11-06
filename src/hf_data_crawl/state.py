@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING
@@ -45,7 +46,7 @@ class StateUpdate:
     current_rows: int
 
 
-def mark_status(store: DatasetStore, updates: dict[str, str]) -> int:
+def mark_status(store: DatasetStore, updates: Mapping[str, str]) -> int:
     """按 id 批量改状态，返回实际发生变化的行数。只改状态，不动观测史。
 
     状态不再只有「在架/下架」两极：`restricted` 表示转为私有、`renamed` 表示

@@ -28,6 +28,10 @@ from enum import StrEnum
 
 import polars as pl
 
+#: polars 的 `pl.Utf8` 这类类对象在类型存根里不算 `DataType` 实例，直接标注会满屏误报。
+#: 统一用这个别名，运行时无影响。
+PolarsType = pl.DataType | type[pl.DataType]
+
 
 class Origin(StrEnum):
     """表的来源，决定重建时该不该清除。"""
@@ -46,7 +50,7 @@ class TableSpec:
     #: 相对 data/ 的路径模板；`{dt}` 表示按快照日期分区。
     path: str
     #: 列定义。读写两侧都以它为准，不再各自维护一份。
-    schema: dict[str, pl.DataType]
+    schema: dict[str, PolarsType]
     origin: Origin
 
     @property
@@ -75,7 +79,7 @@ class TableSpec:
 # 全部集中在此，是为了让「一张表长什么样」只有一个答案。各模块仍可从原位置
 # 导入（它们做了 re-export），但定义只在这里。
 
-BRONZE_SCHEMA: dict[str, pl.DataType] = {
+BRONZE_SCHEMA: dict[str, PolarsType] = {
     "id": pl.Utf8,
     "author": pl.Utf8,
     "sha": pl.Utf8,
@@ -132,7 +136,7 @@ UNCONDITIONAL_FIELDS: frozenset[str] = frozenset({"id"})
 # Silver 是「属性变更流水」：一个 id 只在首次出现或属性变了才追加一行。
 # 指标（downloads / downloads_all_time / likes）不在其中，它们每天有一半的行在变，
 # 历史由 observations 负责；放进来会让每天重复存一份近乎全量的快照。
-SILVER_SCHEMA: dict[str, pl.DataType] = {
+SILVER_SCHEMA: dict[str, PolarsType] = {
     "id": pl.Utf8,
     "author": pl.Utf8,
     "sha": pl.Utf8,
@@ -166,7 +170,7 @@ SILVER_SCHEMA: dict[str, pl.DataType] = {
     "snapshot_date": pl.Date,
 }
 
-OBSERVATIONS_SCHEMA: dict[str, pl.DataType] = {
+OBSERVATIONS_SCHEMA: dict[str, PolarsType] = {
     "id": pl.Utf8,
     "snapshot_date": pl.Date,
     "downloads": pl.Int64,
@@ -174,7 +178,7 @@ OBSERVATIONS_SCHEMA: dict[str, pl.DataType] = {
     "likes": pl.Int64,
 }
 
-CURRENT_SCHEMA: dict[str, pl.DataType] = {
+CURRENT_SCHEMA: dict[str, PolarsType] = {
     "id": pl.Utf8,
     "author": pl.Utf8,
     "sha": pl.Utf8,
@@ -195,7 +199,7 @@ CURRENT_SCHEMA: dict[str, pl.DataType] = {
     "status": pl.Utf8,
 }
 
-ENRICH_SCHEMA: dict[str, pl.DataType] = {
+ENRICH_SCHEMA: dict[str, PolarsType] = {
     "id": pl.Utf8,
     "snapshot_date": pl.Date,
     "pretty_name": pl.Utf8,
@@ -223,7 +227,7 @@ ENRICH_SCHEMA: dict[str, pl.DataType] = {
     "card_download_bytes": pl.Int64,
 }
 
-CARD_CONFIGS_SCHEMA: dict[str, pl.DataType] = {
+CARD_CONFIGS_SCHEMA: dict[str, PolarsType] = {
     "id": pl.Utf8,
     "snapshot_date": pl.Date,
     "config_name": pl.Utf8,
@@ -236,7 +240,7 @@ CARD_CONFIGS_SCHEMA: dict[str, pl.DataType] = {
     "data_files": pl.Utf8,
 }
 
-SIZE_SCHEMA: dict[str, pl.DataType] = {
+SIZE_SCHEMA: dict[str, PolarsType] = {
     "id": pl.Utf8,
     "snapshot_date": pl.Date,
     "status": pl.Utf8,

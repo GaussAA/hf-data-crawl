@@ -28,6 +28,7 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pre-commit>=4.0.0",
+    "pyright==1.1.408",
     "pytest>=9.2.0",
     "ruff>=0.17.3",
 ]
@@ -40,3 +41,11 @@ line-length = 100
 select = ["E", "F", "I", "UP"]
 # 行宽交给 ruff format；它不折行的长注释和字符串，不当作 lint 错误。
 ignore = ["E501"]
+
+
+[tool.pyright]
+include = ["src"]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.13"
+typeCheckingMode = "standard"

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,7 @@ from . import raw, state
 from .atomic import write_parquet
 from .state import StateUpdate
 from .status import Status
-from .tables import table
+from .tables import PolarsType, table
 
 __all__ = ["DatasetStore", "StateUpdate"]
 
@@ -174,11 +175,11 @@ class DatasetStore:
             written_at=written_at,
         )
 
-    def mark_status(self, updates: dict[str, str]) -> int:
+    def mark_status(self, updates: Mapping[str, str]) -> int:
         return state.mark_status(self, updates)
 
 
-def _align_frame(frame: pl.DataFrame, schema: dict[str, pl.DataType]) -> pl.DataFrame:
+def _align_frame(frame: pl.DataFrame, schema: dict[str, PolarsType]) -> pl.DataFrame:
     """把读出的表对齐到目标 schema：缺列补空、多列丢弃。
 
     分区是按 dt 落盘的，而 schema 会随字段扩充而变。若不做对齐，旧分区读出来

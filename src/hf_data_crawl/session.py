@@ -37,6 +37,7 @@ from .atomic import write_parquet
 from .checkpoint import FileCheckpoint
 from .status import INACTIVE
 from .store import DatasetStore
+from .tables import PolarsType
 
 BASELINE_FILENAME = "reconcile-baseline.parquet"
 SEEN_FILENAME = "reconcile-seen.csv"
@@ -44,7 +45,7 @@ SEEN_FILENAME = "reconcile-seen.csv"
 #: 旧格式的已见集合（按日期命名）。启动时清掉，不留孤儿。
 LEGACY_SEEN_GLOB = "reconcile-seen-*.csv"
 
-BASELINE_SCHEMA: dict[str, pl.DataType] = {
+BASELINE_SCHEMA: dict[str, PolarsType] = {
     "id": pl.Utf8,
     "sha": pl.Utf8,
     "status": pl.Utf8,
