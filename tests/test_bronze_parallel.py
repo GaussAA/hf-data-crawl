@@ -72,3 +72,65 @@ def test_并行时同id仍以最后写入者为准(store: DatasetStore, monkeypa
     bronze.build(store, DAY)
 
     assert set(store.read_bronze(DAY)["downloads"].to_list()) == {50}
+
+
+def test_进程池崩溃时退回串行且结果相同(
+    store: DatasetStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """并行只是加速；子进程异常终止不能让可重算的 build 整体失败。"""
+    from concurrent.futures.process import BrokenProcessPool
+
+    class Broken:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> Broken:
+            return self
+
+        def __exit__(self, *exc: Any) -> None:
+            return None
+
+        def map(self, *args: Any, **kwargs: Any) -> Any:
+            raise BrokenProcessPool("子进程异常终止")
+
+    seed(store)
+    monkeypatch.setattr(bronze, "PARALLEL_MIN_FILES", 10_000)
+    bronze.build(store, DAY)
+    serial = store.read_bronze(DAY).sort("id")
+
+    monkeypatch.setattr(bronze, "PARALLEL_MIN_FILES", 1)
+    monkeypatch.setattr(bronze, "ProcessPoolExecutor", Broken)
+    bronze.build(store, DAY)
+
+    assert store.read_bronze(DAY).sort("id").equals(serial)
+
+
+def test_进程池崩溃时降级为串行且结果不变(
+    store: DatasetStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """并行只是加速：池坏了，build 照样要出同样的结果，而不是整体失败。"""
+    from concurrent.futures.process import BrokenProcessPool
+
+    seed(store)
+    monkeypatch.setattr(bronze, "PARALLEL_MIN_FILES", 10_000)
+    bronze.build(store, DAY)
+    expected = store.read_bronze(DAY).sort("id")
+
+    class BrokenPool:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> BrokenPool:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def map(self, *args: object, **kwargs: object) -> list[object]:
+            raise BrokenProcessPool("子进程异常终止")
+
+    monkeypatch.setattr(bronze, "PARALLEL_MIN_FILES", 1)
+    monkeypatch.setattr(bronze, "ProcessPoolExecutor", BrokenPool)
+    bronze.build(store, DAY)
+
+    assert store.read_bronze(DAY).sort("id").equals(expected)

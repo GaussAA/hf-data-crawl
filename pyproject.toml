@@ -1,7 +1,7 @@
 [project]
 name = "hf-data-crawl"
 version = "0.1.0"
-description = "Add your description here"
+description = "Hugging Face 数据集元信息底座：增量采集、对账、分层派生与 DuckDB 视图查询"
 readme = "README.md"
 authors = [
     { name = "GaussAA", email = "m17356051831@163.com" }

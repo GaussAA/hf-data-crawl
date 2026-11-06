@@ -116,7 +116,7 @@ uv run hf-data-crawl doctor                        # 手动体检；有问题退
 ## 开发
 
 ```bash
-uv run pytest          # 250 项，全部离线
+uv run pytest          # 全部离线
 ```
 
 测试只在一条缝上打桩：`HfDatasetApi` 的 transport。除此之外全部走真实代码路径。

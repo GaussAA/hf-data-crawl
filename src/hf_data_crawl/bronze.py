@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -81,8 +82,14 @@ def _load_all(files: list[Path], snapshot_date: date) -> list[tuple[tuple[Any, .
     if len(jobs) < PARALLEL_MIN_FILES:
         return [_load_rows(job) for job in jobs]
     workers = max(1, min(MAX_WORKERS, os.cpu_count() or 1))
-    with ProcessPoolExecutor(max_workers=workers) as pool:
-        return list(pool.map(_load_rows, jobs, chunksize=16))
+    try:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            return list(pool.map(_load_rows, jobs, chunksize=16))
+    except BrokenProcessPool:
+        # 子进程异常终止（实测在副本上出现过一次，原因未查明）时，进程池整体作废。
+        # 分块互不依赖、解析是纯函数，从头串行重算结果相同，只是慢；
+        # 好过让一次可重算的 build 因为并行加速这个可选项而整体失败。
+        return [_load_rows(job) for job in jobs]
 
 
 def prune(store: DatasetStore) -> list[date]:
