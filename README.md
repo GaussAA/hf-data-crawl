@@ -103,9 +103,10 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 ## 定时
 
 ```powershell
-pwsh -File scripts\setup-schedule.ps1              # 注册：每日 03:10 增量、每周日 04:00 对账
+pwsh -File scripts\setup-schedule.ps1              # 注册：每日 03:10 增量、每周日 04:00 对账、每日 09:00 体检
 pwsh -File scripts\setup-schedule.ps1 -Uninstall   # 卸载
-schtasks /Query /TN hf-collect /V /FO LIST         # 核对
+Get-ScheduledTask -TaskName hf-* | Get-ScheduledTaskInfo   # 核对
+uv run hf-data-crawl doctor                        # 手动体检；有问题退出码 1，并写 data\ALERT.txt
 ```
 
 计划任务调 `scripts/collect.cmd` 与 `scripts/reconcile.cmd` 两个包装脚本：代理默认取 `HF_PROXY`，日志追加到 `data\logs\`，`uv` 找不到时回退到 `%USERPROFILE%\.local\bin\uv.exe`。

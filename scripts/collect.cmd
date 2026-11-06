@@ -10,5 +10,5 @@ cd /d "%ROOT%"
 set "UV=uv"
 where uv >nul 2>&1 || set "UV=%USERPROFILE%\.local\bin\uv.exe"
 
-"%UV%" run hf-data-crawl collect --refresh-top 20000 %* >> "data\logs\collect.log" 2>&1
+"%UV%" run hf-data-crawl collect --refresh-top 20000 --skip-if-done %* >> "data\logs\collect.log" 2>&1
 exit /b %ERRORLEVEL%

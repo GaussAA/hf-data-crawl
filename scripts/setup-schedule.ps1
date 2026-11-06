@@ -3,19 +3,29 @@
     注册 / 卸载 hf-data-crawl 的 Windows 计划任务。
 
 .DESCRIPTION
-    每日 03:10 跑日增量；每周日 04:00 跑全量对账。
-    幂等：同名任务会被 /F 覆盖，可反复执行。
-    用 PowerShell 7 运行（脚本为 UTF-8 无 BOM，5.1 会乱码）：
+    hf-collect    每日 03:10 日增量，另在登录后 2 分钟补跑（collect 带 --skip-if-done，
+                  当天已采过会直接跳过）。
+    hf-reconcile  每周日 04:00 全量对账；错过则开机后补跑一次。
+    hf-doctor     每日 09:00 体检，另在登录后 10 分钟再查一次；有问题写 data\ALERT.txt。
+
+    与旧版的差别（旧版是笔记本上三天漏采的原因）：
+      - StartWhenAvailable：关机错过的任务，开机后补跑；
+      - 允许在电池供电时启动（旧版 DisallowStartIfOnBatteries 会让任务被拒绝，
+        结果码 0x800710E0），且切到电池不中断；
+      - 设执行时限：写命令持有数据目录的锁，挂死的进程会一直占着它。
+
+    幂等：同名任务会被覆盖，可反复执行。用 PowerShell 7 运行（脚本为 UTF-8 无 BOM）：
         pwsh -File scripts\setup-schedule.ps1
         pwsh -File scripts\setup-schedule.ps1 -Uninstall
 
 .NOTES
-    采集日志落 data\logs\，运行摘要落 runs\，任务本身不弹窗。
+    采集日志落 data\logs\，运行摘要落 data\runs\，任务本身不弹窗。
 #>
 [CmdletBinding()]
 param(
     [string]$CollectTime = "03:10",
     [string]$ReconcileTime = "04:00",
+    [string]$DoctorTime = "09:00",
     [switch]$Uninstall
 )
 
@@ -27,14 +37,12 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
-$collectCmd = Join-Path $root "scripts\collect.cmd"
-$reconcileCmd = Join-Path $root "scripts\reconcile.cmd"
-$taskNames = @("hf-collect", "hf-reconcile")
+$taskNames = @("hf-collect", "hf-reconcile", "hf-doctor")
 
 if ($Uninstall) {
     foreach ($name in $taskNames) {
-        schtasks /Delete /TN $name /F 2>$null | Out-Null
-        if ($LASTEXITCODE -eq 0) {
+        if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
+            Unregister-ScheduledTask -TaskName $name -Confirm:$false
             Write-Host "已删除任务 $name"
         }
         else {
@@ -44,9 +52,26 @@ if ($Uninstall) {
     return
 }
 
-foreach ($path in @($collectCmd, $reconcileCmd)) {
-    if (-not (Test-Path -LiteralPath $path)) {
-        throw "缺少包装脚本：$path"
+$jobs = @(
+    @{ Name = "hf-collect"; Script = "collect.cmd"; Hours = 4
+       Triggers = @(
+           (New-ScheduledTaskTrigger -Daily -At $CollectTime),
+           (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME)
+       ); LogonDelay = "PT2M" },
+    @{ Name = "hf-reconcile"; Script = "reconcile.cmd"; Hours = 8
+       Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At $ReconcileTime))
+       LogonDelay = $null },
+    @{ Name = "hf-doctor"; Script = "doctor.cmd"; Hours = 1
+       Triggers = @(
+           (New-ScheduledTaskTrigger -Daily -At $DoctorTime),
+           (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME)
+       ); LogonDelay = "PT10M" }
+)
+
+foreach ($job in $jobs) {
+    $cmd = Join-Path $root ("scripts\" + $job.Script)
+    if (-not (Test-Path -LiteralPath $cmd)) {
+        throw "缺少包装脚本：$cmd"
     }
 }
 
@@ -54,19 +79,31 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     Write-Warning "PATH 中找不到 uv；包装脚本会回退到 %USERPROFILE%\.local\bin\uv.exe，请确认该文件存在。"
 }
 
-schtasks /Create /F /SC DAILY /ST $CollectTime /TN "hf-collect" /TR "`"$collectCmd`"" | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    throw "注册 hf-collect 失败（schtasks 退出码 $LASTEXITCODE）"
-}
+$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
+    -LogonType Interactive -RunLevel Limited
 
-schtasks /Create /F /SC WEEKLY /D SUN /ST $ReconcileTime /TN "hf-reconcile" /TR "`"$reconcileCmd`"" | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    throw "注册 hf-reconcile 失败（schtasks 退出码 $LASTEXITCODE）"
+foreach ($job in $jobs) {
+    $cmd = Join-Path $root ("scripts\" + $job.Script)
+    foreach ($trigger in $job.Triggers) {
+        if ($job.LogonDelay -and $trigger.CimClass.CimClassName -eq "MSFT_TaskLogonTrigger") {
+            $trigger.Delay = $job.LogonDelay
+        }
+    }
+    $settings = New-ScheduledTaskSettingsSet `
+        -StartWhenAvailable `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -MultipleInstances IgnoreNew `
+        -ExecutionTimeLimit (New-TimeSpan -Hours $job.Hours)
+    $action = New-ScheduledTaskAction -Execute $cmd
+    Register-ScheduledTask -TaskName $job.Name -Action $action -Trigger $job.Triggers `
+        -Settings $settings -Principal $principal -Force | Out-Null
 }
 
 Write-Host "已注册："
-Write-Host "  hf-collect    每日 $CollectTime"
-Write-Host "  hf-reconcile  每周日 $ReconcileTime"
+Write-Host "  hf-collect    每日 $CollectTime + 登录后补跑（当天已采过则跳过）"
+Write-Host "  hf-reconcile  每周日 $ReconcileTime，错过则开机后补跑"
+Write-Host "  hf-doctor     每日 $DoctorTime + 登录后体检，问题写 data\ALERT.txt"
 Write-Host "日志目录：$(Join-Path $root 'data\logs')"
-Write-Host "运行摘要：$(Join-Path $root 'runs')"
-Write-Host "核对：schtasks /Query /TN hf-collect /V /FO LIST"
+Write-Host "运行摘要：$(Join-Path $root 'data\runs')"
+Write-Host "核对：Get-ScheduledTask -TaskName hf-* | Get-ScheduledTaskInfo"
