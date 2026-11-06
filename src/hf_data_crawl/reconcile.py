@@ -20,6 +20,7 @@ import polars as pl
 from .api import MAX_LIMIT, HfDatasetApi, Page
 from .atomic import write_csv
 from .collect import LEAN_EXPAND
+from .derive import derive_day
 from .scan import ScanRun, ScanSpec
 from .session import ReconcileSession
 from .status import INACTIVE, STATUS_BY_VERDICT, Status
@@ -109,9 +110,7 @@ class Reconciler:
         )
         stopped_reason = scan.stopped_reason
 
-        self._store.build_bronze(snapshot_date)
-        self._store.build_silver(snapshot_date)
-        self._store.update_state(snapshot_date)
+        derive_day(self._store, snapshot_date)
 
         diff = session.diff()
         new_ids = diff.new

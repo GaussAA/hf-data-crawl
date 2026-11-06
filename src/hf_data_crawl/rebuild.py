@@ -10,6 +10,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import date
 
+from .derive import derive_day
 from .status import restore, retain
 from .store import DatasetStore
 from .tables import TABLES, Origin, TableSpec
@@ -62,10 +63,9 @@ def rebuild_from_raw(store: DatasetStore) -> RebuildSummary:
     bronze_rows = 0
     silver_rows = 0
     for snapshot in dates:
-        bronze_rows += store.build_bronze(snapshot)
-        silver_rows += store.build_silver(snapshot)
-        store.build_enrich(snapshot)
-        store.update_state(snapshot)
+        day = derive_day(store, snapshot, enrich=True)
+        bronze_rows += day.bronze_rows
+        silver_rows += day.silver_rows
 
     restore(store, retained)
 

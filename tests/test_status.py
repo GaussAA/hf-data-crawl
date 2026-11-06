@@ -10,6 +10,7 @@ from typing import Any
 import polars as pl
 import pytest
 
+from hf_data_crawl.derive import derive_day
 from hf_data_crawl.status import (
     INACTIVE,
     STATUS_BY_VERDICT,
@@ -44,9 +45,7 @@ def record(index: int) -> dict[str, Any]:
 def store(tmp_path: Path) -> DatasetStore:
     instance = DatasetStore(tmp_path / "data")
     instance.write_raw(snapshot_date=DAY, page_index=1, records=[record(1), record(2)], meta={})
-    instance.build_bronze(DAY)
-    instance.build_silver(DAY)
-    instance.update_state(DAY)
+    derive_day(instance, DAY)
     return instance
 
 

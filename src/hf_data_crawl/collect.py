@@ -14,6 +14,7 @@ from typing import Any
 
 from .api import MAX_LIMIT, HfDatasetApi, Page
 from .checkpoint import FileCheckpoint
+from .derive import derive_day
 from .scan import ScanRun, ScanSpec, ScanSummary
 from .store import DatasetStore
 
@@ -188,9 +189,10 @@ class Collector:
                 ),
             )
 
-        bronze_rows = self._store.build_bronze(snapshot_date)
-        silver_rows = self._store.build_silver(snapshot_date)
-        state = self._store.update_state(snapshot_date)
+        day = derive_day(self._store, snapshot_date)
+        bronze_rows = day.bronze_rows
+        silver_rows = day.silver_rows
+        state = day.state
 
         # 只有「走到末页」与「触发 watermark」算本轮完成；有界停止要保住游标。
         if checkpoint is not None and scan.stopped_reason in {"end", "watermark"}:

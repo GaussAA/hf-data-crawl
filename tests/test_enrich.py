@@ -14,6 +14,7 @@ import polars as pl
 import pytest
 
 from hf_data_crawl.api import HfDatasetApi, HfResponse
+from hf_data_crawl.derive import derive_day
 from hf_data_crawl.enrich import Enricher
 from hf_data_crawl.store import DatasetStore
 
@@ -136,9 +137,7 @@ def test_未补齐时datasets视图无卡片列值但可用(store: DatasetStore)
     from hf_data_crawl.gold import GoldCatalog
 
     store.write_raw(snapshot_date=DAY, page_index=1, records=[record(1, with_card=False)], meta={})
-    store.build_bronze(DAY)
-    store.build_silver(DAY)
-    store.update_state(DAY)
+    derive_day(store, DAY)
 
     catalog = GoldCatalog(store)
     rows = catalog.run("SELECT id, pretty_name FROM datasets")
@@ -151,9 +150,7 @@ def test_补齐后datasets视图可直接查到卡片字段(store: DatasetStore)
     from hf_data_crawl.gold import GoldCatalog
 
     store.write_raw(snapshot_date=DAY, page_index=1, records=[record(1, with_card=False)], meta={})
-    store.build_bronze(DAY)
-    store.build_silver(DAY)
-    store.update_state(DAY)
+    derive_day(store, DAY)
     Enricher(
         api=HfDatasetApi(transport=SeqTransport([[record(1, pretty_name="正式名")]])),
         store=store,

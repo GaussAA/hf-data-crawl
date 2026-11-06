@@ -12,6 +12,7 @@ from typing import Any
 import polars as pl
 import pytest
 
+from hf_data_crawl.derive import derive_day
 from hf_data_crawl.rebuild import discover_raw_dates, rebuild_from_raw
 from hf_data_crawl.store import DatasetStore
 
@@ -38,9 +39,7 @@ def record(index: int, downloads: int) -> dict[str, Any]:
 
 def seed(store: DatasetStore, snapshot: date, records: list[dict[str, Any]]) -> None:
     store.write_raw(snapshot_date=snapshot, page_index=1, records=records, meta={})
-    store.build_bronze(snapshot)
-    store.build_silver(snapshot)
-    store.update_state(snapshot)
+    derive_day(store, snapshot)
 
 
 @pytest.fixture()

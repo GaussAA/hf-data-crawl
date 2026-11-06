@@ -14,6 +14,7 @@ import polars as pl
 import pytest
 
 from hf_data_crawl.api import HfDatasetApi, HfResponse
+from hf_data_crawl.derive import derive_day
 from hf_data_crawl.reconcile import Reconciler
 from hf_data_crawl.store import DatasetStore
 
@@ -87,9 +88,7 @@ def record(name: str, sha: str, downloads: int = 100) -> dict[str, Any]:
 
 def seed(store: DatasetStore, snapshot: date, records: list[dict[str, Any]]) -> None:
     store.write_raw(snapshot_date=snapshot, page_index=1, records=records, meta={})
-    store.build_bronze(snapshot)
-    store.build_silver(snapshot)
-    store.update_state(snapshot)
+    derive_day(store, snapshot)
 
 
 @pytest.fixture()

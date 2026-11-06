@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from hf_data_crawl.derive import derive_day
 from hf_data_crawl.gold import GoldCatalog
 from hf_data_crawl.report import Reporter
 from hf_data_crawl.store import DatasetStore
@@ -45,9 +46,7 @@ def store(tmp_path: Path) -> DatasetStore:
         records=[record("acme/alpha", 500, "Alpha 数据集"), record("acme/beta", 100)],
         meta={},
     )
-    instance.build_bronze(DAY1)
-    instance.build_silver(DAY1)
-    instance.update_state(DAY1)
+    derive_day(instance, DAY1)
     instance.write_raw(
         snapshot_date=DAY1,
         page_index=1,
@@ -134,9 +133,7 @@ def test_数据里的尖括号被转义(store: DatasetStore, tmp_path: Path) -> 
         records=[record("acme/<script>", 900)],
         meta={},
     )
-    store.build_bronze(DAY2)
-    store.build_silver(DAY2)
-    store.update_state(DAY2)
+    derive_day(store, DAY2)
     reporter = Reporter(GoldCatalog(store))
 
     summary = reporter.write(tmp_path / "dashboard.html")

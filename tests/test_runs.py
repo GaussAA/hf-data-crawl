@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from hf_data_crawl.cli import main
+from hf_data_crawl.derive import derive_day
 from hf_data_crawl.runs import read_runs
 from hf_data_crawl.store import DatasetStore
 
@@ -36,9 +37,7 @@ def record(index: int) -> dict[str, Any]:
 
 def seed(store: DatasetStore) -> None:
     store.write_raw(snapshot_date=DAY1, page_index=1, records=[record(1)], meta={})
-    store.build_bronze(DAY1)
-    store.build_silver(DAY1)
-    store.update_state(DAY1)
+    derive_day(store, DAY1)
 
 
 def test_成功运行写入可读摘要(tmp_path: Path) -> None:

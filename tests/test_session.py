@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from hf_data_crawl.derive import derive_day
 from hf_data_crawl.session import (
     BASELINE_FILENAME,
     SEEN_FILENAME,
@@ -46,9 +47,7 @@ def store(tmp_path: Path) -> DatasetStore:
         records=[record("a", "sha-a1"), record("b", "sha-b1")],
         meta={},
     )
-    instance.build_bronze(DAY)
-    instance.build_silver(DAY)
-    instance.update_state(DAY)
+    derive_day(instance, DAY)
     return instance
 
 
@@ -97,9 +96,7 @@ def test_续跑沿用开始时的基线而非现读current(store: DatasetStore) 
     first.checkpoint.save("c2")
     # 有界停止那一轮会改写 current：这里模拟成多了一个库
     store.write_raw(snapshot_date=DAY, page_index=2, records=[record("c", "sha-c1")], meta={})
-    store.build_bronze(DAY)
-    store.build_silver(DAY)
-    store.update_state(DAY)
+    derive_day(store, DAY)
 
     resumed = ReconcileSession.open(store, checkpoint_filename=CHECKPOINT)
 
