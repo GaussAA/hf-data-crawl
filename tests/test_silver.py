@@ -15,6 +15,7 @@ from typing import Any
 import polars as pl
 import pytest
 
+from hf_data_crawl import bronze, silver, state
 from hf_data_crawl.store import DatasetStore
 
 DAY1 = date(2026, 11, 1)
@@ -61,8 +62,8 @@ def store(tmp_path: Path) -> DatasetStore:
 
 def seed(store: DatasetStore, snapshot: date, records: list[dict[str, Any]]) -> None:
     store.write_raw(snapshot_date=snapshot, page_index=1, records=records, meta={})
-    store.build_bronze(snapshot)
-    store.build_silver(snapshot)
+    bronze.build(store, snapshot)
+    silver.build(store, snapshot)
 
 
 def observations(store: DatasetStore) -> pl.DataFrame:
@@ -96,7 +97,7 @@ def test_silver保留原始json与指标字段(store: DatasetStore) -> None:
 def test_首次运行每个数据集产生一条观测(store: DatasetStore) -> None:
     seed(store, DAY1, [record(1), record(2)])
 
-    result = store.update_state(DAY1)
+    result = state.update(store, DAY1)
 
     assert result.appended == 2
     assert observations(store).height == 2
@@ -104,10 +105,10 @@ def test_首次运行每个数据集产生一条观测(store: DatasetStore) -> N
 
 def test_指标未变时不追加观测(store: DatasetStore) -> None:
     seed(store, DAY1, [record(1, downloads=100)])
-    store.update_state(DAY1)
+    state.update(store, DAY1)
 
     seed(store, DAY2, [record(1, downloads=100)])
-    result = store.update_state(DAY2)
+    result = state.update(store, DAY2)
 
     assert result.appended == 0
     assert observations(store).height == 1
@@ -115,12 +116,12 @@ def test_指标未变时不追加观测(store: DatasetStore) -> None:
 
 def test_指标变化时追加且保留旧行(store: DatasetStore) -> None:
     seed(store, DAY1, [record(1, downloads=100)])
-    store.update_state(DAY1)
+    state.update(store, DAY1)
     seed(store, DAY2, [record(1, downloads=100)])
-    store.update_state(DAY2)
+    state.update(store, DAY2)
 
     seed(store, DAY3, [record(1, downloads=180)])
-    result = store.update_state(DAY3)
+    result = state.update(store, DAY3)
 
     rows = observations(store).sort("snapshot_date")
     assert result.appended == 1
@@ -132,8 +133,8 @@ def test_指标变化时追加且保留旧行(store: DatasetStore) -> None:
 def test_同一天重跑观测不重复(store: DatasetStore) -> None:
     seed(store, DAY1, [record(1, downloads=100)])
 
-    store.update_state(DAY1)
-    again = store.update_state(DAY1)
+    state.update(store, DAY1)
+    again = state.update(store, DAY1)
 
     assert again.appended == 0
     assert observations(store).height == 1
@@ -141,9 +142,9 @@ def test_同一天重跑观测不重复(store: DatasetStore) -> None:
 
 def test_current每个数据集仅一行(store: DatasetStore) -> None:
     seed(store, DAY1, [record(1), record(2)])
-    store.update_state(DAY1)
+    state.update(store, DAY1)
     seed(store, DAY2, [record(1), record(2), record(3)])
-    store.update_state(DAY2)
+    state.update(store, DAY2)
 
     current = store.read_current()
 
@@ -153,9 +154,9 @@ def test_current每个数据集仅一行(store: DatasetStore) -> None:
 
 def test_first_seen不随轮次改变且last_seen更新(store: DatasetStore) -> None:
     seed(store, DAY1, [record(1)])
-    store.update_state(DAY1)
+    state.update(store, DAY1)
     seed(store, DAY2, [record(1)])
-    store.update_state(DAY2)
+    state.update(store, DAY2)
 
     row = store.read_current().row(0, named=True)
 
@@ -166,9 +167,9 @@ def test_first_seen不随轮次改变且last_seen更新(store: DatasetStore) -> 
 def test_本轮未出现的数据集在current中保持原状(store: DatasetStore) -> None:
     """下架判定归 reconcile 管，状态更新不得擅自删行或改状态。"""
     seed(store, DAY1, [record(1), record(2)])
-    store.update_state(DAY1)
+    state.update(store, DAY1)
     seed(store, DAY2, [record(1)])
-    store.update_state(DAY2)
+    state.update(store, DAY2)
 
     current = store.read_current()
 

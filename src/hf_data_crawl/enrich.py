@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass
 from datetime import date
 
+from . import card
 from .api import MAX_LIMIT, HfDatasetApi, Page
 from .collect import IDENTITY_EXPAND
 from .raw import CARD_LABEL
@@ -82,7 +83,7 @@ class Enricher:
             ),
         )
 
-        table_rows, config_rows = self._store.build_enrich(snapshot_date)
+        table_rows, config_rows = card.build(self._store, snapshot_date)
 
         return EnrichSummary(
             snapshot_date=snapshot_date,

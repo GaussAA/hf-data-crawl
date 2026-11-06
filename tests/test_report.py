@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from hf_data_crawl import card
 from hf_data_crawl.derive import derive_day
 from hf_data_crawl.gold import GoldCatalog
 from hf_data_crawl.report import Reporter
@@ -54,7 +55,7 @@ def store(tmp_path: Path) -> DatasetStore:
         meta={"mode": "enrich"},
         label="card",
     )
-    instance.build_enrich(DAY1)
+    card.build(instance, DAY1)
     return instance
 
 

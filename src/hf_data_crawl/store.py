@@ -8,8 +8,8 @@
 - `card`    由卡片批次抽出宽表与明细表
 - `state`   观测流水、当前态、状态标记
 
-下面的 `write_raw / build_* / update_state / mark_status` 只是一行转发，保留是为了
-让现有调用方不必同时改。
+推导一天的各步由 `derive.derive_day` 调度，不再经过这里。`write_raw` 与
+`mark_status` 是仓库对外的写入口，保留为一行转发。
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from typing import Any
 
 import polars as pl
 
-from . import bronze, card, raw, silver, state
+from . import raw, state
 from .atomic import write_parquet
 from .state import StateUpdate
 from .status import Status
@@ -173,18 +173,6 @@ class DatasetStore:
             label=label,
             written_at=written_at,
         )
-
-    def build_bronze(self, snapshot_date: date) -> int:
-        return bronze.build(self, snapshot_date)
-
-    def build_silver(self, snapshot_date: date) -> int:
-        return silver.build(self, snapshot_date)
-
-    def build_enrich(self, snapshot_date: date) -> tuple[int, int]:
-        return card.build(self, snapshot_date)
-
-    def update_state(self, snapshot_date: date) -> StateUpdate:
-        return state.update(self, snapshot_date)
 
     def mark_status(self, updates: dict[str, str]) -> int:
         return state.mark_status(self, updates)

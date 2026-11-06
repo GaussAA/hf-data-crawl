@@ -15,6 +15,7 @@ from typing import Any
 import polars as pl
 import pytest
 
+from hf_data_crawl import card
 from hf_data_crawl.card import extract_card_row, extract_config_rows
 from hf_data_crawl.store import DatasetStore
 from hf_data_crawl.tables import CARD_CONFIGS_SCHEMA, ENRICH_SCHEMA
@@ -214,7 +215,7 @@ def test_两张表都落盘且行数正确(store: DatasetStore) -> None:
         snapshot_date=DAY, page_index=1, records=[wikitext_style()], meta={}, label="card"
     )
 
-    card_rows, config_rows = store.build_enrich(DAY)
+    card_rows, config_rows = card.build(store, DAY)
 
     assert card_rows == 1
     # 两个 split + metadata 骨架行
@@ -227,12 +228,12 @@ def test_重复补齐不产生重复明细行(store: DatasetStore) -> None:
     store.write_raw(
         snapshot_date=DAY, page_index=1, records=[wikitext_style()], meta={}, label="card"
     )
-    store.build_enrich(DAY)
+    card.build(store, DAY)
     store.write_raw(
         snapshot_date=DAY, page_index=2, records=[wikitext_style()], meta={}, label="card"
     )
 
-    store.build_enrich(DAY)
+    card.build(store, DAY)
 
     table = store.read_card_configs()
     assert table.height == 3
@@ -250,7 +251,7 @@ def test_旧版卡片表缺列时能继续并入(store: DatasetStore) -> None:
     store.write_raw(
         snapshot_date=DAY, page_index=1, records=[wikitext_style()], meta={}, label="card"
     )
-    store.build_enrich(DAY)
+    card.build(store, DAY)
 
     table = store.read_enrich()
     assert table.height == 2

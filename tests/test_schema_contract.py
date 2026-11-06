@@ -162,7 +162,7 @@ def test_全字段记录落库后没有一列是空的(tmp_path: Path) -> None:
     store = DatasetStore(tmp_path / "data")
     store.write_raw(snapshot_date=DAY, page_index=1, records=[_full_record()], meta={})
 
-    assert store.build_bronze(DAY) == 1
+    assert bronze.build(store, DAY) == 1
     row = store.read_bronze(DAY).row(0, named=True)
 
     empty = [name for name, value in row.items() if value is None and name != "raw"]
@@ -179,7 +179,7 @@ def test_结构化的resource_group存成可再解析的json(tmp_path: Path) -> 
     """直接 str() 会得到单引号的 Python 字面量，之后再 json.loads 必然失败。"""
     store = DatasetStore(tmp_path / "data")
     store.write_raw(snapshot_date=DAY, page_index=1, records=[_full_record()], meta={})
-    store.build_bronze(DAY)
+    bronze.build(store, DAY)
 
     raw_value = store.read_bronze(DAY).row(0, named=True)["resource_group"]
 
@@ -191,7 +191,7 @@ def test_类型不符时留空而不是猜(tmp_path: Path) -> None:
     store = DatasetStore(tmp_path / "data")
     record = _full_record() | {"private": "true", "mainSize": "很大", "trendingScore": None}
     store.write_raw(snapshot_date=DAY, page_index=1, records=[record], meta={})
-    store.build_bronze(DAY)
+    bronze.build(store, DAY)
 
     row = store.read_bronze(DAY).row(0, named=True)
 
@@ -222,7 +222,7 @@ def test_事故列不再恒空(column: str, tmp_path: Path) -> None:
     """逐列点名：这四列是本次补齐的核心，任何一列回到全空都算回归。"""
     store = DatasetStore(tmp_path / "data")
     store.write_raw(snapshot_date=DAY, page_index=1, records=[_full_record()], meta={})
-    store.build_bronze(DAY)
+    bronze.build(store, DAY)
 
     assert store.read_bronze(DAY)[column].null_count() == 0
 

@@ -13,7 +13,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from hf_data_crawl import gold
+from hf_data_crawl import bronze, gold
 from hf_data_crawl.rebuild import _clear, clear_derived
 from hf_data_crawl.store import DatasetStore
 from hf_data_crawl.tables import TABLES, Origin, TableSpec, table
@@ -141,7 +141,7 @@ def test_登记表的schema与实际落盘列一致(tmp_path: Path) -> None:
         "description": "d",
     }
     store.write_raw(snapshot_date=date(2026, 11, 4), page_index=1, records=[record], meta={})
-    store.build_bronze(date(2026, 11, 4))
+    bronze.build(store, date(2026, 11, 4))
 
     frame = store.read_bronze(date(2026, 11, 4))
 

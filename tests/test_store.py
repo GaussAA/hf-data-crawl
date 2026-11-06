@@ -15,6 +15,7 @@ from typing import Any
 import polars as pl
 import pytest
 
+from hf_data_crawl import bronze
 from hf_data_crawl.store import DatasetStore
 
 SNAPSHOT = date(2026, 11, 3)
@@ -87,7 +88,7 @@ def test_从raw重建bronze行数与记录数一致(store: DatasetStore) -> None
     store.write_raw(snapshot_date=SNAPSHOT, page_index=1, records=[record(1), record(2)], meta={})
     store.write_raw(snapshot_date=SNAPSHOT, page_index=2, records=[record(3)], meta={})
 
-    written = store.build_bronze(SNAPSHOT)
+    written = bronze.build(store, SNAPSHOT)
     bronzes = store.read_bronze(SNAPSHOT)
 
     assert written == 3
@@ -99,8 +100,8 @@ def test_bronze同日重建不产生重复行(store: DatasetStore) -> None:
     store.write_raw(snapshot_date=SNAPSHOT, page_index=1, records=[record(1), record(2)], meta={})
     store.write_raw(snapshot_date=SNAPSHOT, page_index=1, records=[record(2), record(3)], meta={})
 
-    store.build_bronze(SNAPSHOT)
-    store.build_bronze(SNAPSHOT)
+    bronze.build(store, SNAPSHOT)
+    bronze.build(store, SNAPSHOT)
 
     bronzes = store.read_bronze(SNAPSHOT)
 
@@ -112,7 +113,7 @@ def test_bronze保留原始JSON且不改写内容(store: DatasetStore) -> None:
     original = record(1, downloads=42)
     store.write_raw(snapshot_date=SNAPSHOT, page_index=1, records=[original], meta={})
 
-    store.build_bronze(SNAPSHOT)
+    bronze.build(store, SNAPSHOT)
     row = store.read_bronze(SNAPSHOT).row(0, named=True)
 
     restored = json.loads(row["raw"])
@@ -126,7 +127,7 @@ def test_缺少可选字段的记录仍能入bronze(store: DatasetStore) -> None
     minimal = {"id": "acme/bare", "lastModified": "2026-11-02T00:00:00.000Z"}
     store.write_raw(snapshot_date=SNAPSHOT, page_index=1, records=[minimal], meta={})
 
-    store.build_bronze(SNAPSHOT)
+    bronze.build(store, SNAPSHOT)
     row = store.read_bronze(SNAPSHOT).row(0, named=True)
 
     assert row["id"] == "acme/bare"
@@ -135,13 +136,13 @@ def test_缺少可选字段的记录仍能入bronze(store: DatasetStore) -> None
 
 
 def test_空目录重建返回零且不产出空分区(store: DatasetStore) -> None:
-    assert store.build_bronze(SNAPSHOT) == 0
+    assert bronze.build(store, SNAPSHOT) == 0
     assert not store.has("bronze", SNAPSHOT)
 
 
 def test_bronze被polars直接可读(store: DatasetStore) -> None:
     store.write_raw(snapshot_date=SNAPSHOT, page_index=1, records=[record(1)], meta={})
-    store.build_bronze(SNAPSHOT)
+    bronze.build(store, SNAPSHOT)
 
     frame = pl.read_parquet(store.path("bronze", SNAPSHOT))
 
@@ -169,7 +170,7 @@ def test_同页多次写入以后写者为准(store: DatasetStore) -> None:
         written_at="2026-11-04T10:00:00.000000+00:00",
     )
 
-    store.build_bronze(SNAPSHOT)
+    bronze.build(store, SNAPSHOT)
 
     assert store.read_bronze(SNAPSHOT).row(0, named=True)["main_size"] == 222
 
@@ -197,6 +198,6 @@ def test_后写入的新字段不会被先写入的空值覆盖(store: DatasetSt
     for path in (store.raw_dir / f"dt={SNAPSHOT.isoformat()}").glob("top-*.json.gz"):
         os.utime(path, (now, now))
 
-    store.build_bronze(SNAPSHOT)
+    bronze.build(store, SNAPSHOT)
 
     assert store.read_bronze(SNAPSHOT).row(0, named=True)["main_size"] == 999

@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 
+from hf_data_crawl import bronze
 from hf_data_crawl.store import DatasetStore
 
 DAY = date(2026, 11, 4)
@@ -104,7 +105,7 @@ def test_胜出者由写入时刻决定而不是文件名(store: DatasetStore) -
         written_at="2026-11-04T09:00:00.000000+00:00",
     )
 
-    store.build_bronze(DAY)
+    bronze.build(store, DAY)
 
     # 09:00 那批虽是后写的，但时刻更早，故 12:00 的 111 胜出。
     assert store.read_bronze(DAY).row(0, named=True)["main_size"] == 111
@@ -141,7 +142,7 @@ def test_胜出者由写入时刻决定而不是文件修改时间(store: Datase
         when = time.time() + (100 if stamp.startswith("2026-11-04T09") else -100)
         os.utime(path, (when, when))
 
-    store.build_bronze(DAY)
+    bronze.build(store, DAY)
 
     assert store.read_bronze(DAY).row(0, named=True)["main_size"] == 111
 
@@ -182,7 +183,7 @@ def test_复制raw目录后重建结果完全一致(tmp_path: Path) -> None:
             written_at=stamp.replace("2026-11-04", "2026-11-05"),
         )
 
-    source.build_bronze(DAY)
+    bronze.build(source, DAY)
     expected = source.read_bronze(DAY)
 
     target = DatasetStore(tmp_path / "b")
@@ -192,7 +193,7 @@ def test_复制raw目录后重建结果完全一致(tmp_path: Path) -> None:
     for offset, path in enumerate(sorted(target.raw_dir.rglob("*.json.gz"))):
         os.utime(path, (now + offset, now + offset))
 
-    target.build_bronze(DAY)
+    bronze.build(target, DAY)
 
     assert target.read_bronze(DAY).equals(expected)
 
@@ -228,7 +229,7 @@ def test_旧raw没有写入时刻时回退文件修改时间(tmp_path: Path) -> 
             handle.write(body)
         os.utime(path, (order, order))
 
-    store.build_bronze(DAY)
+    bronze.build(store, DAY)
 
     assert store.read_bronze(DAY).row(0, named=True)["main_size"] == 222
 
@@ -263,6 +264,6 @@ def test_新分块永远压过没有时刻的旧分块(store: DatasetStore) -> N
         written_at="2026-11-04T09:00:00.000000+00:00",
     )
 
-    store.build_bronze(DAY)
+    bronze.build(store, DAY)
 
     assert store.read_bronze(DAY).row(0, named=True)["main_size"] == 222

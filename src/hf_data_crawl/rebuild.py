@@ -52,7 +52,7 @@ def rebuild_from_raw(store: DatasetStore) -> RebuildSummary:
         )
 
     # 失效状态不是从 raw 派生的：它来自对账时的单库探测（404/401/307），
-    # 而 update_state 会把本轮出现的每条记录都置为 active——直接重建等于把
+    # 而 state.update 会把本轮出现的每条记录都置为 active——直接重建等于把
     # 全部 restricted / renamed 判断清零。2026-11-05 实测踩到：463 条失效标记
     # 在一次 build 后归零。故清理前留存、重建后写回，协议见 `status` 模块；
     # 这是「Raw 是唯一事实来源」的一个例外，边界写在 GLOSSARY.md 第 15、18、26 条。
