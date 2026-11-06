@@ -222,3 +222,56 @@ def test_current与latest_silver对同一时刻取值一致(catalog: GoldCatalog
 
     assert common, "两者没有可比列，说明视图结构已严重漂移"
     assert current.select(common).equals(latest.select(common))
+
+
+# ---------------------------------------------------------------- tag_values 单次扫描
+
+
+def _legacy_tag_values_sql() -> str:
+    """改写前的 16 路 UNION ALL，留作参考实现。"""
+    from hf_data_crawl.silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
+
+    return " UNION ALL ".join(
+        f"SELECT id, '{column}' AS dimension, unnest({column}) AS value FROM latest_silver"
+        for column in (*TAG_DIMENSIONS.values(), PLAIN_TAG_COLUMN)
+    )
+
+
+def test_tag_values与旧的UNION写法结果相同(catalog: GoldCatalog) -> None:
+    new = catalog.run("SELECT * FROM tag_values ORDER BY id, dimension, value")
+    old = catalog.run(f"SELECT * FROM ({_legacy_tag_values_sql()}) ORDER BY id, dimension, value")
+
+    assert new.height > 0
+    assert new.equals(old)
+
+
+def test_tag_values覆盖全部维度列(catalog: GoldCatalog) -> None:
+    from hf_data_crawl.silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
+
+    dimensions = set(
+        catalog.run("SELECT DISTINCT dimension FROM tag_values")["dimension"].to_list()
+    )
+
+    assert dimensions <= {*TAG_DIMENSIONS.values(), PLAIN_TAG_COLUMN}
+    assert "task_categories" in dimensions
+
+
+def test_tag_values每个维度都有数据时仍与旧写法一致(tmp_path: Path) -> None:
+    """夹具只带三类标签时，少一个维度也看不出来；这里让每个维度都有取值。"""
+    from hf_data_crawl.silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
+
+    store = DatasetStore(tmp_path / "data")
+    tags = [f"{prefix}:v-{prefix}" for prefix in TAG_DIMENSIONS] + ["text", "image"]
+    payload = record(1, downloads=10)
+    payload["tags"] = tags
+    seed(store, DAY1, [payload])
+    full = GoldCatalog(store)
+    try:
+        new = full.run("SELECT * FROM tag_values ORDER BY id, dimension, value")
+        old = full.run(f"SELECT * FROM ({_legacy_tag_values_sql()}) ORDER BY id, dimension, value")
+        dimensions = set(new["dimension"].to_list())
+    finally:
+        full.close()
+
+    assert dimensions == {*TAG_DIMENSIONS.values(), PLAIN_TAG_COLUMN}
+    assert new.equals(old)

@@ -208,11 +208,21 @@ class GoldCatalog:
         # 长表视图：一行一个 (数据集, 维度, 取值)。宽表便于 join 榜单，长表便于
         # 任意维度聚合而不必改 SQL——「按模态统计」「按格式统计」都是同一句。
         # 由 TAG_DIMENSIONS 生成，新增维度自动进入，不必再手写一段 UNION。
-        tag_selects = [
-            f"SELECT id, '{column}' AS dimension, unnest({column}) AS value FROM latest_silver"
+        #
+        # 单次扫描：每行先打包成「维度 → 取值列表」的结构体数组再展开。此前是 16 路
+        # UNION ALL，每一路都重新算一遍 latest_silver 的窗口函数，全量 count(*) 要
+        # 8~9 秒；单次扫描实测 3.6 秒，结果逐行相同（tests/test_gold.py 对照旧写法）。
+        packed = ", ".join(
+            f"{{'dimension': '{column}', 'vals': {column}}}"
             for column in (*TAG_DIMENSIONS.values(), PLAIN_TAG_COLUMN)
-        ]
-        self._connection.execute("CREATE VIEW tag_values AS " + " UNION ALL ".join(tag_selects))
+        )
+        self._connection.execute(
+            f"""
+            CREATE VIEW tag_values AS
+            SELECT id, d.dimension AS dimension, unnest(d.vals) AS value
+            FROM (SELECT id, unnest([{packed}]) AS d FROM latest_silver)
+            """
+        )
         # 增速取「最近两个观测点」，而不是固定 7 日窗口：
         # 日增量只扫最新更新的万把条，全站指标靠周对账刷新，7 日窗口在周节奏下几乎取不到两点。
         # 间隔上限 35 天，避免跨季度比较；跨度以 span_days 明示，读榜的人自己判断。
