@@ -28,15 +28,9 @@ from .tables import (
     CARD_CONFIGS_SCHEMA,
     CURRENT_SCHEMA,
     ENRICH_SCHEMA,
-    OBSERVATIONS_SCHEMA,
     SILVER_SCHEMA,
-    SIZE_SCHEMA,
     table,
 )
-
-# 上述 schema 常量在 tables.py 中定义，此处重新导出：旧调用方（含测试）仍可
-# `from hf_data_crawl.store import BRONZE_SCHEMA`，但定义只有一份。
-
 
 #: current 中由 Silver 直接带过来、不需要额外计算的列。
 #:
@@ -157,9 +151,7 @@ class DatasetStore:
         frame = pl.DataFrame(rows, schema=BRONZE_SCHEMA)
         frame = frame.unique(subset=["id"], keep="last", maintain_order=True)
 
-        target_dir = self.bronze_dir / f"dt={snapshot_date.isoformat()}"
-        target_dir.mkdir(parents=True, exist_ok=True)
-        write_parquet(frame, target_dir / "bronze.parquet")
+        self.write("bronze", frame, snapshot_date)
         return frame.height
 
     @staticmethod
@@ -194,10 +186,7 @@ class DatasetStore:
         return batches
 
     def read_bronze(self, snapshot_date: date) -> pl.DataFrame:
-        target = self.bronze_dir / f"dt={snapshot_date.isoformat()}" / "bronze.parquet"
-        if not target.exists():
-            return pl.DataFrame(schema=BRONZE_SCHEMA)
-        return _align_frame(pl.read_parquet(target), BRONZE_SCHEMA)
+        return self.read("bronze", snapshot_date)
 
     @property
     def silver_dir(self) -> Path:
@@ -210,6 +199,75 @@ class DatasetStore:
     @property
     def enrich_dir(self) -> Path:
         return self._root / "enrich"
+
+    # ------------------------------------------------------------ 表读写
+    #
+    # 路径与 schema 只从登记表取。这里是整个仓库里唯一把「逻辑名」翻成磁盘路径、
+    # 并按 schema 读写的地方：改名或加列只动 `tables.py`，读与写一起跟着变。
+
+    def path(self, name: str, dt: date | None = None) -> Path:
+        """某张表的落盘路径。分区表必须给 dt。"""
+        return self._root / table(name).relative(dt.isoformat() if dt else None)
+
+    def has(self, name: str, dt: date | None = None) -> bool:
+        """表是否已有数据。分区表不给 dt 时，任一分区存在即算有。"""
+        spec = table(name)
+        if spec.partitioned and dt is None:
+            return any(self._root.glob(spec.glob()))
+        return self.path(name, dt).exists()
+
+    def read(self, name: str, dt: date | None = None) -> pl.DataFrame:
+        """读一张表（或一个分区），缺列补空、多列丢弃；不存在时返回空帧。"""
+        spec = table(name)
+        target = self.path(name, dt)
+        if not target.exists():
+            return pl.DataFrame(schema=spec.schema)
+        return _align_frame(pl.read_parquet(target), spec.schema)
+
+    def read_all(self, name: str) -> pl.DataFrame:
+        """读一张表的全部分区并合并。每个分区先各自对齐，再拼接。
+
+        旧分区缺新列时，若先拼再对齐，`concat` 会在拼接处抛错或列不齐；逐个对齐
+        之后再拼，「新增字段后整个库打不开」就不会发生。
+        """
+        spec = table(name)
+        if not spec.partitioned:
+            return self.read(name)
+        files = sorted(self._root.glob(spec.glob()))
+        if not files:
+            return pl.DataFrame(schema=spec.schema)
+        return pl.concat(
+            [_align_frame(pl.read_parquet(path), spec.schema) for path in files],
+            how="vertical_relaxed",
+        )
+
+    def write(self, name: str, frame: pl.DataFrame, dt: date | None = None) -> Path:
+        """原子写一张表（或一个分区），列序按 schema 固定。"""
+        target = self.path(name, dt)
+        write_parquet(frame.select(list(table(name).schema)), target)
+        return target
+
+    def upsert(self, name: str, frame: pl.DataFrame, dedupe: list[str] | None = None) -> int:
+        """把本批并入既有表：同 id 以新值为准，其余保留。返回合并后的行数。
+
+        - 替换键固定为 `id`：某个 id 在新批里出现，它在旧表里的行**整体**被换掉，
+          因此卡片里删掉的 config 不会残留。
+        - `dedupe` 只管新批内部的去重键（默认 `id`），与替换键无关。
+        - 空新批不写盘，直接返回现有行数：没有变化就不碰文件。
+        """
+        if frame.height == 0:
+            return self.read(name).height
+
+        fresh = frame.unique(subset=dedupe or ["id"], keep="last", maintain_order=True).select(
+            list(table(name).schema)
+        )
+        previous = self.read(name)
+        merged = pl.concat(
+            [previous.filter(~pl.col("id").is_in(fresh["id"].unique().to_list())), fresh],
+            how="vertical_relaxed",
+        )
+        self.write(name, merged.sort("id"))
+        return merged.height
 
     def build_enrich(self, snapshot_date: date) -> tuple[int, int]:
         """把该日期的 card 批次抽成两张表，按 id 覆盖旧值。
@@ -231,87 +289,29 @@ class DatasetStore:
                     card_rows.append(row)
                 config_rows.extend(extract_config_rows(record, snapshot_date))
 
-        table_rows = self._merge_cards(card_rows, ENRICH_SCHEMA, "carddata.parquet")
-        config_count = self._merge_cards(
-            config_rows,
-            CARD_CONFIGS_SCHEMA,
-            "card_configs.parquet",
+        table_rows = self.upsert("carddata", pl.DataFrame(card_rows, schema=ENRICH_SCHEMA))
+        config_count = self.upsert(
+            "card_configs",
+            pl.DataFrame(config_rows, schema=CARD_CONFIGS_SCHEMA),
             dedupe=["id", "config_name", "split"],
         )
         return table_rows, config_count
 
-    def _merge_cards(
-        self,
-        rows: list[dict[str, Any]],
-        schema: dict[str, pl.DataType],
-        filename: str,
-        *,
-        dedupe: list[str] | None = None,
-    ) -> int:
-        """把本批卡片并入既有表：同 id 以新值为准，其余保留。"""
-        target = self.enrich_dir / filename
-        if not rows:
-            return self.read_card_table(filename, schema).height
-
-        fresh = pl.DataFrame(rows, schema=schema).unique(
-            subset=dedupe or ["id"], keep="last", maintain_order=True
-        )
-        if target.exists():
-            # 旧表是上一次规则下的产物，可能缺新列——先对齐再拼，否则直接抛错。
-            previous = _align_frame(pl.read_parquet(target), schema)
-            merged = pl.concat(
-                [
-                    previous.filter(~pl.col("id").is_in(fresh["id"].unique().to_list())),
-                    fresh,
-                ],
-                how="vertical_relaxed",
-            )
-        else:
-            merged = fresh
-
-        write_parquet(merged.select(list(schema)).sort("id"), target)
-        return merged.height
-
     def read_enrich(self) -> pl.DataFrame:
-        return self.read_card_table("carddata.parquet", ENRICH_SCHEMA)
+        return self.read("carddata")
 
     def read_card_configs(self) -> pl.DataFrame:
-        return self.read_card_table("card_configs.parquet", CARD_CONFIGS_SCHEMA)
-
-    def read_card_table(self, filename: str, schema: dict[str, pl.DataType]) -> pl.DataFrame:
-        target = self.enrich_dir / filename
-        if not target.exists():
-            return pl.DataFrame(schema=schema)
-        return _align_frame(pl.read_parquet(target), schema)
+        return self.read("card_configs")
 
     def read_sizes(self) -> pl.DataFrame:
-        spec = table("size")
-        return self.read_card_table(spec.filename, spec.schema)
+        return self.read("size")
 
     def merge_sizes(self, frame: pl.DataFrame) -> int:
         """把新一批规模数据并入总表，同 id 以新值为准。
 
         不可用的记录也一并落库：不记下来，下一轮还得为它们重烧 30% 的请求预算。
         """
-        spec = table("size")
-        target = self.root / spec.path
-        fresh = frame.unique(subset=["id"], keep="last")
-        if target.exists() and fresh.height:
-            previous = _align_frame(pl.read_parquet(target), SIZE_SCHEMA)
-            merged = pl.concat(
-                [
-                    previous.filter(~pl.col("id").is_in(fresh["id"].to_list())),
-                    fresh,
-                ],
-                how="vertical_relaxed",
-            )
-        elif target.exists():
-            merged = _align_frame(pl.read_parquet(target), SIZE_SCHEMA)
-        else:
-            merged = fresh
-
-        write_parquet(merged.select(list(SIZE_SCHEMA)).sort("id"), target)
-        return merged.height
+        return self.upsert("size", frame)
 
     def build_silver(self, snapshot_date: date) -> int:
         """由 Bronze 派生 Silver 分区，返回行数。"""
@@ -320,29 +320,19 @@ class DatasetStore:
             return 0
         rows = [derive_row(row, snapshot_date) for row in bronze.iter_rows(named=True)]
         frame = pl.DataFrame(rows, schema=SILVER_SCHEMA)
-        target = self.silver_dir / f"dt={snapshot_date.isoformat()}" / "silver.parquet"
-        write_parquet(frame, target)
+        self.write("silver", frame, snapshot_date)
         return frame.height
 
     def read_silver(self, snapshot_date: date) -> pl.DataFrame:
-        target = self.silver_dir / f"dt={snapshot_date.isoformat()}" / "silver.parquet"
-        if not target.exists():
-            return pl.DataFrame(schema=SILVER_SCHEMA)
-        return _align_frame(pl.read_parquet(target), SILVER_SCHEMA)
+        return self.read("silver", snapshot_date)
 
     def read_observations(self) -> pl.DataFrame:
-        files = sorted((self.state_dir / "observations").glob("dt=*/obs.parquet"))
-        if not files:
-            return pl.DataFrame(schema=OBSERVATIONS_SCHEMA)
-        return pl.concat([pl.read_parquet(path) for path in files], how="vertical_relaxed")
+        return self.read_all("observations")
 
     def read_current(self) -> pl.DataFrame:
-        target = self.state_dir / "current.parquet"
-        if not target.exists():
-            return pl.DataFrame(schema=CURRENT_SCHEMA)
-        # 旧表的列不全会让下游 select 直接抛错，故一律按当前 schema 对齐；
+        # 旧表的列不全会让下游 select 直接抛错，`read` 已按当前 schema 对齐；
         # status 缺失时视为全部在架，沿用历史语义。
-        frame = _align_frame(pl.read_parquet(target), CURRENT_SCHEMA)
+        frame = self.read("current")
         if frame["status"].null_count():
             frame = frame.with_columns(pl.col("status").fill_null(Status.ACTIVE.value))
         return frame
@@ -377,7 +367,7 @@ class DatasetStore:
         )
         changed = int((updated["status"] != current["status"]).sum())
         if changed:
-            write_parquet(updated.select(list(CURRENT_SCHEMA)), self.state_dir / "current.parquet")
+            self.write("current", updated)
         return changed
 
     def update_state(self, snapshot_date: date) -> StateUpdate:
@@ -415,15 +405,13 @@ class DatasetStore:
             ]
         )
 
-        target = self.state_dir / "observations" / f"dt={snapshot_date.isoformat()}" / "obs.parquet"
         if new_observations.height == 0:
-            if target.exists():
-                target.unlink()
+            self.path("observations", snapshot_date).unlink(missing_ok=True)
         else:
-            write_parquet(new_observations.select(list(OBSERVATIONS_SCHEMA)), target)
+            self.write("observations", new_observations, snapshot_date)
 
         current = self._rebuild_current(snapshot_date, silver)
-        write_parquet(current, self.state_dir / "current.parquet")
+        self.write("current", current)
 
         return StateUpdate(
             appended=max(0, new_observations.height - before),

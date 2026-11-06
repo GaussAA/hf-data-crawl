@@ -141,7 +141,7 @@ class GoldCatalog:
     """在本地 parquet 上挂一组视图，供 SQL 直接查。"""
 
     def __init__(self, store: DatasetStore) -> None:
-        if not (store.state_dir / "current.parquet").exists():
+        if not store.has("current"):
             raise GoldNotReady("尚无采集数据，请先运行 `hf-data-crawl collect`")
         self._store = store
         self._connection = duckdb.connect()
