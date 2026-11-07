@@ -176,6 +176,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="重试上次标记为不可用的数据集（默认跳过）",
     )
     files.add_argument(
+        "--refresh-truncated",
+        action="store_true",
+        help="重抓上次标了截断的库（须配合 --max-pages>1，否则只是重新确认截断）",
+    )
+    files.add_argument(
         "--flush-every",
         type=int,
         default=100,
@@ -478,6 +483,12 @@ def _fetch_files(
     args: argparse.Namespace, store: DatasetStore, transport: Transport | None
 ) -> Outcome:
     snapshot = _snapshot(args)
+    if args.refresh_truncated and args.max_pages <= 1:
+        # 页数还是一页时重抓，只会把「截断」原样重新确认一遍，白烧请求与配额。
+        message = "--refresh-truncated 需配合 --max-pages>1；否则只是重新确认截断，白烧请求"
+        print(f"失败：{message}")
+        return Outcome({"error": "max-pages"}, code=1, reason=message)
+
     current = store.read_current()
     if current.height == 0:
         print("尚无采集数据，请先运行 `hf-data-crawl collect`。")
@@ -498,6 +509,7 @@ def _fetch_files(
         dataset_ids=ordered["id"].to_list(),
         top=max(1, args.top),
         retry_unavailable=args.retry_unavailable,
+        refresh_truncated=args.refresh_truncated,
         existing=store.read_files(),
         flush=store.merge_files,
         flush_every=args.flush_every,
@@ -543,7 +555,8 @@ def _print_files(summary: FileSummary, table_rows: int) -> None:
         f" / 下载 {summary.downloaded_bytes / 1e6:.1f}MB"
     )
     print(
-        f"  成功 {summary.fetched} · 永久缺失 {summary.unavailable} · "
+        f"  成功 {summary.fetched}（其中刷新截断 {summary.refreshed}） · "
+        f"永久缺失 {summary.unavailable} · "
         f"临时失败 {summary.failed} · 已存跳过 {summary.skipped}"
     )
     print(f"  汇总表累计 {table_rows} 行（临时失败不入库，下次自然重试）")

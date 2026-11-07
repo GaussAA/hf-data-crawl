@@ -22,7 +22,7 @@ import pytest
 from hf_data_crawl.api import HfResponse, TransportError
 from hf_data_crawl.cli import WRITE_COMMANDS, main
 from hf_data_crawl.derive import derive_day
-from hf_data_crawl.files import TREE_LIMIT, FileFetcher, HfFilesApi, next_cursor
+from hf_data_crawl.files import EMPTY_PAGE_GRACE, TREE_LIMIT, FileFetcher, HfFilesApi, next_cursor
 from hf_data_crawl.gold import GoldCatalog, wide_column_names
 from hf_data_crawl.runs import read_runs
 from hf_data_crawl.store import DatasetStore
@@ -431,6 +431,106 @@ def test_零任务时不回调进度也不除零() -> None:
     assert summary.requested == 0
 
 
+def test_刷新截断只重抓截断行() -> None:
+    """截断行若也按「已处理」跳过，就永远是下限，永远补不成完整清单。"""
+    transport = FakeFilesTransport({f"acme/ds-{i}": tree() for i in (1, 2, 3)})
+    ids = ["acme/ds-1", "acme/ds-2", "acme/ds-3"]
+    existing = pl.DataFrame(
+        {
+            "id": ids,
+            "status": ["ok", "ok", "ok"],
+            "truncated": [True, False, True],
+        },
+        schema={"id": pl.Utf8, "status": pl.Utf8, "truncated": pl.Boolean},
+    )
+
+    summary, frame = fetcher(transport).run(
+        DAY, dataset_ids=ids, existing=existing, refresh_truncated=True
+    )
+
+    assert sorted(transport.calls) == ["acme/ds-1", "acme/ds-3"]
+    assert summary.refreshed == 2
+    assert summary.skipped == 1, "完整清单不该被重抓"
+    assert frame.height == 2
+
+
+def test_默认不重抓截断行() -> None:
+    """不显式刷新时保持断点续跑语义：跑过的就跳过，别偷偷重烧流量。"""
+    transport = FakeFilesTransport({"acme/ds-1": tree()})
+    existing = pl.DataFrame(
+        {"id": ["acme/ds-1"], "status": ["ok"], "truncated": [True]},
+        schema={"id": pl.Utf8, "status": pl.Utf8, "truncated": pl.Boolean},
+    )
+
+    summary, frame = fetcher(transport).run(DAY, dataset_ids=["acme/ds-1"], existing=existing)
+
+    assert transport.calls == []
+    assert summary.skipped == 1
+    assert summary.refreshed == 0
+    assert frame.height == 0
+
+
+def test_旧表缺truncated列时当作未截断() -> None:
+    """升级前的产物没有该列，不能因此抛错，也不能把全部历史行重抓一遍。"""
+    transport = FakeFilesTransport({"acme/ds-1": tree()})
+    existing = pl.DataFrame(
+        {"id": ["acme/ds-1"], "status": ["ok"]}, schema={"id": pl.Utf8, "status": pl.Utf8}
+    )
+
+    summary, frame = fetcher(transport).run(
+        DAY, dataset_ids=["acme/ds-1"], existing=existing, refresh_truncated=True
+    )
+
+    assert transport.calls == []
+    assert summary.refreshed == 0
+    assert frame.height == 0
+
+
+def test_首页全是目录时继续翻页直到见到文件() -> None:
+    """目录排在文件前，头几页没文件不代表空仓库——不能报成 0 个文件。"""
+    transport = FakeFilesTransport(
+        {
+            "acme/x": (
+                Page([{"type": "directory", "path": "a", "size": 0}], "p2"),
+                Page([{"type": "directory", "path": "a/b", "size": 0}], "p3"),
+                Page([file_entry("a/b/c.parquet")]),
+            )
+        }
+    )
+
+    result = api(transport).fetch("acme/x", DAY)
+
+    assert result.row["file_count"] == 1, "有文件就不能报 0"
+    assert result.row["truncated"] is False, "翻到了末页，清单已完整"
+    assert len(transport.calls) == 3, "max_pages=1 时靠宽限翻到见到文件为止"
+
+
+def test_全程只有目录时撞兜底上限即停() -> None:
+    """病态仓库（一直给目录、一直有 next）不能无限翻，且四个指标留空不冒充 0。"""
+    transport = FakeFilesTransport(
+        {"acme/x": (Page([{"type": "directory", "path": "a", "size": 0}], "p2"),)}
+    )
+
+    result = api(transport).fetch("acme/x", DAY)
+
+    assert result.row["file_count"] is None, "没见到文件 ≠ 空仓库，不能报 0"
+    assert result.row["has_readme"] is None, "也不能断言没有 README"
+    assert result.row["formats"] is None
+    assert result.row["total_bytes"] is None
+    assert result.row["truncated"] is True
+    assert len(transport.calls) == 1 + EMPTY_PAGE_GRACE, "撞上限即停，不许无限翻"
+
+
+def test_空仓库不因宽限多翻() -> None:
+    """真·空仓库没有 next，第一次就该收工，别白烧宽限页。"""
+    transport = FakeFilesTransport({"acme/x": []})
+
+    result = api(transport).fetch("acme/x", DAY)
+
+    assert result.row["truncated"] is False
+    assert len(transport.calls) == 1
+
+
 # ---------------------------------------------------------------- 登记与视图
 
 
@@ -521,6 +621,77 @@ def test_命令行可显式加大页数(tmp_path: Path) -> None:
 
     assert code == 0
     assert store.read_files()["file_count"].to_list() == [2]
+
+
+def test_命令行刷新截断需配合多页(tmp_path: Path) -> None:
+    """一页上限时重抓只是把「截断」重新确认一遍，白烧请求——故直接拒绝。"""
+    root = tmp_path / "data"
+    store = DatasetStore(root)
+    seed(store, 1)
+    transport = FakeFilesTransport({"acme/ds-1": tree()})
+
+    code = main(
+        ["--data-dir", str(root), "fetch-files", "--top", "1", "--refresh-truncated"],
+        transport=transport,
+    )
+
+    assert code == 1
+    assert transport.calls == [], "被拒时一个请求都不该发"
+    assert read_runs(store)[-1]["status"] == "failed"
+    assert "max-pages" in (read_runs(store)[-1]["reason"] or "")
+
+
+def test_命令行刷新后截断消失(tmp_path: Path) -> None:
+    """端到端：原来截断的行重抓两页后，truncated 应翻成 False 且文件数变全。"""
+    root = tmp_path / "data"
+    store = DatasetStore(root)
+    seed(store, 1)
+    store.merge_files(
+        pl.DataFrame(
+            [
+                {
+                    "id": "acme/ds-1",
+                    "url": "https://huggingface.co/datasets/acme/ds-1",
+                    "snapshot_date": DAY,
+                    "status": "ok",
+                    "file_count": 1,
+                    "total_bytes": 10,
+                    "formats": '{"bin": 1}',
+                    "has_readme": False,
+                    "truncated": True,
+                }
+            ],
+            schema=FILES_SCHEMA,
+        )
+    )
+    transport = FakeFilesTransport(
+        {
+            "acme/ds-1": (
+                Page(tree([file_entry("a.bin")]), "p2"),
+                Page(tree([file_entry("b.bin")])),
+            )
+        }
+    )
+
+    code = main(
+        [
+            "--data-dir",
+            str(root),
+            "fetch-files",
+            "--top",
+            "1",
+            "--max-pages",
+            "2",
+            "--refresh-truncated",
+        ],
+        transport=transport,
+    )
+
+    stored = store.read_files()
+    assert code == 0
+    assert stored["truncated"].to_list() == [False]
+    assert stored["file_count"].to_list() == [2]
+    assert stored.height == 1, "刷新是同 id 覆盖，不能把行数放大"
 
 
 def test_无采集数据时命令失败且留痕(tmp_path: Path) -> None:

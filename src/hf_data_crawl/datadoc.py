@@ -367,8 +367,12 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "它是 `Origin.NETWORK` 表，重建不清；只覆盖头部，不能拿它算全站分布。",
         "默认每库一页（1000 条），`truncated=true` 表示还有后续页未取，",
         "此时 `file_count` / `total_bytes` / `formats` / `has_readme` 都只是下限；",
-        "要完整清单用 `--max-pages`。目录条目不计入文件数，只统计 `type=file`。",
-        "匿名配额 500 请求 / 300 秒固定窗口，429 按响应头 `Retry-After` 退避；",
+        "要完整清单用 `--max-pages`；已标截断的行默认被断点续跑跳过，补全须显式",
+        "`--refresh-truncated`。目录条目不计入文件数，只统计 `type=file`。",
+        "`recursive` 按路径排序、目录在前，头几页可能一个文件都没有；这种「没见到",
+        "文件」不等于空仓库，此时四个指标一律留空，不拿 0 或 False 冒充。",
+        "配额是固定窗口（匿名 500 请求 / 300 秒，带 `HF_TOKEN` 为 1000），"
+        "429 按响应头 `Retry-After` 退避；",
         "临时失败不落库，重跑本命令即由断点续跑补回，不必整批重来。",
         "",
     ]

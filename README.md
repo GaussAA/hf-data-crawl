@@ -44,7 +44,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 hf-data-crawl collect      [--date YYYY-MM-DD] [--limit 1000] [--max-pages N] [--pages-without-new 3] [--refresh-top 20000] [--dry-run]
 hf-data-crawl enrich       [--date YYYY-MM-DD] [--top 20000] [--limit 1000]
 hf-data-crawl fetch-sizes  [--date YYYY-MM-DD] [--top 20000] [--workers 16] [--retry-unavailable]
-hf-data-crawl fetch-files  [--date YYYY-MM-DD] [--top 1000] [--workers 8] [--retry-unavailable] [--timeout 30] [--max-retries 1] [--max-pages 1]
+hf-data-crawl fetch-files  [--date YYYY-MM-DD] [--top 1000] [--workers 8] [--retry-unavailable] [--timeout 30] [--max-retries 1] [--max-pages 1] [--refresh-truncated]
 hf-data-crawl reconcile    [--date YYYY-MM-DD] [--limit 1000] [--max-pages N]
 hf-data-crawl build        [--full]                                      # 默认只重放近 7 天
 hf-data-crawl compact      [--older-than-days 7] [--date YYYY-MM-DD]  # 冷区跨天压缩
@@ -61,7 +61,7 @@ hf-data-crawl export-wide  [--out PATH]           # 默认 data/exports/datasets
 
 **宽表导出**：`current` 只保留 19 列状态标量，语义字段分散在 `silver` / `carddata` / `size`。`export-wide` 把 `gold.datasets` 视图物化成单文件 parquet，直接交给 DuckDB / polars / BI 工具；它是**可重建投影**——不登记为表、不参与 `state.update` / `build` / `compact`，删掉重跑本命令即可，也不改动任何状态表。列口径由 `gold.wide_columns()` 一处生成，加附表字段时视图与导出一起跟上。详见 [docs/DATA.md](docs/DATA.md) 第八节。
 
-**文件清单补采（试点）**：列表接口请求也不返回 `siblings`（见 [docs/DATA.md](docs/DATA.md) 第九节）；单库详情虽返回，但下载量头部实测 13-25 MB / 44-76 s，按头部补会反复超时。`fetch-files` 改走 `/tree/main?recursive=true&expand=false`：每页固定 1000 条、约 110-230 KB / 0.4-0.7 s。默认每库只取第一页，有后续页时标 `truncated=true`——此时 `file_count` / `total_bytes` / `file_formats` / `has_readme` 都只是**这一页的下限**，不是全库真值；要完整清单须显式加大 `--max-pages`。结果落 `enrich/files.parquet`（`Origin.NETWORK`，重建不清），自动进入 `datasets` 宽视图。断点续跑、失败分类、写锁与边跑边落库与 `fetch-sizes` 共用 `batch.collect_rows` 骨架；临时失败不入库、下轮自然重试。这是按头部补的**子集**，别拿它算全站分布。匿名配额实测 500 请求 / 300 秒固定窗口，跑满 1000 需分批；429 会按响应头 `Retry-After` 退避，仍不够时临时失败不落库、下次重跑本命令由断点续跑接力。带 `HF_TOKEN` 可提到 **1000 请求 / 300 秒**（实测），写进仓库根 `.env` 即可，命令自动读取且**不覆盖**已 export 的值；令牌只在本机文件里，值绝不进日志与 `runs/`。
+**文件清单补采（试点）**：列表接口请求也不返回 `siblings`（见 [docs/DATA.md](docs/DATA.md) 第九节）；单库详情虽返回，但下载量头部实测 13-25 MB / 44-76 s，按头部补会反复超时。`fetch-files` 改走 `/tree/main?recursive=true&expand=false`：每页固定 1000 条、约 110-230 KB / 0.4-0.7 s。默认每库只取第一页，有后续页时标 `truncated=true`——此时 `file_count` / `total_bytes` / `file_formats` / `has_readme` 都只是**这一页的下限**，不是全库真值；要完整清单须显式加大 `--max-pages`。结果落 `enrich/files.parquet`（`Origin.NETWORK`，重建不清），自动进入 `datasets` 宽视图。断点续跑、失败分类、写锁与边跑边落库与 `fetch-sizes` 共用 `batch.collect_rows` 骨架；临时失败不入库、下轮自然重试。这是按头部补的**子集**，别拿它算全站分布。匿名配额实测 500 请求 / 300 秒固定窗口，跑满 1000 需分批；429 会按响应头 `Retry-After` 退避，仍不够时临时失败不落库、下次重跑本命令由断点续跑接力。带 `HF_TOKEN` 可提到 **1000 请求 / 300 秒**（实测），写进仓库根 `.env` 即可，命令自动读取且**不覆盖**已 export 的值；令牌只在本机文件里，值绝不进日志与 `runs/`。已标 `truncated` 的行默认被断点续跑跳过，想补成完整清单须显式 `--refresh-truncated --max-pages N`：它只重抓截断行、完整行照旧跳过；`--max-pages` 仍为 1 时命令直接失败，因为一页上限下重抓只是把截断重新确认一遍。
 
 内置榜单（`gold.BOARDS` 是唯一真相源：`query --board` 的候选项由它自动生成，`report` 页面复用同一批口径）：
 
