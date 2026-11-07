@@ -43,10 +43,15 @@ EXPAND_WHITELIST: frozenset[str] = frozenset(
     }
 )
 
-#: Bronze 标量表所需的源字段基座。HF 的 `expand[]` 是白名单裁剪，任何写入 Raw 的
-#: 扫描都必须至少请求这些字段：不同来源共享同一去重池，缺字段的分块一旦后写，
-#: 就会覆盖完整记录，让整列静默变空（2026-11-04 实测 private 曾 100% 为空）。
-#: 由 `ScanSpec` 在构造期校验，并由 `tests/test_schema_contract.py` 与表结构互校。
+#: 所有写入 Raw 的扫描共同遵守的最低字段契约。HF 的 `expand[]` 是白名单裁剪，
+#: 任何写入 Raw 的扫描都必须至少请求这些字段：不同来源共享同一去重池，缺字段的
+#: 分块一旦后写，就会覆盖完整记录，让整列静默变空（2026-11-04 实测 private 曾
+#: 100% 为空）。由 `ScanSpec` 在构造期校验，并由 `tests/test_schema_contract.py`
+#: 与表结构互校。
+#:
+#: 末两项不对应 Bronze 列：它们稀疏（全库约 0.5% / 0.3%），但实测只多约 0.2%
+#: 带宽，放进基座可让每一种来源的 Raw 都留下可回溯副本，顺带消除 lean/enrich
+#: 两档字段分叉。它们不进 Bronze，也不改任何宽表列。
 IDENTITY_EXPAND: tuple[str, ...] = (
     "author",
     "createdAt",
@@ -64,7 +69,23 @@ IDENTITY_EXPAND: tuple[str, ...] = (
     "tags",
     "trendingScore",
     "xetEnabled",
+    "citation",
+    "paperswithcode_id",
 )
+
+#: 实测列表接口「参数合法、但收到请求也不返回」的字段（2026-11-07）。
+#:
+#: 依据：383 万条 Raw 全量普查里二者出现 0 次；逐项探接口，带 `expand[]=siblings`
+#: 或 `full=true` 的列表响应都没有 `siblings`，`resourceGroup` 同样缺席。
+#: - `siblings` 只在单库详情接口出现，该接口一次约 1.2 MB（含文件清单），
+#:   `/tree/main?recursive=true` 也要约 200 KB 且上限 1000 条，逐库补 112 万不现实；
+#: - `resourceGroup` 有历史占位列且整列为空，见 fielddocs 与 DATA.md 第五节。
+#: 白名单只是「参数不会 400」，不等于「列表接口会返回」，别把两者混为一谈。
+LIST_UNRETURNED_FIELDS: frozenset[str] = frozenset({"siblings", "resourceGroup"})
+
+#: 其中仍保留在 IDENTITY_EXPAND 里的历史占位项：只为不破坏既有 schema 而随请求带上，
+#: 其余不返回字段一律不得进入任何扫描请求（契约测试钉死）。
+ALLOWED_PLACEHOLDERS: frozenset[str] = frozenset({"resourceGroup"})
 
 MAX_LIMIT = 1000
 RETRYABLE_STATUS: frozenset[int] = frozenset({429, 500, 502, 503, 504})
@@ -226,7 +247,9 @@ class HfDatasetApi:
             "direction": direction,
         }
         if expand:
-            params["expand[]"] = list(expand)
+            # 档位偶尔会重复列同一字段（基座与专属项重叠时）。HTTP 重复键只会
+            # 白增请求长度；去重且保序，让实际发出的清单与声明严格一致。
+            params["expand[]"] = list(dict.fromkeys(expand))
 
         cursor = (
             start_cursor

@@ -113,6 +113,16 @@ def test_expand字段以重复键发送() -> None:
     assert transport.calls[0]["expand[]"] == ["downloads", "downloadsAllTime"]
 
 
+def test_重复的expand字段会被去重且保序() -> None:
+    """基座与专属项偶尔重叠；同名字段发两遍只是白增请求长度。"""
+    transport = FakeTransport([[record("a/x")]], [None])
+    api = HfDatasetApi(transport=transport)
+
+    list(api.scan(sort="createdAt", expand=("downloads", "likes", "downloads")))
+
+    assert transport.calls[0]["expand[]"] == ["downloads", "likes"]
+
+
 def test_expand含白名单外字段时立即报错() -> None:
     transport = FakeTransport([[record("a/x")]], [None])
     api = HfDatasetApi(transport=transport)

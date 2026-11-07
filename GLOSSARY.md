@@ -126,3 +126,16 @@
     `private` 整列静默变空同源）；且 `silver` 已是「同 id 最新即当前属性」，
     再存一份会形成双真相源。列清单由 `gold.wide_columns()` 单一生成：
     视图 SQL、导出校验、数据说明第八节共用，杜绝第二份手抄清单。
+33. **白名单合法 ≠ 列表接口会返回**（2026-11-07 实测）：383 万条 Raw 全量普查并
+    逐项探接口后确认，`siblings` / `resourceGroup` 在 `expand[]` 白名单里合法，
+    但列表接口收到请求也不返回（带 `full=true` 同样没有），全库出现 0 次。
+    `siblings` 只在单库详情接口（一次约 1.2 MB，含 rfilename / blobId / size），
+    `/tree/main?recursive=true` 约 200 KB 且硬上限 1000 条，逐库补 112 万不现实。
+    故 `api.LIST_UNRETURNED_FIELDS` 登记二者，`ALLOWED_PLACEHOLDERS` 只放行
+    `resourceGroup`（历史占位列、整列为空），契约测试禁止 `siblings` 进任何扫描请求。
+    **顺带纠正一次误判**：`citation`（8,486 次）/ `paperswithcode_id`（8,452 次）/
+    `cardData`（96.7 万次）并非「从未采」——早先只取每个分块首条记录看 key，
+    稀疏字段因此被漏看；`cardData` 覆盖率受 `enrich --top` 限制。
+    前二者现纳入 `IDENTITY_EXPAND`（实测只多约 0.2% 带宽），`ENRICH_EXPAND` 去掉
+    重复项，`api.scan` 对 expand 去重保序；它们不对应 Bronze 列、不改宽表，
+    仅让各来源 Raw 留下可回溯副本。文件级元数据若要做，只能按榜单头部按需补（B 案）。

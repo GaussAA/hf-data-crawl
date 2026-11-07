@@ -18,16 +18,12 @@ from .raw import CARD_LABEL
 from .scan import ScanRun, ScanSpec
 from .store import DatasetStore
 
-#: 比 lean 档多要三样：卡片本体、论文关联、引用文本。
+#: 比 lean 档多要卡片本体；论文关联与引用文本已在 `IDENTITY_EXPAND` 基座里，
+#: 这里不再重复列出（重复会让请求发出同名的 expand 键）。
 #: 基座沿用 IDENTITY_EXPAND 而非另抄一份：两档字段一旦分叉，同一日若既有 part
 #: 又有 card 分区，Bronze 按 `written_at` 定序取最后写入者，缺字段的那份可能
 #: 胜出导致整列为空。ScanSpec 已在构造期强制「expand 必含基座」。
-ENRICH_EXPAND: tuple[str, ...] = (
-    *IDENTITY_EXPAND,
-    "cardData",
-    "paperswithcode_id",
-    "citation",
-)
+ENRICH_EXPAND: tuple[str, ...] = (*IDENTITY_EXPAND, "cardData")
 
 
 @dataclass(frozen=True)

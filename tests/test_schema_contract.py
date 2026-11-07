@@ -22,7 +22,7 @@ from typing import Any
 import pytest
 
 from hf_data_crawl import bronze
-from hf_data_crawl.api import EXPAND_WHITELIST
+from hf_data_crawl.api import ALLOWED_PLACEHOLDERS, EXPAND_WHITELIST, LIST_UNRETURNED_FIELDS
 from hf_data_crawl.collect import LEAN_EXPAND
 from hf_data_crawl.enrich import ENRICH_EXPAND
 from hf_data_crawl.silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
@@ -73,6 +73,32 @@ def test_enrich请求是lean的超集() -> None:
     """两档一旦分叉，同日既有 part 又有 card 分区时，Bronze 去重可能
     让缺字段的那份胜出，导致整列为空。故强制 enrich ⊇ lean。"""
     assert set(LEAN_EXPAND) <= set(ENRICH_EXPAND)
+
+
+def test_列表接口不返回的字段不得被当成可用来源() -> None:
+    """白名单合法 ≠ 列表接口会返回。
+
+    2026-11-07 实测：383 万条 Raw 里 `siblings` / `resourceGroup` 出现 0 次；
+    带 `expand[]=siblings` 或 `full=true` 的列表响应同样没有它们。`resourceGroup`
+    因历史占位列仍随请求带走，显式登记为例外；其余一律不许进扫描请求，
+    免得后人再以为「请求了 siblings 就能拿到文件清单」而白烧一轮采集。
+    """
+    assert ALLOWED_PLACEHOLDERS <= set(LIST_UNRETURNED_FIELDS)
+    assert set(LIST_UNRETURNED_FIELDS) <= set(EXPAND_WHITELIST)
+
+    requested = set(LEAN_EXPAND) | set(ENRICH_EXPAND)
+    forbidden = (set(LIST_UNRETURNED_FIELDS) - ALLOWED_PLACEHOLDERS) & requested
+    assert not forbidden, f"列表接口不返回这些字段，请求只是白烧带宽：{sorted(forbidden)}"
+
+
+def test_稀疏字段已在基座且两档都无重复项() -> None:
+    """citation / paperswithcode_id 只多约 0.2% 带宽，放进基座让各来源 Raw
+    都留下可回溯副本；重复列同一字段会发出同名 expand 键，必须为零。"""
+    sparse = {"citation", "paperswithcode_id"}
+    assert sparse <= set(LEAN_EXPAND)
+    assert sparse <= set(ENRICH_EXPAND)
+    assert len(LEAN_EXPAND) == len(set(LEAN_EXPAND)), "lean 档有重复 expand 字段"
+    assert len(ENRICH_EXPAND) == len(set(ENRICH_EXPAND)), "enrich 档有重复 expand 字段"
 
 
 def test_silver每一列都能由bronze或标签维度得到() -> None:
