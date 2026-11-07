@@ -251,9 +251,9 @@ class Reconciler:
         return path
 
 
-#: 对账差异清单的保留份数。对账按周一次，8 份约两个月；更早的差异已体现在
+#: 对账差异清单的保留份数。对账已改为每日一次，30 份约一个月；更早的差异已体现在
 #: `current` 的状态与 `observations` 里，清单只是当时的可读副本。
-REPORT_KEEP = 8
+REPORT_KEEP = 30
 
 _REPORT_PATTERN = re.compile(r"^reconcile-\d{4}-\d{2}-\d{2}\.csv$")
 

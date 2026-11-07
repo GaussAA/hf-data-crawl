@@ -8,12 +8,15 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import polars as pl
+
 from hf_data_crawl.api import HfResponse
 from hf_data_crawl.cli import main
 from hf_data_crawl.doctor import ALERT_NAME, diagnose, sync_alert
 from hf_data_crawl.retention import REPLAY_WINDOW_DAYS, manifest_path
 from hf_data_crawl.runs import Outcome, write_run
 from hf_data_crawl.store import DatasetStore
+from hf_data_crawl.tables import CURRENT_SCHEMA
 
 NOW = datetime(2026, 11, 10, 12, 0, 0)
 
@@ -36,10 +39,20 @@ def make_raw_days(store: DatasetStore, days: list[date]) -> None:
         (directory / "part-1.json.gz").write_bytes(b"x")
 
 
+def put_current(store: DatasetStore, seen: date, rows: int = 3) -> None:
+    """造一张最小的 current：体检只看 `last_seen_at` 的行龄，其余列留空即可。"""
+    data: dict[str, list[Any]] = {name: [None] * rows for name in CURRENT_SCHEMA}
+    data["id"] = [f"acme/ds-{index}" for index in range(rows)]
+    data["last_seen_at"] = [seen] * rows
+    store.write("current", pl.DataFrame(data, schema=CURRENT_SCHEMA))
+
+
 def healthy(store: DatasetStore) -> None:
     """近 7 天是热区 Raw；更早的日期已由 compact 压进冷区基线并登记。"""
     make_run(store, "collect", NOW - timedelta(hours=9), "watermark")
-    make_run(store, "reconcile", NOW - timedelta(days=3), "end")
+    # 对账改为每日，夹具也按日：留一天半余量，隔一天就该告警。
+    make_run(store, "reconcile", NOW - timedelta(hours=9), "end")
+    put_current(store, NOW.date())
     dates = [NOW.date() - timedelta(days=n) for n in range(1, 14)]
     cutoff = NOW.date() - timedelta(days=REPLAY_WINDOW_DAYS)
     hot = [day for day in dates if day >= cutoff]
@@ -133,6 +146,32 @@ def test_从未对账要报(tmp_path: Path) -> None:
     assert any("全量对账：从未成功完成过" in text for text in problems(store))
 
 
+def test_底库行龄新鲜时不报(tmp_path: Path) -> None:
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+
+    assert not any("底库新鲜度" in text for text in problems(store))
+
+
+def test_底库行龄过旧要点破对账没跑成(tmp_path: Path) -> None:
+    """行龄是唯一直接量到「库里各值是哪天的」的检查；只看任务成没成会漏掉。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    put_current(store, NOW.date() - timedelta(days=30))
+
+    found = [text for text in problems(store) if "底库新鲜度" in text]
+
+    assert found and "P95" in found[0] and "全量对账" in found[0]
+
+
+def test_底库为空要报(tmp_path: Path) -> None:
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    (store.root / "state" / "current.parquet").unlink()
+
+    assert any("current 为空" in text for text in problems(store))
+
+
 def test_Raw断日要点名日期(tmp_path: Path) -> None:
     store = DatasetStore(tmp_path / "data")
     healthy(store)
@@ -194,7 +233,7 @@ def test_失败原因为空时回退到payload里的error(tmp_path: Path) -> Non
     write_run(
         store,
         "reconcile",
-        NOW - timedelta(days=1),
+        NOW - timedelta(hours=1),
         Outcome({"error": "ConnectError: eof"}, code=1, reason=None),
     )
 

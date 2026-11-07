@@ -33,7 +33,7 @@ param(
     [string]$DoctorTime = "09:00",
     [string]$SizesTime = "06:00",
     [string]$ArchiveTime = "05:00",
-    [string]$CompactTime = "06:00",
+    [string]$CompactTime = "00:30",
     [switch]$Uninstall
 )
 
@@ -66,8 +66,12 @@ $jobs = @(
            (New-ScheduledTaskTrigger -Daily -At $CollectTime),
            (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME)
        ); LogonDelay = "PT2M" },
+    # 全量对账每日跑：日增量按 lastModified 走，实测一天只覆盖约 6%，一个两年没更新的
+    # 库永远不会进入增量范围，而它的指标每天都在变——长尾全靠这一轮刷新。成本实测
+    # 1114 页 / 37 分钟，摊下来约 30 请求/分钟，远低于配额；错过由 -StartWhenAvailable
+    # 在开机后补跑，不再依赖「周日那天正好开着机」。
     @{ Name = "hf-reconcile"; Script = "reconcile.ps1"; Hours = 8
-       Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At $ReconcileTime))
+       Triggers = @((New-ScheduledTaskTrigger -Daily -At $ReconcileTime))
        LogonDelay = $null },
     @{ Name = "hf-doctor"; Script = "doctor.ps1"; Hours = 1
        Triggers = @(
@@ -84,10 +88,12 @@ $jobs = @(
     @{ Name = "hf-archive"; Script = "archive.ps1"; Hours = 2
        Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At $ArchiveTime))
        LogonDelay = $null },
-    # 压缩排在归档之后：两者都是写命令、互斥锁串行执行；compact 的 7 天门槛
-    # 会先移走冷区，archive 的 30 天门槛通常空转，保留作单日手动去重工具。
+    # 压缩改为每日 00:30：门槛仍是 7 天，实际每天最多压掉一个刚满期的分区，把
+    # 「周一才清一次、平日热区一路上涨」摊平。放 00:30 是避开 03:10 采集、04:00
+    # 对账、06:00 规模补齐（都是写命令，靠互斥锁串行，撞上只会有一个失败）。
+    # 它每日先移走冷区，archive 的 30 天门槛通常空转，保留作单日手动去重工具。
     @{ Name = "hf-compact"; Script = "compact.ps1"; Hours = 2
-       Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At $CompactTime))
+       Triggers = @((New-ScheduledTaskTrigger -Daily -At $CompactTime))
        LogonDelay = $null }
 )
 
@@ -133,11 +139,11 @@ foreach ($job in $jobs) {
 
 Write-Host "已注册："
 Write-Host "  hf-collect    每日 $CollectTime + 登录后补跑（当天已采过则跳过）"
-Write-Host "  hf-reconcile  每周日 $ReconcileTime，错过则开机后补跑"
+Write-Host "  hf-reconcile  每日 $ReconcileTime 全站对账（1114 页），错过则开机后补跑"
 Write-Host "  hf-doctor     每日 $DoctorTime + 登录后体检，问题写 data\ALERT.txt"
 Write-Host "  hf-sizes      每周日 $SizesTime 补规模数据，增量合并、中断可续"
 Write-Host "  hf-archive    每周一 $ArchiveTime 归档满 30 天的 Raw，原文件移入 backup"
-Write-Host "  hf-compact    每周一 $CompactTime 压缩满 7 天的冷区 Raw，原分块移入 backup 不删"
+Write-Host "  hf-compact    每日 $CompactTime 压缩满 7 天的冷区 Raw，原分块移入 backup 不删"
 Write-Host "日志目录：$(Join-Path $root 'data\logs')"
 Write-Host "运行摘要：$(Join-Path $root 'data\runs')"
 Write-Host "核对：Get-ScheduledTask -TaskName hf-* | Get-ScheduledTaskInfo"

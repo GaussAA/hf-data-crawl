@@ -79,3 +79,15 @@ def test_数据说明写明日志按轮命名() -> None:
     entry = next(item for item in SIDE_FILES if item[0] == "logs/")
     assert "按轮命名" in entry[1]
     assert "LOG_KEEP" in entry[1]
+
+
+def test_全量对账与压缩按日跑() -> None:
+    """日增量按 lastModified 走只覆盖约 6%，长尾靠全量对账刷新；退回按周就会让
+    底库在两次对账之间拿旧值充数。这里把频率钉死，改回 Weekly 必须有人来解释。"""
+    source = text(SCRIPTS / "setup-schedule.ps1")
+    blocks = source.split('Name = "hf-')
+    for name in ("reconcile", "compact"):
+        block = next(item for item in blocks if item.startswith(name))
+        head = block.split("LogonDelay")[0]
+        assert "-Daily" in head, f"hf-{name} 应每日触发"
+        assert "Weekly" not in head, f"hf-{name} 不应再按周触发"

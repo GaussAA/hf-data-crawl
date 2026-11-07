@@ -206,7 +206,7 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 ## 定时
 
 ```powershell
-pwsh -File scripts\setup-schedule.ps1              # 注册：每日 03:10 增量、每周日 04:00 对账、每日 09:00 体检
+pwsh -File scripts\setup-schedule.ps1              # 注册：每日 03:10 增量、每日 04:00 全量对账、每日 09:00 体检、每日 00:30 压缩
 pwsh -File scripts\setup-schedule.ps1 -Uninstall   # 卸载
 Get-ScheduledTask -TaskName hf-* | Get-ScheduledTaskInfo   # 核对
 uv run hf-data-crawl doctor                        # 手动体检；有问题退出码 1，并写 data\ALERT.txt

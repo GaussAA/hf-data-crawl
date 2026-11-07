@@ -15,6 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
+import polars as pl
+
 from . import raw, retention
 from .lock import LOCK_NAME, LockBusy, describe_holder, exclusive
 from .rebuild import discover_raw_dates
@@ -28,9 +30,10 @@ from .store import DatasetStore
 
 ALERT_NAME = "ALERT.txt"
 
-#: 日增量按天跑，留一天半的余量；对账按周跑，留两天余量。
+#: 日增量按天跑，留一天半的余量；对账已改为每日，同口径留一天半——
+#: 再松就会把「昨天那轮没跑成」当成正常，而这正是底库变旧的开始。
 COLLECT_MAX_AGE = timedelta(hours=36)
-RECONCILE_MAX_AGE = timedelta(days=9)
+RECONCILE_MAX_AGE = timedelta(hours=36)
 #: 回看多少天的 Raw 是否断日。
 GAP_WINDOW_DAYS = 14
 #: 临时文件超过这个年纪才算残留；正在写的文件只会存在几秒。
@@ -41,6 +44,9 @@ RAW_MAX_BYTES = 5 * 1024**3
 RAW_MAX_FILES = 20_000
 #: 回看多久内的失败运行。
 FAILURE_WINDOW = timedelta(days=7)
+#: 底库行龄的告警线（按 P95）。全量对账已改为每日，理想值 0-1 天；
+#: 留到 7 天是兜底——超过它说明每日对账已连续多天没跑成，底库在拿旧值充数。
+STALENESS_ALERT_DAYS = 7
 
 #: 有界试跑（max_pages）与 dry_run 不是完成；collect 的完成态与 cli 共用一份枚举。
 _RECONCILE_DONE = frozenset({"end"})
@@ -87,6 +93,43 @@ def _freshness(
     if age > max_age:
         return Finding(True, f"{label}：已 {hours:.0f} 小时没有成功完成（上次 {last:%m-%d %H:%M}）")
     return Finding(False, f"{label}：正常（{hours:.0f} 小时前，{last:%m-%d %H:%M}）")
+
+
+def _catalog_staleness(store: DatasetStore, today: date) -> Finding:
+    """底库有多旧：按 `last_seen_at` 算行龄。
+
+    为什么不能只看「全量对账几天前跑成功过」：那条只说明任务跑没跑，不说明库里
+    每行是哪天的值。日增量按 `lastModified` 走，实测一天只覆盖约 6%——一个两年
+    没更新的库永远不会进入增量范围，它的 downloads 却每天都在变。长尾全靠全量
+    对账刷新；对账连着几天没成时，运行记录仍可能是「成功」，而底库已经在拿几天
+    前的值充数。这里直接量行龄，不猜。
+    """
+    frame = store.read_current()
+    if frame.height == 0:
+        return Finding(True, "底库新鲜度：current 为空")
+
+    ages = (
+        frame.select(
+            (pl.lit(today) - pl.col("last_seen_at").dt.date()).dt.total_days().alias("age")
+        )
+        .get_column("age")
+        .drop_nulls()
+    )
+    if ages.len() == 0:
+        return Finding(True, "底库新鲜度：current 没有 last_seen_at，无法判断")
+
+    p50 = int(ages.quantile(0.5, interpolation="nearest") or 0)
+    p95 = int(ages.quantile(0.95, interpolation="nearest") or 0)
+    # max() 的类型标注是宽联合（date/timedelta 都可能），先收窄再取整。
+    oldest_value = ages.max()
+    oldest = int(oldest_value) if isinstance(oldest_value, int | float) else 0
+    text = f"底库新鲜度：中位 {p50} 天 · P95 {p95} 天 · 最旧 {oldest} 天"
+    if p95 > STALENESS_ALERT_DAYS:
+        return Finding(
+            True,
+            f"{text}（P95 超过 {STALENESS_ALERT_DAYS} 天：全量对账已多日未跑成，底库在拿旧值充数）",
+        )
+    return Finding(False, text)
 
 
 def _raw_gaps(store: DatasetStore, today: date) -> Finding:
@@ -260,6 +303,7 @@ def diagnose(store: DatasetStore, now: datetime | None = None) -> list[Finding]:
     return [
         _freshness(runs, now, "collect", COLLECT_COMPLETE_REASONS, COLLECT_MAX_AGE, "日增量采集"),
         _freshness(runs, now, "reconcile", _RECONCILE_DONE, RECONCILE_MAX_AGE, "全量对账"),
+        _catalog_staleness(store, now.date()),
         _raw_gaps(store, now.date()),
         _raw_growth(store),
         _cold_backlog(store, now.date()),

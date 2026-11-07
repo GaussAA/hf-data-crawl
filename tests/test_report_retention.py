@@ -63,5 +63,6 @@ def test_不碰榜单页与其他文件(tmp_path: Path) -> None:
     ]
 
 
-def test_默认保留份数为八() -> None:
-    assert REPORT_KEEP == 8
+def test_默认保留份数为一月() -> None:
+    """对账改为每日后，份数即天数：30 份约一个月，8 份只够八天。"""
+    assert REPORT_KEEP == 30
