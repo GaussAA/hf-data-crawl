@@ -112,5 +112,17 @@
     原分块移入 `backup/raw/` 不删。**实证**：只重放热区与全量重放、逐日正常跑
     三向逐行等价（见 `tests/test_rebuild.py`）。`build --full` 保留旧逃生舱；
     权威层缺失时自动回退全量。`doctor` 把 `cold/raw/manifest.json` 的日期算作
-    「有观测」，避免部分压缩时残留分区拉长窗口造成断日误判。**代价**：清理 backup 后若权威层
+    「有观测」，避免部分压缩时残留分区拉长窗口造成断日误判。    **代价**：清理 backup 后若权威层
     损坏，只能恢复近 7 天——故原分块默认绝不自动删除。
+32. **宽表导出是可重建投影**（2026-11-07）：`current` 的 19 列不是「字段太少」——
+    语义字段早已全库采到，分别在 `silver`（18 列）/ `carddata`（20 列）/ `size`（8 列），
+    由 `gold.datasets` 宽视图 LEFT JOIN 成 65 列；`latest_silver` 与 `dataset_size`
+    各覆盖 112 万 id。新增 `export-wide` 把该视图流式 COPY 成
+    `data/exports/datasets.parquet`，供需要单文件宽表的分析工具使用。
+    **它不是表**：不登记进 `TABLES`、不参与状态更新与重建，随时可删可重建；
+    事实源仍是 `raw/`。**为什么不扩 `CURRENT_SCHEMA`**：每轮只扫约 22 万行，
+    其余约 90 万行由 `_rebuild_current` 沿用 previous，而 `_align_frame` 对旧表
+    缺列一律补 null——加列后约九成行的新字段会长期为空（与 2026-11-04
+    `private` 整列静默变空同源）；且 `silver` 已是「同 id 最新即当前属性」，
+    再存一份会形成双真相源。列清单由 `gold.wide_columns()` 单一生成：
+    视图 SQL、导出校验、数据说明第八节共用，杜绝第二份手抄清单。

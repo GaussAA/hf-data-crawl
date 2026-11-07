@@ -40,6 +40,7 @@ WRITE_COMMANDS = frozenset(
         "fetch-sizes",
         "archive",
         "compact",
+        "export-wide",
     }
 )
 
@@ -169,6 +170,14 @@ def build_parser() -> argparse.ArgumentParser:
     docs = subparsers.add_parser("docs", help="生成 data 目录说明（结构·文件·字段含义）")
     docs.add_argument("--out", default=None, help="输出路径，默认 docs/DATA.md")
 
+    wide = subparsers.add_parser(
+        "export-wide",
+        help="把 gold.datasets 宽视图导出成单文件 parquet（可重建，不参与状态更新）",
+    )
+    wide.add_argument(
+        "--out", default=None, help="输出路径，默认 data/exports/datasets.parquet（须在数据目录内）"
+    )
+
     return parser
 
 
@@ -207,6 +216,8 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         )
     if args.command == "report":
         return _execute(store, "report", lambda: _report(args, store), lock_wait)
+    if args.command == "export-wide":
+        return _execute(store, "export-wide", lambda: _export_wide(args, store), lock_wait)
     if args.command == "query":
         return _query(args, store)
     if args.command == "doctor":
@@ -481,6 +492,20 @@ def _doctor(store: DatasetStore) -> int:
     for item in findings:
         print(f"{'[!]' if item.problem else '[ok]'} {item.text}")
     return 1 if any(item.problem for item in findings) else 0
+
+
+def _export_wide(args: argparse.Namespace, store: DatasetStore) -> Outcome:
+    """导出宽表。失败由 `_execute` 统一记进 runs/，不留半截文件。"""
+    from .wide import export_wide
+
+    target = Path(args.out) if args.out else None
+    summary = export_wide(store, target)
+    print(
+        f"宽表已导出：{summary.path}（{summary.columns} 列 · "
+        f"{summary.rows:,} 行 · {summary.bytes / 1e6:.1f}MB）"
+    )
+    print("  可重建产物：不参与状态更新，删掉后重跑本命令即可")
+    return Outcome(summary)
 
 
 def _report(args: argparse.Namespace, store: DatasetStore) -> Outcome:

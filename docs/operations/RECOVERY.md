@@ -156,3 +156,4 @@ Remove-Item -Recurse "data\backup\raw\dt=$day"
 - **每日**：检查 collect 是否成功
 - **每周**：reconcile 全量对账；compact 自动压缩满 7 天的冷区 Raw，archive 可对单日做同天去重；确认无误后清理 backup
 - **每月**：运行 `build`（默认只重放近 7 天热区）核对派生层；需要整体重算时用 `build --full`
+- **`exports/` 不在恢复范围内**：单文件宽表是可重建投影，损坏或过期时重跑 `hf-data-crawl export-wide` 即可，不需要备份，也不能作为重建其它层的依据

@@ -6,7 +6,7 @@
 
 ## 数据与口径
 
-- [DATA.md](DATA.md) — Bronze / Silver / Gold 分层、表结构与字段口径
+- [DATA.md](DATA.md) — Bronze / Silver / Gold 分层、表结构与字段口径；第八节讲单文件宽表导出的定位与边界
 - [GLOSSARY.md](../GLOSSARY.md) — 状态四值、30 天下载量与累计下载量等术语的唯一定义
 
 ## 运维

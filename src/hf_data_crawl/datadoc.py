@@ -22,6 +22,7 @@ from typing import Any
 import polars as pl
 
 from .fielddocs import describe
+from .gold import wide_column_names
 from .raw import BRONZE_LABELS, CARD_LABEL
 from .tables import TABLES, Origin, TableSpec
 
@@ -71,6 +72,11 @@ SIDE_FILES: tuple[tuple[str, str, str], ...] = (
         "对账完成后删除",
     ),
     ("state/*-checkpoint.json", "扫描游标，记录下一页从哪开始", "走到末页后清空"),
+    (
+        "exports/",
+        "宽表导出：`gold.datasets` 视图的单文件 parquet，供分析工具直接打开",
+        "**可重建**：不参与派生，删掉后重跑 `export-wide`",
+    ),
 )
 
 
@@ -187,6 +193,7 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         f"├── meta/                       # 重建中断时留存的状态快照（当前 {_dir_summary(store_root, 'meta')}）",
         f"├── reports/                    # 对账清单与榜单页（当前 {_dir_summary(store_root, 'reports')}）",
         f"├── runs/                       # 每轮运行摘要（当前 {_dir_summary(store_root, 'runs')}）",
+        f"├── exports/                    # 宽表导出（可重建，当前 {_dir_summary(store_root, 'exports')}）",
         "└── logs/                       # 计划任务日志",
         "```",
         "",
@@ -265,6 +272,8 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "   我们也确实在请求里带了它，但列表接口收到请求也不返回（实测 2 万条里连键都不存在）。",
         "   它可能只在单库详情里出现，而逐库请求 112 万次不现实——所以这一列保留但为空，",
         "   等上游哪天在列表里开放。",
+        "10. **`current` 只有 19 列不是抓漏了**：语义字段在 `silver` / `carddata` / `size`，",
+        "    由 `gold.datasets` 视图拼成宽表；需要单文件宽表见第八节。",
         "",
         "## 六、HF 页面上的数字，在表里是哪个字段",
         "",
@@ -301,7 +310,29 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "",
         "归纳起来只有三种：**一对一**（`current`，唯一全量）、**多对一**（流水，比基准多）、",
         "**子集**（按天或按需补齐，比基准少）。想知道某个数据集的全部信息，",
-        "以 `current` 为主表 `LEFT JOIN` 其余各表即可——所有表的 id 都能在 `current` 里找到。",
+        "以 `current` 为主表 `LEFT JOIN` 其余各表即可——所有表的 id 都能在 `current` 里找到；",
+        "不想自己拼 join 时，直接导出第八节那份宽表即可。",
+        "",
+        "## 八、宽表导出（可重建，不是事实源）",
+        "",
+        "`hf-data-crawl export-wide` 把 `gold.datasets` 视图原样写成一份 parquet，",
+        f"默认落在 `data/exports/datasets.parquet`，当前共 {len(wide_column_names())} 列、",
+        "行数与 `current` 相同。列清单不在这里手抄：`gold.wide_columns()` 是唯一真相源，",
+        "视图 SQL、导出校验与本节列数都从它取，加一个附表字段三处一起跟上。",
+        "",
+        "**它是可重建的投影，不是第五张状态表**：",
+        "",
+        "- 不登记进 `TABLES`，不参与 `state.update` / `build` / `compact`；",
+        "- 删掉不影响任何派生，重跑一次 `export-wide` 就能重建；",
+        "- 事实源仍是 `raw/`，权威层仍是 `silver` / `observations` / `current`。",
+        "",
+        "为什么不直接给 `current` 加列：每轮采集只扫约二十万行，其余九十万行靠",
+        "`_rebuild_current` 沿用旧行，而 `_align_frame` 对旧表缺列一律补 null；",
+        "加列后约九成行的新字段会长期为空，且 `silver` 与 `current` 会各存一份",
+        "「当前属性」。单独导出则状态表保持轻，宽表想加多少列都随视图走。",
+        "",
+        "写入先落同目录临时文件，校验视图列、导出列与行数后才原子替换；任一项",
+        "不符就撤销，不会让半截文件顶替上一版。`--out` 只接受数据目录内的路径。",
         "",
     ]
     return "\n".join(lines)

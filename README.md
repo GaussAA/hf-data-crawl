@@ -34,6 +34,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `archive` | 归档早于 N 天的 Raw 分区：合并小分块并去重，先验证 Bronze 逐行相等，原文件移入 `backup/raw/` | 否 |
 | `compact` | 压缩冷区 Raw：跨天去重成一份基线，原分块移入 `backup/raw/` 不删除 | 否 |
 | `docs` | 生成 `docs/DATA.md`：data 目录结构、各文件作用、全部字段含义 | 否 |
+| `export-wide` | 把 `datasets` 宽视图导出成单文件 parquet（可重建，不参与状态更新） | 否 |
 
 常用参数：
 
@@ -48,11 +49,14 @@ hf-data-crawl query        [--board NAME] [--limit 50] [--sql "..."]   # NAME �
 hf-data-crawl report       [--out PATH] [--top 20]
 hf-data-crawl archive      [--older-than-days 30] [--date YYYY-MM-DD]
 hf-data-crawl docs         [--out PATH]           # 默认 docs/DATA.md
+hf-data-crawl export-wide  [--out PATH]           # 默认 data/exports/datasets.parquet
 ```
 
 全局参数 `--data-dir` 需放在子命令之前，默认取 `HF_DATA_DIR`，否则 `./data`。
 
-写命令（`collect` / `reconcile` / `build` / `enrich` / `fetch-sizes` / `archive` / `compact`）执行期间持有 `data/.lock` 的独占锁，同一时刻只能跑一个；拿不到锁会失败并在 `runs/` 留记录。进程被杀后系统自动释放，不会留下死锁。`query` 只读不加锁；`report` 与 `docs` 也持锁，以便读到某一刻的完整快照。
+写命令（`collect` / `reconcile` / `build` / `enrich` / `fetch-sizes` / `archive` / `compact` / `export-wide`）执行期间持有 `data/.lock` 的独占锁，同一时刻只能跑一个；拿不到锁会失败并在 `runs/` 留记录。进程被杀后系统自动释放，不会留下死锁。`report` 与 `query` 不加锁。
+
+**宽表导出**：`current` 只保留 19 列状态标量，语义字段分散在 `silver` / `carddata` / `size`。`export-wide` 把 `gold.datasets` 视图物化成单文件 parquet，直接交给 DuckDB / polars / BI 工具；它是**可重建投影**——不登记为表、不参与 `state.update` / `build` / `compact`，删掉重跑本命令即可，也不改动任何状态表。列口径由 `gold.wide_columns()` 一处生成，加附表字段时视图与导出一起跟上。详见 [docs/DATA.md](docs/DATA.md) 第八节。
 
 内置榜单（`gold.BOARDS` 是唯一真相源：`query --board` 的候选项由它自动生成，`report` 页面复用同一批口径）：
 

@@ -66,6 +66,36 @@ _VIEWS: tuple[tuple[str, str], ...] = (
 )
 
 
+def wide_columns() -> tuple[tuple[str, str], ...]:
+    """宽视图在 `c.*` 之后追加的列：(SELECT 表达式, 视图里的列名)。
+
+    抽成模块级函数，是为了让「宽视图有哪些列」只有一个答案：拼 SQL 的
+    `_wide_view_sql`、导出时的列校验、生成数据说明的 `datadoc` 都从这里取。
+    此前这份清单埋在方法内部，多一个消费方就难免手抄第二份——而手抄的
+    代价项目里已经吃过一次（加卡片字段后 `datasets` 视图静默少一列）。
+    """
+    used: set[str] = set(table("current").schema)
+    parts: list[tuple[str, str]] = []
+    for alias, name, _view in _VIEW_SOURCES:
+        spec = table(name)
+        excluded = _VIEW_EXCLUDED.get(name, frozenset())
+        renames = _VIEW_RENAMES.get(name, {})
+        for column in spec.schema:
+            if column in excluded or column in used:
+                continue
+            target = renames.get(column, column)
+            if target in used:
+                continue
+            parts.append((f"{alias}.{column} AS {target}", target))
+            used.add(target)
+    return tuple(parts)
+
+
+def wide_column_names() -> tuple[str, ...]:
+    """`datasets` 视图的完整列序：current 原列 + 附表追加列。"""
+    return (*table("current").schema, *(name for _, name in wide_columns()))
+
+
 def url_expr(column: str = "id") -> str:
     """生成 `... AS url` 的 SQL 片段。传入带别名的列名即可（如 `d.id`）。"""
     return f"'{DATASET_URL}' || {column} AS url"
@@ -348,24 +378,9 @@ class GoldCatalog:
         先得**；需要区分口径的列在 `_VIEW_RENAMES` 里改名；大列与分区列在
         `_VIEW_EXCLUDED` 里排除。
         """
-        used: set[str] = set(table("current").schema)
-        # url 已随 current 的列一起进来（每张表都带），不必在这里再派生一次。
-        parts: list[str] = ["c.*"]
-
-        for alias, name, _view in _VIEW_SOURCES:
-            spec = table(name)
-            excluded = _VIEW_EXCLUDED.get(name, frozenset())
-            renames = _VIEW_RENAMES.get(name, {})
-            for column in spec.schema:
-                if column in excluded or column in used:
-                    continue
-                target = renames.get(column, column)
-                if target in used:
-                    continue
-                parts.append(f"{alias}.{column} AS {target}")
-                used.add(target)
-
-        columns = ",\n                   ".join(parts)
+        columns = ",\n                   ".join(
+            ["c.*", *(expression for expression, _ in wide_columns())]
+        )
         joins = "\n            ".join(
             f"LEFT JOIN {view} AS {alias} ON c.id = {alias}.id"
             for alias, _name, view in _VIEW_SOURCES
