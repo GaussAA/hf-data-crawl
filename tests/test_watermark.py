@@ -64,8 +64,8 @@ def test_空水位线不触发停止() -> None:
     assert not watermark.is_stale(timestamps)
 
 
-def test_页内最老时间晚于水位线触发停止() -> None:
-    """如果页内最老记录仍晚于水位线，说明已越过旧数据边界。"""
+def test_整页新于水位线不触发停止() -> None:
+    """整页记录都晚于水位线，说明还没扫到旧数据，必须继续翻页。"""
     # 水位线：昨天 23:50
     watermark = Watermark("2026-11-06T23:50:00Z")
 
@@ -73,14 +73,14 @@ def test_页内最老时间晚于水位线触发停止() -> None:
     timestamps = [
         "2026-11-07T00:20:00Z",
         "2026-11-07T00:15:00Z",
-        "2026-11-07T00:05:00Z",  # 最老的仍晚于水位线
+        "2026-11-07T00:05:00Z",
     ]
 
-    assert watermark.is_stale(timestamps)
+    assert not watermark.is_stale(timestamps)
 
 
-def test_页内有旧记录不触发停止() -> None:
-    """如果页内有早于水位线的记录，说明还没越过边界。"""
+def test_页内有早于水位线的记录触发停止() -> None:
+    """页内最老记录早于水位线，说明已经越过旧数据边界。"""
     watermark = Watermark("2026-11-06T23:50:00Z")
 
     # 本页记录：有一条 23:45（早于水位线）
@@ -90,7 +90,7 @@ def test_页内有旧记录不触发停止() -> None:
         "2026-11-06T23:45:00Z",  # 早于水位线
     ]
 
-    assert not watermark.is_stale(timestamps)
+    assert watermark.is_stale(timestamps)
 
 
 def test_全异常值页面不触发停止() -> None:
@@ -118,16 +118,16 @@ def test_部分异常值被过滤() -> None:
         "2026-11-07T00:10:00Z",  # 有效
     ]
 
-    # 有效值中最老的（00:05）仍晚于水位线（23:50），触发停止
-    assert watermark.is_stale(timestamps)
+    # 有效值中最老的（00:05）晚于水位线（23:50），尚未越过边界，继续扫描
+    assert not watermark.is_stale(timestamps)
 
-    # 如果最老的早于水位线，则不停止
+    # 如果最老的早于水位线，则停止
     timestamps2 = [
         "2028-12-10T00:00:00Z",  # 异常，过滤
         "2026-11-07T00:05:00Z",  # 有效
         "2026-11-06T23:45:00Z",  # 有效，最老的，早于水位线
     ]
-    assert not watermark.is_stale(timestamps2)
+    assert watermark.is_stale(timestamps2)
 
 
 def test_更新水位线取最新时间戳() -> None:
@@ -264,25 +264,23 @@ def test_损坏的水位线文件返回空水位线(tmp_path: Path) -> None:
 def test_跨日场景真实模拟() -> None:
     """模拟真实跨日场景：00:01 启动，昨天 23:58 的更新不应被跳过。
 
-    关键理解：watermark 记录的是"已扫描过的最新时间戳"。
-    is_stale 判断：页内最老的时间戳是否晚于 watermark。
-    - 如果是：说明这页的所有记录都比已扫描的最新记录更新，已越过旧数据边界
-    - 如果否：说明这页还有比 watermark 更旧的记录，还没扫完
+    关键理解：watermark 记录的是上一轮完成时的最新时间戳，整轮固定不动。
+    is_stale 判断：页内最老的时间戳是否严格早于 watermark。
+    - 如果否：说明这页全部落在尚未扫过的区间内，继续翻页
+    - 如果是：说明这页已经触及水位线之前的旧数据，越过边界
     """
     # 上次运行的水位线：昨天 22:00
-    watermark = Watermark("2026-11-06T22:00:00Z")
+    baseline = Watermark("2026-11-06T22:00:00Z")
 
     # 第一页：今天 00:11 ~ 00:20 的新库
     page1 = [f"2026-11-07T00:{i:02d}:00Z" for i in range(20, 10, -1)]
-    # 最老的是 00:11，晚于 22:00，已越过边界
-    assert watermark.is_stale(page1)
-    watermark = watermark.update(page1)  # watermark 更新为 00:20
+    # 最老的是 00:11，晚于 22:00，尚未越过边界
+    assert not baseline.is_stale(page1)
 
     # 第二页：今天 00:01 ~ 00:10 的新库
     page2 = [f"2026-11-07T00:{i:02d}:00Z" for i in range(10, 0, -1)]
-    # 最老的是 00:01，早于当前 watermark (00:20)，还没越过边界
-    assert not watermark.is_stale(page2)
-    watermark = watermark.update(page2)  # watermark 更新为 00:20（不变，因为这页最新的才 00:10）
+    # 最老的是 00:01，仍晚于 22:00，继续
+    assert not baseline.is_stale(page2)
 
     # 第三页：混合，包含昨天 23:58 的更新
     page3 = [
@@ -291,9 +289,8 @@ def test_跨日场景真实模拟() -> None:
         "2026-11-06T23:58:00Z",  # 昨天晚上的更新！
         "2026-11-06T23:55:00Z",
     ]
-    # 最老的是 23:55，早于当前 watermark (00:20)，还没越过边界
-    assert not watermark.is_stale(page3)
-    watermark = watermark.update(page3)
+    # 最老的是 23:55，仍晚于 22:00，继续
+    assert not baseline.is_stale(page3)
 
     # 第四页：开始接近原始水位线
     page4 = [
@@ -301,8 +298,8 @@ def test_跨日场景真实模拟() -> None:
         "2026-11-06T23:45:00Z",
         "2026-11-06T22:30:00Z",
     ]
-    # 最老的是 22:30，早于当前 watermark，还没越过
-    assert not watermark.is_stale(page4)
+    # 最老的是 22:30，仍晚于 22:00，继续
+    assert not baseline.is_stale(page4)
 
     # 第五页：最老的早于原始水位线（22:00）
     page5 = [
@@ -310,8 +307,8 @@ def test_跨日场景真实模拟() -> None:
         "2026-11-06T22:05:00Z",
         "2026-11-06T21:50:00Z",  # 最老的，早于原始水位线 22:00
     ]
-    # 最老的早于当前 watermark，还没越过边界
-    assert not watermark.is_stale(page5)
+    # 最老 21:50 严格早于基线 22:00，越过边界
+    assert baseline.is_stale(page5)
 
-    # 结论：使用 watermark 机制时，需要配合"连续 N 页都 is_stale"的逻辑
-    # 单纯的 is_stale 只是判断当前页是否已越过边界，不是最终停止条件
+    # 结论：is_stale 必须始终拿“开始时的基线”比较；本轮累积的新时间戳
+    # 只用于下一轮边界，不能改变本轮是否越界。

@@ -181,6 +181,21 @@ def test_成功与失败都走同一处记录(tmp_path: Path) -> None:
     assert bad_runs[0]["reason"]
 
 
+def test_运行摘要超过上限时只保留最近若干条(tmp_path: Path, monkeypatch: Any) -> None:
+    """上限由 RUNS_KEEP 控制，按内容里的开始时刻保留最新，而不是按文件名。"""
+    from datetime import datetime
+
+    from hf_data_crawl.runs import Outcome, write_run
+
+    monkeypatch.setattr("hf_data_crawl.runs.RUNS_KEEP", 2)
+    store = DatasetStore(tmp_path / "data")
+    for hour in (1, 2, 3, 4):
+        write_run(store, "build", datetime(2026, 11, 5, hour, 0, 0), Outcome(payload=hour))
+
+    assert [run["payload"] for run in read_runs(store)] == [3, 4]
+    assert len(list((store.root / "runs").glob("*.json"))) == 2
+
+
 def test_摘要中日期与路径被序列化为字符串(tmp_path: Path) -> None:
     root = tmp_path / "data"
     seed(DatasetStore(root))

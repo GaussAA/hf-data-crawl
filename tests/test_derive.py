@@ -81,6 +81,26 @@ def test_enrich时产出卡片表(store: DatasetStore) -> None:
     assert store.read_enrich().height == 1
 
 
+def test_bronze只收part与top不收卡片批次(store: DatasetStore) -> None:
+    """卡片批次属于卡片表，不该让 Bronze 的行数随补抓节奏膨胀。"""
+    store.write_raw(snapshot_date=DAY, page_index=1, records=[record(1)], meta={}, label="part")
+    store.write_raw(snapshot_date=DAY, page_index=2, records=[record(2)], meta={}, label="top")
+    store.write_raw(
+        snapshot_date=DAY,
+        page_index=3,
+        records=[record(3, with_card=True)],
+        meta={},
+        label=CARD_LABEL,
+    )
+
+    result = derive_day(store, DAY, enrich=True)
+
+    assert result.bronze_rows == 2
+    assert sorted(store.read_bronze(DAY)["id"].to_list()) == ["acme/ds-1", "acme/ds-2"]
+    assert result.card_rows == 1
+    assert store.read_current().height == 2
+
+
 def test_调用次序固定为bronze_silver_card_state(
     store: DatasetStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:

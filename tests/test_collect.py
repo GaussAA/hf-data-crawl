@@ -250,17 +250,22 @@ def test_正常完成后水位线留给下一轮(store: DatasetStore) -> None:
 
 
 def test_次轮凭水位线在越过边界时停止(store: DatasetStore) -> None:
-    """端到端：上轮水线 11-01，下轮首页全比它新 → 触发时间戳停止。
+    """端到端：上轮水线 11-01，下轮先扫新记录，遇到早于基线的记录才停止。
 
-    旧实现下轮加载到的是空水线，永远走不到这个分支，只能靠「连续 N 页无新 id」
-    后备。这条用例把「时间戳机制真的生效」钉住，而非只验文件存在。
+    首页全部晚于基线时必须继续翻页；直到某页最老记录严格早于基线，才触发
+    时间戳停止。这条用例把「基线固定 + 比较方向正确」一起钉住。
     """
     first = FakeCursorTransport([page("a", 2)])
     first_summary = collector(first, store).run(DAY1, limit=100, pages_without_new=5)
     assert first_summary.stopped_reason == "end"
 
-    again = FakeCursorTransport([_dated("b", 2, "2026-11-02T00:00:00.000Z")])
+    again = FakeCursorTransport(
+        [
+            _dated("b", 2, "2026-11-02T00:00:00.000Z"),  # 全晚于基线，继续
+            _dated("c", 2, "2026-10-31T23:00:00.000Z"),  # 最老早于基线，停止
+        ]
+    )
     summary = collector(again, store).run(DAY2, limit=100, pages_without_new=5)
 
     assert summary.stopped_reason == "watermark_timestamp"
-    assert len(again.calls) == 1
+    assert len(again.calls) == 2

@@ -15,9 +15,10 @@ from typing import Any
 from .api import IDENTITY_EXPAND, MAX_LIMIT, HfDatasetApi, Page
 from .checkpoint import FileCheckpoint
 from .derive import derive_day
+from .runs import COLLECT_COMPLETE_REASONS
 from .scan import ScanRun, ScanSpec, ScanSummary
 from .store import DatasetStore
-from .watermark import WatermarkCheckpoint, extract_last_modified
+from .watermark import WatermarkCheckpoint, _is_reasonable_timestamp, extract_last_modified
 
 #: 身份与指标基座定义在 `api.IDENTITY_EXPAND`（与 expand[] 白名单同处）：
 #: 任何写入 Raw 的扫描都必须含它，ScanSpec 在构造期校验。
@@ -131,29 +132,40 @@ class Collector:
 
         known: set[str] = set(self._store.read_current()["id"].to_list())
 
+        # 整轮固定用开始时加载的水位线判断边界。若拿本轮已更新的值来比，
+        # 跨日更新会被提前截断：第一页之后水位线跳到今天，旧边界反而显得“已越过”。
+        baseline = checkpoint.watermark
+        baseline_time = baseline.latest_modified
         new_ids = 0
         streak = 0
-        current_watermark = checkpoint.watermark
+        current_watermark = baseline
 
         def track(page: Page, _index: int) -> str | None:
-            """双重 watermark：既看新 id、也看时间戳。"""
+            """双重 watermark：时间戳看边界，新 id 作为后备。"""
             nonlocal new_ids, streak, current_watermark
 
-            fresh = sum(1 for record in page.records if record["id"] not in known)
-            known.update(record["id"] for record in page.records)
-            new_ids += fresh
-
-            # 时间戳 watermark：本页最老记录仍晚于上次最新，说明已越过旧数据边界
             timestamps = extract_last_modified(page.records)
-            if current_watermark.is_stale(timestamps):
-                return "watermark_timestamp"
+            page_new = sum(1 for record in page.records if record["id"] not in known)
+            # 新 id 或 lastModified 晚于基线，都说明本页仍有新信息；二者任一成立
+            # 就不计入 streak。否则跨日的稀疏更新会被“连续 N 页无新 id”提前截断。
+            fresh = page_new + sum(
+                1
+                for record, timestamp in zip(page.records, timestamps)
+                if record["id"] in known
+                and baseline_time is not None
+                and timestamp
+                and _is_reasonable_timestamp(timestamp)
+                and timestamp > baseline_time
+            )
+            new_ids += page_new
+            known.update(record["id"] for record in page.records)
 
-            # 更新水位线（即使未触发停止，也要记录本页最新时间戳）
+            # 列表按 lastModified 倒序：页内最老记录严格早于基线，才说明越过旧边界。
+            # 无论是否停止都把本页最新值并入，供完成态统一持久化。
+            stale = baseline.is_stale(timestamps)
             current_watermark = current_watermark.update(timestamps)
-            # 只写水位线：此刻 checkpoint.cursor 还是上一页的，本页的 next_cursor
-            # 由 ScanRun 在钩子之后统一保存。旧写法把这个 cursor 传给 save，
-            # 首轮它恒为 None，被 save 当成「完成」信号，刚写的水线当场清空。
-            checkpoint.save_watermark(current_watermark)
+            if stale:
+                return "watermark_timestamp"
 
             # 传统 watermark：连续 N 页无新 id（保留作为后备）
             streak = 0 if fresh else streak + 1
@@ -196,13 +208,11 @@ class Collector:
         silver_rows = day.silver_rows
         state = day.state
 
-        # 只有「走到末页」与「触发 watermark」算本轮完成；有界停止要保住游标。
-        # 完成只作废游标，水位线留给下一轮判断新旧边界（见 WatermarkCheckpoint.finish）。
-        if scan.stopped_reason in {
-            "end",
-            "watermark_timestamp",
-            "watermark_no_new",
-        }:
+        # 完成态才推进水位线：走到末页说明本轮到尾，时间戳/无新 id 说明已越过
+        # 旧边界。有界停止（max_pages）要保住游标，水位线也不能前进，否则续跑会
+        # 误以为边界已经越过。完成只作废游标，水位线留给下一轮判断新旧边界。
+        if scan.stopped_reason in COLLECT_COMPLETE_REASONS:
+            checkpoint.save_watermark(current_watermark)
             checkpoint.finish()
 
         return CollectSummary(

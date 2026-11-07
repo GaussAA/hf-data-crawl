@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from typing import Any
 
 import duckdb
@@ -181,6 +183,33 @@ class GoldNotReady(RuntimeError):
     """尚无采集数据，无法建立视图。"""
 
 
+class UnsafeQuery(RuntimeError):
+    """查询被安全策略拒绝：非只读语句，或越出数据目录访问文件。"""
+
+
+#: 拒绝执行时的统一说明。DuckDB 自己给出的 PermissionException 只讲
+#: 「filesystem operations are disabled」，读者看不出这是刻意的安全限制。
+SECURITY_NOTE = (
+    "出于安全限制，`query --sql` 只允许读取本工具的采集数据："
+    "禁止写文件、附加数据库、加载扩展，也不能读取数据目录以外的本机文件。"
+)
+
+
+def _guard(sql: str) -> None:
+    """只放行单条 SELECT；其余语句在进 DuckDB 之前就拒绝。
+
+    连接层已经关闭外部文件访问（见 `_lock_down`），这里再补一层语句限制：
+    `CREATE` / `SET` 之类虽只改内存态、不落盘，但会让同一条 `--sql` 表现出
+    与「只读查询」不符的能力；一次也只允许一条语句，避免用分号夹带。
+    """
+    statements = duckdb.extract_statements(sql)
+    if len(statements) != 1:
+        raise UnsafeQuery(f"{SECURITY_NOTE}一次只能执行一条语句（收到 {len(statements)} 条）。")
+    kind = statements[0].type
+    if kind != duckdb.StatementType.SELECT:
+        raise UnsafeQuery(f"{SECURITY_NOTE}拒绝执行 {kind} 语句，只接受 SELECT。")
+
+
 class GoldCatalog:
     """在本地 parquet 上挂一组视图，供 SQL 直接查。"""
 
@@ -188,8 +217,35 @@ class GoldCatalog:
         if not store.has("current"):
             raise GoldNotReady("尚无采集数据，请先运行 `hf-data-crawl collect`")
         self._store = store
-        self._connection = duckdb.connect()
-        self._register()
+        # 内存库不支持 read_only，故先把视图写进一个临时文件库，再以只读方式
+        # 重新打开给查询用：查询连接既改不了目录（不能 CREATE/DROP），也解除
+        # 不了下面的外部访问限制。
+        self._tempdir = tempfile.TemporaryDirectory(prefix="hf-data-crawl-gold-")
+        database = Path(self._tempdir.name) / "catalog.duckdb"
+        writer = duckdb.connect(str(database))
+        try:
+            self._lock_down(writer)
+            self._register(writer)
+        finally:
+            writer.close()
+        self._connection = duckdb.connect(str(database), read_only=True)
+        self._lock_down(self._connection)
+        # 视图建完后锁死配置：之后任何 `SET`（包括把外部访问重新打开）都会被拒。
+        self._connection.execute("SET lock_configuration = true")
+
+    def _lock_down(self, connection: duckdb.DuckDBPyConnection) -> None:
+        """连接层只读：外部文件访问只允许数据目录，其余一律关闭。
+
+        只读连接挡得住对目录本身的写操作（CREATE/DROP/INSERT 都会报
+        "attached in read-only mode"）；这里再把外部访问关掉，数据目录以外的
+        读写文件、ATTACH、INSTALL/LOAD 都会报 PermissionException。`allowed_
+        directories` 是视图读取 parquet 的唯一例外，范围就是数据目录本身；
+        目录内仍可写文件，故 `run()` 另有「只允许 SELECT」的语句限制兜底。
+        配置在视图就绪后锁死，查询无法自行解除。
+        """
+        directory = self._store.root.as_posix().replace("'", "''")
+        connection.execute(f"SET allowed_directories = ['{directory}']")
+        connection.execute("SET enable_external_access = false")
 
     @property
     def store(self) -> DatasetStore:
@@ -200,7 +256,11 @@ class GoldCatalog:
         return self._connection
 
     def run(self, sql: str, params: list[Any] | None = None) -> pl.DataFrame:
-        return self._connection.sql(sql, params=params or []).pl()
+        _guard(sql)
+        try:
+            return self._connection.sql(sql, params=params or []).pl()
+        except duckdb.PermissionException as error:
+            raise UnsafeQuery(f"{SECURITY_NOTE}具体原因：{error}") from error
 
     def board(self, name: str, limit: int = 50) -> pl.DataFrame:
         sql = BOARDS.get(name)
@@ -210,20 +270,21 @@ class GoldCatalog:
 
     def close(self) -> None:
         self._connection.close()
+        self._tempdir.cleanup()
 
-    def _register(self) -> None:
+    def _register(self, connection: duckdb.DuckDBPyConnection) -> None:
         # 视图的连接路径与空视图 schema 全部取自登记表，不再硬编码。
         for view, name in _VIEWS:
             spec = table(name)
-            self._create_file_view(view, spec.glob(), _empty_view(spec.schema))
-        self._connection.execute(
+            self._create_file_view(connection, view, spec.glob(), _empty_view(spec.schema))
+        connection.execute(
             """
             CREATE VIEW latest_silver AS
             SELECT * FROM silver
             QUALIFY row_number() OVER (PARTITION BY id ORDER BY snapshot_date DESC) = 1
             """
         )
-        self._connection.execute(self._wide_view_sql())
+        connection.execute(self._wide_view_sql())
         # 长表视图：一行一个 (数据集, 维度, 取值)。宽表便于 join 榜单，长表便于
         # 任意维度聚合而不必改 SQL——「按模态统计」「按格式统计」都是同一句。
         # 由 TAG_DIMENSIONS 生成，新增维度自动进入，不必再手写一段 UNION。
@@ -235,7 +296,7 @@ class GoldCatalog:
             f"{{'dimension': '{column}', 'vals': {column}}}"
             for column in (*TAG_DIMENSIONS.values(), PLAIN_TAG_COLUMN)
         )
-        self._connection.execute(
+        connection.execute(
             f"""
             CREATE VIEW tag_values AS
             SELECT id, d.dimension AS dimension, unnest(d.vals) AS value
@@ -245,7 +306,7 @@ class GoldCatalog:
         # 增速取「最近两个观测点」，而不是固定 7 日窗口：
         # 日增量只扫最新更新的万把条，全站指标靠周对账刷新，7 日窗口在周节奏下几乎取不到两点。
         # 间隔上限 35 天，避免跨季度比较；跨度以 span_days 明示，读榜的人自己判断。
-        self._connection.execute(
+        connection.execute(
             """
             CREATE VIEW v_growth AS
             WITH ranked AS (
@@ -316,11 +377,17 @@ class GoldCatalog:
             f"            {joins}\n"
         )
 
-    def _create_file_view(self, name: str, relative_pattern: str, empty_sql: str) -> None:
+    def _create_file_view(
+        self,
+        connection: duckdb.DuckDBPyConnection,
+        name: str,
+        relative_pattern: str,
+        empty_sql: str,
+    ) -> None:
         """无分区时挂空视图，让「刚装好还没采集」也能建连并给出空结果而非报错。"""
         if any(self._store.root.glob(relative_pattern)):
             pattern = f"{self._store.root.as_posix()}/{relative_pattern}"
             source = f"SELECT * FROM read_parquet('{pattern}', union_by_name = true)"
         else:
             source = empty_sql
-        self._connection.execute(f"CREATE VIEW {name} AS {source}")
+        connection.execute(f"CREATE VIEW {name} AS {source}")

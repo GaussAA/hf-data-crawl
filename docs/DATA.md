@@ -1,6 +1,6 @@
 # data 目录说明
 
-> 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-07 19:30，**请勿手工编辑**。
+> 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-07 20:37，**请勿手工编辑**。
 > 表结构与行数由代码和实际文件算出；字段含义维护在 `src/hf_data_crawl/fielddocs.py`。
 > 改完代码后重新生成即可，`tests/test_docs.py` 会在忘记生成时报错。
 
@@ -35,8 +35,8 @@ data/
 ├── state/                      # 当前态与观测流水（当前 6 个文件 · 127.0 MB）
 ├── enrich/                     # 卡片与规模（当前 3 个文件 · 138.2 MB）
 ├── meta/                       # 重建中断时留存的状态快照（当前 空）
-├── reports/                    # 对账差异清单（当前 3 个文件 · 40.9 MB）
-├── runs/                       # 每轮运行摘要（当前 56 个文件 · 25.6 KB）
+├── reports/                    # 对账清单与榜单页（当前 3 个文件 · 40.9 MB）
+├── runs/                       # 每轮运行摘要（当前 57 个文件 · 25.9 KB）
 └── logs/                       # 计划任务日志
 ```
 
@@ -240,8 +240,11 @@ data/
 
 ### raw 分块
 
-文件名形如 `<批次>-<页号>-<内容摘要>.json.gz`，摘要由内容算出：
-同一页同一内容重写为同一个文件（幂等），内容变了则另存（绝不覆盖丢数据）。
+文件名形如 `<类别>-<来源>-<页号>-<内容摘要>.json.gz`；旧格式与旧归档分片省略 `<来源>`。
+来源由 `ScanSpec` 的 mode + sort 派生，日增量、顶部刷新、卡片补齐各有独立页码空间。
+归档后变为 `<类别>-<来源>-archive-<序号>-<摘要>.json.gz`，分片内仍按原分段保留排序键。
+`cold/raw/baseline-*.json.gz` 是跨天去重的冷区基线，与热区分块一起回放。
+摘要由内容算出：同一页同一内容重写为同一个文件（幂等），内容变了则另存（绝不覆盖丢数据）。
 排序依据是 payload 里的 `written_at`，**不是文件名、也不是文件修改时间**。
 
 | 前缀 | 批次 | 派生去向 |
@@ -255,8 +258,8 @@ data/
 | 路径 | 作用 | 生命周期 |
 | --- | --- | --- |
 | `logs/` | 计划任务的输出日志，按运行日期命名 | 不参与任何派生 |
-| `runs/` | 每轮运行摘要，成功与失败都写；`status` 与 `reason` 由命令结局推出 | 只读，供对比两轮退化 |
-| `reports/` | 对账差异清单，只保留最近 8 份 | 只读，供人工核对 |
+| `runs/` | 每轮运行摘要，成功与失败都写（保留最近 `RUNS_KEEP` 条）；`status` 与 `reason` 由命令结局推出 | 只读，供对比两轮退化 |
+| `reports/` | 对账差异清单（`reconcile-YYYY-MM-DD.csv`，保留最近 `REPORT_KEEP` 份）与榜单页 `dashboard.html` | 只读，供人工核对 |
 | `ALERT.txt` | 体检发现异常时写入，正常时不存在 | `doctor` 写 |
 | `state/reconcile-seen.csv` | 对账会话的已见集合，续跑时靠它避免把前半段误判下架 | 对账完成后删除 |
 | `state/*-checkpoint.json` | 扫描游标，记录下一页从哪开始 | 走到末页后清空 |
@@ -292,10 +295,10 @@ data/
 
 | 页面显示 | 表字段 | 覆盖 | 说明 |
 | --- | --- | --- | --- |
-| Number of rows | `size.num_rows` | 84.4% | datasets-server 实测行数 |
-| Total file size | `current.main_size` | ~100% | **仓库字节**，含 LFS 与历史版本 |
-| Estimated rows（预估行数） | `size.estimated_num_rows` | 2.9% | 上游按体积估算，精度差 |
-| Columns | `size.num_columns_max` | 67.5% | 各 config 中列数的最大值 |
+| Number of rows | `size.num_rows` | 74.3% | datasets-server 实测行数 |
+| Total file size | `current.main_size` | 100.0% | **仓库字节**，含 LFS 与历史版本 |
+| Estimated rows（预估行数） | `size.estimated_num_rows` | 0.7% | 上游按体积估算，精度差 |
+| Columns | `size.num_columns_max` | 66.8% | 各 config 中列数的最大值 |
 
 **两处必须留意的差异**：
 

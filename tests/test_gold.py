@@ -303,6 +303,63 @@ def test_聚合类榜单不需要地址(catalog: GoldCatalog) -> None:
     assert "url" not in frame.columns
 
 
+# ---------------------------------------------------------------- 只读查询的安全边界
+
+
+def test_任意SQL只接受单条SELECT(catalog: GoldCatalog) -> None:
+    """非 SELECT 与分号夹带都在进 DuckDB 之前被拒，报错要点明是安全限制。"""
+    from hf_data_crawl.gold import UnsafeQuery
+
+    with pytest.raises(UnsafeQuery, match="安全限制"):
+        catalog.run("CREATE TABLE stolen AS SELECT 1")
+    with pytest.raises(UnsafeQuery, match="安全限制"):
+        catalog.run("SELECT 1; SELECT 2")
+
+
+def test_不能读取数据目录以外的文件(catalog: GoldCatalog, tmp_path: Path) -> None:
+    outside = tmp_path / "secret.csv"
+    outside.write_text("value\n42\n", encoding="utf-8")
+
+    from hf_data_crawl.gold import UnsafeQuery
+
+    with pytest.raises(UnsafeQuery, match="安全限制"):
+        catalog.run(f"SELECT * FROM read_csv('{outside.as_posix()}')")
+
+
+def test_连接层只读且禁止写文件(catalog: GoldCatalog, tmp_path: Path) -> None:
+    """查询连接本身是只读的，且即便绕过 `run()` 也写不了数据目录外的文件。"""
+    import duckdb
+
+    with pytest.raises(duckdb.InvalidInputException, match="read-only"):
+        catalog.connection.execute("CREATE TABLE stolen AS SELECT 1")
+
+    target = tmp_path / "copied.csv"
+
+    with pytest.raises(duckdb.PermissionException):
+        catalog.connection.execute(f"COPY (SELECT 1) TO '{target.as_posix()}'")
+    assert not target.exists()
+
+
+def test_外部访问配置已锁死(catalog: GoldCatalog) -> None:
+    """查询执行期间不能把 `enable_external_access` 重新打开。"""
+    import duckdb
+
+    with pytest.raises(duckdb.InvalidInputException):
+        catalog.connection.execute("SET enable_external_access = true")
+
+
+def test_query命令行对非只读语句返回失败(tmp_path: Path, capsys: Any) -> None:
+    from hf_data_crawl.cli import main
+
+    store = DatasetStore(tmp_path / "data")
+    seed(store, DAY1, [record(1, downloads=100)])
+
+    code = main(["--data-dir", str(store.root), "query", "--sql", "CREATE TABLE x AS SELECT 1"])
+
+    assert code == 1
+    assert "安全限制" in capsys.readouterr().out
+
+
 # ---------------------------------------------------------------- 文档契约
 
 

@@ -109,6 +109,40 @@ def test_只读命令不受锁影响(tmp_path: Path) -> None:
     assert read_runs(DatasetStore(root)) == []
 
 
+def test_docs在锁被占用时等不到就失败(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """docs 需要一致快照，撞上写命令时应先等；等不到再明确失败，不生成半新半旧的文件。"""
+    from hf_data_crawl import cli
+
+    monkeypatch.setattr(cli, "SNAPSHOT_LOCK_WAIT", 0.0)
+    root = tmp_path / "data"
+    target = tmp_path / "DATA.md"
+
+    with exclusive(root, "collect"):
+        code = main(["--data-dir", str(root), "docs", "--out", str(target)])
+
+    assert code == 1
+    assert "docs 失败" in capsys.readouterr().out
+    assert not target.exists()
+
+
+def test_report在锁被占用时留下失败记录(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """report 同样要读一致快照；锁失败也照常写 runs，便于事后看到原因。"""
+    from hf_data_crawl import cli
+
+    monkeypatch.setattr(cli, "SNAPSHOT_LOCK_WAIT", 0.0)
+    root = tmp_path / "data"
+
+    with exclusive(root, "collect"):
+        code = main(["--data-dir", str(root), "report"])
+
+    assert code == 1
+    runs = read_runs(DatasetStore(root))
+    assert [item["status"] for item in runs] == ["failed"]
+    assert "LockBusy" in runs[0]["reason"]
+
+
 # ---------------------------------------------------------------- 计划任务的等待
 
 

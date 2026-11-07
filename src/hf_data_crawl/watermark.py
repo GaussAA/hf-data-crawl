@@ -7,8 +7,10 @@
 排在列表最前面，连续 3 页都没有"昨天晚上更新的库"，watermark 提前触发。
 但实际上昨天 23:58 更新的库还没扫到（它们的 lastModified 排在今天的新库后面）。
 
-新机制：基于 lastModified 时间戳判断。只有当"连续 N 页的最老 lastModified 仍晚于
-上次运行记录的最新 lastModified"时，才认为到达水位线。
+新机制：基于 lastModified 时间戳判断。列表按 lastModified 倒序翻页，只有当页内
+最老的有效 lastModified **严格早于**上次完成运行时记录的最新值时，才认为已经越过
+旧数据边界；整页都晚于水位线时仍在未扫过的区间内，必须继续翻页。水位线在整轮里
+固定不动，本轮新记录只用于决定下一轮的边界。
 
 异常值处理
 ----------
@@ -46,7 +48,8 @@ class Watermark:
     def is_stale(self, last_modified_list: list[str]) -> bool:
         """判断一页记录是否已过水位线。
 
-        如果页内最老的有效 lastModified 仍晚于水位线，说明已经越过旧数据边界。
+        页内最老的有效 lastModified 严格早于水位线，说明已经越过旧数据边界；
+        整页都晚于水位线时尚未扫到旧数据，必须继续翻页。
         """
         if self.latest_modified is None:
             # 首次运行，没有水位线
@@ -59,7 +62,7 @@ class Watermark:
             return False
 
         oldest_in_page = min(valid_timestamps)
-        return oldest_in_page > self.latest_modified
+        return oldest_in_page < self.latest_modified
 
     def update(self, last_modified_list: list[str]) -> Watermark:
         """根据本页记录更新水位线，返回新水位线。"""

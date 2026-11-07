@@ -22,13 +22,20 @@ from typing import Any
 import polars as pl
 
 from .fielddocs import describe
+from .raw import BRONZE_LABELS, CARD_LABEL
 from .tables import TABLES, Origin, TableSpec
 
+#: 各类 Raw 分块的作用与派生去向。类别清单取自 `raw` 的常量，避免文档与
+#: 「谁进 Bronze、谁是卡片批次」这两条约定各写一份。
+_LABEL_KINDS: dict[str, tuple[str, str]] = {
+    "part": ("日增量扫描的分块（按 `lastModified` 倒序）", "bronze → silver → state"),
+    "top": ("顶部池刷新的分块（按 `downloads` 倒序）", "同上，让增速榜每天有新读数"),
+    CARD_LABEL: ("卡片补齐的分块（带 `cardData`）", "carddata · card_configs"),
+}
+
 #: 由 raw 分块构成、不是登记表的东西。文档里单列一节说明它们的作用。
-RAW_KINDS: tuple[tuple[str, str, str], ...] = (
-    ("part-*.json.gz", "日增量扫描的分块（按 `lastModified` 倒序）", "bronze → silver → state"),
-    ("top-*.json.gz", "顶部池刷新的分块（按 `downloads` 倒序）", "同上，让增速榜每天有新读数"),
-    ("card-*.json.gz", "卡片补齐的分块（带 `cardData`）", "carddata · card_configs"),
+RAW_KINDS: tuple[tuple[str, str, str], ...] = tuple(
+    (f"{label}-*.json.gz", *_LABEL_KINDS[label]) for label in [*sorted(BRONZE_LABELS), CARD_LABEL]
 )
 
 #: 各表的粒度与它和 current 的关系。第七节据此逐行生成，行数实时计算。
@@ -47,10 +54,16 @@ SIDE_FILES: tuple[tuple[str, str, str], ...] = (
     ("logs/", "计划任务的输出日志，按运行日期命名", "不参与任何派生"),
     (
         "runs/",
-        "每轮运行摘要，成功与失败都写；`status` 与 `reason` 由命令结局推出",
+        "每轮运行摘要，成功与失败都写（保留最近 `RUNS_KEEP` 条）；"
+        "`status` 与 `reason` 由命令结局推出",
         "只读，供对比两轮退化",
     ),
-    ("reports/", "对账差异清单，只保留最近 8 份", "只读，供人工核对"),
+    (
+        "reports/",
+        "对账差异清单（`reconcile-YYYY-MM-DD.csv`，保留最近 `REPORT_KEEP` 份）"
+        "与榜单页 `dashboard.html`",
+        "只读，供人工核对",
+    ),
     ("ALERT.txt", "体检发现异常时写入，正常时不存在", "`doctor` 写"),
     (
         "state/reconcile-seen.csv",
@@ -172,7 +185,7 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         f"├── state/                      # 当前态与观测流水（当前 {_dir_summary(store_root, 'state')}）",
         f"├── enrich/                     # 卡片与规模（当前 {_dir_summary(store_root, 'enrich')}）",
         f"├── meta/                       # 重建中断时留存的状态快照（当前 {_dir_summary(store_root, 'meta')}）",
-        f"├── reports/                    # 对账差异清单（当前 {_dir_summary(store_root, 'reports')}）",
+        f"├── reports/                    # 对账清单与榜单页（当前 {_dir_summary(store_root, 'reports')}）",
         f"├── runs/                       # 每轮运行摘要（当前 {_dir_summary(store_root, 'runs')}）",
         "└── logs/                       # 计划任务日志",
         "```",
@@ -203,8 +216,11 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "",
         "### raw 分块",
         "",
-        "文件名形如 `<批次>-<页号>-<内容摘要>.json.gz`，摘要由内容算出：",
-        "同一页同一内容重写为同一个文件（幂等），内容变了则另存（绝不覆盖丢数据）。",
+        "文件名形如 `<类别>-<来源>-<页号>-<内容摘要>.json.gz`；旧格式与旧归档分片省略 `<来源>`。",
+        "来源由 `ScanSpec` 的 mode + sort 派生，日增量、顶部刷新、卡片补齐各有独立页码空间。",
+        "归档后变为 `<类别>-<来源>-archive-<序号>-<摘要>.json.gz`，分片内仍按原分段保留排序键。",
+        "`cold/raw/baseline-*.json.gz` 是跨天去重的冷区基线，与热区分块一起回放。",
+        "摘要由内容算出：同一页同一内容重写为同一个文件（幂等），内容变了则另存（绝不覆盖丢数据）。",
         "排序依据是 payload 里的 `written_at`，**不是文件名、也不是文件修改时间**。",
         "",
         "| 前缀 | 批次 | 派生去向 |",
@@ -256,10 +272,10 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "",
         "| 页面显示 | 表字段 | 覆盖 | 说明 |",
         "| --- | --- | --- | --- |",
-        "| Number of rows | `size.num_rows` | 84.4% | datasets-server 实测行数 |",
-        "| Total file size | `current.main_size` | ~100% | **仓库字节**，含 LFS 与历史版本 |",
-        "| Estimated rows（预估行数） | `size.estimated_num_rows` | 2.9% | 上游按体积估算，精度差 |",
-        "| Columns | `size.num_columns_max` | 67.5% | 各 config 中列数的最大值 |",
+        f"| Number of rows | `size.num_rows` | {_coverage(store_root, 'size', 'num_rows')} | datasets-server 实测行数 |",
+        f"| Total file size | `current.main_size` | {_coverage(store_root, 'current', 'main_size')} | **仓库字节**，含 LFS 与历史版本 |",
+        f"| Estimated rows（预估行数） | `size.estimated_num_rows` | {_coverage(store_root, 'size', 'estimated_num_rows')} | 上游按体积估算，精度差 |",
+        f"| Columns | `size.num_columns_max` | {_coverage(store_root, 'size', 'num_columns_max')} | 各 config 中列数的最大值 |",
         "",
         "**两处必须留意的差异**：",
         "",
@@ -295,6 +311,26 @@ def _total_rows(root: Path, name: str) -> int:
     spec = TABLES[name]
     files = [root / spec.path] if not spec.partitioned else list(root.glob(spec.glob()))
     return sum(_row_count(path) or 0 for path in files if path.exists())
+
+
+def _coverage(root: Path, name: str, column: str) -> str:
+    """某列非空的真实占比。无文件、空表或读不到 schema 时返回占位符。"""
+    spec = TABLES[name]
+    files = [root / spec.path] if not spec.partitioned else list(root.glob(spec.glob()))
+    files = [path for path in files if path.exists()]
+    if not files:
+        return "—"
+
+    try:
+        frame = pl.scan_parquet(files)
+        total = int(frame.select(pl.len()).collect().item())
+        if total == 0:
+            return "—"
+        filled = int(frame.select(pl.col(column).is_not_null().sum()).collect().item())
+    except (OSError, pl.exceptions.PolarsError):
+        return "—"
+
+    return f"{filled / total * 100:.1f}%"
 
 
 def _grain_rows(root: Path) -> list[str]:

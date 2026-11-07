@@ -9,7 +9,7 @@
 **观察**：
 ```
 ⚠️  检测到 1 个未完成的派生，已自动恢复：[date(2026, 11, 7)]
-   提示：这些日期的派生层已清理，下次运行时会重新派生
+   提示：残留派生层已清理；有 Raw 的日期已重新派生，无 Raw 的仅清理
 ```
 
 **手动检查**：
@@ -41,7 +41,8 @@ uv run hf-data-crawl reconcile
 
 **手动**：
 ```bash
-uv run hf-data-crawl build  # 从 raw 重建所有派生层
+uv run hf-data-crawl build        # 重放近 7 天的 Raw，重建热区派生层
+uv run hf-data-crawl build --full # 清空派生层并按全部 Raw 重放（逃生舱）
 ```
 
 ### 4. Watermark 异常
@@ -85,8 +86,10 @@ uv run hf-data-crawl query --sql "SELECT status, COUNT(*) FROM current GROUP BY 
 ### 检查数据完整性
 ```bash
 ls data/raw/dt=*
-uv run hf-data-crawl query --sql "SELECT COUNT(*) FROM bronze WHERE dt='2026-11-07'"
+uv run hf-data-crawl query --sql "SELECT COUNT(*) FROM current WHERE last_seen_at = DATE '2026-11-07'"
 ```
+`query` 只挂了 `current` / `silver` / `observations` / `card` / `dataset_size` 等视图，
+没有 `bronze` 视图；按日核对用 `current.last_seen_at`。
 
 ---
 

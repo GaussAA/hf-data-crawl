@@ -86,9 +86,9 @@ def test_同id的胜负不变且重复记录被去掉(store: DatasetStore) -> No
         return frame.filter(frame["id"] == dataset_id)["downloads"].to_list()
 
     before = bronze_of(store)
-    # bronze.build 读当天全部标签：ds-1 最后写入的是 02:00 的 card 批次（5），
-    # 晚于 01:00 的 top（999）；ds-2 最后写入的是第 5 页的 part（50）。
-    assert downloads(before, "acme/ds-1") == [5]
+    # bronze.build 只读 part / top：ds-1 最后写入的是 01:00 的 top（999）；
+    # 02:00 的 card 批次属于卡片表，不参与 Bronze；ds-2 最后写入的是第 5 页的 part（50）。
+    assert downloads(before, "acme/ds-1") == [999]
     assert downloads(before, "acme/ds-2") == [50]
 
     result = archive_day(store, DAY)
@@ -96,7 +96,7 @@ def test_同id的胜负不变且重复记录被去掉(store: DatasetStore) -> No
     assert result is not None
     assert result.records_after < result.records_before
     after = bronze_of(store)
-    assert downloads(after, "acme/ds-1") == [5]
+    assert downloads(after, "acme/ds-1") == [999]
     assert downloads(after, "acme/ds-2") == [50]
 
 

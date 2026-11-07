@@ -136,6 +136,20 @@ def batch_files(
     return sorted(partition.glob(batch_pattern(label)))
 
 
+def bronze_files(store: DatasetStore, snapshot_date: date) -> list[Path]:
+    """进入 Bronze 的分块：只取 `BRONZE_LABELS`，卡片批次不参与。
+
+    `card-*` 是 enrich 为卡片表写的批次，内容虽同为数据集记录，但它的存在
+    与否取决于补抓节奏，不属于「当天的标量快照」。混进来会让 Bronze 的行数
+    随卡片补抓膨胀，也会让卡片表之外的派生层看到一批来源不同的记录。
+    """
+    return sorted(
+        path
+        for label in sorted(BRONZE_LABELS)
+        for path in batch_files(store, snapshot_date, label=label)
+    )
+
+
 def is_archive(path: Path) -> bool:
     """归档分片的文件名含 `-archive-`（新旧命名空间两种格式都成立）。"""
     return "-archive-" in path.name

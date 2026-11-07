@@ -20,7 +20,8 @@
 1. 如果发现标记文件且超过阈值（如 10 分钟），说明上次派生可能未完成
 2. 删除该日的**所有派生层分区**（bronze/silver/observations）
 3. 删除标记文件
-4. 重新派生
+4. 该日 Raw 仍存在时调用 `derive_day()` 重新派生，连同 `current` 一起重建；
+   Raw 已被归档清理时只清理派生层，不动全局的 `current`
 
 这样：
 - 复杂度低（只多写一个小文件）
@@ -106,9 +107,11 @@ def check_and_recover(store: DatasetStore) -> list[date]:
 
         elapsed = (now - started).total_seconds()
         if elapsed > STALE_THRESHOLD_SECONDS:
-            # 超过阈值，清理该日的派生层
+            # 超过阈值：先清掉残留的派生层，再视 Raw 是否还在决定是否重派生。
             _clean_derived_partitions(store, flag.snapshot_date)
             path.unlink(missing_ok=True)
+            if _has_raw(store, flag.snapshot_date):
+                _rederive(store, flag.snapshot_date)
             recovered.append(flag.snapshot_date)
 
     return recovered
@@ -128,8 +131,35 @@ def _load_flag(path: Path) -> DerivingFlag | None:
 def _clean_derived_partitions(store: DatasetStore, snapshot_date: date) -> None:
     """删除某一天的所有派生层分区（bronze/silver/observations）。
 
-    不删 current（它是全局的、不按日分区），observations 按日分区所以会被清理。
+    不删 current（它是全局的、不按日分区）；清理后由 `_rederive` 依据 Raw
+    重建，Raw 已不存在时 current 保持原状。
     """
     for name in ["bronze", "silver", "observations"]:
         partition = store.path(name, snapshot_date)
         partition.unlink(missing_ok=True)
+
+
+def _has_raw(store: DatasetStore, snapshot_date: date) -> bool:
+    """该日是否还有可重建派生层的 Raw。
+
+    只看 Bronze 消费的 `part` / `top`：只剩卡片批次时重派生不出任何标量数据，
+    却会触发 `bronze.prune` 删掉旧分区，反而制造不一致。
+    """
+    from .raw import bronze_files
+
+    return bool(bronze_files(store, snapshot_date))
+
+
+def _rederive(store: DatasetStore, snapshot_date: date) -> None:
+    """清理后真正重派生一天，重建 bronze → silver → observations → current。
+
+    `derive_day()` 会在开头重新打标记；这里吞掉异常，让新标记在下次启动时
+    再次触发恢复。一个坏日期不应阻塞其余写命令。
+    """
+    from .derive import derive_day
+
+    try:
+        derive_day(store, snapshot_date)
+    except Exception:
+        # 新标记已由 derive_day 开头写入，保留它等下一次超时重试。
+        pass

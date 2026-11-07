@@ -1,6 +1,7 @@
 """用 datasets-server 补数据集的规模与形状。
 
-列表接口给的是仓库字节数（`mainSize`），卡片给的行数只覆盖 7.3%。
+列表接口给的是仓库字节数（`mainSize`），卡片里声明的行数只覆盖少数数据集
+（当前覆盖率见 `docs/DATA.md` 的「HF 页面上的数字」一节，那里按实际数据计算）。
 真正回答「这个数据集多少行、多少列」的是 datasets-server 的 `/size`：
 
     {"size": {"dataset": {"num_rows": ..., "num_bytes_memory": ...},

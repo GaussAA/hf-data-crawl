@@ -20,6 +20,7 @@ from hf_data_crawl.deriving import (
     flag_path,
     mark_deriving,
 )
+from hf_data_crawl.raw import CARD_LABEL
 from hf_data_crawl.store import DatasetStore
 
 
@@ -280,6 +281,77 @@ def test_只清理派生层不清理current(tmp_path: Path) -> None:
 
     # current 保留
     assert current_path.exists()
+
+
+def test_有Raw时清理后重新派生(tmp_path: Path, monkeypatch) -> None:
+    """清理过期派生层后，若该日 Raw 存在，应真正调用 derive_day 重建。"""
+    store = DatasetStore(tmp_path)
+    snapshot_date = date(2026, 11, 7)
+
+    bronze_path = store.path("bronze", snapshot_date)
+    bronze_path.parent.mkdir(parents=True, exist_ok=True)
+    bronze_path.write_text("fake bronze", encoding="utf-8")
+
+    path = flag_path(store, snapshot_date)
+    old_time = datetime.now(UTC) - timedelta(seconds=STALE_THRESHOLD_SECONDS + 60)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "snapshot_date": snapshot_date.isoformat(),
+                "started_at": old_time.isoformat(timespec="seconds"),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rederived: list[date] = []
+    monkeypatch.setattr("hf_data_crawl.deriving._has_raw", lambda *_: True)
+    monkeypatch.setattr(
+        "hf_data_crawl.deriving._rederive", lambda _store, day: rederived.append(day)
+    )
+
+    recovered = check_and_recover(store)
+
+    assert recovered == [snapshot_date]
+    assert not bronze_path.exists()
+    assert rederived == [snapshot_date]
+
+
+def test_只有卡片批次时不重派生(tmp_path: Path, monkeypatch) -> None:
+    """卡片批次不进 Bronze，恢复时不应把它当成可重派生的一天。"""
+    store = DatasetStore(tmp_path)
+    snapshot_date = date(2026, 11, 7)
+    store.write_raw(
+        snapshot_date=snapshot_date,
+        page_index=1,
+        records=[{"id": "acme/ds-1"}],
+        meta={},
+        label=CARD_LABEL,
+    )
+
+    path = flag_path(store, snapshot_date)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    old_time = datetime.now(UTC) - timedelta(seconds=STALE_THRESHOLD_SECONDS + 60)
+    path.write_text(
+        json.dumps(
+            {
+                "snapshot_date": snapshot_date.isoformat(),
+                "started_at": old_time.isoformat(timespec="seconds"),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rederived: list[date] = []
+    monkeypatch.setattr(
+        "hf_data_crawl.deriving._rederive", lambda _store, day: rederived.append(day)
+    )
+
+    recovered = check_and_recover(store)
+
+    assert recovered == [snapshot_date]
+    assert rederived == []
 
 
 def test_阈值边界(tmp_path: Path) -> None:

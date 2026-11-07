@@ -52,7 +52,7 @@ hf-data-crawl docs         [--out PATH]           # 默认 docs/DATA.md
 
 全局参数 `--data-dir` 需放在子命令之前，默认取 `HF_DATA_DIR`，否则 `./data`。
 
-写命令（`collect` / `reconcile` / `build` / `enrich` / `fetch-sizes` / `archive`）执行期间持有 `data/.lock` 的独占锁，同一时刻只能跑一个；拿不到锁会失败并在 `runs/` 留记录。进程被杀后系统自动释放，不会留下死锁。`report` 与 `query` 不加锁。
+写命令（`collect` / `reconcile` / `build` / `enrich` / `fetch-sizes` / `archive` / `compact`）执行期间持有 `data/.lock` 的独占锁，同一时刻只能跑一个；拿不到锁会失败并在 `runs/` 留记录。进程被杀后系统自动释放，不会留下死锁。`query` 只读不加锁；`report` 与 `docs` 也持锁，以便读到某一刻的完整快照。
 
 内置榜单（`gold.BOARDS` 是唯一真相源：`query --board` 的候选项由它自动生成，`report` 页面复用同一批口径）：
 
@@ -186,7 +186,7 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 - 故障恢复：[docs/operations/RECOVERY.md](docs/operations/RECOVERY.md)
 - 监控指标：[docs/operations/MONITORING.md](docs/operations/MONITORING.md)
 - **标签维度拆 16 类**：按全站 950 万条标签实测频次补齐 `modality`（12.7%）/`region`（11.7%）/`format`（8.6%）等；无前缀标签单列 `plain_tags`（13.7%，旧式 `text`/`image` 标记都在这里）。维度覆盖率 51.5% → 99.9%。`tag_values` 长表视图由映射表自动生成，新增维度不必改 SQL。
-- **规模数据走 datasets-server**：列表接口的 `mainSize` 是仓库字节，卡片行数只覆盖 7.3%。`fetch-sizes` 打 `/size` 拿 `num_rows` 与 `num_columns`。实测成功率约 80%，并发 16 稳定 26 req/s，两万条约 790 秒。失败分类处理：500/401/501 记 `unavailable` 落库并默认跳过（永久缺失，重试只会白烧 30% 预算）；429/502/503 退避重试且不落库（下轮自然重试）。
+- **规模数据走 datasets-server**：列表接口的 `mainSize` 是仓库字节，卡片声明的行数只覆盖少数数据集（当前覆盖率见 [docs/DATA.md](docs/DATA.md)）。`fetch-sizes` 打 `/size` 拿 `num_rows` 与 `num_columns`。实测成功率约 80%，并发 16 稳定 26 req/s，两万条约 790 秒。失败分类处理：500/401/501 记 `unavailable` 落库并默认跳过（永久缺失，重试只会白烧 30% 预算）；429/502/503 退避重试且不落库（下轮自然重试）。
 - **宽视图由 schema 拼装**：`datasets` 的列不再手抄，由 `tables.py` 的 schema 按固定顺序拼接，重名**先到先得**；需要区分口径的列改名（`size.num_rows → server_num_rows`，与卡片口径的 `card_num_rows` 并存）；`raw`（每行数 KB 的整行 JSON）与重复的 `snapshot_date` 排除在外。手抄的代价是漂移——加一个卡片字段，`card` 视图自动有，`datasets` 安静地少一列。
 - **「最新一行」有物化与视图两套实现，必须永远一致**：`current` 是物化表，`latest_silver` 是窗口视图。`current` 的带入列由两个 schema **求交**推导，不手抄；`status` / `first_seen_at` / `last_seen_at` 是本地判断，不得混进 Silver。一致性由测试守护（实测 111.7 万行、15 个公共列取值相同）。
 - **失效状态不是「删除」一种**：对账后逐条探测，404 才是删除，401 是转私有（库还在），307 是改名（跟随到 200 拿到新 id）。三者混记会让下架数虚高，也让改名后的库在下轮变成「新增」而丢掉观测史。

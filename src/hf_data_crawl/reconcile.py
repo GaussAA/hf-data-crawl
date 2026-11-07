@@ -33,7 +33,11 @@ RECONCILE_CHECKPOINT = "reconcile-checkpoint.json"
 REPORT_SCHEMA: dict[str, PolarsType] = {
     "kind": pl.Utf8,
     "id": pl.Utf8,
+    # `detail` 是机器可读的编码（404 / 401 / sha_null / probe），保留给程序判断；
+    # `note` 是给人看的中文说明。Polars 按显式 schema 建表时会静默丢掉多出的键，
+    # 所以两列都必须登记，否则行里的 `note` 永远进不了 CSV。
     "detail": pl.Utf8,
+    "note": pl.Utf8,
 }
 
 

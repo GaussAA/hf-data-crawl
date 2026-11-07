@@ -23,7 +23,7 @@ from .retention import (
     BACKUP_PRUNE_AFTER_DAYS,
     REPLAY_WINDOW_DAYS,
 )
-from .runs import read_runs
+from .runs import COLLECT_COMPLETE_REASONS, read_runs
 from .store import DatasetStore
 
 ALERT_NAME = "ALERT.txt"
@@ -42,8 +42,7 @@ RAW_MAX_FILES = 20_000
 #: 回看多久内的失败运行。
 FAILURE_WINDOW = timedelta(days=7)
 
-#: 算「完成」的停止原因。有界试跑（max_pages）与 dry_run 不是完成。
-_COLLECT_DONE = frozenset({"end", "watermark"})
+#: 有界试跑（max_pages）与 dry_run 不是完成；collect 的完成态与 cli 共用一份枚举。
 _RECONCILE_DONE = frozenset({"end"})
 
 
@@ -259,7 +258,7 @@ def diagnose(store: DatasetStore, now: datetime | None = None) -> list[Finding]:
     now = now or datetime.now()
     runs = read_runs(store)
     return [
-        _freshness(runs, now, "collect", _COLLECT_DONE, COLLECT_MAX_AGE, "日增量采集"),
+        _freshness(runs, now, "collect", COLLECT_COMPLETE_REASONS, COLLECT_MAX_AGE, "日增量采集"),
         _freshness(runs, now, "reconcile", _RECONCILE_DONE, RECONCILE_MAX_AGE, "全量对账"),
         _raw_gaps(store, now.date()),
         _raw_growth(store),

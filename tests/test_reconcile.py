@@ -308,6 +308,20 @@ def test_探测证明还在但本就在架的库不计入reactivated(store: Data
     assert summary.reactivated == 0
 
 
+def test_差异清单的note列不再被schema丢弃(store: DatasetStore) -> None:
+    """`note` 是给人看的中文说明，不能只留下机器编码 `detail`；旧列保持兼容。"""
+    path = reconciler(FakeCursorTransport([[]]), store)._write_report(
+        DAY2, "end", [], [], [], [], undetectable=["acme/x"]
+    )
+
+    report = pl.read_csv(path)
+
+    assert report.columns == ["kind", "id", "detail", "note"]
+    row = report.filter(pl.col("kind") == "undetectable_change").row(0, named=True)
+    assert row["detail"] == "sha_null"
+    assert row["note"] == "无法检测变更（sha为null）"
+
+
 # ---------------------------------------------------------------- 续跑一致性
 
 

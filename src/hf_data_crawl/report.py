@@ -421,6 +421,11 @@ class Reporter:
         as_of = _esc(overview["as_of"])
         last_seen = _esc(overview["last_seen"])
         total_downloads = _num(overview["total_downloads"])
+        sized = _num(overview["sized"])
+        volume_note = (
+            f"已实测 {sized} 个数据集的规模（datasets-server /size）；"
+            "行数动辄万亿，用 T/B/M 压缩并保留完整值。"
+        )
 
         return f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
@@ -529,7 +534,7 @@ class Reporter:
 </section>
 
 <section id="volume" class="chapter">
-  {_chapter_head("04", "规模上限", "头部两万名补过 datasets-server 的规模；行数动辄万亿，用 T/B/M 压缩并保留完整值。")}
+  {_chapter_head("04", "规模上限", volume_note)}
   <div class="board">
     <div class="board-head">
       <div><h3>规模榜</h3>

@@ -17,22 +17,42 @@ from .collect import Collector, CollectSummary
 from .deriving import check_and_recover
 from .doctor import diagnose, sync_alert
 from .enrich import Enricher, EnrichSummary
-from .gold import BOARDS, GoldCatalog, GoldNotReady
-from .lock import exclusive
+from .gold import BOARDS, GoldCatalog, GoldNotReady, UnsafeQuery
+from .lock import LockBusy, exclusive
 from .rebuild import RebuildSummary, rebuild_from_raw
 from .reconcile import Reconciler, ReconcileSummary
 from .report import Reporter
 from .retention import REPLAY_WINDOW_DAYS
-from .runs import Outcome, read_runs, write_run
+from .runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs, write_run
 from .sizes import HfSizeApi, SizeFetcher, SizeSummary, tail
 from .store import DatasetStore
 from .transport import HttpxTransport
 
-#: 会改写数据目录的命令，执行期间持有独占锁。report 只写自己的 HTML（原子替换），
-#: query 只读，二者不需要。
+#: 会改写数据目录的命令，执行期间持有独占锁。query 只读且单次查询很短，
+#: 不在此列；report/docs 不改数据，但要同时读多张表，与写命令并发会读到
+#: 新旧混合的快照，因此也纳入锁集合。
 WRITE_COMMANDS = frozenset(
-    {"collect", "reconcile", "build", "enrich", "fetch-sizes", "archive", "compact"}
+    {
+        "collect",
+        "reconcile",
+        "build",
+        "enrich",
+        "fetch-sizes",
+        "archive",
+        "compact",
+    }
 )
+
+#: 只读一批表、需要一致快照的生成命令。它们与写命令共用同一把独占锁——
+#: 只有互斥才能保证读到的是某一刻的完整快照；Windows 的文件锁不提供共享模式。
+SNAPSHOT_COMMANDS = frozenset({"report", "docs"})
+
+#: 需要持锁的命令全集。
+LOCKED_COMMANDS = WRITE_COMMANDS | SNAPSHOT_COMMANDS
+
+#: 生成命令默认等锁时长（秒）。它们通常由计划任务或人工临时触发，撞上采集
+#: 时干等一会儿比直接失败有用；等不到仍会如实报错。可用 `--lock-wait` 覆盖。
+SNAPSHOT_LOCK_WAIT = 60.0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -48,8 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--lock-wait",
         type=float,
-        default=0.0,
-        help="写命令拿不到数据目录锁时最多等几秒；计划任务用，默认 0 立刻失败",
+        default=None,
+        help=(
+            "拿不到数据目录锁时最多等几秒；默认写命令 0（立刻失败），"
+            f"report/docs 等 {SNAPSHOT_LOCK_WAIT:g} 秒"
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -153,41 +176,49 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
     """命令行入口。`transport` 是唯一的注入缝：测试传假实现，生产不传。"""
     args = build_parser().parse_args(argv)
     store = DatasetStore(Path(args.data_dir))
+    # 未显式给 --lock-wait 时按命令取默认值：写命令立即失败，生成命令先等一会儿。
+    lock_wait = args.lock_wait
+    if lock_wait is None:
+        lock_wait = SNAPSHOT_LOCK_WAIT if args.command in SNAPSHOT_COMMANDS else 0.0
 
     # 启动时自动检查和恢复未完成的派生
-    # 只在写命令时执行，避免只读命令（query/report）也触发恢复
+    # 只有写命令才做：恢复本身会改派生层，只读快照命令（report/docs）不应顺手写数据。
     if args.command in WRITE_COMMANDS:
         recovered = check_and_recover(store)
         if recovered:
             print(f"⚠️  检测到 {len(recovered)} 个未完成的派生，已自动恢复：{recovered}")
-            print("   提示：这些日期的派生层已清理，下次运行时会重新派生")
+            print("   提示：残留派生层已清理；有 Raw 的日期已重新派生，无 Raw 的仅清理")
 
     if args.command == "collect":
-        return _execute(store, "collect", lambda: _collect(args, store, transport), args.lock_wait)
+        return _execute(store, "collect", lambda: _collect(args, store, transport), lock_wait)
     if args.command == "reconcile":
-        return _execute(
-            store, "reconcile", lambda: _reconcile(args, store, transport), args.lock_wait
-        )
+        return _execute(store, "reconcile", lambda: _reconcile(args, store, transport), lock_wait)
     if args.command == "build":
-        return _execute(store, "build", lambda: _build(args, store), args.lock_wait)
+        return _execute(store, "build", lambda: _build(args, store), lock_wait)
     if args.command == "archive":
-        return _execute(store, "archive", lambda: _archive(args, store), args.lock_wait)
+        return _execute(store, "archive", lambda: _archive(args, store), lock_wait)
     if args.command == "compact":
-        return _execute(store, "compact", lambda: _compact(args, store), args.lock_wait)
+        return _execute(store, "compact", lambda: _compact(args, store), lock_wait)
     if args.command == "enrich":
-        return _execute(store, "enrich", lambda: _enrich(args, store, transport), args.lock_wait)
+        return _execute(store, "enrich", lambda: _enrich(args, store, transport), lock_wait)
     if args.command == "fetch-sizes":
         return _execute(
-            store, "fetch-sizes", lambda: _fetch_sizes(args, store, transport), args.lock_wait
+            store, "fetch-sizes", lambda: _fetch_sizes(args, store, transport), lock_wait
         )
     if args.command == "report":
-        return _execute(store, "report", lambda: _report(args, store), args.lock_wait)
+        return _execute(store, "report", lambda: _report(args, store), lock_wait)
     if args.command == "query":
         return _query(args, store)
     if args.command == "doctor":
         return _doctor(store)
     if args.command == "docs":
-        return _write_docs(args, store)
+        # docs 不写 runs/，但同样要在一致快照上生成；拿不到锁就明确失败。
+        try:
+            with exclusive(store.root, "docs", lock_wait):
+                return _write_docs(args, store)
+        except LockBusy as error:
+            print(f"docs 失败：{type(error).__name__}: {error}")
+            return 1
 
     return 1
 
@@ -206,8 +237,9 @@ def _execute(
     """
     started = datetime.now()
     try:
-        if command in WRITE_COMMANDS:
-            # 写命令互斥：拿不到锁就如实失败并留下 runs 记录，而不是并发写坏 current。
+        if command in LOCKED_COMMANDS:
+            # 写命令互斥，生成命令则等一个完整快照：拿不到锁就如实失败并留下
+            # runs 记录，而不是并发读到新旧混合的表。
             with exclusive(store.root, command, lock_wait):
                 outcome = action()
         else:
@@ -241,7 +273,7 @@ def _collected_today(store: DatasetStore, snapshot: date) -> bool:
         payload = item.get("payload") or {}
         if payload.get("snapshot_date") != snapshot.isoformat():
             continue
-        if payload.get("stopped_reason") in {"end", "watermark"}:
+        if payload.get("stopped_reason") in COLLECT_COMPLETE_REASONS:
             return True
     return False
 
@@ -408,6 +440,9 @@ def _query(args: argparse.Namespace, store: DatasetStore) -> int:
         frame = (
             catalog.run(args.sql) if args.sql else catalog.board(args.board or "growth", args.limit)
         )
+    except UnsafeQuery as error:
+        print(error)
+        return 1
     finally:
         catalog.close()
 

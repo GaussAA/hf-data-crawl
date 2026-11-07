@@ -130,8 +130,12 @@ def frame_from_files(files: list[Path], snapshot_date: date) -> pl.DataFrame | N
 
 
 def build(store: DatasetStore, snapshot_date: date) -> int:
-    """从该日期的 Raw 整体重建 Bronze 分区，返回写入标量行数。"""
-    files = raw.batch_files(store, snapshot_date)
+    """从该日期的 Raw 整体重建 Bronze 分区，返回写入标量行数。
+
+    只读 `part` / `top` 两个类别（见 `raw.BRONZE_LABELS`）：卡片批次是 enrich
+    为卡片表补抓的，不属于当天的标量快照，混进来会让 Bronze 行数随补抓节奏膨胀。
+    """
+    files = raw.bronze_files(store, snapshot_date)
     if not files:
         return 0
 
