@@ -2,7 +2,7 @@
 rem 规模补齐包装脚本：给 Windows 计划任务用。
 rem
 rem 这是全流程里最慢的一步：每条要单独请求 datasets-server，并发 16 时约 26 req/s。
-rem 故一周只跑一次，且只补前 30 万名中还没数据的那些——fetch-sizes 是增量合并，
+rem 故一周只跑一次，且只补全站中还没数据的那些——fetch-sizes 是增量合并，
 rem 已有 ok 记录会跳过，重复执行不会重抓。
 rem
 rem 默认给 4 小时时限；中断也没关系，已抓到的都已落库，下周接着补。
@@ -19,5 +19,5 @@ cd /d "%ROOT%"
 set "UV=uv"
 where uv >nul 2>&1 || set "UV=%USERPROFILE%\.local\bin\uv.exe"
 
-"%UV%" run hf-data-crawl --lock-wait 900 fetch-sizes --top 300000 --workers 16 %* >> "data\logs\sizes.log" 2>&1
+"%UV%" run hf-data-crawl --lock-wait 900 fetch-sizes --top 1122000 --workers 16 %* >> "data\logs\sizes.log" 2>&1
 exit /b %ERRORLEVEL%
