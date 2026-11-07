@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
-from . import bronze, raw
+from . import bronze
 from .status import Status
 from .tables import BRONZE_SCHEMA, CURRENT_SCHEMA
 
@@ -81,40 +81,17 @@ def mark_status(store: DatasetStore, updates: Mapping[str, str]) -> int:
     return changed
 
 
-def _with_supplements(
-    store: DatasetStore, snapshot_date: date, today_frame: pl.DataFrame
-) -> pl.DataFrame:
-    """把只在补抓批次（`card-*`）里出现过的库并进当日帧。
-
-    为什么不并进 Bronze：Bronze 是「当天的标量扫描快照」，补抓批次混进去会让行数随
-    补抓节奏膨胀——2026-11-08 实测从 233 万涨到 338 万（+45%），而真正只缺 203 个库。
-    但完全不看补抓批次又会「current 里有、raw 重放不出来」（同一实测丢 27 行）。
-
-    折中：在状态层按 id **补空位**——已在当日帧里的记录一律不动，胜负仍归扫描批次。
-    """
-    files = raw.supplement_files(store, snapshot_date)
-    if not files:
-        return today_frame
-    extra = bronze.frame_from_files(files, snapshot_date)
-    if extra is None:
-        return today_frame
-    unseen = extra.join(today_frame.select("id"), on="id", how="anti")
-    if unseen.height == 0:
-        return today_frame
-    return pl.concat([today_frame, unseen.select(today_frame.columns)], how="vertical")
-
-
 def update(store: DatasetStore, snapshot_date: date) -> StateUpdate:
-    """按当日 Bronze 更新观测流水与当前态。
+    """按当日帧更新观测流水与当前态。
 
     观测只在该日指标与「该日之前的最后一条观测」不同时追加；
     同日重跑先重建该日分区，故结果与一次跑完一致。
 
-    当日帧会先用补抓批次补空位（见 `_with_supplements`）：Bronze 只收扫描批次，
-    但只在补抓批次里出现过的库也真的被观察过，不补就会「current 里有、raw 重放不出来」。
+    当日帧取自 `bronze.day_frame`：Bronze 分区加上只在补抓批次里出现的库。补位
+    放在读时而不写进 Bronze，协议见该函数；`silver` 用的是同一份帧，属性、当前态、
+    观测三者才不会各说各话。
     """
-    today_frame = store.read_bronze(snapshot_date)
-    today_frame = _with_supplements(store, snapshot_date, today_frame)
+    today_frame = bronze.day_frame(store, snapshot_date)
     if today_frame.height == 0:
         return StateUpdate(appended=0, current_rows=store.read_current().height)
 

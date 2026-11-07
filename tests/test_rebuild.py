@@ -14,8 +14,15 @@ from typing import Any
 import polars as pl
 import pytest
 
+from hf_data_crawl.cli import main
 from hf_data_crawl.derive import derive_day
-from hf_data_crawl.rebuild import discover_raw_dates, rebuild_from_raw
+from hf_data_crawl.lineage import path_of as lineage_path
+from hf_data_crawl.rebuild import (
+    discover_raw_dates,
+    divergent_since,
+    rebuild_from_raw,
+    replay_suffix,
+)
 from hf_data_crawl.retention import REPLAY_WINDOW_DAYS
 from hf_data_crawl.store import DatasetStore
 
@@ -295,3 +302,86 @@ def test_权威层缺失时自动回退全量重放(tmp_path: Path) -> None:
 def test_非法窗口立即报错(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="window_days"):
         rebuild_from_raw(DatasetStore(tmp_path / "data"), window_days=0)
+
+
+# ---------------------------------------------------------------- 定点重放
+#
+# Raw 被重写（归档重分片、补采追加、手工修数据）之后，派生层不会自己更新。
+# 定点重放是修法，但它必须后缀闭合：只放一天会让 current 回退到那天的值。
+
+
+def test_重放范围必须后缀闭合(store: DatasetStore) -> None:
+    assert replay_suffix(store, DAY2) == [DAY2]
+    assert replay_suffix(store, DAY1) == [DAY1, DAY2]
+
+
+def test_只重放最新一天不改动结果(store: DatasetStore) -> None:
+    """最新日收尾时，重放结果与逐日推进逐字节一致——这是定点重放合法的最小形。"""
+    expected_current = store.read_current()
+    expected_obs = store.read_observations()
+
+    summary = rebuild_from_raw(store, days=[DAY2])
+
+    assert summary.mode == "target"
+    assert summary.dates == [DAY2]
+    assert store.read_current().equals(expected_current)
+    assert store.read_observations().equals(expected_obs)
+
+
+def test_定点重放只清自己的分区(tmp_path: Path) -> None:
+    """冷区分区与更早日的热区分区都不动：它们是权威层，清掉重建不回来。"""
+    store = DatasetStore(tmp_path / "data")
+    seed(store, DAY1, [record(1, 100)])
+    seed(store, DAY2, [record(1, 180)])
+
+    rebuild_from_raw(store, days=[DAY2])
+
+    assert store.path("silver", DAY1).exists()
+
+
+def test_给空日期集合时什么都不做(store: DatasetStore) -> None:
+    expected = store.read_current()
+
+    summary = rebuild_from_raw(store, days=[])
+
+    assert summary.dates == []
+    assert store.read_current().equals(expected)
+
+
+def test_无戳记时定格到最早一天(tmp_path: Path) -> None:
+    """机制上线首轮没有凭证，必须从头建立基线——只补最新一天会留下无凭证的旧日。"""
+    store = DatasetStore(tmp_path / "data")
+    store.write_raw(snapshot_date=DAY1, page_index=1, records=[record(1, 100)], meta={})
+    store.write_raw(snapshot_date=DAY2, page_index=1, records=[record(1, 180)], meta={})
+    lineage_path(store).unlink(missing_ok=True)
+
+    assert divergent_since(store) == DAY1
+
+
+def test_全部对齐时不定格(store: DatasetStore) -> None:
+    assert divergent_since(store) is None
+
+
+def test_cli定点重放修好被重写的Raw(tmp_path: Path) -> None:
+    store = DatasetStore(tmp_path / "data")
+    seed(store, DAY1, [record(1, 100), record(2, 50)])
+    seed(store, DAY2, [record(1, 180), record(2, 50)])
+    # 补一块新分块，但没有触发派生：Raw 新、派生旧。
+    store.write_raw(snapshot_date=DAY2, page_index=2, records=[record(3, 10)], meta={})
+    assert divergent_since(store) == DAY2
+
+    code = main(["--data-dir", str(store.root), "build", "--stale"])
+
+    assert code == 0
+    assert divergent_since(store) is None
+    assert "acme/ds-3" in set(store.read_current()["id"].to_list())
+
+
+def test_cli全量与定点互斥(tmp_path: Path) -> None:
+    store = DatasetStore(tmp_path / "data")
+    seed(store, DAY1, [record(1, 100)])
+
+    code = main(["--data-dir", str(store.root), "build", "--full", "--stale"])
+
+    assert code == 1
+    assert [item for item in (store.root / "runs").glob("*build*")]

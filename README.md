@@ -29,7 +29,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `fetch-sizes` | 经 datasets-server 补规模与列数（`num_rows` / `num_columns_max`） | 是 |
 | `fetch-files` | 按下载量取头部，经 `/tree/main` 补文件清单汇总（试点：top 1000，每库默认 1 页） | 是 |
 | `reconcile` | 全量对账：按 `createdAt` 稳定序扫全站，产出新增/删除/转私有/改名/sha 变更 | 是 |
-| `build` | 重建派生层：默认只重放近 7 天热区，`--full` 全量重放（含卡片与明细） | 否 |
+| `build` | 重建派生层：默认只重放近 7 天热区，`--stale` 只修派生滞后的日子及其后，`--full` 全量重放 | 否 |
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
 | `report` | 生成单文件榜单页（离线可看） | 否 |
 | `doctor` | 体检：任务是否按时、Raw 是否断日、有无残留文件，异常写 `ALERT.txt` | 否 |
@@ -46,7 +46,7 @@ hf-data-crawl enrich       [--date YYYY-MM-DD] [--top 20000] [--limit 1000]
 hf-data-crawl fetch-sizes  [--date YYYY-MM-DD] [--top 20000] [--workers 16] [--retry-unavailable]
 hf-data-crawl fetch-files  [--date YYYY-MM-DD] [--top 1000] [--workers 8] [--retry-unavailable] [--timeout 30] [--max-retries 1] [--max-pages 1] [--refresh-truncated]
 hf-data-crawl reconcile    [--date YYYY-MM-DD] [--limit 1000] [--max-pages N]
-hf-data-crawl build        [--full]                                      # 默认只重放近 7 天
+hf-data-crawl build        [--stale | --full]                            # 默认只重放近 7 天
 hf-data-crawl compact      [--older-than-days 7] [--date YYYY-MM-DD]  # 冷区跨天压缩
 hf-data-crawl query        [--board NAME] [--limit 50] [--sql "..."]   # NAME 见「内置榜单」；省略则 growth
 hf-data-crawl report       [--out PATH] [--top 20]
@@ -179,7 +179,47 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 
 **效果**：派生不一致风险降低 80%+，启动时会显示恢复信息
 
-### 3. sha 变更检测改进（2026-11-07）
+### 3. 派生凭据：Raw 被改过，就得证明派生跟上了（2026-11-08）
+
+**问题**：Raw 可以被 `archive` 重分片、被 `compact` 移走、被补采追加、被手工修数据。
+重写之后派生层**不会自己更新**——`derive_day` 只在 `collect` / `enrich` / `build` 里跑。
+于是存在一种没有任何报错的坏状态：Raw 是新的、bronze / silver / observations 是旧的。
+从文件时间上也看不出来（派生文件常常比 Raw 更晚，因为别的日子刚跑过）。
+
+**解决方案**：
+
+- 每派生一天，在 `state/lineage.json` 落一条戳记：当日 Raw 分块的指纹
+  （文件名 + 字节数 + mtime 的 sha256，**含 `card-*` 补抓批次**，因为补位会经它写进
+  当前态）、派生时刻、bronze / silver / observations 三层行数。
+- `doctor` 逐日比对：指纹不符 = **派生滞后**；没有戳记 = **派生无凭证**。两者都
+  直接给出 `build --stale`。
+- `build --stale` 只重放「最早出问题那天 → 最新日」的**后缀**，不是只修那一天。
+  Silver 的「变了才追加」要拿前一日当锚点，Observations 同理，而 Current 是拿当日帧
+  覆盖同名 id——中间缺任何一天都会拿错锚点，且当前态回退。这条约束由
+  `rebuild.replay_suffix` 单独实现，调用方不自己拼日期。
+- `archive` 是**已校验的等价改写**（移走原件前验过 Bronze 逐行相等），跑完调
+  `lineage.restamp` 只刷新指纹、不重派生。不刷新的话下轮体检会把等价改写报成滞后
+  ——假警报会训练人忽略告警。
+
+**效果**：把「派生是不是最新」从人的记忆变成一份可读的凭证。机制上线首轮会把
+无凭证的日子全量重放一次建立基线，此后只有真被改过的日子才会被点名。
+
+### 4. 补位同源：属性层、当前态、观测看同一份当日帧（2026-11-08）
+
+**问题**：`bronze.build` 只读 `part` / `top`（当日扫描），只在补抓批次 `card-*` 里
+出现的库不进 Bronze——这是有意的，混进去会让 Bronze 行数随补抓节奏膨胀 45%
+（实测 233 万→338 万），而真正只缺 203 个库。但补位此前**只做在状态层**：
+`current` 与 `observations` 有这批库，`silver` 没有。
+
+**解决方案**：补位提到 `bronze.day_frame`——按 id 补空位（已在扫描帧里的记录一律
+不动，胜负仍归扫描批次），`silver` 与 `state` 共用这一份帧；Bronze 分区本身仍然纯净。
+
+**效果**：2026-11-08 体检的层间勾稽量出 **203 个库**在 current 里、却没有一行属性，
+`datasets` 宽视图里它们的 tags / description 整片为 null（不报错，只是查不出来）。
+修复后三层对齐。体检同时勾稽三条：current ↔ observations 双向差集、current ↔ silver
+覆盖、current 的 `last_seen_at` 是否落后于最新 Raw 日（采了却没进当前态）。
+
+### 5. sha 变更检测改进（2026-11-07）
 
 **问题**：将 null sha 当成相同，导致漏报变更。
 

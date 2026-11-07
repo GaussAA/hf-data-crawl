@@ -20,8 +20,9 @@
 1. 如果发现标记文件且超过阈值（如 10 分钟），说明上次派生可能未完成
 2. 删除该日的**所有派生层分区**（bronze/silver/observations）
 3. 删除标记文件
-4. 该日 Raw 仍存在时调用 `derive_day()` 重新派生，连同 `current` 一起重建；
-   Raw 已被归档清理时只清理派生层，不动全局的 `current`
+4. 该日 Raw 仍存在时从该日起**后缀重放**（不是只重算这一天——只算一天会让
+   `current` 回退到那天的值，见 `_rederive`）；Raw 已被归档清理时只清理派生层，
+   不动全局的 `current`
 
 这样：
 - 复杂度低（只多写一个小文件）
@@ -151,15 +152,20 @@ def _has_raw(store: DatasetStore, snapshot_date: date) -> bool:
 
 
 def _rederive(store: DatasetStore, snapshot_date: date) -> None:
-    """清理后真正重派生一天，重建 bronze → silver → observations → current。
+    """清理后真正重派生：从该日起**后缀重放**，而不是只重算这一天。
+
+    只重算一天会把 `current` 覆盖成那一天的值：`state._rebuild_current` 用当日帧
+    替换同名 id 的全部标量列与 `last_seen_at`。若崩溃那天不是最新 Raw 日，
+    「自愈」的结果是当前态整体回退——比不修更坏。后缀重放（见
+    `rebuild.replay_suffix`）保证最后一天是最新日，`current` 收敛到正确值。
 
     `derive_day()` 会在开头重新打标记；这里吞掉异常，让新标记在下次启动时
     再次触发恢复。一个坏日期不应阻塞其余写命令。
     """
-    from .derive import derive_day
+    from .rebuild import rebuild_from_raw, replay_suffix
 
     try:
-        derive_day(store, snapshot_date)
+        rebuild_from_raw(store, days=replay_suffix(store, snapshot_date))
     except Exception:
         # 新标记已由 derive_day 开头写入，保留它等下一次超时重试。
         pass

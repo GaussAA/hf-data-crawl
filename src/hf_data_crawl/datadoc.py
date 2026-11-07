@@ -79,6 +79,12 @@ SIDE_FILES: tuple[tuple[str, str, str], ...] = (
     ),
     ("state/*-checkpoint.json", "扫描游标，记录下一页从哪开始", "走到末页后清空"),
     (
+        "state/lineage.json",
+        "派生戳记：逐日记下当日 Raw 分块指纹、派生时刻与三层行数；"
+        "`doctor` 据此判断「Raw 改过、派生有没有跟上」",
+        "**可重建**：删掉后跑 `build --stale` 重放一遍即恢复",
+    ),
+    (
         "exports/",
         "宽表导出：`gold.datasets` 视图的单文件 parquet，供分析工具直接打开",
         "**可重建**：不参与派生，删掉后重跑 `export-wide`",

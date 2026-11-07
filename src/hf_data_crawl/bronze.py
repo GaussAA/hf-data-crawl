@@ -129,6 +129,32 @@ def frame_from_files(files: list[Path], snapshot_date: date) -> pl.DataFrame | N
     return pl.concat(frames, how="vertical").unique(subset=["id"], keep="last", maintain_order=True)
 
 
+def day_frame(store: DatasetStore, snapshot_date: date) -> pl.DataFrame:
+    """当日帧：Bronze 分区，加上「只在补抓批次里出现」的库。
+
+    为什么不把补位行进 Bronze 分区：Bronze 是「当天的标量扫描快照」，补抓批次混进去
+    会让行数随补抓节奏膨胀——2026-11-08 实测从 233 万涨到 338 万（+45%），而真正
+    只缺 203 个库。但不看补抓批次又会「current 里有、raw 重放不出来」，且那批库
+    在属性层整片为空。
+
+    折中：补位放在**读时**，按 id 补空位——已在扫描帧里的记录一律不动，胜负仍归扫描
+    批次。两个消费方必须共用这一份帧：`silver`（属性）与 `state`（当前态、观测）。
+    此前只有 `state` 补位，于是 203 个库进了 current 却没进 silver，`datasets` 宽视图
+    里它们的 tags / description 全是 null——不报错，只是查不出来。
+    """
+    today = store.read_bronze(snapshot_date)
+    files = raw.supplement_files(store, snapshot_date)
+    if not files:
+        return today
+    extra = frame_from_files(files, snapshot_date)
+    if extra is None:
+        return today
+    unseen = extra.join(today.select("id"), on="id", how="anti")
+    if unseen.height == 0:
+        return today
+    return pl.concat([today, unseen.select(today.columns)], how="vertical")
+
+
 def build(store: DatasetStore, snapshot_date: date) -> int:
     """从该日期的 Raw 整体重建 Bronze 分区，返回写入标量行数。
 

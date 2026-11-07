@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
+from .bronze import day_frame
 from .langs import ISO3_TO_ISO1
 from .tables import SILVER_SCHEMA
 
@@ -241,14 +242,18 @@ def changed_rows(today: pl.DataFrame, previous: pl.DataFrame) -> pl.DataFrame:
 
 
 def build(store: DatasetStore, snapshot_date: date) -> int:
-    """由 Bronze 追加该日的属性变更，返回写入的行数；无 Bronze 则不动。
+    """由当日帧追加属性变更，返回写入的行数；当日无任何记录则不动。
+
+    取 `bronze.day_frame` 而不是 Bronze 分区本身：只在补抓批次里出现的库同样是
+    「这天观察到的数据集」，属性必须与当前态、观测同进同出。此前只有状态层补位，
+    结果是 203 个库有当前态、有观测，却没有一行属性——宽表里它们整片为空。
 
     没有任何变化时不留空分区，并清掉同日重跑前遗留的旧分区。
     """
-    bronze = store.read_bronze(snapshot_date)
-    if bronze.height == 0:
+    today = day_frame(store, snapshot_date)
+    if today.height == 0:
         return 0
-    delta = changed_rows(derive(bronze, snapshot_date), latest(store, before=snapshot_date))
+    delta = changed_rows(derive(today, snapshot_date), latest(store, before=snapshot_date))
     if delta.height == 0:
         store.path("silver", snapshot_date).unlink(missing_ok=True)
         return 0

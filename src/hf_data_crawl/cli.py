@@ -20,8 +20,9 @@ from .enrich import Enricher, EnrichSummary
 from .env import load_env_file
 from .files import FileFetcher, FileSummary, HfFilesApi
 from .gold import BOARDS, GoldCatalog, GoldNotReady, UnsafeQuery
+from .lineage import restamp
 from .lock import LockBusy, exclusive
-from .rebuild import RebuildSummary, rebuild_from_raw
+from .rebuild import RebuildSummary, divergent_since, rebuild_from_raw, replay_suffix
 from .reconcile import Reconciler, ReconcileSummary
 from .report import Reporter
 from .retention import REPLAY_WINDOW_DAYS
@@ -121,6 +122,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--full",
         action="store_true",
         help="清空全部派生层并按天重放 data/raw 里所有日期（冷区权威层已损坏时的逃生舱）",
+    )
+    build.add_argument(
+        "--stale",
+        action="store_true",
+        help=(
+            "只重放「派生与 Raw 不符」的日期及其之后（按派生戳记判定）；"
+            "Raw 被重写过而派生没跟上时用这个，比 --full 快得多"
+        ),
     )
 
     enrich = subparsers.add_parser("enrich", help="按下载量取头部，补抓 cardData")
@@ -387,7 +396,21 @@ def _reconcile(
 
 
 def _build(args: argparse.Namespace, store: DatasetStore) -> Outcome:
-    summary = rebuild_from_raw(store, window_days=None if args.full else REPLAY_WINDOW_DAYS)
+    if args.full and args.stale:
+        print("失败：--full 与 --stale 互斥；全量重放不需要挑日期。")
+        return Outcome({"error": "flags"}, code=1, reason="--full 与 --stale 不能同时给")
+
+    if args.stale:
+        since = divergent_since(store)
+        if since is None:
+            print("派生层与 Raw 已对齐（逐日戳记一致），无需重建。")
+            return Outcome({"snapshot_date": None, "mode": "already-aligned", "days": 0})
+        days = replay_suffix(store, since)
+        # 说清楚为什么不是只修那一天：后缀闭合是正确性要求，不是保守做法。
+        print(f"检出派生滞后：自 {since} 起重放 {len(days)} 天（含其后所有有 Raw 的日子）")
+        summary = rebuild_from_raw(store, days=days)
+    else:
+        summary = rebuild_from_raw(store, window_days=None if args.full else REPLAY_WINDOW_DAYS)
     _print_build(summary)
     return Outcome(summary)
 
@@ -416,6 +439,10 @@ def _archive(args: argparse.Namespace, store: DatasetStore) -> Outcome:
             continue
         if result is None:
             continue
+        # 归档在移走原件之前校验过「前后 Bronze 逐行相等」，派生结果仍然有效，
+        # 只是 Raw 分块换了一批文件名与 mtime。不刷新指纹，下轮体检会把这次
+        # 等价改写报成「派生滞后」——假警报比漏报更能训练人忽略告警。
+        restamp(store, day)
         done.append(
             {
                 "date": day.isoformat(),
@@ -741,6 +768,7 @@ def _print_build(summary: RebuildSummary) -> None:
         "window": f"热区重放（近 {REPLAY_WINDOW_DAYS} 天，冷区权威层保留）",
         "full": "全量重放（显式 --full）",
         "recovery": "全量重放（冷区权威层缺失，自动回退）",
+        "target": "定点重放（派生滞后的日期及其后，冷区权威层保留）",
     }[summary.mode]
     print(
         f"重建完成：{len(summary.dates)} 个日期"

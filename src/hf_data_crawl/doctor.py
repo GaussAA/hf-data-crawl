@@ -17,7 +17,7 @@ from datetime import date, datetime, timedelta
 
 import polars as pl
 
-from . import raw, retention
+from . import lineage, raw, retention
 from .lock import LOCK_NAME, LockBusy, describe_holder, exclusive
 from .rebuild import discover_raw_dates
 from .retention import (
@@ -27,6 +27,7 @@ from .retention import (
 )
 from .runs import COLLECT_COMPLETE_REASONS, read_runs
 from .store import DatasetStore
+from .tables import table
 
 ALERT_NAME = "ALERT.txt"
 
@@ -149,6 +150,112 @@ def _raw_gaps(store: DatasetStore, today: date) -> Finding:
         more = f" 等 {len(missing)} 天" if len(missing) > 5 else ""
         return Finding(True, f"Raw 断日：{shown}{more}没有采集（那天的观测点已丢失）")
     return Finding(False, f"Raw：近 {GAP_WINDOW_DAYS} 天没有断日")
+
+
+def _derive_state(store: DatasetStore) -> Finding:
+    """派生层有没有跟上 Raw。
+
+    这是全项目唯一直接回答「派生表是不是旧值」的检查。此前只能靠人回忆
+    「上次 build 是什么时候」，而 Raw 可以被 `archive` 重分片、被补采追加、
+    被手工修数据——重写之后派生层不会自己更新，也没有任何文件时间能证明
+    它落后（派生文件常常比 Raw 更晚，因为别的日子刚跑过）。
+
+    判据取 `lineage` 的戳记：Raw 指纹变了而戳记没变，就是落后。没有戳记
+    按「无凭证」报——它与落后在执行上是同一件事：都得跑一次派生才有据可查。
+    """
+    statuses = lineage.compare(store, discover_raw_dates(store))
+    if not statuses:
+        return Finding(False, "派生凭证：没有可重放的 Raw 日期")
+
+    stale = [item.day for item in statuses if item.state == lineage.STALE]
+    unverified = [item.day for item in statuses if item.state == lineage.UNVERIFIED]
+    ok = len(statuses) - len(stale) - len(unverified)
+
+    if stale:
+        shown = "、".join(day.isoformat() for day in stale[:5])
+        more = f" 等 {len(stale)} 天" if len(stale) > 5 else ""
+        return Finding(
+            True,
+            f"派生滞后：{shown}{more} 的 Raw 已被重写，派生层仍是旧值；"
+            "跑 hf-data-crawl build --stale",
+        )
+    if unverified:
+        shown = "、".join(day.isoformat() for day in unverified[:5])
+        more = f" 等 {len(unverified)} 天" if len(unverified) > 5 else ""
+        return Finding(
+            True,
+            f"派生无凭证：{shown}{more} 没有派生戳记，无法证明跟着 Raw 走；"
+            "跑 hf-data-crawl build --stale 建立基线",
+        )
+    return Finding(False, f"派生凭证：{ok} 天均与 Raw 一致")
+
+
+def _ids(store: DatasetStore, name: str) -> set[str] | None:
+    """一张分区表里的全部 id；表不存在返回空集，读取失败返回 None（跳过该检查）。
+
+    只扫 id 一列：`silver` 两百多万行、`observations` 同量级，读全列会让体检
+    从秒级掉到十秒级，而这里只需要知道「某个 id 在不在」。
+    """
+    spec = table(name)
+    if not any(store.root.glob(spec.glob())):
+        return set()
+    pattern = f"{store.root.as_posix()}/{spec.glob()}"
+    try:
+        frame = pl.scan_parquet(pattern).select("id").unique().collect()
+    except (OSError, pl.exceptions.PolarsError):
+        return None
+    return set(frame.get_column("id").to_list())
+
+
+def _layer_reconcile(store: DatasetStore) -> Finding:
+    """层间勾稽：同一批数据集在 current / observations / silver 里是否对得上。
+
+    这三张表回答的是同一件事的不同面——当前态、指标史、属性史。任一侧多出
+    或少了 id，都不会在查询时报错：少的那侧在 `datasets` 宽视图里表现为
+    整片 null（左连接以 current 为基底），多的那侧则永远查不出来。
+
+    最后一条比的是日期：当前态的最晚 `last_seen_at` 落后于最新 Raw 日，
+    说明有 Raw 采进来了却没有任何一行进入当前态——典型成因是派生没跑，
+    或跑的是别的日期。
+    """
+    current = store.read_current()
+    if current.height == 0:
+        return Finding(True, "层间勾稽：current 为空，无法比对")
+
+    current_ids = set(current["id"].to_list())
+    problems: list[str] = []
+    notes: list[str] = []
+
+    observation_ids = _ids(store, "observations")
+    if observation_ids is None:
+        notes.append("观测流水读取失败，已跳过")
+    else:
+        missing = current_ids - observation_ids
+        orphan = observation_ids - current_ids
+        if missing:
+            problems.append(f"{len(missing)} 个数据集在 observations 里没有观测来源")
+        if orphan:
+            problems.append(f"{len(orphan)} 个数据集有观测却不在 current 里")
+        notes.append(f"观测覆盖 {len(observation_ids)} 个 id")
+
+    silver_ids = _ids(store, "silver")
+    if silver_ids is not None:
+        no_attribute = current_ids - silver_ids
+        if no_attribute:
+            problems.append(f"{len(no_attribute)} 个数据集在 silver 里没有属性行（宽表这些行为空）")
+        notes.append(f"属性覆盖 {len(silver_ids)} 个 id")
+
+    latest_raw = max(discover_raw_dates(store), default=None)
+    newest_seen = current["last_seen_at"].max()
+    if isinstance(newest_seen, date) and latest_raw is not None and newest_seen < latest_raw:
+        problems.append(
+            f"当前态最新只到 {newest_seen}，而 Raw 已到 {latest_raw}（采了却没进 current）"
+        )
+
+    if problems:
+        return Finding(True, "层间勾稽：" + "；".join(problems))
+    detail = "，".join(notes)
+    return Finding(False, f"层间勾稽：current {len(current_ids)} 个 id 与各层一致（{detail}）")
 
 
 def _raw_growth(store: DatasetStore) -> Finding:
@@ -304,7 +411,9 @@ def diagnose(store: DatasetStore, now: datetime | None = None) -> list[Finding]:
         _freshness(runs, now, "collect", COLLECT_COMPLETE_REASONS, COLLECT_MAX_AGE, "日增量采集"),
         _freshness(runs, now, "reconcile", _RECONCILE_DONE, RECONCILE_MAX_AGE, "全量对账"),
         _catalog_staleness(store, now.date()),
+        _layer_reconcile(store),
         _raw_gaps(store, now.date()),
+        _derive_state(store),
         _raw_growth(store),
         _cold_backlog(store, now.date()),
         _archive_backlog(store, now.date()),

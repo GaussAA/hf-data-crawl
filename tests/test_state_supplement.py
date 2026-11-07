@@ -6,7 +6,11 @@
 
 第一版修法把补抓批次并进 Bronze，实测行数从 233 万涨到 338 万（+45%），而真正
 只缺 203 个库——正是 `bronze.build` docstring 警告的膨胀。现在的规则：**Bronze 保持
-纯净，补位置移到状态层**，只在 id 未出现时补，不抢扫描批次的胜负。
+纯净，补位放在读时**（`bronze.day_frame`），只在 id 未出现时补，不抢扫描批次的胜负。
+
+补位必须**同时**喂给属性层与状态层。只补状态层时，那批库有 current、有观测，却没有
+一行 silver，`datasets` 宽视图里它们的 tags / description 整片为 null——直到 2026-11-08
+体检的层间勾稽才被量出来（203 个）。
 """
 
 from __future__ import annotations
@@ -17,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from hf_data_crawl import bronze, raw, state
+from hf_data_crawl import bronze, raw, silver, state
 from hf_data_crawl.raw import BRONZE_LABELS, CARD_LABEL
 from hf_data_crawl.store import DatasetStore
 
@@ -119,6 +123,28 @@ def test_补充分块与主批次分开取(store: DatasetStore) -> None:
 
     assert [p.name.split("-")[0] for p in raw.bronze_files(store, DAY)] == ["part"]
     assert [p.name.split("-")[0] for p in raw.supplement_files(store, DAY)] == ["card"]
+
+
+def test_补进来的库也有属性行(store: DatasetStore) -> None:
+    """补位只做在状态层时，这批库在宽表里属性整片为空——2026-11-08 实测 203 个。"""
+    write(store, record("acme/in-part"))
+    write(store, record("acme/only-card"), label=CARD_LABEL)
+    bronze.build(store, DAY)
+
+    silver.build(store, DAY)
+
+    assert set(store.read_silver(DAY)["id"].to_list()) == {"acme/in-part", "acme/only-card"}
+
+
+def test_补进来的库属性取自补抓批次(store: DatasetStore) -> None:
+    write(store, record("acme/only-card", description="from-card"), label=CARD_LABEL)
+    bronze.build(store, DAY)
+
+    silver.build(store, DAY)
+
+    row = store.read_silver(DAY).row(0, named=True)
+    assert row["id"] == "acme/only-card"
+    assert row["description"] == "from-card"
 
 
 def test_卡片批次仍不进bronze去重池() -> None:

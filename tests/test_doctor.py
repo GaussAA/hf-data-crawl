@@ -10,9 +10,11 @@ from typing import Any
 
 import polars as pl
 
+from hf_data_crawl import lineage
 from hf_data_crawl.api import HfResponse
 from hf_data_crawl.cli import main
 from hf_data_crawl.doctor import ALERT_NAME, diagnose, sync_alert
+from hf_data_crawl.lineage import path_of as lineage_path
 from hf_data_crawl.retention import REPLAY_WINDOW_DAYS, manifest_path
 from hf_data_crawl.runs import Outcome, write_run
 from hf_data_crawl.store import DatasetStore
@@ -47,17 +49,38 @@ def put_current(store: DatasetStore, seen: date, rows: int = 3) -> None:
     store.write("current", pl.DataFrame(data, schema=CURRENT_SCHEMA))
 
 
+def put_ids(store: DatasetStore, name: str, day: date, ids: list[str]) -> None:
+    """只写 id 列的分区。
+
+    勾稽检查只扫 id（`silver` 两百多万行，读全列不值当），夹具照同一口径造：
+    走 `store.write` 会按 schema 补齐全部列，反而把测试写成「造一张完整表」。
+    """
+    target = store.path(name, day)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"id": ids}).write_parquet(target)
+
+
 def healthy(store: DatasetStore) -> None:
-    """近 7 天是热区 Raw；更早的日期已由 compact 压进冷区基线并登记。"""
+    """近 7 天是热区 Raw；更早的日期已由 compact 压进冷区基线并登记。
+
+    逐日补齐派生凭证与两张流水分区：体检现在会勾稽 current / observations /
+    silver，也会比对派生戳记。夹具若不造这些，「一切正常」就名不副实——
+    它测的是「什么都没做」也不会报，而不是「做过一轮之后」不会报。
+    """
     make_run(store, "collect", NOW - timedelta(hours=9), "watermark")
     # 对账改为每日，夹具也按日：留一天半余量，隔一天就该告警。
     make_run(store, "reconcile", NOW - timedelta(hours=9), "end")
     put_current(store, NOW.date())
+    ids = [f"acme/ds-{index}" for index in range(3)]
     dates = [NOW.date() - timedelta(days=n) for n in range(1, 14)]
     cutoff = NOW.date() - timedelta(days=REPLAY_WINDOW_DAYS)
     hot = [day for day in dates if day >= cutoff]
     cold = [day for day in dates if day < cutoff]
     make_raw_days(store, hot)
+    for day in hot:
+        put_ids(store, "observations", day, ids)
+        put_ids(store, "silver", day, ids)
+        lineage.stamp(store, day, bronze_rows=0, silver_rows=0, observations=len(ids))
     manifest = manifest_path(store)
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
@@ -386,3 +409,48 @@ def test_backup刚归档不报(tmp_path: Path) -> None:
     os.utime(fresh, (NOW.timestamp(), NOW.timestamp()))
 
     assert not any("backup/raw" in text for text in problems(store))
+
+
+def test_派生滞后要点名日期并给出命令(tmp_path: Path) -> None:
+    """Raw 被重写后派生不会自己更新——这是本项目此前唯一无法被观测的坏状态。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    day = NOW.date() - timedelta(days=2)
+    (store.raw_dir / f"dt={day.isoformat()}" / "part-2.json.gz").write_bytes(b"y")
+
+    found = [text for text in problems(store) if "派生滞后" in text]
+
+    assert len(found) == 1
+    assert day.isoformat() in found[0]
+    assert "build --stale" in found[0]
+
+
+def test_派生无凭证也要报(tmp_path: Path) -> None:
+    """没有戳记与戳记过期在执行上是同一件事：都得重派一次才有据可查。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    lineage_path(store).unlink()
+
+    assert any("派生无凭证" in text for text in problems(store))
+
+
+def test_层间勾稽发现当前态缺观测来源(tmp_path: Path) -> None:
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    for target in store.root.glob("state/observations/dt=*/obs.parquet"):
+        pl.DataFrame({"id": ["acme/ds-0", "acme/ds-1"]}).write_parquet(target)
+
+    found = [text for text in problems(store) if "层间勾稽" in text]
+
+    assert found and "没有观测来源" in found[0]
+
+
+def test_层间勾稽发现当前态落后于Raw(tmp_path: Path) -> None:
+    """采进来了却没有任何一行进入当前态，典型成因是派生跑的是别的日期。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    put_current(store, NOW.date() - timedelta(days=3))
+
+    found = [text for text in problems(store) if "层间勾稽" in text]
+
+    assert found and "当前态最新只到" in found[0]

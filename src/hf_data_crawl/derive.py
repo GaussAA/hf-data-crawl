@@ -11,6 +11,13 @@
 - 开始派生前写标记文件
 - 派生完成后删除标记文件
 - 启动时检查标记文件，恢复未完成的派生
+
+派生凭证
+--------
+成功之后落一条戳记（见 `lineage`），记下这次是照着哪一版 Raw 跑的。标记文件回答
+「派生是不是跑到一半崩了」，戳记回答「跑完的那一次基于什么输入」——Raw 被重写后，
+只有后者能证明派生有没有跟上。失败路径不写戳记，旧凭证自然与新的 Raw 指纹不符，
+体检据此报出「派生滞后」。
 """
 
 from __future__ import annotations
@@ -19,7 +26,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING
 
-from . import bronze, card, silver, state
+from . import bronze, card, lineage, silver, state
 from .deriving import clear_deriving, mark_deriving
 
 if TYPE_CHECKING:
@@ -46,6 +53,11 @@ def derive_day(store: DatasetStore, snapshot_date: date, *, enrich: bool = False
 
     原子性保护：开始前标记、完成后清除。如果中途崩溃，下次启动时
     `check_and_recover()` 会检测到标记文件并清理该日的派生层。
+
+    凭证：成功路径在 `clear_deriving` 之前写戳记。写入顺序很重要——戳记先落、
+    标记后清，中途崩掉时戳记可能已经写了而派生标记还在，下次恢复会重派一遍并
+    覆盖戳记；反过来（先清标记后写戳记）则会出现「没有标记、也没有凭证」的
+    空档，体检看到的就是「这天从没派生过」，与「派生过但没记下」无法区分。
     """
     # 标记开始派生
     mark_deriving(store, snapshot_date)
@@ -58,6 +70,13 @@ def derive_day(store: DatasetStore, snapshot_date: date, *, enrich: bool = False
         if enrich:
             card_rows, config_rows = card.build(store, snapshot_date)
         update = state.update(store, snapshot_date)
+        lineage.stamp(
+            store,
+            snapshot_date,
+            bronze_rows=bronze_rows,
+            silver_rows=silver_rows,
+            observations=store.read("observations", snapshot_date).height,
+        )
         # 运行态已经读完当天的 Bronze，旧分区不再有读者，且随时能从 Raw 重建。
         bronze.prune(store)
 
