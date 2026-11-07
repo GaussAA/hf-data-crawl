@@ -342,6 +342,23 @@ class GoldCatalog:
             FROM (SELECT id, unnest([{packed}]) AS d FROM latest_silver)
             """
         )
+        # 任意前缀视图：直接展开原始 tags，不依赖 TAG_DIMENSIONS 白名单。
+        # tag_values 只覆盖已拆的 15 个维度 + plain_tags；被丢弃的长尾前缀
+        # （`model:` / `eval:` 之类，合计 0.06%）不在其中。这里按第一个冒号原样切分，
+        # 任何前缀都能查——是视图不是表：112 万 × 平均 11 条 ≈ 1,200 万行，物化不值当。
+        connection.execute(
+            """
+            CREATE VIEW tag_index AS
+            SELECT
+                id,
+                CASE WHEN strpos(tag, ':') > 0 THEN split_part(tag, ':', 1) ELSE '' END
+                    AS prefix,
+                CASE WHEN strpos(tag, ':') > 0
+                     THEN substr(tag, strpos(tag, ':') + 1)
+                     ELSE trim(tag) END AS value
+            FROM (SELECT id, unnest(tags) AS tag FROM latest_silver)
+            """
+        )
         # 增速取「最近两个观测点」，而不是固定 7 日窗口：
         # 日增量只扫最新更新的万把条，全站指标靠周对账刷新，7 日窗口在周节奏下几乎取不到两点。
         # 间隔上限 35 天，避免跨季度比较；跨度以 span_days 明示，读榜的人自己判断。

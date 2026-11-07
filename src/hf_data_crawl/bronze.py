@@ -133,7 +133,11 @@ def build(store: DatasetStore, snapshot_date: date) -> int:
     """从该日期的 Raw 整体重建 Bronze 分区，返回写入标量行数。
 
     只读 `part` / `top` 两个类别（见 `raw.BRONZE_LABELS`）：卡片批次是 enrich
-    为卡片表补抓的，不属于当天的标量快照，混进来会让 Bronze 行数随补抓节奏膨胀。
+    为卡片表补抓的，不属于当天的标量快照，混进来会让 Bronze 行数随补抓节奏膨胀
+    （2026-11-08 实测：把补抓批次并进来会让 Bronze 从 233 万涨到 338 万，+45%）。
+
+    只在补抓批次里出现的库由**状态层**补进 `current` / 观测（见 `state._with_supplements`）：
+    它们确实被观察过，但不属当日扫描，不该借道 Bronze。
     """
     files = raw.bronze_files(store, snapshot_date)
     if not files:

@@ -98,7 +98,13 @@ def test_bronze只收part与top不收卡片批次(store: DatasetStore) -> None:
     assert result.bronze_rows == 2
     assert sorted(store.read_bronze(DAY)["id"].to_list()) == ["acme/ds-1", "acme/ds-2"]
     assert result.card_rows == 1
-    assert store.read_current().height == 2
+    # Bronze 仍然不含卡片批次（上面两条），但只在卡片批次出现的库由状态层补进
+    # current——否则会出现「current 里有、raw 重放不出来」。见 test_state_supplement.py。
+    assert sorted(store.read_current()["id"].to_list()) == [
+        "acme/ds-1",
+        "acme/ds-2",
+        "acme/ds-3",
+    ]
 
 
 def test_调用次序固定为bronze_silver_card_state(

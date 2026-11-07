@@ -171,7 +171,7 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         '  BRONZE -->|"拆维度·只记变更"| SILVER["silver/<br/>属性流水"]',
         '  BRONZE -->|"折叠指标"| STATE["state/<br/>当前态 + 观测流水"]',
         '  RAW -->|"卡片解析"| ENRICH["enrich/carddata<br/>+ card_configs"]',
-        '  SILVER --> GOLD["Gold 视图<br/>datasets / tag_values / 榜单"]',
+        '  SILVER --> GOLD["Gold 视图<br/>datasets / tag_values / tag_index / 榜单"]',
         "  STATE --> GOLD",
         "  ENRICH --> GOLD",
         "  SIZE --> GOLD",

@@ -150,6 +150,16 @@ def bronze_files(store: DatasetStore, snapshot_date: date) -> list[Path]:
     )
 
 
+def supplement_files(store: DatasetStore, snapshot_date: date) -> list[Path]:
+    """补充分块：`card-*`，enrich 为卡片表补抓的批次。
+
+    它们默认不进 Bronze（见 `bronze_files`），但**只在它里面出现过的 id** 仍是当天
+    观察到的数据集。完全忽略会让「current 里有、raw 重放不出来」——2026-11-08 全量
+    重放实测丢了 27 行。故 Bronze 仅在主批次未见该 id 时用它补一条，不参与去重优先级。
+    """
+    return batch_files(store, snapshot_date, label=CARD_LABEL)
+
+
 def is_archive(path: Path) -> bool:
     """归档分片的文件名含 `-archive-`（新旧命名空间两种格式都成立）。"""
     return "-archive-" in path.name

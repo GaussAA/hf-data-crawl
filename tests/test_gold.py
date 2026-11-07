@@ -225,6 +225,41 @@ def test_current与latest_silver对同一时刻取值一致(catalog: GoldCatalog
     assert current.select(common).equals(latest.select(common))
 
 
+# ---------------------------------------------------------------- tag_index 任意前缀
+
+
+def test_tag_index覆盖未拆分的长尾前缀(tmp_path: Path) -> None:
+    """tag_values 只认白名单；被丢弃的长尾前缀（`model:` 之类）得另有出口。"""
+    store = DatasetStore(tmp_path / "data")
+    item = record(1, downloads=10)
+    item["tags"] = [*item["tags"], "model:qwen-canary", "bare-tag"]
+    seed(store, DAY1, [item])
+    catalog = GoldCatalog(store)
+    try:
+        long_tail = catalog.run("SELECT value FROM tag_index WHERE prefix = 'model'")
+        plain = catalog.run("SELECT value FROM tag_index WHERE prefix = ''")
+        total = catalog.run("SELECT count(*) AS n FROM tag_index")["n"].to_list()
+    finally:
+        catalog.close()
+
+    assert long_tail["value"].to_list() == ["qwen-canary"]
+    assert "bare-tag" in plain["value"].to_list(), "无前缀标签的 prefix 应为空串"
+    assert total == [5], "5 条标签各展开一行，不多不少"
+
+
+def test_tag_index在已知维度上与tag_values一致(catalog: GoldCatalog) -> None:
+    """同一份数据两条路径不该给出不同答案（夹具里只有两字码，故折叠无差异）。"""
+    indexed = catalog.run(
+        "SELECT id, value FROM tag_index WHERE prefix = 'language' ORDER BY id, value"
+    )
+    dimensioned = catalog.run(
+        "SELECT id, value FROM tag_values WHERE dimension = 'languages' ORDER BY id, value"
+    )
+
+    assert indexed.height > 0
+    assert indexed.equals(dimensioned)
+
+
 # ---------------------------------------------------------------- tag_values 单次扫描
 
 
