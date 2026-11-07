@@ -157,3 +157,4 @@ Remove-Item -Recurse "data\backup\raw\dt=$day"
 - **每周**：reconcile 全量对账；compact 自动压缩满 7 天的冷区 Raw，archive 可对单日做同天去重；确认无误后清理 backup
 - **每月**：运行 `build`（默认只重放近 7 天热区）核对派生层；需要整体重算时用 `build --full`
 - **`exports/` 不在恢复范围内**：单文件宽表是可重建投影，损坏或过期时重跑 `hf-data-crawl export-wide` 即可，不需要备份，也不能作为重建其它层的依据
+- **`enrich/size.parquet` 与 `enrich/files.parquet` 是 NETWORK 表**：`build` / `compact` 不会重建它们，丢了只能分别重跑 `fetch-sizes` / `fetch-files`；`files.truncated=true` 只说明当次取了一页 tree，不是全库真值，必要时用 `--max-pages` 重补

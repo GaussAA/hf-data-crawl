@@ -17,6 +17,7 @@ from .collect import Collector, CollectSummary
 from .deriving import check_and_recover
 from .doctor import diagnose, sync_alert
 from .enrich import Enricher, EnrichSummary
+from .files import FileFetcher, FileSummary, HfFilesApi
 from .gold import BOARDS, GoldCatalog, GoldNotReady, UnsafeQuery
 from .lock import LockBusy, exclusive
 from .rebuild import RebuildSummary, rebuild_from_raw
@@ -38,6 +39,7 @@ WRITE_COMMANDS = frozenset(
         "build",
         "enrich",
         "fetch-sizes",
+        "fetch-files",
         "archive",
         "compact",
         "export-wide",
@@ -141,6 +143,44 @@ def build_parser() -> argparse.ArgumentParser:
         help="每处理多少条就落一次库，中断时最多损失这一批",
     )
 
+    files = subparsers.add_parser(
+        "fetch-files", help="按下载量取头部，补文件清单汇总（只补 top N，不逐库全量）"
+    )
+    files.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
+    files.add_argument("--top", type=int, default=1_000, help="按下载量取前多少名（默认 1000）")
+    files.add_argument(
+        "--workers", type=int, default=8, help="并发数，tree 每页虽轻仍是外网请求，保守取 8"
+    )
+    files.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        help="单库请求超时秒数；tree 实测 0.4-0.7s，超时即记临时失败",
+    )
+    files.add_argument(
+        "--max-retries",
+        type=int,
+        default=1,
+        help="单库重试次数；429 按上游 Retry-After 退避，默认只试一次",
+    )
+    files.add_argument(
+        "--max-pages",
+        type=int,
+        default=1,
+        help="每个库最多取几页 tree（每页 1000 条）；默认 1 页，未取完会标 truncated",
+    )
+    files.add_argument(
+        "--retry-unavailable",
+        action="store_true",
+        help="重试上次标记为不可用的数据集（默认跳过）",
+    )
+    files.add_argument(
+        "--flush-every",
+        type=int,
+        default=100,
+        help="每处理多少条就落一次库，中断时最多损失这一批",
+    )
+
     subparsers.add_parser("doctor", help="体检：任务是否按时、Raw 是否断日、有无残留文件")
 
     archive = subparsers.add_parser(
@@ -213,6 +253,10 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
     if args.command == "fetch-sizes":
         return _execute(
             store, "fetch-sizes", lambda: _fetch_sizes(args, store, transport), lock_wait
+        )
+    if args.command == "fetch-files":
+        return _execute(
+            store, "fetch-files", lambda: _fetch_files(args, store, transport), lock_wait
         )
     if args.command == "report":
         return _execute(store, "report", lambda: _report(args, store), lock_wait)
@@ -393,7 +437,7 @@ def _fetch_sizes(
     fetcher = SizeFetcher(
         api=HfSizeApi(transport=_open_transport(transport)),
         workers=args.workers,
-        progress=_size_progress,
+        progress=_progress_line,
     )
     summary, frame = fetcher.run(
         snapshot,
@@ -413,7 +457,44 @@ def _fetch_sizes(
     return Outcome(summary)
 
 
-def _size_progress(done: int, total: int) -> None:
+def _fetch_files(
+    args: argparse.Namespace, store: DatasetStore, transport: Transport | None
+) -> Outcome:
+    snapshot = _snapshot(args)
+    current = store.read_current()
+    if current.height == 0:
+        print("尚无采集数据，请先运行 `hf-data-crawl collect`。")
+        return Outcome({"error": "empty"}, code=1, reason="尚无采集数据，请先运行 collect")
+
+    ordered = current.sort("downloads", descending=True, nulls_last=True)
+    fetcher = FileFetcher(
+        api=HfFilesApi(
+            transport=(
+                transport if transport is not None else HttpxTransport(timeout=args.timeout)
+            ),
+            max_retries=args.max_retries,
+            max_pages=args.max_pages,
+        ),
+        workers=args.workers,
+        progress=lambda done, total: _progress_line(done, total, "补齐文件清单"),
+    )
+    summary, frame = fetcher.run(
+        snapshot,
+        dataset_ids=ordered["id"].to_list(),
+        top=max(1, args.top),
+        retry_unavailable=args.retry_unavailable,
+        existing=store.read_files(),
+        flush=store.merge_files,
+        flush_every=args.flush_every,
+    )
+    print()
+    if frame.height:
+        store.merge_files(frame)
+    _print_files(summary, store.read_files().height)
+    return Outcome(summary)
+
+
+def _progress_line(done: int, total: int, label: str = "补齐规模") -> None:
     """终端里原地刷新，非终端（日志、CI）按十等分打印。
 
     直接输出 `\\r` 会把日志冲成几百行甚至糊成一行——取决于接收方是否解释回车。
@@ -423,9 +504,9 @@ def _size_progress(done: int, total: int) -> None:
     if not sys.stdout.isatty():
         if done % step and done != total:
             return
-        print(f"  补齐规模 {done}/{total}（{tail(done, total)}%）", flush=True)
+        print(f"  {label} {done}/{total}（{tail(done, total)}%）", flush=True)
         return
-    print(f"\r  补齐规模 {done}/{total}（{tail(done, total)}%）", end="", flush=True)
+    print(f"\r  {label} {done}/{total}（{tail(done, total)}%）", end="", flush=True)
 
 
 def _print_sizes(summary: SizeSummary, table_rows: int) -> None:
@@ -438,6 +519,19 @@ def _print_sizes(summary: SizeSummary, table_rows: int) -> None:
         f"临时失败 {summary.failed} · 已存跳过 {summary.skipped}"
     )
     print(f"  规模表累计 {table_rows} 行（临时失败不入库，下次自然重试）")
+
+
+def _print_files(summary: FileSummary, table_rows: int) -> None:
+    print(
+        f"{summary.snapshot_date} 文件清单补齐：候选 {summary.requested} 条"
+        f" / 耗时 {summary.elapsed_seconds:.1f}s"
+        f" / 下载 {summary.downloaded_bytes / 1e6:.1f}MB"
+    )
+    print(
+        f"  成功 {summary.fetched} · 永久缺失 {summary.unavailable} · "
+        f"临时失败 {summary.failed} · 已存跳过 {summary.skipped}"
+    )
+    print(f"  汇总表累计 {table_rows} 行（临时失败不入库，下次自然重试）")
 
 
 def _query(args: argparse.Namespace, store: DatasetStore) -> int:

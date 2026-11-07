@@ -139,3 +139,20 @@
     前二者现纳入 `IDENTITY_EXPAND`（实测只多约 0.2% 带宽），`ENRICH_EXPAND` 去掉
     重复项，`api.scan` 对 expand 去重保序；它们不对应 Bronze 列、不改宽表，
     仅让各来源 Raw 留下可回溯副本。文件级元数据若要做，只能按榜单头部按需补（B 案）。
+34. **文件清单走 tree、按头部补**（2026-11-07，B 案试点）：列表接口请求也不返回
+    `siblings`；单库详情虽返回，但下载量头部实测 13-25 MB / 44-76 s（首次
+    `--top 20` 跑满 240 s 被杀），故详情方案实测被推翻。改用
+    `/tree/main?recursive=true&expand=false`，每页固定 1000 条、约 110-230 KB /
+    0.4-0.7 s，`Link: rel="next"` 分页。默认每库只取一页，未取完标 `truncated`，
+    此时 file_count / total_bytes / formats / has_readme 全是**下限**；`--max-pages`
+    可显式翻页。此前 #16 否定的「589 B 顶层树」是**非递归**树，拿不到子目录文件，
+    与本次递归树并不矛盾。落 `files` 表（`Origin.NETWORK`，`rebuild` 不清），
+    tree 拿不到 `usedStorage`，故不留 `storage_bytes` 空壳列；并发调度、flush 与进度
+    抽到 `batch.collect_rows`，`size` 与 `files` 共用骨架；失败仍分「永久缺失落库」
+    与「临时失败不落库」两类。**宽视图改名判重同步修正**：旧逻辑先拿原列名查 used，
+    `files.status` 因与 `current.status` 撞名被跳过、改名 `files_status` 没机会生效，
+    `files.formats` 也与 `silver.formats` 撞名；现按改名后的目标名判重，宽视图 65 → 71
+    列，契约测试与反向验证钉死。此表是头部子集，不能用于全站分布统计。
+    **限流**：匿名 `ratelimit-policy` 实测 `q=500;w=300` 固定窗口，首轮 1000 里
+    321 个撞 429；根因是固定 2 秒退避早于窗口重置，改为尊重 `Retry-After`
+    （非有限值 / 负数回退指数、合法值夹 60 秒）后，续跑 321/321 全成功、0 失败。

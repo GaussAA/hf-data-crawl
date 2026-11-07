@@ -26,7 +26,6 @@ import json
 import math
 import time
 from collections.abc import Callable, Iterable, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -34,6 +33,7 @@ from typing import Any
 import polars as pl
 
 from .api import Transport, TransportError
+from .batch import collect_rows
 from .coerce import as_int
 from .tables import SIZE_SCHEMA, url_for
 
@@ -211,32 +211,15 @@ class SizeFetcher:
         pending = [dataset_id for dataset_id in candidates if dataset_id not in done]
         skipped = len(candidates) - len(pending)
 
-        results: list[SizeResult] = []
-        rows: list[dict[str, Any]] = []
-        buffer: list[dict[str, Any]] = []
-        completed = 0
-        with ThreadPoolExecutor(max_workers=self._workers) as pool:
-            futures = {
-                pool.submit(self._api.fetch, dataset_id, snapshot_date): dataset_id
-                for dataset_id in pending
-            }
-            for future in as_completed(futures):
-                result = future.result()
-                results.append(result)
-                if result.row:
-                    rows.append(result.row)
-                    buffer.append(result.row)
-                completed += 1
-
-                if flush is not None and len(buffer) >= max(1, flush_every):
-                    flush(pl.DataFrame(buffer, schema=SIZE_SCHEMA))
-                    buffer.clear()
-                if self._progress is not None and (
-                    completed % 100 == 0 or completed == len(pending)
-                ):
-                    self._progress(completed, len(pending))
-
-        frame = pl.DataFrame(rows, schema=SIZE_SCHEMA) if rows else pl.DataFrame(schema=SIZE_SCHEMA)
+        results, frame = collect_rows(
+            pending=pending,
+            fetch=lambda dataset_id: self._api.fetch(dataset_id, snapshot_date),
+            schema=SIZE_SCHEMA,
+            workers=self._workers,
+            flush=flush,
+            flush_every=flush_every,
+            progress=self._progress,
+        )
         ok = sum(1 for result in results if result.status == "ok")
         unavailable = sum(1 for result in results if result.status == "unavailable")
 

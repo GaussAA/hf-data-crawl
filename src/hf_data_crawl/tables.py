@@ -282,6 +282,24 @@ SIZE_SCHEMA: dict[str, PolarsType] = {
     "configs": pl.Utf8,
 }
 
+#: 文件清单汇总：一行一个数据集，来自单库详情接口的 `siblings`。
+#:
+#: 只存汇总不存明细，是 B 案试点的刻意收窄：详情接口一次可达 1.2 MB，
+#: 全量逐库不可行，按下载量取头部时明细表也会比汇总表大几个数量级。
+#: `formats` 是扩展名计数的 JSON 文本——键随数据集而变，写成固定 struct
+#: 会让大多数列落空（与 `features` / `configs` 同一理由）。
+FILES_SCHEMA: dict[str, PolarsType] = {
+    "id": pl.Utf8,
+    "url": pl.Utf8,
+    "snapshot_date": pl.Date,
+    "status": pl.Utf8,
+    "file_count": pl.Int64,
+    "total_bytes": pl.Int64,
+    "formats": pl.Utf8,
+    "has_readme": pl.Boolean,
+    "truncated": pl.Boolean,
+}
+
 
 # ------------------------------------------------------------------ 登记
 
@@ -296,8 +314,10 @@ TABLES: dict[str, TableSpec] = {
     "card_configs": TableSpec(
         "card_configs", "enrich/card_configs.parquet", CARD_CONFIGS_SCHEMA, Origin.RAW
     ),
-    # 唯一一张 NETWORK 表：来自 datasets-server，删掉就要重抓两万条（约 13 分钟）。
+    # NETWORK 表来自外部接口，raw 里没有对应数据，删掉就要重抓：
+    # size 走 datasets-server，files 走单库详情接口（按下载量取头部）。
     "size": TableSpec("size", "enrich/size.parquet", SIZE_SCHEMA, Origin.NETWORK),
+    "files": TableSpec("files", "enrich/files.parquet", FILES_SCHEMA, Origin.NETWORK),
 }
 
 

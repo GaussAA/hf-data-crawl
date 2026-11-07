@@ -48,6 +48,7 @@ _TABLE_GRAIN: dict[str, tuple[str, str]] = {
     "carddata": ("一个数据集一行", "**子集**：按下载量取头部补齐；长尾多数没有卡片"),
     "card_configs": ("一个 config/split 一行", "**展开**：卡片里的 config 逐条拆开"),
     "size": ("一个数据集一行", "**全量**：每库一条，其中约七成有实测行数"),
+    "files": ("一个数据集一行", "**子集**：按下载量取头部补文件树，长尾没有"),
 }
 
 #: data/ 下不属于任何表的文件与目录。
@@ -270,7 +271,7 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "   不必为了少数查询把结构硬编码进 schema。",
         "9. **`resource_group` 整列为空，不是抓漏了**。字段名在接口的 expand 白名单里，",
         "   我们也确实在请求里带了它，但列表接口收到请求也不返回（实测 2 万条里连键都不存在）。",
-        "   它可能只在单库详情里出现，而逐库请求 112 万次不现实——所以这一列保留但为空，",
+        "   它只在单库详情里出现，逐库请求 112 万次不现实——所以这一列保留但为空，",
         "   等上游哪天在列表里开放。",
         "10. **`current` 只有 19 列不是抓漏了**：语义字段在 `silver` / `carddata` / `size`，",
         "    由 `gold.datasets` 视图拼成宽表；需要单文件宽表见第八节。",
@@ -351,13 +352,24 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "| `resourceGroup` | 请求也不返回 | — | 0 | 历史占位列，整列为空 |",
         "",
         "带 `expand[]=siblings` 与 `full=true` 的列表响应都没有文件清单；轻量替代",
-        "`/tree/main?recursive=true` 一次约 200 KB 且**上限 1000 条**，全量仍需数百 GB。",
-        "故文件级元数据只能按榜单头部按需补，不进日常扫描。边界由",
+        "`/tree/main?recursive=true` 一次约 110-230 KB 且**上限 1000 条**，全量仍需数百 GB。",
+        "但只补**头部**完全可行：`fetch-files` 默认每库取一页，有后续页就标 `truncated`，",
+        "拿不到全库真值时如实承认是下限；单库详情头部实测 13-25 MB / 44-76 s，已弃用。",
+        "文件级元数据只在榜单头部按需补，不进日常扫描。边界由",
         "`api.LIST_UNRETURNED_FIELDS` 与 `tests/test_schema_contract.py` 钉死。",
         "",
         "`citation` 与 `paperswithcode_id` 进基座只为让各来源 Raw 留下可回溯副本：",
         "它们不对应 Bronze 列、也不进宽表；`carddata` 表仍只由 `card-*` 分块解析，",
         "覆盖率受 `enrich --top` 限制。数值稀疏是作者没填，不是抓漏了。",
+        "",
+        "文件清单走 `fetch-files`（`/tree/main` 递归树）按下载量取头部补",
+        f"`enrich/files.parquet`（当前 {_total_rows(store_root, 'files'):,} 行）。",
+        "它是 `Origin.NETWORK` 表，重建不清；只覆盖头部，不能拿它算全站分布。",
+        "默认每库一页（1000 条），`truncated=true` 表示还有后续页未取，",
+        "此时 `file_count` / `total_bytes` / `formats` / `has_readme` 都只是下限；",
+        "要完整清单用 `--max-pages`。目录条目不计入文件数，只统计 `type=file`。",
+        "匿名配额 500 请求 / 300 秒固定窗口，429 按响应头 `Retry-After` 退避；",
+        "临时失败不落库，重跑本命令即由断点续跑补回，不必整批重来。",
         "",
     ]
     return "\n".join(lines)

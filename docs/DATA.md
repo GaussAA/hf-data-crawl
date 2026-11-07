@@ -1,6 +1,6 @@
 # data 目录说明
 
-> 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-07 21:10，**请勿手工编辑**。
+> 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-07 22:49，**请勿手工编辑**。
 > 表结构与行数由代码和实际文件算出；字段含义维护在 `src/hf_data_crawl/fielddocs.py`。
 > 改完代码后重新生成即可，`tests/test_docs.py` 会在忘记生成时报错。
 
@@ -33,10 +33,10 @@ data/
 ├── bronze/dt=YYYY-MM-DD/       # 标量快照，只保留最新一天（当前 1 个文件 · 131.2 MB）
 ├── silver/dt=YYYY-MM-DD/       # 属性变更流水（当前 4 个文件 · 278.2 MB）
 ├── state/                      # 当前态与观测流水（当前 6 个文件 · 127.0 MB）
-├── enrich/                     # 卡片与规模（当前 3 个文件 · 138.2 MB）
+├── enrich/                     # 卡片与规模（当前 4 个文件 · 138.3 MB）
 ├── meta/                       # 重建中断时留存的状态快照（当前 空）
 ├── reports/                    # 对账清单与榜单页（当前 3 个文件 · 40.9 MB）
-├── runs/                       # 每轮运行摘要（当前 57 个文件 · 25.9 KB）
+├── runs/                       # 每轮运行摘要（当前 62 个文件 · 31.7 KB）
 ├── exports/                    # 宽表导出（可重建，当前 1 个文件 · 326.2 MB）
 └── logs/                       # 计划任务日志
 ```
@@ -237,6 +237,25 @@ data/
 | `num_columns_max` | 整数 | 各 config 中列数的最大值 |
 | `configs` | 字符串 | 各 config 的明细（JSON 文本） |
 
+### `enrich/files.parquet`
+
+- 逻辑名：`files`
+- 来源：来自外部接口，**删掉就要重抓**
+- 分区：单文件，不分区
+- 现状：1,000 行 · 51.5 KB
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `id` | 字符串 | 数据集标识，形如 `作者/名称`，全库唯一 |
+| `url` | 字符串 | 数据集页面地址，形如 `https://huggingface.co/datasets/作者/名称`；由 `id` 拼出，可直接点开 |
+| `snapshot_date` | 日期 | 最近一次补抓文件清单的日期 |
+| `status` | 字符串 | `ok` 拿到文件树 / `unavailable` 仓库不可访问 / `error` 临时失败 |
+| `file_count` | 整数 | 本页 tree 里 type=file 的条目数；truncated 时只是下限，不是全库真值 |
+| `total_bytes` | 整数 | 本页文件 size 之和；全部缺失时留空，不拿 0 冒充 |
+| `formats` | 字符串 | 本页扩展名计数（JSON 文本）；无扩展名的归入 (none) |
+| `has_readme` | 布尔 | 本页是否存在以 README 开头的文件 |
+| `truncated` | 布尔 | 是否还有未取的下一页；为 true 时上面四项都只是下限 |
+
 ## 四、不属于表的东西
 
 ### raw 分块
@@ -288,7 +307,7 @@ data/
    不必为了少数查询把结构硬编码进 schema。
 9. **`resource_group` 整列为空，不是抓漏了**。字段名在接口的 expand 白名单里，
    我们也确实在请求里带了它，但列表接口收到请求也不返回（实测 2 万条里连键都不存在）。
-   它可能只在单库详情里出现，而逐库请求 112 万次不现实——所以这一列保留但为空，
+   它只在单库详情里出现，逐库请求 112 万次不现实——所以这一列保留但为空，
    等上游哪天在列表里开放。
 10. **`current` 只有 19 列不是抓漏了**：语义字段在 `silver` / `carddata` / `size`，
     由 `gold.datasets` 视图拼成宽表；需要单文件宽表见第八节。
@@ -332,6 +351,7 @@ data/
 | `carddata` | 768,348 | 一个数据集一行 | **子集**：按下载量取头部补齐；长尾多数没有卡片 |
 | `card_configs` | 1,837,878 | 一个 config/split 一行 | **展开**：卡片里的 config 逐条拆开 |
 | `size` | 1,121,641 | 一个数据集一行 | **全量**：每库一条，其中约七成有实测行数 |
+| `files` | 1,000 | 一个数据集一行 | **子集**：按下载量取头部补文件树，长尾没有 |
 
 归纳起来只有三种：**一对一**（`current`，唯一全量）、**多对一**（流水，比基准多）、
 **子集**（按天或按需补齐，比基准少）。想知道某个数据集的全部信息，
@@ -341,7 +361,7 @@ data/
 ## 八、宽表导出（可重建，不是事实源）
 
 `hf-data-crawl export-wide` 把 `gold.datasets` 视图原样写成一份 parquet，
-默认落在 `data/exports/datasets.parquet`，当前共 65 列、
+默认落在 `data/exports/datasets.parquet`，当前共 71 列、
 行数与 `current` 相同。列清单不在这里手抄：`gold.wide_columns()` 是唯一真相源，
 视图 SQL、导出校验与本节列数都从它取，加一个附表字段三处一起跟上。
 
@@ -374,10 +394,21 @@ data/
 | `resourceGroup` | 请求也不返回 | — | 0 | 历史占位列，整列为空 |
 
 带 `expand[]=siblings` 与 `full=true` 的列表响应都没有文件清单；轻量替代
-`/tree/main?recursive=true` 一次约 200 KB 且**上限 1000 条**，全量仍需数百 GB。
-故文件级元数据只能按榜单头部按需补，不进日常扫描。边界由
+`/tree/main?recursive=true` 一次约 110-230 KB 且**上限 1000 条**，全量仍需数百 GB。
+但只补**头部**完全可行：`fetch-files` 默认每库取一页，有后续页就标 `truncated`，
+拿不到全库真值时如实承认是下限；单库详情头部实测 13-25 MB / 44-76 s，已弃用。
+文件级元数据只在榜单头部按需补，不进日常扫描。边界由
 `api.LIST_UNRETURNED_FIELDS` 与 `tests/test_schema_contract.py` 钉死。
 
 `citation` 与 `paperswithcode_id` 进基座只为让各来源 Raw 留下可回溯副本：
 它们不对应 Bronze 列、也不进宽表；`carddata` 表仍只由 `card-*` 分块解析，
 覆盖率受 `enrich --top` 限制。数值稀疏是作者没填，不是抓漏了。
+
+文件清单走 `fetch-files`（`/tree/main` 递归树）按下载量取头部补
+`enrich/files.parquet`（当前 1,000 行）。
+它是 `Origin.NETWORK` 表，重建不清；只覆盖头部，不能拿它算全站分布。
+默认每库一页（1000 条），`truncated=true` 表示还有后续页未取，
+此时 `file_count` / `total_bytes` / `formats` / `has_readme` 都只是下限；
+要完整清单用 `--max-pages`。目录条目不计入文件数，只统计 `type=file`。
+匿名配额 500 请求 / 300 秒固定窗口，429 按响应头 `Retry-After` 退避；
+临时失败不落库，重跑本命令即由断点续跑补回，不必整批重来。

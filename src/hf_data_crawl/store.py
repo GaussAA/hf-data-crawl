@@ -138,6 +138,9 @@ class DatasetStore:
     def read_sizes(self) -> pl.DataFrame:
         return self.read("size")
 
+    def read_files(self) -> pl.DataFrame:
+        return self.read("files")
+
     def read_current(self) -> pl.DataFrame:
         # 旧表的列不全会让下游 select 直接抛错，`read` 已按当前 schema 对齐；
         # status 缺失时视为全部在架，沿用历史语义。
@@ -152,6 +155,10 @@ class DatasetStore:
         不可用的记录也一并落库：不记下来，下一轮还得为它们重烧 30% 的请求预算。
         """
         return self.upsert("size", frame)
+
+    def merge_files(self, frame: pl.DataFrame) -> int:
+        """把新一批文件汇总并入总表，同 id 以新值为准；语义同 `merge_sizes`。"""
+        return self.upsert("files", frame)
 
     # ------------------------------------------------------------ 流程转发
 

@@ -59,10 +59,14 @@ def test_未登记的表名立刻报错而非拼出错误路径() -> None:
         table("不存在的表")
 
 
-def test_网络来源的表只有规模表一张() -> None:
-    """NETWORK 意味着「删了就得重抓」。多一张就该重新审视它是否真的不可重算。"""
+def test_网络来源的表清单是显式登记的() -> None:
+    """NETWORK 意味着「删了就得重抓」，重建会跳过它。
+
+    清单写死而非从 TABLES 推导：新增一张 NETWORK 表时必须有人在这里点头，
+    确认它真的不可从 raw 重算。files 走单库详情接口，raw 里没有对应数据。
+    """
     network = [spec.name for spec in TABLES.values() if spec.origin is Origin.NETWORK]
-    assert network == ["size"]
+    assert network == ["size", "files"]
 
 
 def test_当前态与观测属于运行态而非裸数据() -> None:
@@ -85,7 +89,7 @@ def test_视图路径由登记表生成() -> None:
 
 
 def test_重建只跳过网络来源的表(tmp_path: Path) -> None:
-    """规模表删了要重抓两万条，重建必须放过它；其余一律清除重算。"""
+    """size 与 files 都来自外部接口，删了要重抓，重建必须放过；其余一律清除重算。"""
     store = DatasetStore(tmp_path / "data")
     for spec in TABLES.values():
         target = (
@@ -103,7 +107,7 @@ def test_重建只跳过网络来源的表(tmp_path: Path) -> None:
             store.root / spec.relative("2026-11-04") if spec.partitioned else store.root / spec.path
         ).exists()
     ]
-    assert surviving == ["size"]
+    assert surviving == ["size", "files"]
 
 
 def test_清除分区表会连整个分区目录一起删(tmp_path: Path) -> None:

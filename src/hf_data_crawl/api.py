@@ -78,7 +78,8 @@ IDENTITY_EXPAND: tuple[str, ...] = (
 #: 依据：383 万条 Raw 全量普查里二者出现 0 次；逐项探接口，带 `expand[]=siblings`
 #: 或 `full=true` 的列表响应都没有 `siblings`，`resourceGroup` 同样缺席。
 #: - `siblings` 只在单库详情接口出现，该接口一次约 1.2 MB（含文件清单），
-#:   `/tree/main?recursive=true` 也要约 200 KB 且上限 1000 条，逐库补 112 万不现实；
+#:   `/tree/main?recursive=true` 每页约 110-230 KB 且上限 1000 条，逐库补 112 万
+#:   不现实（但按头部补可行，见 files.py）；
 #: - `resourceGroup` 有历史占位列且整列为空，见 fielddocs 与 DATA.md 第五节。
 #: 白名单只是「参数不会 400」，不等于「列表接口会返回」，别把两者混为一谈。
 LIST_UNRETURNED_FIELDS: frozenset[str] = frozenset({"siblings", "resourceGroup"})

@@ -118,6 +118,15 @@ FIELD_DOCS: dict[str, dict[str, str]] = {
         "configs": "各 config 的明细（JSON 文本）",
         "snapshot_date": "最近一次成功补抓的日期",
     },
+    "files": {
+        "status": "`ok` 拿到文件树 / `unavailable` 仓库不可访问 / `error` 临时失败",
+        "file_count": "本页 tree 里 type=file 的条目数；truncated 时只是下限，不是全库真值",
+        "total_bytes": "本页文件 size 之和；全部缺失时留空，不拿 0 冒充",
+        "formats": "本页扩展名计数（JSON 文本）；无扩展名的归入 (none)",
+        "has_readme": "本页是否存在以 README 开头的文件",
+        "truncated": "是否还有未取的下一页；为 true 时上面四项都只是下限",
+        "snapshot_date": "最近一次补抓文件清单的日期",
+    },
 }
 
 

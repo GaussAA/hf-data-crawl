@@ -31,7 +31,10 @@ _VIEW_RENAMES: dict[str, dict[str, str]] = {
         "num_bytes_original": "server_num_bytes_original",
         "num_bytes_parquet": "server_num_bytes_parquet",
         "configs": "server_configs",
-    }
+    },
+    # files.status 与 current.status 是两回事：前者只说这次文件清单补采成功与否。
+    # files.formats 是扩展名计数，与 silver.formats（标签维度）同名不同义。
+    "files": {"status": "files_status", "formats": "file_formats"},
 }
 
 #: 宽视图里刻意不带的列。
@@ -42,6 +45,7 @@ _VIEW_EXCLUDED: dict[str, frozenset[str]] = {
     "silver": frozenset({"snapshot_date"}),
     "carddata": frozenset({"snapshot_date"}),
     "size": frozenset({"snapshot_date"}),
+    "files": frozenset({"snapshot_date"}),
 }
 
 #: 宽视图的附表：(别名, 登记表名, 视图名)，按此顺序拼接，重名列先到先得。
@@ -49,6 +53,7 @@ _VIEW_SOURCES: tuple[tuple[str, str, str], ...] = (
     ("s", "silver", "latest_silver"),
     ("cd", "carddata", "card"),
     ("ds", "size", "dataset_size"),
+    ("fs", "files", "files"),
 )
 
 #: 视图名 → 登记表名。两者不必同名（`card` 视图读的是 `carddata` 表）。
@@ -63,6 +68,7 @@ _VIEWS: tuple[tuple[str, str], ...] = (
     ("card", "carddata"),
     ("card_config", "card_configs"),
     ("dataset_size", "size"),
+    ("files", "files"),
 )
 
 
@@ -81,10 +87,13 @@ def wide_columns() -> tuple[tuple[str, str], ...]:
         excluded = _VIEW_EXCLUDED.get(name, frozenset())
         renames = _VIEW_RENAMES.get(name, {})
         for column in spec.schema:
-            if column in excluded or column in used:
+            if column in excluded:
                 continue
             target = renames.get(column, column)
-            if target in used:
+            # 改名过的列按**新名字**判重。此前先拿原列名查 used，于是
+            # files.status 因与 current.status 撞名被跳过，连改成 files_status
+            # 的机会都没有——一条本该进宽视图的状态列就这样静默消失。
+            if target in used or (target == column and column in used):
                 continue
             parts.append((f"{alias}.{column} AS {target}", target))
             used.add(target)
