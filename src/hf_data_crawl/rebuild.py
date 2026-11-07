@@ -1,7 +1,23 @@
-"""从 Raw 重建全部派生层。
+"""从 Raw 重建派生层：默认只重放热区，冷区以流水为权威。
 
-Raw 是唯一事实来源：派生规则变了、派生层坏了，都只需跑一次本模块，不联网。
-重建会清空 bronze/silver/state——它们全可由 raw 重算，而 raw 不动。
+语义变更（2026-11-07，大帅钦点）
+--------------------------------
+旧契约是「Raw 是唯一事实来源」：清空全部派生层，按天重放**所有**历史 Raw。
+于是跨天全量快照必须永久留在 `data/raw`，每天 ~240 MB 线性堆积，且一次
+build 要重放几百天。
+
+新契约分三层，见 `retention` 模块：
+
+- **冷区权威层**：`silver`（属性变更流水）、`observations`（指标变更流水）、
+  `current`（当前态）的历史不再清空。它们本就是「变化才追加」的压缩表示，
+  信息量与每天一份全量快照等价，却小得多。
+- **热区**：默认只重放最近 `REPLAY_WINDOW_DAYS` 天的 Raw；冷区 Raw 由
+  `compact` 跨天压成基线、移出主目录。
+- **逃生舱**：`--full`（或 `window_days=None`）走旧的全量重放；权威层若已损坏
+  （观测流水或当前态为空）会自动回退全量，避免局部重放静默丢掉冷区历史。
+
+等价性由 `tests/test_rebuild.py` 的三向契约钉死：局部重放 == 全量重放 == 逐日
+正常跑。三者都读「早于该日的历史」，冷区不动，热区自然收敛到同一结果。
 """
 
 from __future__ import annotations
@@ -11,9 +27,13 @@ from dataclasses import dataclass
 from datetime import date
 
 from .derive import derive_day
+from .retention import REPLAY_WINDOW_DAYS
 from .status import restore, retain
 from .store import DatasetStore
 from .tables import TABLES, Origin, TableSpec
+
+#: 冷区权威层的分区表：局部重放只删热区日期的分区，不清整表。
+_AUTHORITY_PARTITIONED = ("silver", "observations")
 
 
 @dataclass(frozen=True)
@@ -23,6 +43,8 @@ class RebuildSummary:
     silver_rows: int
     observations: int
     current_rows: int
+    #: window（默认）/ full（显式全量）/ recovery（权威层缺失自动回退）。
+    mode: str = "window"
     card_rows: int = 0
     config_rows: int = 0
 
@@ -35,6 +57,11 @@ def discover_raw_dates(store: DatasetStore) -> list[date]:
     for path in store.raw_dir.iterdir():
         if not path.is_dir() or not path.name.startswith("dt="):
             continue
+        # compact 把冷区原分块移进 backup 后会留下空的 dt= 目录；若仍算有效
+        # 日期，build 会对没有 Raw 的日子跑 state.update，拿空 Bronze 改写
+        # current。目录名只是壳，有没有分块才是「这天有观测」的判据。
+        if not any(path.glob("*.json.gz")):
+            continue
         try:
             dates.append(date.fromisoformat(path.name[3:]))
         except ValueError:
@@ -43,26 +70,42 @@ def discover_raw_dates(store: DatasetStore) -> list[date]:
     return sorted(dates)
 
 
-def rebuild_from_raw(store: DatasetStore) -> RebuildSummary:
-    """按日期顺序重放全部派生层，结果与逐日跑 collect 一致。"""
+def _authority_intact(store: DatasetStore) -> bool:
+    """冷区权威层是否还在。两者任一为空，局部重放都会丢历史。"""
+    return store.read_observations().height > 0 and store.read_current().height > 0
+
+
+def rebuild_from_raw(
+    store: DatasetStore, *, window_days: int | None = REPLAY_WINDOW_DAYS
+) -> RebuildSummary:
+    """重建派生层；默认只重放热区，`window_days=None` 表示全量重放。"""
+    if window_days is not None and window_days < 1:
+        raise ValueError(f"window_days 必须 >= 1 或设为 None（全量），实得 {window_days}")
     dates = discover_raw_dates(store)
     if not dates:
         return RebuildSummary(
             dates=[], bronze_rows=0, silver_rows=0, observations=0, current_rows=0
         )
 
+    full = window_days is None
+    if not full and not _authority_intact(store):
+        # 权威层已损坏：退回旧的全量重放，宁可慢也不要把冷区历史抹掉。
+        full, mode = True, "recovery"
+    else:
+        mode = "full" if full else "window"
+    window = len(dates) if full or window_days is None else window_days
+    replay = dates[-window:]
+
     # 失效状态不是从 raw 派生的：它来自对账时的单库探测（404/401/307），
-    # 而 state.update 会把本轮出现的每条记录都置为 active——直接重建等于把
-    # 全部 restricted / renamed 判断清零。2026-11-05 实测踩到：463 条失效标记
-    # 在一次 build 后归零。故清理前留存、重建后写回，协议见 `status` 模块；
-    # 这是「Raw 是唯一事实来源」的一个例外，边界写在 GLOSSARY.md 第 15、18、26 条。
+    # 而 state.update 会把本轮出现的每条记录都置为 active。清理前留存、
+    # 重建后写回，协议见 `status` 模块；GLOSSARY #15/#18/#26 记有实测事故。
     retained = retain(store)
 
-    clear_derived(store)
+    clear_derived(store, hot_dates=None if full else set(replay))
 
     bronze_rows = 0
     silver_rows = 0
-    for snapshot in dates:
+    for snapshot in replay:
         day = derive_day(store, snapshot, enrich=True)
         bronze_rows += day.bronze_rows
         silver_rows += day.silver_rows
@@ -70,32 +113,43 @@ def rebuild_from_raw(store: DatasetStore) -> RebuildSummary:
     restore(store, retained)
 
     return RebuildSummary(
-        dates=dates,
+        dates=list(replay),
         bronze_rows=bronze_rows,
         silver_rows=silver_rows,
         observations=store.read_observations().height,
         current_rows=store.read_current().height,
+        mode=mode,
         card_rows=store.read_enrich().height,
         config_rows=store.read_card_configs().height,
     )
 
 
-def clear_derived(store: DatasetStore) -> None:
-    """清除所有能从 Raw 重算的产物。
+def clear_derived(store: DatasetStore, *, hot_dates: set[date] | None = None) -> None:
+    """清除可重算的产物。
 
-    清不清除，由登记表的 origin 决定，不靠手工清单：RAW / STATE 都能重算，
-    NETWORK 删了就得重抓（size.parquet 两万条约 13 分钟）。2026-11-05 的
-    「build 误删规模表」就是因为这张清单写在 rebuild 里，而「该表不从 raw 派生」
-    这个事实写在 sizes.py，两边都不知道对方。
+    `hot_dates=None` 是全量模式：按 `Origin` 清掉所有 RAW/STATE 表（NETWORK
+    不可重算，跳过），并作废对账会话文件——旧行为，供 `--full` 逃生舱使用。
+
+    给了 `hot_dates` 是局部模式：只清 Bronze 整表与热区日期的
+    silver/observations 分区；冷区分区、单文件表（current / 卡片表 / 规模表）
+    与 state 会话文件**一律保留**，它们已是权威层，清掉就重建不回来。
     """
-    for spec in TABLES.values():
-        if spec.origin is Origin.NETWORK:
-            continue
-        _clear(store, spec)
+    if hot_dates is None:
+        for spec in TABLES.values():
+            if spec.origin is Origin.NETWORK:
+                continue
+            _clear(store, spec)
+        _clear_stale_state(store)
+        return
 
-    # state 目录下还散落着游标与会话文件，它们不属于任何表，重建后同样作废。
-    # 对账会话（已见集合、基线）同样作废：游标已被上面的 *.json 清掉，留着它们
-    # 会让下一次对账把残留当成续跑。
+    _clear(store, TABLES["bronze"])
+    for snapshot in hot_dates:
+        for name in _AUTHORITY_PARTITIONED:
+            store.path(name, snapshot).unlink(missing_ok=True)
+
+
+def _clear_stale_state(store: DatasetStore) -> None:
+    """全量模式下作废游标与对账会话：重建后它们不再对应任何有效基线。"""
     stale_files = [
         *store.state_dir.glob("*.json"),
         *store.state_dir.glob("reconcile-*.csv"),

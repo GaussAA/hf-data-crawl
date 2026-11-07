@@ -83,23 +83,27 @@ jq -r '.status' data/runs/collect-*.json | tail -30 | grep -c "success"
 
 ---
 
-### 7. Raw 规模与归档积压
+### 7. Raw 规模与冷区压缩
 
 **采集方法**：
 ```bash
 du -sh data/raw data/backup/raw 2>/dev/null
 find data/raw -name '*.json.gz' | wc -l
-uv run hf-data-crawl doctor      # 直接给出「Raw 规模 / 归档 / 备份」三项结论
+uv run hf-data-crawl doctor      # 直接给出「Raw 规模 / 冷区 / 归档 / 备份」结论
+du -sh data/cold/raw 2>/dev/null
+cat data/cold/raw/manifest.json  # 已压缩进冷区基线的日期
 uv run python -c "from pathlib import Path; from hf_data_crawl import raw; print(sorted({raw.source_of(p) for p in Path('data/raw').rglob('*.json.gz')}))"  # 当天有哪些扫描来源
 ```
 
 **正常范围**：
-- 热区（30 天内）每天 1000~2500 个原始分块；归档后每个历史分区约 100~130 个分片
+- 热区（近 7 天）每天 1000~2500 个原始分块；`data/raw` 里没有超过 7 天的 `dt=` 分区
+- `cold/raw/manifest.json` 的日期与已压缩分区一致；`build` 默认只重放热区
 - 来源清单应只含 `lean_lastModified` / `top_refresh_downloads` / `enrich_downloads` / `reconcile_createdAt` / `legacy`；出现陌生来源说明新增扫描未登记
 - `data/backup/raw/` 无超过 7 天的分区
 
 **告警**（`doctor` 自动判定并写 `ALERT.txt`）：
 - `data/raw` > 5 GB 或 > 20,000 文件
+- 超过 7 天仍留在 `data/raw` 的冷区分区（compact 没跟上，主目录会线性膨胀）
 - 30 天前的分区仍是原始分块（写入序未冻结、同天重复未压缩）
 - `backup/raw` 分区超过 7 天未清理（归档不删原文件，磁盘没真正释放）
 
@@ -118,7 +122,7 @@ uv run python -c "from pathlib import Path; from hf_data_crawl import raw; print
 - 派生恢复次数 > 0
 - Collect 耗时 > 600 秒
 - 成功率 < 90%
-- Raw 规模超阈值 / 归档积压 / backup 超期未清理
+- Raw 规模超阈值 / 冷区未压缩 / 归档积压 / backup 超期未清理
 
 ---
 

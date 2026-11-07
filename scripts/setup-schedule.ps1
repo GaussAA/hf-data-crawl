@@ -9,6 +9,7 @@
     hf-doctor     每日 09:00 体检，另在登录后 10 分钟再查一次；有问题写 data\ALERT.txt。
     hf-sizes      每周日 06:00 补数据集规模（行数/列数），最慢的一步，增量可续。
     hf-archive    每周一 05:00 归档满 30 天的 Raw（去重小分块、冻结写入序），原文件移入 backup。
+    hf-compact    每周一 06:00 压缩满 7 天的冷区 Raw（跨天去重成基线），原分块移入 backup 不删。
 
     与旧版的差别（旧版是笔记本上三天漏采的原因）：
       - StartWhenAvailable：关机错过的任务，开机后补跑；
@@ -30,6 +31,7 @@ param(
     [string]$DoctorTime = "09:00",
     [string]$SizesTime = "06:00",
     [string]$ArchiveTime = "05:00",
+    [string]$CompactTime = "06:00",
     [switch]$Uninstall
 )
 
@@ -41,7 +43,7 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
-$taskNames = @("hf-collect", "hf-reconcile", "hf-doctor", "hf-sizes", "hf-archive")
+$taskNames = @("hf-collect", "hf-reconcile", "hf-doctor", "hf-sizes", "hf-archive", "hf-compact")
 
 if ($Uninstall) {
     foreach ($name in $taskNames) {
@@ -79,6 +81,11 @@ $jobs = @(
     # 归档放周一，避开周日的对账与规模补齐（写命令互斥锁）。
     @{ Name = "hf-archive"; Script = "archive.ps1"; Hours = 2
        Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At $ArchiveTime))
+       LogonDelay = $null },
+    # 压缩排在归档之后：两者都是写命令、互斥锁串行执行；compact 的 7 天门槛
+    # 会先移走冷区，archive 的 30 天门槛通常空转，保留作单日手动去重工具。
+    @{ Name = "hf-compact"; Script = "compact.ps1"; Hours = 2
+       Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At $CompactTime))
        LogonDelay = $null }
 )
 
@@ -128,6 +135,7 @@ Write-Host "  hf-reconcile  每周日 $ReconcileTime，错过则开机后补跑"
 Write-Host "  hf-doctor     每日 $DoctorTime + 登录后体检，问题写 data\ALERT.txt"
 Write-Host "  hf-sizes      每周日 $SizesTime 补规模数据，增量合并、中断可续"
 Write-Host "  hf-archive    每周一 $ArchiveTime 归档满 30 天的 Raw，原文件移入 backup"
+Write-Host "  hf-compact    每周一 $CompactTime 压缩满 7 天的冷区 Raw，原分块移入 backup 不删"
 Write-Host "日志目录：$(Join-Path $root 'data\logs')"
 Write-Host "运行摘要：$(Join-Path $root 'data\runs')"
 Write-Host "核对：Get-ScheduledTask -TaskName hf-* | Get-ScheduledTaskInfo"

@@ -11,6 +11,7 @@ from typing import Any
 from hf_data_crawl.api import HfResponse
 from hf_data_crawl.cli import main
 from hf_data_crawl.doctor import ALERT_NAME, diagnose, sync_alert
+from hf_data_crawl.retention import REPLAY_WINDOW_DAYS, manifest_path
 from hf_data_crawl.runs import Outcome, write_run
 from hf_data_crawl.store import DatasetStore
 
@@ -36,13 +37,63 @@ def make_raw_days(store: DatasetStore, days: list[date]) -> None:
 
 
 def healthy(store: DatasetStore) -> None:
+    """近 7 天是热区 Raw；更早的日期已由 compact 压进冷区基线并登记。"""
     make_run(store, "collect", NOW - timedelta(hours=9), "watermark")
     make_run(store, "reconcile", NOW - timedelta(days=3), "end")
-    make_raw_days(store, [NOW.date() - timedelta(days=n) for n in range(1, 14)])
+    dates = [NOW.date() - timedelta(days=n) for n in range(1, 14)]
+    cutoff = NOW.date() - timedelta(days=REPLAY_WINDOW_DAYS)
+    hot = [day for day in dates if day >= cutoff]
+    cold = [day for day in dates if day < cutoff]
+    make_raw_days(store, hot)
+    manifest = manifest_path(store)
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps({"compressed_dates": [day.isoformat() for day in cold]}),
+        encoding="utf-8",
+    )
 
 
 def problems(store: DatasetStore) -> list[str]:
     return [item.text for item in diagnose(store, NOW) if item.problem]
+
+
+def test_冷区分区未压缩要报(tmp_path: Path) -> None:
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    old = NOW.date() - timedelta(days=40)
+    make_raw_days(store, [old])
+
+    found = [text for text in problems(store) if "冷区未压缩" in text]
+
+    assert len(found) == 1 and old.isoformat() in found[0]
+
+
+def test_冷区已登记不会误报断日(tmp_path: Path) -> None:
+    """部分压缩现场：raw 只剩首尾两天，中间日期已压进冷区基线。
+
+    若 `doctor` 不把 manifest 里的日期算作「有观测」，残留的早分区会把
+    检查窗口拉长到 14 天，中间那些已压缩的日子就被误判成断日。
+    """
+    store = DatasetStore(tmp_path / "data")
+    today = NOW.date()
+    make_raw_days(store, [today - timedelta(days=1), today - timedelta(days=13)])
+    cold = [today - timedelta(days=n) for n in range(2, 13)]
+    manifest = manifest_path(store)
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps({"compressed_dates": [day.isoformat() for day in cold]}),
+        encoding="utf-8",
+    )
+
+    assert not any("断日" in text for text in problems(store))
+
+
+def test_冷区档案损坏时体检不崩(tmp_path: Path) -> None:
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    manifest_path(store).write_text("{ 坏档案", encoding="utf-8")
+
+    assert isinstance(problems(store), list)
 
 
 def test_一切正常时没有问题(tmp_path: Path) -> None:

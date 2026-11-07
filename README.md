@@ -27,11 +27,12 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `enrich` | 按下载量取头部，补抓 `cardData`（标签、config/split 明细、行数列数） | 是 |
 | `fetch-sizes` | 经 datasets-server 补规模与列数（`num_rows` / `num_columns_max`） | 是 |
 | `reconcile` | 全量对账：按 `createdAt` 稳定序扫全站，产出新增/删除/转私有/改名/sha 变更 | 是 |
-| `build` | 从 Raw 重建全部派生层（含卡片与明细） | 否 |
+| `build` | 重建派生层：默认只重放近 7 天热区，`--full` 全量重放（含卡片与明细） | 否 |
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
 | `report` | 生成单文件榜单页（离线可看） | 否 |
 | `doctor` | 体检：任务是否按时、Raw 是否断日、有无残留文件，异常写 `ALERT.txt` | 否 |
 | `archive` | 归档早于 N 天的 Raw 分区：合并小分块并去重，先验证 Bronze 逐行相等，原文件移入 `backup/raw/` | 否 |
+| `compact` | 压缩冷区 Raw：跨天去重成一份基线，原分块移入 `backup/raw/` 不删除 | 否 |
 | `docs` | 生成 `docs/DATA.md`：data 目录结构、各文件作用、全部字段含义 | 否 |
 
 常用参数：
@@ -41,6 +42,8 @@ hf-data-crawl collect      [--date YYYY-MM-DD] [--limit 1000] [--max-pages N] [-
 hf-data-crawl enrich       [--date YYYY-MM-DD] [--top 20000] [--limit 1000]
 hf-data-crawl fetch-sizes  [--date YYYY-MM-DD] [--top 20000] [--workers 16] [--retry-unavailable]
 hf-data-crawl reconcile    [--date YYYY-MM-DD] [--limit 1000] [--max-pages N]
+hf-data-crawl build        [--full]                                      # 默认只重放近 7 天
+hf-data-crawl compact      [--older-than-days 7] [--date YYYY-MM-DD]  # 冷区跨天压缩
 hf-data-crawl query        [--board NAME] [--limit 50] [--sql "..."]   # NAME 见「内置榜单」；省略则 growth
 hf-data-crawl report       [--out PATH] [--top 20]
 hf-data-crawl archive      [--older-than-days 30] [--date YYYY-MM-DD]
@@ -75,7 +78,8 @@ hf-data-crawl docs         [--out PATH]           # 默认 docs/DATA.md
 ```
 data/
 ├── raw/dt=YYYY-MM-DD/<类别>-<来源>-<页号>-<摘要>.json.gz  # 原始响应：热区原样，30 天后归档为分片
-├── backup/raw/dt=YYYY-MM-DD/                         # 归档移出的原分块，人工确认后清理
+├── cold/raw/                                         # 冷区基线（跨天去重）与 manifest.json
+├── backup/raw/dt=YYYY-MM-DD/                         # 归档/压缩移出的原分块，人工确认后清理
 ├── bronze/dt=YYYY-MM-DD/bronze.parquet                # 一行一条，含 raw 列；只保留最新一天，旧分区可由 raw 重建
 ├── silver/dt=YYYY-MM-DD/silver.parquet                # 属性变更流水：新增或属性变了才追加；标签已拆 16 类维度，不含指标
 ├── state/
@@ -100,13 +104,22 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 的后写记录覆盖完整记录、整列静默变空。命名空间**不参与排序**，胜负仍由
 `written_at` 决定。
 
-**Raw 保留策略**：近 30 天（热区）保留原始分块，可直接重放；满 30 天由
-`hf-data-crawl archive`（每周计划任务）合并小分块、去掉同天被覆盖的重复记录，
-并把真实写入序冻结进分片的 `groups`，此后定序不再依赖文件 mtime。归档先验证
-前后 Bronze 逐行相等，不等即撤销；原文件**只移入 `backup/raw/`、不删除**。
-`doctor` 会在规模超阈值、归档积压或备份超过 7 天未清理时写 `ALERT.txt`，
-确认派生无误后按 `RECOVERY.md` 人工清理。**历史分区始终保留，`build` 仍按天
-全量重放**——删历史 Raw 会丢那一天的观测点。
+**Raw 保留策略（2026-11-07 起，三层语义，常量集中在 `retention.py`）**：
+
+- **热区**：近 7 天（`REPLAY_WINDOW_DAYS`）的 `data/raw/dt=*` 原样保留，`build`
+  默认按天重放；`archive` 可对单日做同天去重，并把写入序冻结进 `groups`。
+- **冷区权威层**：`silver`（属性变更流水）、`observations`（指标变更流水）、
+  `current` 的历史**不再清空**，它们是历史事实来源。实证：只重放热区与全量
+  重放逐行等价（契约见 `tests/test_rebuild.py`）。
+- **冷区 Raw**：`compact` 把超过 7 天的多日全量快照跨天去重压成一份基线，
+  存 `data/cold/raw/`（分片 `groups` 仍冻结写入序），原分块**只移入
+  `backup/raw/`、不删除**。写基线前后逐个 id 校验胜出者，不等即撤销。
+
+`build --full` 保留旧的全量重放；冷区权威层若已损坏（观测流水或当前态为空），
+默认 `build` 会自动回退全量。`doctor` 把 `cold/raw/manifest.json` 里已压缩的
+日期算作「有观测」，避免压缩后误报断日；并在冷区未压缩、规模超阈值、备份
+超过 7 天未清理时写 `ALERT.txt`。**清理 backup 前须确认权威层已备份**：一旦
+原分块被删且权威层损坏，就只能恢复近 7 天。
 
 
 每张表的身份（路径、schema、来源）统一登记在 `tables.py`，读写、视图、重建清理都从它取，不在各处各自硬编码。

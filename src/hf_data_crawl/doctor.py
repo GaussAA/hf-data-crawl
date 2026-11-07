@@ -15,9 +15,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from . import raw
+from . import raw, retention
 from .lock import LOCK_NAME, LockBusy, describe_holder, exclusive
 from .rebuild import discover_raw_dates
+from .retention import (
+    ARCHIVE_AFTER_DAYS,
+    BACKUP_PRUNE_AFTER_DAYS,
+    REPLAY_WINDOW_DAYS,
+)
 from .runs import read_runs
 from .store import DatasetStore
 
@@ -34,10 +39,6 @@ TMP_STALE_AFTER = timedelta(hours=1)
 #: 跨天全量快照仍会累积；超过阈值说明归档没跟上或 backup 没清。
 RAW_MAX_BYTES = 5 * 1024**3
 RAW_MAX_FILES = 20_000
-#: 与 `cli archive --older-than-days` 的默认值一致。
-ARCHIVE_AFTER_DAYS = 30
-#: archive 只把原文件移进 backup、不删；放太久等于磁盘没省下来。
-BACKUP_PRUNE_AFTER_DAYS = 7
 #: 回看多久内的失败运行。
 FAILURE_WINDOW = timedelta(days=7)
 
@@ -90,7 +91,9 @@ def _freshness(
 
 
 def _raw_gaps(store: DatasetStore, today: date) -> Finding:
-    dates = set(discover_raw_dates(store))
+    # 冷区分区已被 compact 移出 data/raw，但那天确实采过：
+    # 部分压缩后残留的早分区会把窗口拉长，已压缩的日子不登记就被误判成断日。
+    dates = set(discover_raw_dates(store)) | retention.read_compressed_dates(store)
     if not dates:
         return Finding(True, "Raw：没有任何分区")
     start = max(min(dates), today - timedelta(days=GAP_WINDOW_DAYS - 1))
@@ -107,7 +110,7 @@ def _raw_gaps(store: DatasetStore, today: date) -> Finding:
 
 
 def _raw_growth(store: DatasetStore) -> Finding:
-    """盯住 Raw 规模：归档只压同天重复，跨天全量快照仍需靠阈值兜底。"""
+    """盯住 Raw 规模：compact 压跨天重复，热区仍会逐日增长，靠阈值兜底。"""
     files = (
         [path for path in store.raw_dir.rglob("*.json.gz") if path.is_file()]
         if store.raw_dir.exists()
@@ -119,9 +122,24 @@ def _raw_growth(store: DatasetStore) -> Finding:
             True,
             f"Raw 规模超阈值：{len(files)} 个文件 / {total / 1024**3:.1f} GB"
             f"（阈值 {RAW_MAX_FILES} 个 / {RAW_MAX_BYTES / 1024**3:.0f} GB）；"
-            "检查 archive 是否在跑、backup 是否清理",
+            "检查 compact 是否在跑、backup 是否清理",
         )
     return Finding(False, f"Raw 规模：{len(files)} 个文件 / {total / 1024**2:.0f} MB（阈值内）")
+
+
+def _cold_backlog(store: DatasetStore, today: date) -> Finding:
+    """超过重放窗口仍留在 data/raw 的分区：compact 没跟上，冷区未压缩。"""
+    cutoff = today - timedelta(days=REPLAY_WINDOW_DAYS)
+    pending = [day for day in discover_raw_dates(store) if day < cutoff]
+    if pending:
+        shown = "、".join(day.isoformat() for day in pending[:5])
+        more = f" 等 {len(pending)} 天" if len(pending) > 5 else ""
+        return Finding(
+            True,
+            f"冷区未压缩：{shown}{more} 超过 {REPLAY_WINDOW_DAYS} 天仍在 data/raw"
+            "（默认 build 不再重放它们，却仍占主目录）；请跑 hf-data-crawl compact",
+        )
+    return Finding(False, f"Raw 冷区：{REPLAY_WINDOW_DAYS} 天前的分区均已压缩或不在主目录")
 
 
 def _archive_backlog(store: DatasetStore, today: date) -> Finding:
@@ -245,6 +263,7 @@ def diagnose(store: DatasetStore, now: datetime | None = None) -> list[Finding]:
         _freshness(runs, now, "reconcile", _RECONCILE_DONE, RECONCILE_MAX_AGE, "全量对账"),
         _raw_gaps(store, now.date()),
         _raw_growth(store),
+        _cold_backlog(store, now.date()),
         _archive_backlog(store, now.date()),
         _backup_backlog(store, now),
         _recent_failures(runs, now),

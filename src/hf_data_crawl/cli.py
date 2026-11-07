@@ -22,6 +22,7 @@ from .lock import exclusive
 from .rebuild import RebuildSummary, rebuild_from_raw
 from .reconcile import Reconciler, ReconcileSummary
 from .report import Reporter
+from .retention import REPLAY_WINDOW_DAYS
 from .runs import Outcome, read_runs, write_run
 from .sizes import HfSizeApi, SizeFetcher, SizeSummary, tail
 from .store import DatasetStore
@@ -29,7 +30,9 @@ from .transport import HttpxTransport
 
 #: 会改写数据目录的命令，执行期间持有独占锁。report 只写自己的 HTML（原子替换），
 #: query 只读，二者不需要。
-WRITE_COMMANDS = frozenset({"collect", "reconcile", "build", "enrich", "fetch-sizes", "archive"})
+WRITE_COMMANDS = frozenset(
+    {"collect", "reconcile", "build", "enrich", "fetch-sizes", "archive", "compact"}
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -86,7 +89,12 @@ def build_parser() -> argparse.ArgumentParser:
     query.add_argument("--sql", default=None, help="任意只读 SQL")
     query.add_argument("--limit", type=int, default=50, help="榜单条数上限")
 
-    subparsers.add_parser("build", help="从 Raw 重建全部派生层（不联网）")
+    build = subparsers.add_parser("build", help="重建派生层（默认只重放热区，不联网）")
+    build.add_argument(
+        "--full",
+        action="store_true",
+        help="清空全部派生层并按天重放 data/raw 里所有日期（冷区权威层已损坏时的逃生舱）",
+    )
 
     enrich = subparsers.add_parser("enrich", help="按下载量取头部，补抓 cardData")
     enrich.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
@@ -119,6 +127,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     archive.add_argument("--date", default=None, help="只归档指定日期 YYYY-MM-DD（忽略天数门槛）")
 
+    compact = subparsers.add_parser(
+        "compact",
+        help="压缩冷区 Raw：跨天去重成一份基线，原分块移入 backup/raw 不删除",
+    )
+    compact.add_argument(
+        "--older-than-days",
+        type=int,
+        default=REPLAY_WINDOW_DAYS,
+        help=f"只压缩早于这么多天的日期（默认 {REPLAY_WINDOW_DAYS}，与 build 热区窗口一致）",
+    )
+    compact.add_argument("--date", default=None, help="只压缩指定日期 YYYY-MM-DD（忽略天数门槛）")
+
     report = subparsers.add_parser("report", help="生成静态榜单页（不联网）")
     report.add_argument("--out", default=None, help="输出路径，默认 data/reports/dashboard.html")
     report.add_argument("--top", type=int, default=20, help="每张榜单条数")
@@ -149,9 +169,11 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
             store, "reconcile", lambda: _reconcile(args, store, transport), args.lock_wait
         )
     if args.command == "build":
-        return _execute(store, "build", lambda: _build(store), args.lock_wait)
+        return _execute(store, "build", lambda: _build(args, store), args.lock_wait)
     if args.command == "archive":
         return _execute(store, "archive", lambda: _archive(args, store), args.lock_wait)
+    if args.command == "compact":
+        return _execute(store, "compact", lambda: _compact(args, store), args.lock_wait)
     if args.command == "enrich":
         return _execute(store, "enrich", lambda: _enrich(args, store, transport), args.lock_wait)
     if args.command == "fetch-sizes":
@@ -255,8 +277,8 @@ def _reconcile(
     return Outcome(summary)
 
 
-def _build(store: DatasetStore) -> Outcome:
-    summary = rebuild_from_raw(store)
+def _build(args: argparse.Namespace, store: DatasetStore) -> Outcome:
+    summary = rebuild_from_raw(store, window_days=None if args.full else REPLAY_WINDOW_DAYS)
     _print_build(summary)
     return Outcome(summary)
 
@@ -485,14 +507,62 @@ def _print_reconcile(summary: ReconcileSummary) -> None:
     print(f"  差异清单 {summary.report_path} · 停止原因 {summary.stopped_reason}")
 
 
+def _compact(args: argparse.Namespace, store: DatasetStore) -> Outcome:
+    """压缩冷区日期。一次合并全部目标日期与已有基线，避免逐日重写基线。"""
+    from datetime import timedelta
+
+    from .compact import CompactMismatch, compact
+    from .rebuild import discover_raw_dates
+
+    if args.date:
+        days = [date.fromisoformat(args.date)]
+    else:
+        cutoff = date.today() - timedelta(days=args.older_than_days)
+        days = [day for day in discover_raw_dates(store) if day < cutoff]
+    if not days:
+        print("没有符合条件的冷区日期。")
+        return Outcome({"compacted": [], "failures": []})
+
+    try:
+        result = compact(store, days)
+    except CompactMismatch as error:
+        print(f"  [!] {error}")
+        return Outcome({"compacted": [], "failures": [str(error)]}, code=1, reason=str(error))
+    if result is None:
+        print("这些日期在 data/raw 里没有分块，无需压缩。")
+        return Outcome({"compacted": [], "failures": []})
+
+    print(
+        f"冷区压缩完成：{len(result.dates)} 个日期 · {result.source_files} 个分块"
+        f"→ {result.baselines} 个基线分片，记录 "
+        f"{result.records_before}→{result.records_after}，"
+        f"{result.bytes_before / 1e6:.1f}MB→{result.bytes_after / 1e6:.1f}MB"
+    )
+    print("原分块在 data/backup/raw/dt=<日期>/，未删除；回滚见 docs/operations/RECOVERY.md")
+    return Outcome(
+        {
+            "dates": [day.isoformat() for day in result.dates],
+            "files": f"{result.source_files}→{result.baselines}",
+            "records": f"{result.records_before}→{result.records_after}",
+            "bytes": f"{result.bytes_before}→{result.bytes_after}",
+            "backup_files": result.backup_files,
+        }
+    )
+
+
 def _print_build(summary: RebuildSummary) -> None:
     if not summary.dates:
         print("raw 下没有任何分区，无可重建。")
         return
 
+    mode = {
+        "window": f"热区重放（近 {REPLAY_WINDOW_DAYS} 天，冷区权威层保留）",
+        "full": "全量重放（显式 --full）",
+        "recovery": "全量重放（冷区权威层缺失，自动回退）",
+    }[summary.mode]
     print(
         f"重建完成：{len(summary.dates)} 个日期"
-        f"（{summary.dates[0]} ~ {summary.dates[-1]}），全程未联网"
+        f"（{summary.dates[0]} ~ {summary.dates[-1]}），全程未联网 · {mode}"
     )
     print(
         f"  bronze {summary.bronze_rows} 行 · silver {summary.silver_rows} 行 · "

@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import shutil
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,7 @@ import pytest
 
 from hf_data_crawl.derive import derive_day
 from hf_data_crawl.rebuild import discover_raw_dates, rebuild_from_raw
+from hf_data_crawl.retention import REPLAY_WINDOW_DAYS
 from hf_data_crawl.store import DatasetStore
 
 DAY1 = date(2026, 11, 1)
@@ -217,3 +220,78 @@ def test_重建后已恢复的库不会被旧快照改回去(store: DatasetStore
     rebuild_from_raw(store)
 
     assert status_of(store, "acme/ds-2") == "active"
+
+
+# ---------------------------------------------------------------- 热区/冷区
+
+
+def fingerprint(store: DatasetStore) -> dict[str, str]:
+    """三张权威层表的逐行指纹；List 列不能写 CSV，故用规范化 repr。"""
+    out: dict[str, str] = {}
+    for name, frame in (
+        ("observations", store.read_observations()),
+        ("silver", store.read_all("silver")),
+        ("current", store.read_current()),
+    ):
+        columns = sorted(frame.columns)
+        keys = [column for column in ("id", "snapshot_date") if column in frame.columns]
+        payload = repr(frame.select(columns).sort(keys).to_dict(as_series=False))
+        out[name] = hashlib.sha256(payload.encode()).hexdigest()[:16]
+    return out
+
+
+def seed_long(store: DatasetStore) -> None:
+    """造超过重放窗口的数据，冷区与热区都含属性变更与新增。"""
+    for number in range(1, REPLAY_WINDOW_DAYS + 4):
+        day = date(2026, 11, number)
+        first = record(1, 100 + number * 10)
+        first["sha"] = f"sha-{number // 3}"
+        records = [first, record(2, 50)]
+        if number >= REPLAY_WINDOW_DAYS:
+            records.append(record(3, 7))
+        store.write_raw(
+            snapshot_date=day,
+            page_index=1,
+            records=records,
+            meta={},
+            written_at=f"2026-11-{number:02d}T00:00:00.000000+00:00",
+        )
+        derive_day(store, day)
+
+
+def test_局部重放与全量重放及逐日结果三向一致(tmp_path: Path) -> None:
+    """核心不变式：冷区权威层保留后，只重放热区不得改变任何一条记录。"""
+    store = DatasetStore(tmp_path / "data")
+    seed_long(store)
+    baseline = fingerprint(store)
+
+    full = rebuild_from_raw(store, window_days=None)
+
+    assert full.mode == "full"
+    assert len(full.dates) == REPLAY_WINDOW_DAYS + 3
+    assert fingerprint(store) == baseline
+
+    partial = rebuild_from_raw(store)
+
+    assert partial.mode == "window"
+    assert len(partial.dates) == REPLAY_WINDOW_DAYS
+    assert fingerprint(store) == baseline
+
+
+def test_权威层缺失时自动回退全量重放(tmp_path: Path) -> None:
+    """冷区权威层已损坏时，局部重放会静默丢历史，必须退回全量。"""
+    store = DatasetStore(tmp_path / "data")
+    seed_long(store)
+    baseline = fingerprint(store)
+    shutil.rmtree(store.state_dir)
+
+    summary = rebuild_from_raw(store)
+
+    assert summary.mode == "recovery"
+    assert len(summary.dates) == REPLAY_WINDOW_DAYS + 3
+    assert fingerprint(store) == baseline
+
+
+def test_非法窗口立即报错(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="window_days"):
+        rebuild_from_raw(DatasetStore(tmp_path / "data"), window_days=0)
