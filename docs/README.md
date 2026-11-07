@@ -19,6 +19,19 @@
 - [ADR-0001：元数据刷新一致性加固](adr/0001-metadata-refresh-consistency-hardening.md) — 水位线、派生原子性、null sha 漏报三项缺陷的决策记录
 - [TODO.md](TODO.md) — 低优先级可选改进
 
+## v1.0 历史归档
+
+以下两份是 2026-11-03 首版的需求与实现追溯记录，属**历史档案**，不是当前待办。
+切片的验收状态、实测数据与事故复盘保留原文，不随后续重构改写；当前待办只看
+[TODO.md](TODO.md)。
+
+- [PRD v1.0](PRD-hf-data-crawl-v1.0.md) — Problem Statement、20 条 User Stories、
+  实施与测试决策、Out of Scope、Changelog
+- [ISSUES.md](ISSUES.md) — S1–S8 垂直切片与验收清单（「覆盖故事」编号对应 PRD 的
+  User Stories）、四轮整改索引、两处真实事故复盘、已知遗留
+
+二者构成「需求 → 切片」的完整追溯链，删去任一份都会让另一份的编号失去参照。
+
 ## Agent 协作
 
 - [domain.md](agents/domain.md) — 领域边界

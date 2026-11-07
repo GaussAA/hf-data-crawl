@@ -31,4 +31,13 @@ Used by `/wayfinder`. The **map** is a file with one **child** file per ticket.
 
 ## Legacy
 
-`docs/ISSUES.md` (S1–S5…) is the v1.0 combined slice list written before this convention. It is history, not the live tracker; new tickets go under `.scratch/`.
+The v1.0 combined slice list and the PRD behind it are kept as **historical
+archives**, not as the live tracker. Both are indexed from the
+[docs index](../README.md):
+
+- [docs/ISSUES.md](../ISSUES.md) — S1–S8 slices, four rounds of remediation notes
+  and two incident post-mortems.
+- [docs/PRD-hf-data-crawl-v1.0.md](../PRD-hf-data-crawl-v1.0.md) — the 20 user
+  stories behind the slices' "覆盖故事" numbers.
+
+New tickets still go under `.scratch/`; the archives are read-only records.

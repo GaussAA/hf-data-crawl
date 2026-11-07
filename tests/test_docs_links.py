@@ -1,8 +1,9 @@
-"""文档链接校验器自身的回归测试。
+"""文档引用校验器自身的回归测试。
 
-钉住三件事：真断链必须被检出并报出位置；有效链接不能误报；
-非 UTF-8 控制台（Windows runner 的 cp1252）不能让「通过」变成崩溃。
-否则校验器很容易退化成「只打印文件名」的假检查。
+钉住四件事：内联链接与行内代码路径的断链都必须被检出并报出位置；有效引用
+不能误报；v1.0 需求→切片追溯链不得被静默删除；非 UTF-8 控制台（Windows
+runner 的 cp1252）不能让「通过」变成崩溃。否则校验器很容易退化成「只打印
+文件名」的假检查。
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ def _run(root: Path, io_encoding: str | None = None) -> subprocess.CompletedProc
     )
 
 
-def test_当前仓库的文档链接全部有效() -> None:
+def test_当前仓库的文档引用全部有效() -> None:
     result = _run(ROOT)
 
     assert result.returncode == 0, result.stderr
@@ -65,6 +66,60 @@ def test_修好断链后校验转为通过(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "UnicodeEncodeError" not in result.stderr
+
+
+def test_行内代码的仓库路径失效必须被检出(tmp_path: Path) -> None:
+    """Legacy 段用反引号引用文件，文件删了也不能静默通过。"""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "tracker.md").write_text(
+        "v1.0 切片表见 `docs/ISSUES.md`。\n", encoding="utf-8"
+    )
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 1
+    assert "UnicodeEncodeError" not in result.stderr
+    assert "tracker.md" in result.stderr
+    assert "docs/ISSUES.md" in result.stderr
+    assert "行内代码" in result.stderr
+
+
+def test_行内代码路径修好后转为通过(tmp_path: Path) -> None:
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "tracker.md").write_text(
+        "v1.0 切片表见 `docs/ISSUES.md`。\n", encoding="utf-8"
+    )
+    (tmp_path / "docs" / "ISSUES.md").write_text("# Issues\n", encoding="utf-8")
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "0 条断链" in result.stdout
+
+
+def test_裸文件名占位符与命令片段不误报(tmp_path: Path) -> None:
+    (tmp_path / "note.md").write_text(
+        "`derive.py` 是源码；`silver/dt={dt}/silver.parquet` 是数据布局；\n"
+        "`.scratch/<slug>/spec.md` 是模板；`python scripts/check_docs_links.py` 是命令。\n"
+        "```\n`docs/missing-in-fence.md`\n```\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_v1_0_需求到切片的追溯链必须完整() -> None:
+    """两份档案互为参照：连文档带索引一起删，也不能悄悄通过。"""
+    prd = ROOT / "docs" / "PRD-hf-data-crawl-v1.0.md"
+    issues = ROOT / "docs" / "ISSUES.md"
+    index = (ROOT / "docs" / "README.md").read_text(encoding="utf-8")
+
+    assert prd.is_file() and issues.is_file()
+    assert "User Stories" in prd.read_text(encoding="utf-8")
+    assert "覆盖故事" in issues.read_text(encoding="utf-8")
+    assert prd.name in index and issues.name in index
 
 
 def test_cp1252_控制台下仍能输出正确结论() -> None:

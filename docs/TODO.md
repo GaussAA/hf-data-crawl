@@ -22,18 +22,26 @@ if after_count < before_count * 0.5:
 
 ## 自动化改进
 
-### 逐步修复 Mypy 类型错误
+### 类型检查维护
+类型检查已是单一入口，工具版本由 `uv.lock` 锁定，口径见
+[CODING_STANDARDS.md](../CODING_STANDARDS.md) 的「工具链口径」：
+
 ```bash
-# 当前有 14 个类型错误，可以逐步修复
-uv run mypy src/hf_data_crawl/watermark.py
-uv run mypy src/hf_data_crawl/deriving.py
+uv run mypy      # src + tests，当前 0 错
+uv run pyright   # src 补充检查
 ```
+
+新增模块若出现类型错误，须改真实类型（显式注解、Protocol、让类型承载不变式），
+不得用 `type: ignore` 或临时豁免绕过。
 
 ### 监控 CI 性能
 如果 CI 运行时间过长，考虑：
 - 缓存依赖
 - 并行运行测试
-- Windows CI 改为可选
+
+**不要移除 Windows job**：它曾抓出 cp1252 控制台下打印中文导致的
+`UnicodeEncodeError`（文档链接校验器「校验通过」被误判为失败），本机 UTF-8
+终端复现不到，见 `scripts/check_docs_links.py`。
 
 ---
 

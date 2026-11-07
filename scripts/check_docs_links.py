@@ -1,7 +1,17 @@
-"""校验仓库内 Markdown 的相对链接，防止文档漂移。
+"""校验仓库内 Markdown 的文档引用，防止文档漂移。
 
-CI 的 ``Check documentation`` 与 pre-commit 共用这一入口；判定标准是目标文件
-真的存在，而不是把文件名打印一遍。纯标准库实现，不依赖项目环境。
+检查两类引用：
+
+1. Markdown 内联链接 ``[...](target)``，按所在文件目录解析；
+2. 行内代码里**带仓库前缀**的路径，如 `` `docs/ISSUES.md` ``，按仓库根解析。
+
+第二类曾经是盲区：文档的 Legacy 段用反引号引用 `` `docs/ISSUES.md` ``，
+文件被删后引用悬空，而只查内联链接的校验器与 CI 依旧全绿。裸文件名、
+数据布局示例、``.scratch/<slug>/spec.md`` 这类模板占位符不视为路径，
+否则会产生大量误报。
+
+CI 的 ``Check documentation`` 与 pre-commit 共用这一入口；判定标准是目标
+文件真的存在，而不是把文件名打印一遍。纯标准库实现，不依赖项目环境。
 
 用法::
 
@@ -13,14 +23,21 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 #: Markdown 内联链接 / 图片，捕获括号内的目标部分。
 _LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
-#: 围栏代码块边界；块内的示例路径不是真链接，跳过以免误报。
+#: 行内代码；是否为「仓库路径」由 _repo_relative_target 判定。
+_CODE_PATH = re.compile(r"`([^`\n]+)`")
+#: 围栏代码块边界；块内的示例路径不是真引用，跳过以免误报。
 _FENCE = re.compile(r"^\s*(?:```|~~~)")
 #: 不参与扫描的目录：产物、依赖、缓存与工作区内部记录。
 _EXCLUDED = {".git", ".venv", "node_modules", "data", "__pycache__", ".workbuddy", "build", "dist"}
+#: 写在行内代码里、且以这些前缀开头的路径，按仓库根解析。
+_REPO_PREFIXES = ("docs/", "scripts/", "src/", "tests/", ".github/")
+#: 路径里出现空白、占位符或通配符，说明是命令片段/模板而非单一路径。
+_NOT_A_PATH = re.compile(r"[\s<>{}*?$]")
 
 
 def markdown_files(root: Path) -> list[Path]:
@@ -30,18 +47,25 @@ def markdown_files(root: Path) -> list[Path]:
     )
 
 
-def link_targets(text: str) -> list[str]:
-    """取出行内链接目标，跳过围栏代码块。"""
-    targets: list[str] = []
+def _scanned_lines(text: str) -> Iterator[str]:
+    """逐行产出参与校验的文本，跳过围栏代码块内容。"""
     in_fence = False
     for line in text.splitlines():
         if _FENCE.match(line):
             in_fence = not in_fence
             continue
-        if in_fence:
-            continue
-        targets.extend(match.group(1) for match in _LINK.finditer(line))
-    return targets
+        if not in_fence:
+            yield line
+
+
+def link_targets(text: str) -> list[str]:
+    """取出行内链接目标。"""
+    return [match.group(1) for line in _scanned_lines(text) for match in _LINK.finditer(line)]
+
+
+def code_paths(text: str) -> list[str]:
+    """取出行内代码内容，由调用方筛出真正的仓库路径。"""
+    return [match.group(1) for line in _scanned_lines(text) for match in _CODE_PATH.finditer(line)]
 
 
 def _relative_target(raw: str) -> str | None:
@@ -61,17 +85,40 @@ def _relative_target(raw: str) -> str | None:
     return target.lstrip("/") if target.startswith("/") else target
 
 
-def broken_links(root: Path) -> list[str]:
-    """返回 ``文件: 目标`` 形式的断链清单，空列表表示全部有效。"""
+def _repo_relative_target(raw: str) -> str | None:
+    """行内代码里带仓库前缀的单一路径；其余写法返回 None。
+
+    只认「前缀 + 单一路径」：`docs/ISSUES.md` 会被校验，`derive.py`（裸文件名）、
+    `silver/dt={dt}/silver.parquet`（数据布局示例）、`.scratch/<slug>/spec.md`
+    （模板占位符）、`python scripts/check_docs_links.py`（命令片段）都不会。
+    """
+    target = raw.strip().split("#", 1)[0].strip()
+    if not target.startswith(_REPO_PREFIXES) or _NOT_A_PATH.search(target):
+        return None
+    if ".." in Path(target).parts:
+        return None  # 带 .. 的写法语义依所在目录而定，不按仓库根解析
+    return target
+
+
+def broken_references(root: Path) -> list[str]:
+    """返回 ``文件: 目标`` 形式的失效引用清单，空列表表示全部有效。"""
     problems: list[str] = []
     for path in markdown_files(root):
-        for raw in link_targets(path.read_text(encoding="utf-8", errors="replace")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        relative = path.relative_to(root)
+        for raw in link_targets(text):
             target = _relative_target(raw)
             if target is None:
                 continue
             base = root if raw.strip().startswith("/") else path.parent
             if not (base / target).resolve().exists():
-                problems.append(f"{path.relative_to(root)}: {raw.strip()} -> {target}")
+                problems.append(f"{relative}: 链接 {raw.strip()} -> {target}")
+        for raw in code_paths(text):
+            target = _repo_relative_target(raw)
+            if target is None:
+                continue
+            if not (root / target).resolve().exists():
+                problems.append(f"{relative}: 行内代码 {raw.strip()} -> {target}")
     return problems
 
 
@@ -91,7 +138,7 @@ def _force_utf8_output() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     _force_utf8_output()
-    parser = argparse.ArgumentParser(description="校验 Markdown 相对链接")
+    parser = argparse.ArgumentParser(description="校验 Markdown 文档引用")
     parser.add_argument(
         "--root",
         type=Path,
@@ -106,9 +153,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"未找到 Markdown 文件：{root}", file=sys.stderr)
         return 1
 
-    problems = broken_links(root)
+    problems = broken_references(root)
     if problems:
-        print(f"发现 {len(problems)} 条失效相对链接：", file=sys.stderr)
+        print(f"发现 {len(problems)} 条失效文档引用：", file=sys.stderr)
         for item in problems:
             print(f"  {item}", file=sys.stderr)
         return 1
