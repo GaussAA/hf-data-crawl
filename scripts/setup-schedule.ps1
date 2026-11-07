@@ -55,15 +55,15 @@ if ($Uninstall) {
 }
 
 $jobs = @(
-    @{ Name = "hf-collect"; Script = "collect.cmd"; Hours = 4
+    @{ Name = "hf-collect"; Script = "collect.ps1"; Hours = 4
        Triggers = @(
            (New-ScheduledTaskTrigger -Daily -At $CollectTime),
            (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME)
        ); LogonDelay = "PT2M" },
-    @{ Name = "hf-reconcile"; Script = "reconcile.cmd"; Hours = 8
+    @{ Name = "hf-reconcile"; Script = "reconcile.ps1"; Hours = 8
        Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At $ReconcileTime))
        LogonDelay = $null },
-    @{ Name = "hf-doctor"; Script = "doctor.cmd"; Hours = 1
+    @{ Name = "hf-doctor"; Script = "doctor.ps1"; Hours = 1
        Triggers = @(
            (New-ScheduledTaskTrigger -Daily -At $DoctorTime),
            (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME)
@@ -71,7 +71,7 @@ $jobs = @(
     # 规模补齐：全流程最慢的一步（每条单独请求，约 26 req/s），故一周一次，
     # 放在对账之后两小时。给足 4 小时；中途被打断也不要紧——已抓到的都已落库，
     # 下周从缺口接着补，不会重抓。
-    @{ Name = "hf-sizes"; Script = "sizes.cmd"; Hours = 4
+    @{ Name = "hf-sizes"; Script = "sizes.ps1"; Hours = 4
        Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At $SizesTime))
        LogonDelay = $null }
 )
@@ -86,6 +86,13 @@ foreach ($job in $jobs) {
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     Write-Warning "PATH 中找不到 uv；包装脚本会回退到 %USERPROFILE%\.local\bin\uv.exe，请确认该文件存在。"
 }
+
+# 计划任务的环境不保证有 PATH，pwsh 的绝对路径须在注册时定下来。
+$pwshCommand = Get-Command pwsh -ErrorAction SilentlyContinue
+if (-not $pwshCommand) {
+    throw "找不到 pwsh：请安装 PowerShell 7（winget install Microsoft.PowerShell）"
+}
+$pwsh = $pwshCommand.Source
 
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
     -LogonType Interactive -RunLevel Limited
@@ -103,7 +110,8 @@ foreach ($job in $jobs) {
         -DontStopIfGoingOnBatteries `
         -MultipleInstances IgnoreNew `
         -ExecutionTimeLimit (New-TimeSpan -Hours $job.Hours)
-    $action = New-ScheduledTaskAction -Execute $cmd
+    $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$cmd`""
+    $action = New-ScheduledTaskAction -Execute $pwsh -Argument $arguments -WorkingDirectory $root
     Register-ScheduledTask -TaskName $job.Name -Action $action -Trigger $job.Triggers `
         -Settings $settings -Principal $principal -Force | Out-Null
 }
