@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
+from .langs import ISO3_TO_ISO1
 from .tables import SILVER_SCHEMA
 
 if TYPE_CHECKING:
@@ -60,6 +61,36 @@ TAG_DIMENSIONS: dict[str, str] = {
 #: `audio` / `tabular`）都在这里——不单独成列，等于把模态信息砍掉一半。
 PLAIN_TAG_COLUMN = "plain_tags"
 
+#: 语言维度列：唯一需要归一化取值的维度（两套 ISO 码混用）。
+LANGUAGE_COLUMN = TAG_DIMENSIONS["language"]
+
+#: 模态维度列：除 `modality:` 前缀外，无前缀词也会额外投进来。
+MODALITY_COLUMN = TAG_DIMENSIONS["modality"]
+
+#: 无前缀词 → 模态取值。只收语义明确、HF 实际在用的那几种：
+#:
+#: - `text` / `image` / `audio` / `video` / `tabular` / `3d` 直接对应前缀取值；
+#: - `timeseries` 与连字符写法 `time-series` 归一到 HF 的 `timeseries`；
+#: - `point-cloud` / `pointcloud` 归到 `3d`（点云就是三维数据，HF 无单独取值）；
+#: - `multimodal` 是**本仓库扩展取值**：HF 的 9 种 modality 里没有它，但全站有
+#:   2,516 个库只打了这个无前缀词，不映射就等于「多模态有多少」永远查不出来。
+#:
+#: 刻意不收 `lidar` / `rgb` / `depth` / `mesh`：它们可能属 3d 也可能属 geospatial，
+#: 归错比不归更坏，一律留在 plain_tags 供人自取。
+PLAIN_MODALITY_ALIASES: dict[str, str] = {
+    "text": "text",
+    "image": "image",
+    "audio": "audio",
+    "video": "video",
+    "tabular": "tabular",
+    "timeseries": "timeseries",
+    "time-series": "timeseries",
+    "3d": "3d",
+    "point-cloud": "3d",
+    "pointcloud": "3d",
+    "multimodal": "multimodal",
+}
+
 #: 参与变更判定的列：除键与日期之外的全部列。由 schema 求得而非手抄，
 #: 新增属性列自动进入判定，不会出现「列加了却不触发变更」的静默缺陷。
 ATTRIBUTE_COLUMNS: tuple[str, ...] = tuple(
@@ -78,8 +109,12 @@ def _classify(indexed: pl.DataFrame) -> pl.DataFrame:
     规则（与逐行版本一致）：
     - 以第一个 `:` 切成 前缀 / 取值；没有冒号，或冒号后为空，算无前缀标签，
       整串去首尾空白后进 `plain_tags`，去空后为空则丢弃；
+    - 无前缀标签若是模态别名（`text` / `image` / `multimodal` …），**额外**投一份
+      到 `modalities`，原词仍留在 `plain_tags`——不丢原样，也不让模态漏统计；
     - 有取值但前缀不在 `TAG_DIMENSIONS` 里，直接丢弃（仍保留在原 `tags` 列）；
-    - 取值不去空白：`"language: en"` 的取值是 `" en"`，保持原样。
+    - 取值不去空白：`"language: en"` 的取值是 `" en"`，保持原样；
+    - `language:` 取值里的三字码折成两字码（`eng`→`en`），无 639-1 码的语言
+      （`yue` / `ceb` / `cmn` …）原样保留，详见 `langs.ISO3_TO_ISO1`。
     """
     mapping = pl.DataFrame(
         {"prefix": list(TAG_DIMENSIONS), "dimension": list(TAG_DIMENSIONS.values())},
@@ -99,7 +134,7 @@ def _classify(indexed: pl.DataFrame) -> pl.DataFrame:
         .join(mapping, on="prefix", how="left")
     )
     plain = pl.col("value").is_null() | (pl.col("value") == "")
-    return entries.select(
+    classified = entries.select(
         _ROW,
         pl.when(plain)
         .then(pl.lit(PLAIN_TAG_COLUMN))
@@ -110,6 +145,45 @@ def _classify(indexed: pl.DataFrame) -> pl.DataFrame:
         .otherwise(pl.col("value"))
         .alias("item"),
     ).filter(pl.col("column").is_not_null() & (pl.col("item") != ""))
+    return _with_plain_modalities(_fold_language_codes(classified))
+
+
+def _fold_language_codes(frame: pl.DataFrame) -> pl.DataFrame:
+    """把 `language:` 的三字码折成两字码；没有 639-1 码的语言原样留着。
+
+    只折 3→2：两字码不动，避免把作者写的 `en` 改写成 `eng`，也避免无从判断该用哪套。
+    """
+    if not ISO3_TO_ISO1:
+        return frame
+    folded = pl.col("item").replace_strict(ISO3_TO_ISO1, default=pl.col("item")).alias("item")
+    return frame.with_columns(
+        pl.when(pl.col("column") == LANGUAGE_COLUMN)
+        .then(folded)
+        .otherwise(pl.col("item"))
+        .alias("item")
+    )
+
+
+def _with_plain_modalities(frame: pl.DataFrame) -> pl.DataFrame:
+    """无前缀词里的模态别名额外投一份到 `modalities`，原词仍留在 `plain_tags`。
+
+    追加在基础行之后，故 `modalities` 的取值顺序是「前缀取值在前、无前缀别名在后」；
+    `tests/test_silver_derive.py` 的逐行参考实现按同一顺序写，两边逐行相等。
+    """
+    extra = (
+        frame.filter(pl.col("column") == PLAIN_TAG_COLUMN)
+        .with_columns(
+            pl.col("item")
+            .str.to_lowercase()
+            .replace_strict(PLAIN_MODALITY_ALIASES, default=None)
+            .alias("alias")
+        )
+        .filter(pl.col("alias").is_not_null())
+        .select(_ROW, pl.lit(MODALITY_COLUMN).alias("column"), pl.col("alias").alias("item"))
+    )
+    if extra.height == 0:
+        return frame
+    return pl.concat([frame, extra])
 
 
 def derive(bronze: pl.DataFrame, snapshot_date: date) -> pl.DataFrame:

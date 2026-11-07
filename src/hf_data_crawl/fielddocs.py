@@ -50,11 +50,11 @@ FIELD_DOCS: dict[str, dict[str, str]] = {
     "silver": {
         "task_categories": "任务大类（`text-classification`、`image-segmentation` 等）",
         "task_ids": "具体任务标识，比大类更细",
-        "languages": "语言代码（`en`、`zh`、`code` 等）",
+        "languages": "语言代码，已把三字码折成两字码（`eng`→`en`）；无 ISO 639-1 码的语言（`yue`、`ceb`）保持原样",
         "size_categories": "规模档位（`n<1K`、`1K<n<10K` … `n>1T`）",
         "licenses": "许可证（`mit`、`apache-2.0`、`cc-by-4.0` 等）",
         "libraries": "适配的框架库（`datasets`、`pandas`、`polars` …）",
-        "modalities": "模态（`text`、`image`、`audio`、`video`、`3D`）",
+        "modalities": "模态（`text`/`image`/`audio`/`video`/`3d`/`tabular` 等；无前缀的 `multimodal` 也会并入，属本仓库扩展取值）",
         "formats": "数据文件格式（`parquet`、`csv`、`json`、`arrow` …）",
         "regions": "数据覆盖的地区",
         "multilinguality": "多语言性标记（单语 / 多语）",

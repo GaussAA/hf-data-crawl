@@ -14,7 +14,15 @@ from datetime import date
 import polars as pl
 import pytest
 
-from hf_data_crawl.silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS, derive
+from hf_data_crawl.langs import ISO3_TO_ISO1
+from hf_data_crawl.silver import (
+    LANGUAGE_COLUMN,
+    MODALITY_COLUMN,
+    PLAIN_MODALITY_ALIASES,
+    PLAIN_TAG_COLUMN,
+    TAG_DIMENSIONS,
+    derive,
+)
 from hf_data_crawl.tables import BRONZE_SCHEMA, SILVER_SCHEMA
 
 DAY = date(2026, 11, 4)
@@ -22,21 +30,34 @@ DIMENSION_COLUMNS = [*TAG_DIMENSIONS.values(), PLAIN_TAG_COLUMN]
 
 
 def reference(tags: list[str]) -> dict[str, list[str]]:
-    """旧的逐行实现，原样保留作为规则的权威表述。"""
+    """旧的逐行实现，原样保留作为规则的权威表述。
+
+    两条扩展规则也写在这里，且顺序与向量化实现一致：无前缀的模态别名**追加**在
+    基础行之后（不是边扫边插），否则 `modalities` 的取值顺序会两边不等。
+    """
     buckets: dict[str, list[str]] = {column: [] for column in TAG_DIMENSIONS.values()}
     buckets[PLAIN_TAG_COLUMN] = []
+    plain_aliases: list[str] = []
     for tag in tags:
         prefix, separator, value = tag.partition(":")
         if not separator or not value:
             plain = tag.strip()
             if plain and plain not in buckets[PLAIN_TAG_COLUMN]:
                 buckets[PLAIN_TAG_COLUMN].append(plain)
+            alias = PLAIN_MODALITY_ALIASES.get(plain.lower())
+            if alias is not None:
+                plain_aliases.append(alias)
             continue
         column = TAG_DIMENSIONS.get(prefix)
         if column is None:
             continue
+        if column == LANGUAGE_COLUMN:
+            value = ISO3_TO_ISO1.get(value, value)
         if value not in buckets[column]:
             buckets[column].append(value)
+    for alias in plain_aliases:
+        if alias not in buckets[MODALITY_COLUMN]:
+            buckets[MODALITY_COLUMN].append(alias)
     return buckets
 
 
@@ -79,6 +100,14 @@ EDGE_CASES: list[list[str]] = [
     ["license:mit", "license:apache-2.0", "task_categories:text-classification"],
     ["language:a\nb"],  # 取值含换行
     ["modality:text", "text", "format:parquet", "region:us", "library:datasets"],
+    ["language:eng"],  # 三字码折成两字码
+    ["language:eng", "language:en", "language:English"],  # 折叠后去重，非码值原样
+    ["language:ceb", "language:yue", "language:cmn"],  # 无 639-1 码：原样保留
+    ["multimodal", "Multimodal"],  # 无前缀模态词大小写不同，折叠去重
+    ["point-cloud", "time-series", "3d"],  # 点云/连字符写法归一到 HF 取值
+    ["modality:image", "image", "text"],  # 前缀取值在前、无前缀别名在后
+    ["lidar", "rgb", "mesh"],  # 刻意不归一：留在 plain_tags，不进 modalities
+    ["eng"],  # 无前缀且非模态词：不进 modalities
 ]
 
 
@@ -124,3 +153,35 @@ def test_标签为空值时当作空列表() -> None:
 
     assert result["tags"].to_list() == [["language:en"], []]
     assert result["languages"].to_list() == [["en"], []]
+
+
+def test_语言三字码折成两字码而无法折算的原样保留() -> None:
+    """HF 两套 ISO 码混用；不折叠的话，按语言聚合会把同一语言劈成两行。"""
+    result = derive(bronze_of([["language:eng", "language:fra", "language:ceb"]]), DAY)
+
+    assert result["languages"].to_list() == [["en", "fr", "ceb"]]
+
+
+def test_无前缀模态词并入模态且原词仍留在plain_tags() -> None:
+    """`multimodal` 全站两千多个库只打了这一个词，不并入就等于查不出来。"""
+    result = derive(bronze_of([["modality:image", "multimodal"]]), DAY)
+
+    assert result["modalities"].to_list() == [["image", "multimodal"]], "前缀取值在前、别名在后"
+    assert result["plain_tags"].to_list() == [["multimodal"]], "原词不能丢"
+
+
+def test_语义含糊的模态近义词不擅自归一() -> None:
+    """`lidar` 可能属 3d 也可能属 geospatial，归错比不归更坏。"""
+    result = derive(bronze_of([["point-cloud", "lidar", "rgb"]]), DAY)
+
+    assert result["modalities"].to_list() == [["3d"]]
+    assert result["plain_tags"].to_list() == [["point-cloud", "lidar", "rgb"]]
+
+
+def test_语言映射表自洽() -> None:
+    """表是手固化的数据，形状错了会让整列语言静默不动。"""
+    assert len(ISO3_TO_ISO1) == 184, "ISO 639-1 语言数，变动说明表被改过"
+    assert all(len(code) == 3 and len(target) == 2 for code, target in ISO3_TO_ISO1.items())
+    assert ISO3_TO_ISO1["eng"] == "en"
+    assert ISO3_TO_ISO1["zho"] == "zh"
+    assert "ceb" not in ISO3_TO_ISO1, "宿务语无 639-1 码，不该被折成两字码"
