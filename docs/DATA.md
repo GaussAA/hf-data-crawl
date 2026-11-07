@@ -1,6 +1,6 @@
 # data 目录说明
 
-> 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-07 18:25，**请勿手工编辑**。
+> 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-07 18:48，**请勿手工编辑**。
 > 表结构与行数由代码和实际文件算出；字段含义维护在 `src/hf_data_crawl/fielddocs.py`。
 > 改完代码后重新生成即可，`tests/test_docs.py` 会在忘记生成时报错。
 
@@ -27,7 +27,7 @@ flowchart TD
 
 ```
 data/
-├── raw/dt=YYYY-MM-DD/          # 原始响应：热区原样，30 天后归档（当前 1,716 个文件 · 782.8 MB）
+├── raw/dt=YYYY-MM-DD/          # 原始响应：类别-来源-页号-摘要，30 天后归档（当前 1,716 个文件 · 782.8 MB）
 ├── bronze/dt=YYYY-MM-DD/       # 标量快照，只保留最新一天（当前 1 个文件 · 131.2 MB）
 ├── silver/dt=YYYY-MM-DD/       # 属性变更流水（当前 4 个文件 · 278.2 MB）
 ├── state/                      # 当前态与观测流水（当前 6 个文件 · 127.0 MB）

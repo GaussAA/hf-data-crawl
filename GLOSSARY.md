@@ -92,3 +92,14 @@
 29. **sha 为 null 的库无法检测变更**（2026-11-07 明确）：对账通过比对基线与已见集合的 `sha` 来检测变更。如果基线或已见至少一方 sha 为 null，无法判断是否变更，归入报告的 `undetectable_change` 类别，单独列出"无法检测变更的库清单"。
     只有两方都有非 null sha 且不同时，才算 `sha_changed`。此前 null 值会被当成相同（`None == None` 是 True），导致漏报变更。
     折衷：不强制调用详情接口（会让对账从数小时变成可能一整天），接受"部分库无法检测变更"的现实，通过报告提升可观测性。
+30. **Raw 文件名带来源命名空间**（2026-11-07）：文件名是
+    `{类别}-{source}-{页码:06d}-{摘要}.json.gz`，`source` 由 `ScanSpec` 用 mode + sort
+    派生（`lean_lastModified` / `top_refresh_downloads` / `enrich_downloads` …），
+    同时写进 `meta` 与归档分片的 `groups`。此前四种扫描共用 `part-000001` 这一模糊
+    身份，归档后来源彻底丢失；如今同一天里不同目的的全站快照各有独立页码空间，
+    `archive` 按 (类别, 来源) 分流，分片名与 `groups.source` 都保留来源。旧格式与
+    旧归档分片一律归为 `legacy` 兼容读取，**不改写任何历史文件**。
+    配套不变式：`ScanSpec.__post_init__` 强制 `expand` 必含 `api.IDENTITY_EXPAND`——
+    不同来源共享同一去重池，后写的更窄记录会覆盖完整记录、让整列静默变空；
+    `archive.DEDUPE_LABELS` 引用 `raw.BRONZE_LABELS`，去重类别不再有第二份字面量。
+    **命名空间不参与排序**：胜负仍由 `written_at` 决定（见 #17）。

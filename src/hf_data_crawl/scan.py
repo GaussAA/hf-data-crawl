@@ -22,7 +22,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Protocol
 
-from .api import MAX_LIMIT, Page
+from . import raw
+from .api import IDENTITY_EXPAND, MAX_LIMIT, Page
 from .checkpoint import Checkpoint
 from .store import DatasetStore
 
@@ -71,6 +72,24 @@ class ScanSpec:
     write: bool = True
     on_page: PageHook | None = None
 
+    def __post_init__(self) -> None:
+        """写入 Raw 的扫描不得比 Bronze 基座更窄（见 api.IDENTITY_EXPAND）。"""
+        missing = set(IDENTITY_EXPAND) - set(self.expand)
+        if missing:
+            raise ValueError(
+                f"ScanSpec.expand 缺少 Bronze 基座字段 {sorted(missing)}："
+                "不同来源共享同一去重池，缺字段的后写分块会覆盖完整记录，整列静默变空"
+            )
+
+    @property
+    def source(self) -> str:
+        """命名空间：由 mode + sort 派生，写进 Raw 文件名与 meta。
+
+        调用方不必手写，也不会与文件名漂移；同一天不同目的的扫描因此各有
+        独立的页码空间，归档后仍能从文件名认出「这批是谁扫的」。
+        """
+        return raw.source_slug(self.mode, self.sort)
+
 
 @dataclass(frozen=True)
 class ScanSummary:
@@ -117,8 +136,10 @@ class ScanRun:
                         "sort": spec.sort,
                         "direction": spec.direction,
                         "mode": spec.mode,
+                        "source": spec.source,
                     },
                     label=spec.label,
+                    source=spec.source,
                 )
 
             # 顺序：写盘 → 钩子 → 存游标 → 判停止。

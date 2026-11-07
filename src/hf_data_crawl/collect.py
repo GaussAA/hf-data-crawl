@@ -12,39 +12,15 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from .api import MAX_LIMIT, HfDatasetApi, Page
+from .api import IDENTITY_EXPAND, MAX_LIMIT, HfDatasetApi, Page
 from .checkpoint import FileCheckpoint
 from .derive import derive_day
 from .scan import ScanRun, ScanSpec, ScanSummary
 from .store import DatasetStore
 from .watermark import WatermarkCheckpoint, extract_last_modified
 
-#: 身份与指标基座：一次请求拿全。含体积（mainSize）、私有与禁用标记、趋势分。
-#:
-#: 铁律——HF 的 `expand[]` 是**白名单裁剪**而非增补：只要传了它，未列出的字段
-#: 一律不返回，连默认响应里本就有的 `private` / `disabled` 都会被裁掉
-#: （实测 `expand[]=downloads` 时返回体只剩 `_id/downloads/id`）。
-#: 因此本清单必须与 `store.BRONZE_SCHEMA` 的源字段严格同步，
-#: 由 `tests/test_schema_contract.py` 强制校验，防止再出现「列声明了但源端不供」
-#: 从而整列为空却不报错的静默缺陷（2026-11-04 实测 private 曾 100% 为空）。
-IDENTITY_EXPAND: tuple[str, ...] = (
-    "author",
-    "createdAt",
-    "description",
-    "disabled",
-    "downloads",
-    "downloadsAllTime",
-    "gated",
-    "lastModified",
-    "likes",
-    "mainSize",
-    "private",
-    "resourceGroup",
-    "sha",
-    "tags",
-    "trendingScore",
-    "xetEnabled",
-)
+#: 身份与指标基座定义在 `api.IDENTITY_EXPAND`（与 expand[] 白名单同处）：
+#: 任何写入 Raw 的扫描都必须含它，ScanSpec 在构造期校验。
 
 #: Lean 档：不含 cardData。实测满档约 6 KB/条、带宽 90–170 KB/s，
 #: 日增量若拉全量字段，光传输就要数小时，而增量的信息量几乎全在指标字段。

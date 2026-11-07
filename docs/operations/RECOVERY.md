@@ -103,6 +103,11 @@ uv run hf-data-crawl archive --date 2026-11-07
 `data/backup/raw/dt=<日期>/`，**不删除**。归档分片的 `groups` 冻结了真实写入序，
 此后 `build` 不再依赖文件 mtime。
 
+**来源可追溯**：归档按 (类别, 来源) 分流，分片名与 `groups.source` 都保留
+`source`（如 `lean_lastModified`、`top_refresh_downloads`）；命名空间引入前的历史
+分块归为 `legacy`，沿用旧分片名。排障时看文件名第二段即可认出「这批是谁扫的」，
+不同来源互不合并。
+
 **回滚**（对归档结果有疑问时，把原分块移回并删除分片）：
 ```powershell
 $day = '2026-11-07'

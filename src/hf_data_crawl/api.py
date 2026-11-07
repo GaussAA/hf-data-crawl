@@ -43,6 +43,29 @@ EXPAND_WHITELIST: frozenset[str] = frozenset(
     }
 )
 
+#: Bronze 标量表所需的源字段基座。HF 的 `expand[]` 是白名单裁剪，任何写入 Raw 的
+#: 扫描都必须至少请求这些字段：不同来源共享同一去重池，缺字段的分块一旦后写，
+#: 就会覆盖完整记录，让整列静默变空（2026-11-04 实测 private 曾 100% 为空）。
+#: 由 `ScanSpec` 在构造期校验，并由 `tests/test_schema_contract.py` 与表结构互校。
+IDENTITY_EXPAND: tuple[str, ...] = (
+    "author",
+    "createdAt",
+    "description",
+    "disabled",
+    "downloads",
+    "downloadsAllTime",
+    "gated",
+    "lastModified",
+    "likes",
+    "mainSize",
+    "private",
+    "resourceGroup",
+    "sha",
+    "tags",
+    "trendingScore",
+    "xetEnabled",
+)
+
 MAX_LIMIT = 1000
 RETRYABLE_STATUS: frozenset[int] = frozenset({429, 500, 502, 503, 504})
 

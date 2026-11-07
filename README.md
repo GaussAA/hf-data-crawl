@@ -74,7 +74,7 @@ hf-data-crawl docs         [--out PATH]           # 默认 docs/DATA.md
 
 ```
 data/
-├── raw/dt=YYYY-MM-DD/part-<页号>-<内容摘要>.json.gz   # 原始响应：热区原样，30 天后归档为分片
+├── raw/dt=YYYY-MM-DD/<类别>-<来源>-<页号>-<摘要>.json.gz  # 原始响应：热区原样，30 天后归档为分片
 ├── backup/raw/dt=YYYY-MM-DD/                         # 归档移出的原分块，人工确认后清理
 ├── bronze/dt=YYYY-MM-DD/bronze.parquet                # 一行一条，含 raw 列；只保留最新一天，旧分区可由 raw 重建
 ├── silver/dt=YYYY-MM-DD/silver.parquet                # 属性变更流水：新增或属性变了才追加；标签已拆 16 类维度，不含指标
@@ -91,6 +91,14 @@ data/
 ```
 
 Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等），同页内容变了则另存（绝不覆盖丢数据）。
+
+**来源命名空间**：`ScanSpec` 用 `mode` + `sort` 派生 `source`（如 `lean_lastModified`、
+`top_refresh_downloads`、`enrich_downloads`），写进文件名与 `meta`。同一天里日增量、
+顶部刷新、全量对账、卡片补齐各有独立页码空间，不再共用 `part-000001`；归档按
+(类别, 来源) 分流，分片名与 `groups.source` 都保留来源。历史分块按 `legacy` 兼容
+读取，不改写。`ScanSpec` 在构造期强制 `expand` 必含 Bronze 基座字段，防止更窄档位
+的后写记录覆盖完整记录、整列静默变空。命名空间**不参与排序**，胜负仍由
+`written_at` 决定。
 
 **Raw 保留策略**：近 30 天（热区）保留原始分块，可直接重放；满 30 天由
 `hf-data-crawl archive`（每周计划任务）合并小分块、去掉同天被覆盖的重复记录，

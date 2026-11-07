@@ -164,7 +164,7 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "",
         "```",
         "data/",
-        f"├── raw/dt=YYYY-MM-DD/          # 原始响应：热区原样，30 天后归档（当前 {_dir_summary(store_root, 'raw')}）",
+        f"├── raw/dt=YYYY-MM-DD/          # 原始响应：类别-来源-页号-摘要，30 天后归档（当前 {_dir_summary(store_root, 'raw')}）",
         f"├── bronze/dt=YYYY-MM-DD/       # 标量快照，只保留最新一天（当前 {_dir_summary(store_root, 'bronze')}）",
         f"├── silver/dt=YYYY-MM-DD/       # 属性变更流水（当前 {_dir_summary(store_root, 'silver')}）",
         f"├── state/                      # 当前态与观测流水（当前 {_dir_summary(store_root, 'state')}）",

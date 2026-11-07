@@ -13,15 +13,15 @@ from dataclasses import dataclass
 from datetime import date
 
 from . import card
-from .api import MAX_LIMIT, HfDatasetApi, Page
-from .collect import IDENTITY_EXPAND
+from .api import IDENTITY_EXPAND, MAX_LIMIT, HfDatasetApi, Page
 from .raw import CARD_LABEL
 from .scan import ScanRun, ScanSpec
 from .store import DatasetStore
 
 #: 比 lean 档多要三样：卡片本体、论文关联、引用文本。
 #: 基座沿用 IDENTITY_EXPAND 而非另抄一份：两档字段一旦分叉，同一日若既有 part
-#: 又有 card 分区，Bronze 会按文件名去重，缺字段的那份可能胜出，导致整列为空。
+#: 又有 card 分区，Bronze 按 `written_at` 定序取最后写入者，缺字段的那份可能
+#: 胜出导致整列为空。ScanSpec 已在构造期强制「expand 必含基座」。
 ENRICH_EXPAND: tuple[str, ...] = (
     *IDENTITY_EXPAND,
     "cardData",

@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from hf_data_crawl.api import Page
+from hf_data_crawl.api import IDENTITY_EXPAND, Page
 from hf_data_crawl.scan import ScanRun, ScanSpec
 from hf_data_crawl.store import DatasetStore
 
@@ -61,7 +61,11 @@ def store(tmp_path: Path) -> DatasetStore:
 
 
 def spec(**overrides: Any) -> ScanSpec:
-    base: dict[str, Any] = {"sort": "lastModified", "expand": ("downloads",), "mode": "lean"}
+    base: dict[str, Any] = {
+        "sort": "lastModified",
+        "expand": IDENTITY_EXPAND,
+        "mode": "lean",
+    }
     base.update(overrides)
     return ScanSpec(**base)
 

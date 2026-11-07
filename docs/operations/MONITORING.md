@@ -90,10 +90,12 @@ jq -r '.status' data/runs/collect-*.json | tail -30 | grep -c "success"
 du -sh data/raw data/backup/raw 2>/dev/null
 find data/raw -name '*.json.gz' | wc -l
 uv run hf-data-crawl doctor      # 直接给出「Raw 规模 / 归档 / 备份」三项结论
+uv run python -c "from pathlib import Path; from hf_data_crawl import raw; print(sorted({raw.source_of(p) for p in Path('data/raw').rglob('*.json.gz')}))"  # 当天有哪些扫描来源
 ```
 
 **正常范围**：
 - 热区（30 天内）每天 1000~2500 个原始分块；归档后每个历史分区约 100~130 个分片
+- 来源清单应只含 `lean_lastModified` / `top_refresh_downloads` / `enrich_downloads` / `reconcile_createdAt` / `legacy`；出现陌生来源说明新增扫描未登记
 - `data/backup/raw/` 无超过 7 天的分区
 
 **告警**（`doctor` 自动判定并写 `ALERT.txt`）：

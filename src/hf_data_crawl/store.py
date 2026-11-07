@@ -163,6 +163,7 @@ class DatasetStore:
         records: list[dict[str, Any]],
         meta: dict[str, Any] | None = None,
         label: str = "part",
+        source: str | None = None,
         written_at: str | None = None,
     ) -> Path:
         return raw.write(
@@ -172,6 +173,7 @@ class DatasetStore:
             records=records,
             meta=meta,
             label=label,
+            source=source,
             written_at=written_at,
         )
 

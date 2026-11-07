@@ -11,9 +11,15 @@ Raw 是唯一不可重算的层，也是唯一没有整理策略的层。全量�
 来源文件名，`raw.load_batches` 据此切回多个 Batch，所以归档前后 `bronze.build`
 的输出必须逐行相等。这一点在移走原文件**之前**就验证，不等则撤销、原文件原地不动。
 
-去重只对 Bronze 消费的标签（part / top）做：同 id 只留排序最靠后的一条，正是
-`unique(keep="last")` 本来就会留下的那条。`card` 标签只合并不去重——卡片表按
-(id, config, split) 去重，记录级去重可能丢掉旧记录里独有的 config 行。
+去重只对 Bronze 消费的类别（part / top，见 `raw.BRONZE_LABELS`）做：同 id 只留
+排序最靠后的一条，正是 `unique(keep="last")` 本来就会留下的那条。`card` 只合并
+不去重——卡片表按 (id, config, split) 去重，记录级去重可能丢掉旧记录里独有的
+config 行。
+
+**按命名空间分流**：同一类别下不同来源（`lean_lastModified`、`top_refresh_downloads`、
+`enrich_downloads`…）各自成组、各自编号分片，分片名与 `groups` 都记下来源。
+不同目的的全站快照不再被塞进同一组分片按写入序赛跑，归档后也能从文件名认出
+「这批是谁扫的」。历史分块归为 `legacy`，保持旧分片名，不改写任何历史文件。
 
 原文件不删除，移到 `backup/raw/dt=<日期>/`，确认无误后由人清理。
 
@@ -48,8 +54,8 @@ if TYPE_CHECKING:
 #: 5 万条一片时 11-04 只有 26 片，低于 `bronze.PARALLEL_MIN_FILES`，重建退回串行，
 #: 在副本上实测 138s，而归档前并行是 56~62s。
 SHARD_RECORDS = 10_000
-#: 做记录级去重的标签。
-DEDUPE_LABELS = frozenset({"part", "top"})
+#: 做记录级去重的类别，唯一真相源在 raw.BRONZE_LABELS。
+DEDUPE_LABELS = raw.BRONZE_LABELS
 PARALLEL_MIN_FILES = 64
 BACKUP_SUBDIR = ("backup", "raw")
 
@@ -114,23 +120,33 @@ def _scan_ids(paths: list[Path]) -> list[tuple[tuple[Any, ...], str, list[str | 
 
 
 def _write_shard(
-    directory: Path, label: str, index: int, groups: list[dict[str, Any]], records: list[Any]
+    directory: Path,
+    label: str,
+    source: str,
+    index: int,
+    groups: list[dict[str, Any]],
+    records: list[Any],
 ) -> Path:
     payload = {
-        "meta": {"label": label, "archived": True, "record_count": len(records)},
+        "meta": {
+            "label": label,
+            "source": source,
+            "archived": True,
+            "record_count": len(records),
+        },
         "groups": groups,
         "records": records,
     }
     body = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     digest = hashlib.sha256(body).hexdigest()[:8]
-    path = directory / raw.archive_name(label, index, digest)
+    path = directory / raw.archive_name(label, index, digest, source)
     if not path.exists():
         write_bytes(path, gzip.compress(body))
     return path
 
 
-def _archive_label(directory: Path, label: str, paths: list[Path]) -> list[Path]:
-    """把同一标签的若干文件合并成分片，返回新分片路径。不删任何东西。"""
+def _archive_source(directory: Path, label: str, source: str, paths: list[Path]) -> list[Path]:
+    """把同一 (类别, 来源) 的若干文件合并成分片，返回新分片路径。不删任何东西。"""
     entries = _scan_ids(paths)
     dedupe = label in DEDUPE_LABELS
 
@@ -150,30 +166,41 @@ def _archive_label(directory: Path, label: str, paths: list[Path]) -> list[Path]
     def flush() -> None:
         nonlocal groups, records
         if groups:
-            shards.append(_write_shard(directory, label, len(shards) + 1, groups, records))
+            shards.append(_write_shard(directory, label, source, len(shards) + 1, groups, records))
         groups, records = [], []
 
     for position, (key, file, ids, path, index) in enumerate(entries):
         if path != cached_path:
             cached, cached_path = raw.load_batches(path), path
-        source = cached[index].records
+        chunk = cached[index].records
         if dedupe:
             kept = []
-            for offset, record in enumerate(source):
+            for offset, record in enumerate(chunk):
                 dataset_id = ids[offset]
                 # 无有效 id 的记录 Bronze 本就丢弃，原样保留，归档不替 Bronze 做取舍。
                 if dataset_id is None or last[dataset_id] == (position, offset):
                     kept.append(record)
         else:
-            kept = list(source)
+            kept = list(chunk)
         if not kept:
             continue
-        groups.append({"key": list(key), "file": file, "count": len(kept)})
+        groups.append({"key": list(key), "file": file, "count": len(kept), "source": source})
         records.extend(kept)
         if len(records) >= SHARD_RECORDS:
             flush()
     flush()
     return shards
+
+
+def _archive_label(directory: Path, label: str, paths: list[Path]) -> list[Path]:
+    """按来源命名空间分流，再逐组合并；签名保持供调用方与回归测试复用。"""
+    by_source: dict[str, list[Path]] = {}
+    for path in paths:
+        by_source.setdefault(raw.source_of(path), []).append(path)
+    created: list[Path] = []
+    for source, group in sorted(by_source.items()):
+        created += _archive_source(directory, label, source, group)
+    return created
 
 
 def _card_view(paths: list[Path]) -> list[tuple[Any, ...]]:
