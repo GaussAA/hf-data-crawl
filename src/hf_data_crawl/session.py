@@ -68,10 +68,13 @@ class SetDiff:
     undetectable_change: list[str]
 
 
-def diff_sets(
-    baseline: Mapping[str, tuple[str | None, str]],
-    seen: Mapping[str, str | None],
-) -> SetDiff:
+#: 会话基线 id → (sha, status)、已见 id → sha。别名由本模块拥有：调用方与测试
+#: 共用，空字典才不会在类型检查里退化成 dict[Any, Any]。
+Baseline = Mapping[str, tuple[str | None, str]]
+Seen = Mapping[str, str | None]
+
+
+def diff_sets(baseline: Baseline, seen: Seen) -> SetDiff:
     """集合差的纯函数：基线 id → (sha, status)，已见 id → sha。
 
     对于 sha 为 null 的情况特殊处理：

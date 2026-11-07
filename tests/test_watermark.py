@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from hf_data_crawl.checkpoint import MemoryCheckpoint
 from hf_data_crawl.watermark import (
@@ -172,7 +173,7 @@ def test_全异常值不更新水位线() -> None:
 
 def test_提取记录的lastModified() -> None:
     """测试从记录列表提取时间戳。"""
-    records = [
+    records: list[dict[str, Any]] = [
         {"id": "a/b", "lastModified": "2026-11-07T00:20:00Z"},
         {"id": "c/d", "lastModified": "2026-11-07T00:10:00Z"},
         {"id": "e/f", "lastModified": None},  # null 值

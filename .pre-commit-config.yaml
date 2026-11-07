@@ -1,23 +1,38 @@
+# 核心工具（ruff / mypy / pytest / 文档校验）一律走 uv 锁定的本地环境，
+# 版本与 uv.lock、GitHub Actions 完全一致；只有与项目依赖无关的文本检查
+# 才用远端 hook。这样「本地能过、CI 却挂」或「钩子版本悄悄漂移」无从发生。
 repos:
-  # Ruff - 快速的 Python linter 和 formatter
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.4
+  - repo: local
     hooks:
-      - id: ruff
-        args: [--fix]
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
       - id: ruff-format
-
-  # Mypy - 类型检查
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.13.0
-    hooks:
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
       - id: mypy
-        additional_dependencies:
-          - types-requests
-          - polars
-          - httpx
+        name: mypy (src + tests)
+        entry: uv run mypy
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: docs-links
+        name: docs links
+        entry: uv run python scripts/check_docs_links.py
+        language: system
+        pass_filenames: false
+        files: ^(?:.*\.md|scripts/check_docs_links\.py)$
+      - id: pytest-fast
+        name: pytest (full suite)
+        entry: uv run pytest -x --tb=short
+        language: system
+        pass_filenames: false
+        always_run: true
 
-  # 基础检查
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
@@ -27,13 +42,3 @@ repos:
       - id: check-added-large-files
         args: [--maxkb=1000]
       - id: check-merge-conflict
-
-  # Pytest - 运行测试
-  - repo: local
-    hooks:
-      - id: pytest-fast
-        name: pytest (fast tests only)
-        entry: uv run pytest -x --tb=short
-        language: system
-        pass_filenames: false
-        always_run: true

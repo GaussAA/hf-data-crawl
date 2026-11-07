@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from hf_data_crawl.api import HfDatasetApi, HfResponse
+from hf_data_crawl.api import HfDatasetApi, HfResponse, Transport
 from hf_data_crawl.checkpoint import FileCheckpoint
 from hf_data_crawl.collect import CHECKPOINT_FILENAME, WATERMARK_FILENAME, Collector
 from hf_data_crawl.store import DatasetStore
@@ -79,7 +79,7 @@ def store(tmp_path: Path) -> DatasetStore:
     return DatasetStore(tmp_path / "data")
 
 
-def collector(transport: FakeCursorTransport, store: DatasetStore, **kwargs: Any) -> Collector:
+def collector(transport: Transport, store: DatasetStore, **kwargs: Any) -> Collector:
     return Collector(api=HfDatasetApi(transport=transport), store=store, **kwargs)
 
 

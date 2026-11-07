@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from hf_data_crawl.session import diff_sets
+from hf_data_crawl.session import Baseline, Seen, diff_sets
 from hf_data_crawl.status import Status
 
 
@@ -154,9 +154,7 @@ def test_消失的库不参与sha检测() -> None:
         "dataset/a": ("sha123", Status.ACTIVE.value),
         "dataset/b": (None, Status.ACTIVE.value),
     }
-    seen = {
-        # a 和 b 都消失了
-    }
+    seen: Seen = {}
 
     diff = diff_sets(baseline, seen)
 
@@ -219,8 +217,8 @@ def test_恢复但sha为null() -> None:
 
 def test_空基线空已见() -> None:
     """空基线、空已见，所有列表都应为空。"""
-    baseline = {}
-    seen = {}
+    baseline: Baseline = {}
+    seen: Seen = {}
 
     diff = diff_sets(baseline, seen)
 
@@ -233,7 +231,7 @@ def test_空基线空已见() -> None:
 
 def test_只有新增() -> None:
     """只有新增的库。"""
-    baseline = {}
+    baseline: Baseline = {}
     seen = {
         "dataset/a": "sha123",
         "dataset/b": None,
@@ -252,7 +250,7 @@ def test_只有消失() -> None:
         "dataset/a": ("sha123", Status.ACTIVE.value),
         "dataset/b": (None, Status.ACTIVE.value),
     }
-    seen = {}
+    seen: Seen = {}
 
     diff = diff_sets(baseline, seen)
 

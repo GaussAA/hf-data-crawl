@@ -17,17 +17,35 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import date
+from typing import Protocol
 
-from .api import MAX_LIMIT, HfDatasetApi, Page
+from .api import MAX_LIMIT, Page
 from .checkpoint import Checkpoint
 from .store import DatasetStore
 
 #: 每页钩子。返回非 None 表示「到此为止」，返回值即停止原因。
 #: 钩子在保存游标之前执行，可能因续跑被重复调用，副作用须幂等。
 PageHook = Callable[[Page, int], str | None]
+
+
+class ScanApi(Protocol):
+    """ScanRun 只依赖「按排序翻页」这一能力，不依赖具体 HTTP 实现。
+
+    生产实现 HfDatasetApi 与测试替身都按结构满足它，替身无需继承具体类。
+    """
+
+    def scan(
+        self,
+        *,
+        sort: str,
+        direction: str,
+        limit: int,
+        expand: Sequence[str],
+        checkpoint: Checkpoint | None,
+    ) -> Iterator[Page]: ...
 
 
 @dataclass(frozen=True)
@@ -66,7 +84,7 @@ class ScanSummary:
 class ScanRun:
     """翻页扫描的唯一实现。"""
 
-    def __init__(self, api: HfDatasetApi, store: DatasetStore) -> None:
+    def __init__(self, api: ScanApi, store: DatasetStore) -> None:
         self.api = api
         self.store = store
 

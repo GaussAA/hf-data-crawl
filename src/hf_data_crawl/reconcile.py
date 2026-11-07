@@ -52,7 +52,8 @@ class ReconcileSummary:
     disappeared: int
     sha_changed: int
     reactivated: int
-    report_path: Path | None
+    #: 每轮对账必写差异清单，`_write_report` 恒返回 Path，故不是可选值。
+    report_path: Path
     stopped_reason: str
     elapsed_seconds: float
     resumed: bool = False

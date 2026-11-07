@@ -63,16 +63,14 @@ def write(
     同内容重写会复用已有文件，其 written_at 保持首次写入时刻——内容相同，
     谁胜出都不影响结果。
     """
-    payload = {
-        "meta": {
-            **(meta or {}),
-            "snapshot_date": snapshot_date.isoformat(),
-            "page_index": page_index,
-            "record_count": len(records),
-            "written_at": written_at or _utc_now(),
-        },
-        "records": records,
+    snapshot_meta: dict[str, Any] = {
+        **(meta or {}),
+        "snapshot_date": snapshot_date.isoformat(),
+        "page_index": page_index,
+        "record_count": len(records),
+        "written_at": written_at or _utc_now(),
     }
+    payload: dict[str, Any] = {"meta": snapshot_meta, "records": records}
     body = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     # 摘要**不含**写入时刻：否则同一页每跑一次就多一个文件，幂等性失效。
     # 排除后，「同内容重写复用已有文件」照旧成立，其 written_at 保持首次写入
@@ -81,7 +79,7 @@ def write(
     digest_source = json.dumps(
         {
             **payload,
-            "meta": {key: value for key, value in payload["meta"].items() if key != "written_at"},
+            "meta": {key: value for key, value in snapshot_meta.items() if key != "written_at"},
         },
         ensure_ascii=False,
         sort_keys=True,

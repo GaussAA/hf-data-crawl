@@ -4,6 +4,24 @@
 
 ---
 
+## 工具链口径
+
+检查只有一个入口，工具版本全部由 `uv.lock` 锁定，pre-commit 与 GitHub Actions
+调用同一组命令；CI 里任何检查都不用 `continue-on-error` 掩盖失败。
+
+| 检查 | 命令 | 范围 |
+| --- | --- | --- |
+| 类型 | `uv run mypy` | `src` + `tests`（`[tool.mypy] files`） |
+| 类型（补充） | `uv run pyright` | `src`（`[tool.pyright] include`） |
+| 静态 | `uv run ruff check .` / `uv run ruff format --check .` | 全仓 |
+| 测试 | `uv run pytest -q` | 全量 |
+| 文档链接 | `python scripts/check_docs_links.py` | 全仓 Markdown |
+
+类型错误必须改真实类型（显式注解、Protocol、让类型承载不变式），
+不得用 `type: ignore` 或临时豁免绕过。
+
+---
+
 ## 测试命名
 
 函数名使用英文，docstring 使用中文：

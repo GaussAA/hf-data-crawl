@@ -37,8 +37,7 @@ jobs:
         run: uv run ruff format --check src tests
 
       - name: Run mypy
-        run: uv run mypy src
-        continue-on-error: true  # 初期允许类型错误，逐步修复
+        run: uv run mypy
 
   lint:
     name: Lint
@@ -79,8 +78,4 @@ jobs:
           test -f docs/operations/MONITORING.md
 
       - name: Check for broken links
-        run: |
-          # 简单检查相对链接是否存在
-          for file in $(find docs -name "*.md"); do
-            echo "Checking $file"
-          done
+        run: python3 scripts/check_docs_links.py

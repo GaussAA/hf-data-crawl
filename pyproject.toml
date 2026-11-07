@@ -28,6 +28,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "mypy>=1.13,<2",
     "pre-commit>=4.0.0",
     "pyright==1.1.408",
     "pytest>=9.2.0",
@@ -42,6 +43,12 @@ line-length = 100
 select = ["E", "F", "I", "UP"]
 # 行宽交给 ruff format；它不折行的长注释和字符串，不当作 lint 错误。
 ignore = ["E501"]
+
+[tool.mypy]
+# 类型检查的单一入口：`uv run mypy` 覆盖生产代码与测试代码，范围只在此定义。
+# pre-commit 与 CI 都调用这条命令，不再各自手抄路径或使用另一套工具版本。
+python_version = "3.13"
+files = ["src", "tests"]
 
 
 [tool.pyright]

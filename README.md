@@ -151,7 +151,7 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 
 详见：
 - 设计决策：[docs/adr/0001-metadata-refresh-consistency-hardening.md](docs/adr/0001-metadata-refresh-consistency-hardening.md)
-- 完整报告：[docs/COMPLETION_REPORT.md](docs/COMPLETION_REPORT.md)
+- 文档索引：[docs/README.md](docs/README.md)
 - 故障恢复：[docs/operations/RECOVERY.md](docs/operations/RECOVERY.md)
 - 监控指标：[docs/operations/MONITORING.md](docs/operations/MONITORING.md)
 - **标签维度拆 16 类**：按全站 950 万条标签实测频次补齐 `modality`（12.7%）/`region`（11.7%）/`format`（8.6%）等；无前缀标签单列 `plain_tags`（13.7%，旧式 `text`/`image` 标记都在这里）。维度覆盖率 51.5% → 99.9%。`tag_values` 长表视图由映射表自动生成，新增维度不必改 SQL。
