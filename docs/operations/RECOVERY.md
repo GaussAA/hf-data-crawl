@@ -90,8 +90,36 @@ uv run hf-data-crawl query --sql "SELECT COUNT(*) FROM bronze WHERE dt='2026-11-
 
 ---
 
+## Raw 归档与备份清理
+
+**症状**：`doctor` 报「Raw 归档积压」或「backup/raw 超过 7 天未清理」。
+
+**归档**（每周计划任务自动执行；也可手动指定某一天）：
+```bash
+uv run hf-data-crawl archive --older-than-days 30
+uv run hf-data-crawl archive --date 2026-11-07
+```
+归档先验证前后 Bronze 逐行相等，不等则撤销、原文件原地不动；原文件移入
+`data/backup/raw/dt=<日期>/`，**不删除**。归档分片的 `groups` 冻结了真实写入序，
+此后 `build` 不再依赖文件 mtime。
+
+**回滚**（对归档结果有疑问时，把原分块移回并删除分片）：
+```powershell
+$day = '2026-11-07'
+Move-Item "data\backup\raw\dt=$day\*" "data\raw\dt=$day\"
+Remove-Item "data\raw\dt=$day\*-archive-*.json.gz"
+```
+执行前务必确认 backup 中该日原分块齐全，否则该日观测点会丢。
+
+**确认后清理**（不可逆，须人工执行）：先跑一次 `build` 或核对 Bronze，确认派生无误：
+```powershell
+Remove-Item -Recurse "data\backup\raw\dt=$day"
+```
+
+---
+
 ## 维护建议
 
 - **每日**：检查 collect 是否成功
-- **每周**：运行 reconcile 全量对账
+- **每周**：reconcile 全量对账；archive 自动归档满 30 天的 Raw，确认无误后清理 backup
 - **每月**：运行 build 重建所有派生层

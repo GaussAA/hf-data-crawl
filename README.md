@@ -74,7 +74,8 @@ hf-data-crawl docs         [--out PATH]           # 默认 docs/DATA.md
 
 ```
 data/
-├── raw/dt=YYYY-MM-DD/part-<页号>-<内容摘要>.json.gz   # 原始响应，永久保留
+├── raw/dt=YYYY-MM-DD/part-<页号>-<内容摘要>.json.gz   # 原始响应：热区原样，30 天后归档为分片
+├── backup/raw/dt=YYYY-MM-DD/                         # 归档移出的原分块，人工确认后清理
 ├── bronze/dt=YYYY-MM-DD/bronze.parquet                # 一行一条，含 raw 列；只保留最新一天，旧分区可由 raw 重建
 ├── silver/dt=YYYY-MM-DD/silver.parquet                # 属性变更流水：新增或属性变了才追加；标签已拆 16 类维度，不含指标
 ├── state/
@@ -90,6 +91,15 @@ data/
 ```
 
 Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等），同页内容变了则另存（绝不覆盖丢数据）。
+
+**Raw 保留策略**：近 30 天（热区）保留原始分块，可直接重放；满 30 天由
+`hf-data-crawl archive`（每周计划任务）合并小分块、去掉同天被覆盖的重复记录，
+并把真实写入序冻结进分片的 `groups`，此后定序不再依赖文件 mtime。归档先验证
+前后 Bronze 逐行相等，不等即撤销；原文件**只移入 `backup/raw/`、不删除**。
+`doctor` 会在规模超阈值、归档积压或备份超过 7 天未清理时写 `ALERT.txt`，
+确认派生无误后按 `RECOVERY.md` 人工清理。**历史分区始终保留，`build` 仍按天
+全量重放**——删历史 Raw 会丢那一天的观测点。
+
 
 每张表的身份（路径、schema、来源）统一登记在 `tables.py`，读写、视图、重建清理都从它取，不在各处各自硬编码。
 

@@ -127,9 +127,10 @@ def load_batches(path: Path) -> list[Batch]:
     最重的一段纯 CPU 活，各文件互不依赖。
 
     普通分块一个文件对应一个 Batch。排序键取自 payload 的 `written_at`，文件名与
-    文件属性都不作数。旧分块（此字段引入之前）回退到 mtime——它们已经稳定、不会再变，
-    影响锁在历史里；键首位的 0/1 保证新分块永远排在其后，迁移期不会出现
-    「新写的数据输给历史数据」。
+    文件属性都不作数。没有该字段的历史分块按文件名确定性定序（**不读 mtime**）：
+    复制目录、解压归档、换机迁移都会改变 mtime，届时同一批 Raw 会推出不同 Bronze。
+    这类分块应先跑 `archive --date ...`，把真实写入序冻结进归档分片的 `groups`；
+    键首位的 0/1 保证新分块永远排在其后。
 
     归档分片（见 `archive` 模块）把多个原分块去重后并在一起，但**每条记录原来的排序键
     与来源文件名按段记在 `groups` 里**，这里按段切回多个 Batch——合并不改变任何
@@ -153,8 +154,11 @@ def load_batches(path: Path) -> list[Batch]:
     if isinstance(stamp, str) and stamp:
         key: tuple[Any, ...] = (1, stamp, path.name)
     else:
-        # 定宽浮点串，保证字典序等于数值序。
-        key = (0, "", f"{path.stat().st_mtime:020.6f}", path.name)
+        # 确定性回退：文件名（页号 + 内容摘要）不随文件系统状态变化。
+        # 未归档的历史分块应先跑 `archive --date`，把真实写入序冻结进 groups；
+        # 在此之前按文件名定序是确定的，但可能与迁移前的 mtime 序不同，
+        # doctor 会对「未归档且无 written_at」的历史分区告警。
+        key = (0, "", path.name)
     return [Batch(key, records, path.name)]
 
 

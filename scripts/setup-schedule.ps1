@@ -8,6 +8,7 @@
     hf-reconcile  每周日 04:00 全量对账；错过则开机后补跑一次。
     hf-doctor     每日 09:00 体检，另在登录后 10 分钟再查一次；有问题写 data\ALERT.txt。
     hf-sizes      每周日 06:00 补数据集规模（行数/列数），最慢的一步，增量可续。
+    hf-archive    每周一 05:00 归档满 30 天的 Raw（去重小分块、冻结写入序），原文件移入 backup。
 
     与旧版的差别（旧版是笔记本上三天漏采的原因）：
       - StartWhenAvailable：关机错过的任务，开机后补跑；
@@ -28,6 +29,7 @@ param(
     [string]$ReconcileTime = "04:00",
     [string]$DoctorTime = "09:00",
     [string]$SizesTime = "06:00",
+    [string]$ArchiveTime = "05:00",
     [switch]$Uninstall
 )
 
@@ -39,7 +41,7 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
-$taskNames = @("hf-collect", "hf-reconcile", "hf-doctor", "hf-sizes")
+$taskNames = @("hf-collect", "hf-reconcile", "hf-doctor", "hf-sizes", "hf-archive")
 
 if ($Uninstall) {
     foreach ($name in $taskNames) {
@@ -73,6 +75,10 @@ $jobs = @(
     # 下周从缺口接着补，不会重抓。
     @{ Name = "hf-sizes"; Script = "sizes.ps1"; Hours = 4
        Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At $SizesTime))
+       LogonDelay = $null },
+    # 归档放周一，避开周日的对账与规模补齐（写命令互斥锁）。
+    @{ Name = "hf-archive"; Script = "archive.ps1"; Hours = 2
+       Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At $ArchiveTime))
        LogonDelay = $null }
 )
 
@@ -121,6 +127,7 @@ Write-Host "  hf-collect    每日 $CollectTime + 登录后补跑（当天已采
 Write-Host "  hf-reconcile  每周日 $ReconcileTime，错过则开机后补跑"
 Write-Host "  hf-doctor     每日 $DoctorTime + 登录后体检，问题写 data\ALERT.txt"
 Write-Host "  hf-sizes      每周日 $SizesTime 补规模数据，增量合并、中断可续"
+Write-Host "  hf-archive    每周一 $ArchiveTime 归档满 30 天的 Raw，原文件移入 backup"
 Write-Host "日志目录：$(Join-Path $root 'data\logs')"
 Write-Host "运行摘要：$(Join-Path $root 'data\runs')"
 Write-Host "核对：Get-ScheduledTask -TaskName hf-* | Get-ScheduledTaskInfo"

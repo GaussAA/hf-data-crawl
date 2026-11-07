@@ -237,3 +237,62 @@ def test_skip_if_done只认同一快照日(tmp_path: Path) -> None:
     )
 
     assert transport.calls > first
+
+
+# ---------------------------------------------------------------- Raw 治理
+
+
+def test_Raw规模超阈值要报(tmp_path: Path, monkeypatch: Any) -> None:
+    import hf_data_crawl.doctor as doctor
+
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    monkeypatch.setattr(doctor, "RAW_MAX_FILES", 2)
+    monkeypatch.setattr(doctor, "RAW_MAX_BYTES", 10)
+
+    assert any("Raw 规模超阈值" in text for text in problems(store))
+
+
+def test_超出保留窗口仍是原始分块要报(tmp_path: Path) -> None:
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    old = NOW.date() - timedelta(days=40)
+    directory = store.raw_dir / f"dt={old.isoformat()}"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "part-1.json.gz").write_bytes(b"x")
+
+    found = [text for text in problems(store) if "Raw 归档积压" in text]
+
+    assert len(found) == 1 and old.isoformat() in found[0]
+
+
+def test_已归档分片不算积压(tmp_path: Path) -> None:
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    old = NOW.date() - timedelta(days=40)
+    directory = store.raw_dir / f"dt={old.isoformat()}"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "part-archive-000001-abcd1234.json.gz").write_bytes(b"x")
+
+    assert not any("Raw 归档积压" in text for text in problems(store))
+
+
+def test_backup超期未清理要报(tmp_path: Path) -> None:
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    stale = store.root / "backup" / "raw" / "dt=2026-09-01"
+    stale.mkdir(parents=True, exist_ok=True)
+    when = (NOW - timedelta(days=10)).timestamp()
+    os.utime(stale, (when, when))
+
+    assert any("backup/raw" in text and "未清理" in text for text in problems(store))
+
+
+def test_backup刚归档不报(tmp_path: Path) -> None:
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    fresh = store.root / "backup" / "raw" / "dt=2026-11-09"
+    fresh.mkdir(parents=True, exist_ok=True)
+    os.utime(fresh, (NOW.timestamp(), NOW.timestamp()))
+
+    assert not any("backup/raw" in text for text in problems(store))

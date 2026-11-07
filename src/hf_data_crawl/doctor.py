@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
+from . import raw
 from .lock import LOCK_NAME, LockBusy, describe_holder, exclusive
 from .rebuild import discover_raw_dates
 from .runs import read_runs
@@ -29,6 +30,14 @@ RECONCILE_MAX_AGE = timedelta(days=9)
 GAP_WINDOW_DAYS = 14
 #: 临时文件超过这个年纪才算残留；正在写的文件只会存在几秒。
 TMP_STALE_AFTER = timedelta(hours=1)
+#: Raw 是唯一不可重算、也是唯一会无限增长的一层。归档只压同一天内的重复，
+#: 跨天全量快照仍会累积；超过阈值说明归档没跟上或 backup 没清。
+RAW_MAX_BYTES = 5 * 1024**3
+RAW_MAX_FILES = 20_000
+#: 与 `cli archive --older-than-days` 的默认值一致。
+ARCHIVE_AFTER_DAYS = 30
+#: archive 只把原文件移进 backup、不删；放太久等于磁盘没省下来。
+BACKUP_PRUNE_AFTER_DAYS = 7
 #: 回看多久内的失败运行。
 FAILURE_WINDOW = timedelta(days=7)
 
@@ -95,6 +104,74 @@ def _raw_gaps(store: DatasetStore, today: date) -> Finding:
         more = f" 等 {len(missing)} 天" if len(missing) > 5 else ""
         return Finding(True, f"Raw 断日：{shown}{more}没有采集（那天的观测点已丢失）")
     return Finding(False, f"Raw：近 {GAP_WINDOW_DAYS} 天没有断日")
+
+
+def _raw_growth(store: DatasetStore) -> Finding:
+    """盯住 Raw 规模：归档只压同天重复，跨天全量快照仍需靠阈值兜底。"""
+    files = (
+        [path for path in store.raw_dir.rglob("*.json.gz") if path.is_file()]
+        if store.raw_dir.exists()
+        else []
+    )
+    total = sum(path.stat().st_size for path in files)
+    if len(files) > RAW_MAX_FILES or total > RAW_MAX_BYTES:
+        return Finding(
+            True,
+            f"Raw 规模超阈值：{len(files)} 个文件 / {total / 1024**3:.1f} GB"
+            f"（阈值 {RAW_MAX_FILES} 个 / {RAW_MAX_BYTES / 1024**3:.0f} GB）；"
+            "检查 archive 是否在跑、backup 是否清理",
+        )
+    return Finding(False, f"Raw 规模：{len(files)} 个文件 / {total / 1024**2:.0f} MB（阈值内）")
+
+
+def _archive_backlog(store: DatasetStore, today: date) -> Finding:
+    """超过保留窗口仍是原始分块：写入序未冻结、同天重复未压缩。"""
+    if not store.raw_dir.exists():
+        return Finding(False, "Raw 归档：无分区")
+    cutoff = today - timedelta(days=ARCHIVE_AFTER_DAYS)
+    pending: list[date] = []
+    for path in sorted(store.raw_dir.glob("dt=*")):
+        if not path.is_dir():
+            continue
+        try:
+            day = date.fromisoformat(path.name.removeprefix("dt="))
+        except ValueError:
+            continue
+        if day >= cutoff:
+            continue
+        files = list(path.glob("*.json.gz"))
+        if files and not all(raw.is_archive(item) for item in files):
+            pending.append(day)
+    if pending:
+        shown = "、".join(day.isoformat() for day in pending[:5])
+        more = f" 等 {len(pending)} 天" if len(pending) > 5 else ""
+        return Finding(
+            True,
+            f"Raw 归档积压：{shown}{more} 超过 {ARCHIVE_AFTER_DAYS} 天仍是原始分块"
+            "（写入序未冻结进 groups、同天重复未压缩）；请跑 hf-data-crawl archive",
+        )
+    return Finding(False, f"Raw 归档：{ARCHIVE_AFTER_DAYS} 天前的分区均已归档")
+
+
+def _backup_backlog(store: DatasetStore, now: datetime) -> Finding:
+    """archive 只移不删；backup 长期不清理，磁盘就没有真正释放。"""
+    backup_root = store.root / "backup" / "raw"
+    if not backup_root.exists():
+        return Finding(False, "Raw 备份：无待清理分区")
+    limit = timedelta(days=BACKUP_PRUNE_AFTER_DAYS)
+    stale = [
+        path
+        for path in backup_root.glob("dt=*")
+        if path.is_dir() and now - datetime.fromtimestamp(path.stat().st_mtime) > limit
+    ]
+    if stale:
+        shown = "、".join(path.name.removeprefix("dt=") for path in stale[:5])
+        return Finding(
+            True,
+            f"backup/raw 有 {len(stale)} 个分区超过 {BACKUP_PRUNE_AFTER_DAYS} 天未清理（{shown}）；"
+            "归档不删原文件，确认派生无误后按 RECOVERY.md 人工清理",
+        )
+    return Finding(False, f"Raw 备份：无超过 {BACKUP_PRUNE_AFTER_DAYS} 天的待清理分区")
 
 
 def _stale_temp_files(store: DatasetStore, now: datetime) -> Finding:
@@ -167,6 +244,9 @@ def diagnose(store: DatasetStore, now: datetime | None = None) -> list[Finding]:
         _freshness(runs, now, "collect", _COLLECT_DONE, COLLECT_MAX_AGE, "日增量采集"),
         _freshness(runs, now, "reconcile", _RECONCILE_DONE, RECONCILE_MAX_AGE, "全量对账"),
         _raw_gaps(store, now.date()),
+        _raw_growth(store),
+        _archive_backlog(store, now.date()),
+        _backup_backlog(store, now),
         _recent_failures(runs, now),
         _stale_temp_files(store, now),
         _lock_state(store),

@@ -83,6 +83,26 @@ jq -r '.status' data/runs/collect-*.json | tail -30 | grep -c "success"
 
 ---
 
+### 7. Raw 规模与归档积压
+
+**采集方法**：
+```bash
+du -sh data/raw data/backup/raw 2>/dev/null
+find data/raw -name '*.json.gz' | wc -l
+uv run hf-data-crawl doctor      # 直接给出「Raw 规模 / 归档 / 备份」三项结论
+```
+
+**正常范围**：
+- 热区（30 天内）每天 1000~2500 个原始分块；归档后每个历史分区约 100~130 个分片
+- `data/backup/raw/` 无超过 7 天的分区
+
+**告警**（`doctor` 自动判定并写 `ALERT.txt`）：
+- `data/raw` > 5 GB 或 > 20,000 文件
+- 30 天前的分区仍是原始分块（写入序未冻结、同天重复未压缩）
+- `backup/raw` 分区超过 7 天未清理（归档不删原文件，磁盘没真正释放）
+
+---
+
 ## 告警规则
 
 ### Critical（严重）
@@ -96,6 +116,7 @@ jq -r '.status' data/runs/collect-*.json | tail -30 | grep -c "success"
 - 派生恢复次数 > 0
 - Collect 耗时 > 600 秒
 - 成功率 < 90%
+- Raw 规模超阈值 / 归档积压 / backup 超期未清理
 
 ---
 

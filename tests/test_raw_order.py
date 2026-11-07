@@ -10,6 +10,9 @@
 
 而 `rebuild` 宣称「Raw 是唯一事实来源、结果可复现」。这两句话必须同时为真，
 否则 rebuild 就只是「碰巧能重建一次」。
+
+2026-11-07 收口：新分块写 `written_at`；历史分区经 `archive` 把真实写入序
+冻结进 `groups`；两者皆无的旧分块按文件名确定性定序，不再读 mtime。
 """
 
 from __future__ import annotations
@@ -201,10 +204,11 @@ def test_复制raw目录后重建结果完全一致(tmp_path: Path) -> None:
 # ---------------------------------------------------------------- 向后兼容
 
 
-def test_旧raw没有写入时刻时回退文件修改时间(tmp_path: Path) -> None:
-    """历史分块没有这个字段，不能因此把顺序丢掉。
+def test_旧raw没有写入时刻时按文件名确定性定序(tmp_path: Path) -> None:
+    """历史分块没有这个字段，定序不得依赖文件系统 mtime。
 
-    它们已经稳定、不会再变，故回退到 mtime 是安全的：影响锁在历史里。
+    故意把 mtime 设成与文件名字典序相反：若实现还在读 mtime，111 会胜出。
+    未归档的旧分块应先跑 `archive --date`，把真实写入序冻结进 groups。
     """
     import os
 
@@ -213,8 +217,8 @@ def test_旧raw没有写入时刻时回退文件修改时间(tmp_path: Path) -> 
     partition.mkdir(parents=True)
 
     for name, main_size, order in [
-        ("part-000001-aaaa.json.gz", 111, 10),
-        ("part-000001-bbbb.json.gz", 222, 20),
+        ("part-000001-aaaa.json.gz", 111, 10_000),
+        ("part-000001-bbbb.json.gz", 222, 10),
     ]:
         body = json.dumps(
             {
@@ -263,6 +267,44 @@ def test_新分块永远压过没有时刻的旧分块(store: DatasetStore) -> N
         meta={},
         written_at="2026-11-04T09:00:00.000000+00:00",
     )
+
+    bronze.build(store, DAY)
+
+    assert store.read_bronze(DAY).row(0, named=True)["main_size"] == 222
+
+
+# ---------------------------------------------------------------- 归档冻结
+
+
+def test_归档分片自带排序键不受文件mtime影响(tmp_path: Path) -> None:
+    """archive 把真实写入序冻结进 groups；此后 Raw 自包含，迁移不再改结果。"""
+    import os
+    import time
+
+    store = DatasetStore(tmp_path / "archived")
+    partition = store.raw_dir / f"dt={DAY.isoformat()}"
+    partition.mkdir(parents=True)
+    payload = {
+        "meta": {"label": "part", "archived": True, "record_count": 2},
+        "groups": [
+            {
+                "key": [1, "2026-11-04T09:00:00.000000+00:00", "old.json.gz"],
+                "file": "old.json.gz",
+                "count": 1,
+            },
+            {
+                "key": [1, "2026-11-04T12:00:00.000000+00:00", "new.json.gz"],
+                "file": "new.json.gz",
+                "count": 1,
+            },
+        ],
+        "records": [record(1, main_size=111), record(1, main_size=222)],
+    }
+    path = partition / "part-archive-000001-abcd1234.json.gz"
+    with gzip.open(path, "wb") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    future = time.time() + 10_000
+    os.utime(path, (future, future))
 
     bronze.build(store, DAY)
 
