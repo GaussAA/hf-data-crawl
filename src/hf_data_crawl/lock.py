@@ -9,10 +9,16 @@ collect、reconcile、手动 build 之间的互斥。
 
 做法
 ----
-对 `<data>/.lock` 的第 0 字节加操作系统级独占锁，非阻塞：拿不到就立刻失败并
-说明谁占着。进程退出（包括被杀、断电重启）时系统自动释放，所以不存在
-「残留锁文件导致永远起不来」。占用者信息写在第 0 字节之后，供诊断读取；
-被锁的只有第 0 字节，读信息不受影响。
+对 `<data>/.lock` 的第 0 字节加操作系统级独占锁：拿不到时，默认立刻失败并说明
+谁占着；给了 `wait_seconds` 就先等一会儿再试。进程退出（包括被杀、断电重启）
+时系统自动释放，所以不存在「残留锁文件导致永远起不来」。占用者信息写在第 0
+字节之后，供诊断读取；被锁的只有第 0 字节，读信息不受影响。
+
+为什么要有等待
+--------------
+立刻失败对人工命令是对的——报错比干等更有用。但对计划任务太脆：两个任务
+时间重叠一次，就白丢一轮。2026-11-07 实测：collect 03:10 撞上仍在跑的
+fetch-sizes，整轮采集作废，那天少了一个观测点。
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ import contextlib
 import json
 import os
 import sys
+import time
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
@@ -75,8 +82,12 @@ def describe_holder(root: Path) -> str:
 
 
 @contextlib.contextmanager
-def exclusive(root: Path, command: str) -> Iterator[None]:
-    """持有数据目录的独占写锁；拿不到抛 `LockBusy`。"""
+def exclusive(root: Path, command: str, wait_seconds: float = 0.0) -> Iterator[None]:
+    """持有数据目录的独占写锁；拿不到抛 `LockBusy`。
+
+    `wait_seconds` 为 0（默认）时立刻失败，适合人工命令；计划任务给正数，
+    撞上别的写命令时先等，等到就接着干。
+    """
     root.mkdir(parents=True, exist_ok=True)
     handle = (root / LOCK_NAME).open("a+b")
     try:
@@ -85,7 +96,13 @@ def exclusive(root: Path, command: str) -> Iterator[None]:
         if handle.tell() == 0:
             handle.write(b"\0")
             handle.flush()
-        if not _try_lock(handle):
+        acquired = _try_lock(handle)
+        if not acquired and wait_seconds > 0:
+            deadline = time.monotonic() + wait_seconds
+            while not acquired and time.monotonic() < deadline:
+                time.sleep(2.0)
+                acquired = _try_lock(handle)
+        if not acquired:
             raise LockBusy(f"数据目录正被另一个写命令占用：{describe_holder(root)}")
         info = json.dumps(
             {"command": command, "pid": os.getpid(), "since": datetime.now().isoformat()},

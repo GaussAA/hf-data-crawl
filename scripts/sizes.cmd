@@ -7,6 +7,8 @@ rem 已有 ok 记录会跳过，重复执行不会重抓。
 rem
 rem 默认给 4 小时时限；中断也没关系，已抓到的都已落库，下周接着补。
 setlocal
+rem 撞上别的写命令时最多等 15 分钟（fetch-sizes 可能要跑一小时），
+rem 而不是直接失败——一次时间重叠不该白丢一整轮。
 set "ROOT=%~dp0.."
 if "%HF_PROXY%"=="" set "HF_PROXY=http://127.0.0.1:7897"
 rem 三个小时的任务，日志不能等进程结束才刷出来——出问题时要能实时看到进度。
@@ -17,5 +19,5 @@ cd /d "%ROOT%"
 set "UV=uv"
 where uv >nul 2>&1 || set "UV=%USERPROFILE%\.local\bin\uv.exe"
 
-"%UV%" run hf-data-crawl fetch-sizes --top 300000 --workers 16 %* >> "data\logs\sizes.log" 2>&1
+"%UV%" run hf-data-crawl --lock-wait 900 fetch-sizes --top 300000 --workers 16 %* >> "data\logs\sizes.log" 2>&1
 exit /b %ERRORLEVEL%

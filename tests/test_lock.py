@@ -107,3 +107,60 @@ def test_只读命令不受锁影响(tmp_path: Path) -> None:
 
     assert code == 1
     assert read_runs(DatasetStore(root)) == []
+
+
+# ---------------------------------------------------------------- 计划任务的等待
+
+def test_不等待时只试一次就失败(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """人工命令：报错比干等更有用。"""
+    from hf_data_crawl import lock as lock_mod
+
+    calls = {"n": 0}
+
+    def always_busy(_handle: object) -> bool:
+        calls["n"] += 1
+        return False
+
+    monkeypatch.setattr(lock_mod, "_try_lock", always_busy)
+
+    with pytest.raises(lock_mod.LockBusy):
+        with lock_mod.exclusive(tmp_path, "manual"):
+            pass
+
+    assert calls["n"] == 1
+
+
+def test_给等待时会重试直到拿到(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """计划任务：撞上别的写命令时先等，而不是白丢一轮。
+
+    2026-11-07 实测：collect 03:10 撞上仍在跑的 fetch-sizes，整轮采集作废。
+    """
+    from hf_data_crawl import lock as lock_mod
+
+    calls = {"n": 0}
+
+    def busy_twice(_handle: object) -> bool:
+        calls["n"] += 1
+        return calls["n"] >= 3
+
+    monkeypatch.setattr(lock_mod, "_try_lock", busy_twice)
+    monkeypatch.setattr(lock_mod.time, "sleep", lambda _seconds: None)
+
+    with lock_mod.exclusive(tmp_path, "scheduled", wait_seconds=60):
+        pass
+
+    assert calls["n"] == 3, "应当一直重试到拿到为止"
+
+
+def test_等待超时后仍然失败(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """等到超时还没释放，必须如实失败，不能无限等下去。"""
+    from hf_data_crawl import lock as lock_mod
+
+    monkeypatch.setattr(lock_mod, "_try_lock", lambda _handle: False)
+    monkeypatch.setattr(lock_mod.time, "sleep", lambda _seconds: None)
+    ticks = iter([0.0, 1.0, 100.0])
+    monkeypatch.setattr(lock_mod.time, "monotonic", lambda: next(ticks, 100.0))
+
+    with pytest.raises(lock_mod.LockBusy):
+        with lock_mod.exclusive(tmp_path, "scheduled", wait_seconds=10):
+            pass

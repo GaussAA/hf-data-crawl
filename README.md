@@ -120,6 +120,8 @@ uv run hf-data-crawl doctor                        # 手动体检；有问题退
 
 每轮摘要落在 `runs/`，失败也写并带错误原因，不会静默。
 
+**写命令互斥**：所有写命令（collect / reconcile / build / enrich / fetch-sizes）持有数据目录的锁，避免 `current.parquet` 被并发覆盖。人工执行时撞上别人会立刻报错并说明占用者；计划任务的包装脚本加了 `--lock-wait 900`，会先等 15 分钟而不是白丢一轮（`fetch-sizes` 一次可能跑一小时，与 03:10 的采集重叠过，曾因此丢过一次采集）。
+
 ## 开发
 
 ```bash

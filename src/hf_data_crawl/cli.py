@@ -41,6 +41,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("HF_DATA_DIR", "data"),
         help="数据根目录（默认取 HF_DATA_DIR，否则 ./data）",
     )
+    parser.add_argument(
+        "--lock-wait",
+        type=float,
+        default=0.0,
+        help="写命令拿不到数据目录锁时最多等几秒；计划任务用，默认 0 立刻失败",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     collect = subparsers.add_parser("collect", help="日增量采集")
@@ -128,19 +134,19 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
     store = DatasetStore(Path(args.data_dir))
 
     if args.command == "collect":
-        return _execute(store, "collect", lambda: _collect(args, store, transport))
+        return _execute(store, "collect", lambda: _collect(args, store, transport), args.lock_wait)
     if args.command == "reconcile":
-        return _execute(store, "reconcile", lambda: _reconcile(args, store, transport))
+        return _execute(store, "reconcile", lambda: _reconcile(args, store, transport), args.lock_wait)
     if args.command == "build":
-        return _execute(store, "build", lambda: _build(store))
+        return _execute(store, "build", lambda: _build(store), args.lock_wait)
     if args.command == "archive":
-        return _execute(store, "archive", lambda: _archive(args, store))
+        return _execute(store, "archive", lambda: _archive(args, store), args.lock_wait)
     if args.command == "enrich":
-        return _execute(store, "enrich", lambda: _enrich(args, store, transport))
+        return _execute(store, "enrich", lambda: _enrich(args, store, transport), args.lock_wait)
     if args.command == "fetch-sizes":
-        return _execute(store, "fetch-sizes", lambda: _fetch_sizes(args, store, transport))
+        return _execute(store, "fetch-sizes", lambda: _fetch_sizes(args, store, transport), args.lock_wait)
     if args.command == "report":
-        return _execute(store, "report", lambda: _report(args, store))
+        return _execute(store, "report", lambda: _report(args, store), args.lock_wait)
     if args.command == "query":
         return _query(args, store)
     if args.command == "doctor":
@@ -155,6 +161,7 @@ def _execute(
     store: DatasetStore,
     command: str,
     action: Callable[[], Outcome],
+    lock_wait: float = 0.0,
 ) -> int:
     """执行一条命令并留下唯一一份运行记录。
 
@@ -166,7 +173,7 @@ def _execute(
     try:
         if command in WRITE_COMMANDS:
             # 写命令互斥：拿不到锁就如实失败并留下 runs 记录，而不是并发写坏 current。
-            with exclusive(store.root, command):
+            with exclusive(store.root, command, lock_wait):
                 outcome = action()
         else:
             outcome = action()
