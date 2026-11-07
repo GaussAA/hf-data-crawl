@@ -75,7 +75,22 @@ def broken_links(root: Path) -> list[str]:
     return problems
 
 
+def _force_utf8_output() -> None:
+    """把标准输出固定为 UTF-8。
+
+    Windows runner 的 stdout 默认 cp1252 + strict，成功时打印中文会抛
+    UnicodeEncodeError，把「校验通过」误判成失败；stderr 默认 backslashreplace，
+    中文被转义得难以阅读。文本流支持 reconfigure 时统一切换；被重定向为内存流
+    （如测试捕获）时本就不做编码，跳过即可。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_output()
     parser = argparse.ArgumentParser(description="校验 Markdown 相对链接")
     parser.add_argument(
         "--root",
