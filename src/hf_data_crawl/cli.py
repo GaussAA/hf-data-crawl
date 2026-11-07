@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .api import MAX_LIMIT, HfDatasetApi, Transport
 from .collect import Collector, CollectSummary
+from .deriving import check_and_recover
 from .doctor import diagnose, sync_alert
 from .enrich import Enricher, EnrichSummary
 from .gold import BOARDS, GoldCatalog, GoldNotReady
@@ -133,10 +134,20 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
     args = build_parser().parse_args(argv)
     store = DatasetStore(Path(args.data_dir))
 
+    # 启动时自动检查和恢复未完成的派生
+    # 只在写命令时执行，避免只读命令（query/report）也触发恢复
+    if args.command in WRITE_COMMANDS:
+        recovered = check_and_recover(store)
+        if recovered:
+            print(f"⚠️  检测到 {len(recovered)} 个未完成的派生，已自动恢复：{recovered}")
+            print("   提示：这些日期的派生层已清理，下次运行时会重新派生")
+
     if args.command == "collect":
         return _execute(store, "collect", lambda: _collect(args, store, transport), args.lock_wait)
     if args.command == "reconcile":
-        return _execute(store, "reconcile", lambda: _reconcile(args, store, transport), args.lock_wait)
+        return _execute(
+            store, "reconcile", lambda: _reconcile(args, store, transport), args.lock_wait
+        )
     if args.command == "build":
         return _execute(store, "build", lambda: _build(store), args.lock_wait)
     if args.command == "archive":
@@ -144,7 +155,9 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
     if args.command == "enrich":
         return _execute(store, "enrich", lambda: _enrich(args, store, transport), args.lock_wait)
     if args.command == "fetch-sizes":
-        return _execute(store, "fetch-sizes", lambda: _fetch_sizes(args, store, transport), args.lock_wait)
+        return _execute(
+            store, "fetch-sizes", lambda: _fetch_sizes(args, store, transport), args.lock_wait
+        )
     if args.command == "report":
         return _execute(store, "report", lambda: _report(args, store), args.lock_wait)
     if args.command == "query":

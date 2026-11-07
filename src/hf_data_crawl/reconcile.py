@@ -60,6 +60,8 @@ class ReconcileSummary:
     renamed: int = 0
     #: 发现了旧版本留下的会话（有游标、无基线），已丢弃并从头开始。
     discarded_stale_session: bool = False
+    #: 无法检测变更的库数量（sha 为 null）
+    undetectable_change: int = 0
 
 
 class Reconciler:
@@ -118,6 +120,7 @@ class Reconciler:
         new_ids = diff.new
         sha_changed = diff.sha_changed
         reactivated = diff.reactivated
+        undetectable = diff.undetectable_change
 
         disappeared: list[str] = []
         restricted: list[str] = []
@@ -147,6 +150,7 @@ class Reconciler:
             restricted=restricted,
             renamed=renamed,
             probe_reactivated=probe_reactivated,
+            undetectable=undetectable,
         )
 
         return ReconcileSummary(
@@ -164,6 +168,7 @@ class Reconciler:
             restricted=len(restricted),
             renamed=len(renamed),
             discarded_stale_session=session.discarded,
+            undetectable_change=len(undetectable),
         )
 
     def _classify_missing(self, missing: list[str]) -> dict[str, Status]:
@@ -198,19 +203,40 @@ class Reconciler:
         restricted: list[str] | None = None,
         renamed: list[str] | None = None,
         probe_reactivated: list[str] | None = None,
+        undetectable: list[str] | None = None,
     ) -> Path:
         rows: list[dict[str, Any]] = [
-            {"kind": "run", "id": "", "detail": f"stopped_reason={stopped_reason}"}
+            {"kind": "run", "id": "", "detail": f"stopped_reason={stopped_reason}", "note": ""}
         ]
-        rows += [{"kind": "new", "id": item, "detail": ""} for item in new_ids]
-        rows += [{"kind": "disappeared", "id": item, "detail": "404"} for item in disappeared]
-        rows += [{"kind": "restricted", "id": item, "detail": "401"} for item in restricted or []]
-        rows += [{"kind": "renamed", "id": item, "detail": ""} for item in renamed or []]
-        rows += [{"kind": "sha_changed", "id": item, "detail": ""} for item in sha_changed]
-        rows += [{"kind": "reactivated", "id": item, "detail": ""} for item in reactivated]
+        rows += [{"kind": "new", "id": item, "detail": "", "note": ""} for item in new_ids]
         rows += [
-            {"kind": "reactivated", "id": item, "detail": "probe"}
+            {"kind": "disappeared", "id": item, "detail": "404", "note": ""} for item in disappeared
+        ]
+        rows += [
+            {"kind": "restricted", "id": item, "detail": "401", "note": ""}
+            for item in restricted or []
+        ]
+        rows += [
+            {"kind": "renamed", "id": item, "detail": "", "note": ""} for item in renamed or []
+        ]
+        rows += [
+            {"kind": "sha_changed", "id": item, "detail": "", "note": ""} for item in sha_changed
+        ]
+        rows += [
+            {"kind": "reactivated", "id": item, "detail": "", "note": ""} for item in reactivated
+        ]
+        rows += [
+            {"kind": "reactivated", "id": item, "detail": "probe", "note": ""}
             for item in probe_reactivated or []
+        ]
+        rows += [
+            {
+                "kind": "undetectable_change",
+                "id": item,
+                "detail": "sha_null",
+                "note": "无法检测变更（sha为null）",
+            }
+            for item in undetectable or []
         ]
 
         self._report_dir.mkdir(parents=True, exist_ok=True)

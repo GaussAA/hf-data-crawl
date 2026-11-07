@@ -64,20 +64,44 @@ class SetDiff:
     reactivated: list[str]
     #: 基线里有、没见到。是否真下架要靠探测，且只有扫到末页才可判。
     missing: list[str]
+    #: 两边都有、但至少一方 sha 为 null，无法检测变更。
+    undetectable_change: list[str]
 
 
 def diff_sets(
     baseline: Mapping[str, tuple[str | None, str]],
     seen: Mapping[str, str | None],
 ) -> SetDiff:
-    """集合差的纯函数：基线 id → (sha, status)，已见 id → sha。"""
+    """集合差的纯函数：基线 id → (sha, status)，已见 id → sha。
+
+    对于 sha 为 null 的情况特殊处理：
+    - 如果基线和已见至少一方为 null，无法判断是否变更，归入 undetectable_change
+    - 只有两方都有非 null sha 且不同时，才算 sha_changed
+    """
     known = set(baseline)
     seen_ids = set(seen)
+    both = seen_ids & known
+
+    sha_changed: list[str] = []
+    undetectable: list[str] = []
+
+    for dataset_id in both:
+        baseline_sha, _ = baseline[dataset_id]
+        seen_sha = seen[dataset_id]
+
+        # 至少一方为 null，无法检测变更
+        if baseline_sha is None or seen_sha is None:
+            undetectable.append(dataset_id)
+        # 两方都有 sha 且不同
+        elif baseline_sha != seen_sha:
+            sha_changed.append(dataset_id)
+
     return SetDiff(
         new=sorted(seen_ids - known),
-        sha_changed=sorted(i for i in seen_ids & known if baseline[i][0] != seen[i]),
-        reactivated=sorted(i for i in seen_ids & known if baseline[i][1] in INACTIVE),
+        sha_changed=sorted(sha_changed),
+        reactivated=sorted(i for i in both if baseline[i][1] in INACTIVE),
         missing=sorted(known - seen_ids),
+        undetectable_change=sorted(undetectable),
     )
 
 

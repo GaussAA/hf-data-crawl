@@ -111,6 +111,7 @@ def test_只读命令不受锁影响(tmp_path: Path) -> None:
 
 # ---------------------------------------------------------------- 计划任务的等待
 
+
 def test_不等待时只试一次就失败(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """人工命令：报错比干等更有用。"""
     from hf_data_crawl import lock as lock_mod
