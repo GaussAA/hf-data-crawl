@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,7 @@ from typing import Any
 import pytest
 
 from hf_data_crawl.derive import derive_day
-from hf_data_crawl.gold import GoldCatalog
+from hf_data_crawl.gold import BOARDS, GoldCatalog
 from hf_data_crawl.store import DatasetStore
 
 DAY1 = date(2026, 11, 1)
@@ -288,7 +289,7 @@ def test_宽视图带可直接打开的地址(catalog: GoldCatalog) -> None:
 
 
 def test_带数据集列表的榜单都附地址(catalog: GoldCatalog) -> None:
-    for name in ("downloads", "alltime", "growth", "ranking"):
+    for name in ("downloads", "alltime", "growth", "ranking", "ranking_alltime"):
         frame = catalog.board(name, 5)
         assert frame.height > 0, f"{name} 应有数据"
         assert "url" in frame.columns, f"{name} 缺 url 列"
@@ -300,3 +301,23 @@ def test_聚合类榜单不需要地址(catalog: GoldCatalog) -> None:
     frame = catalog.board("categories", 5)
 
     assert "url" not in frame.columns
+
+
+# ---------------------------------------------------------------- 文档契约
+
+
+def test_README列出全部内置榜单() -> None:
+    """榜单清单不能有手抄副本：README 的表格必须与 BOARDS 逐项对齐。
+
+    新增一榜只改 gold.py 时，query 的候选项会自动跟着变，README 却不会——
+    读文档的人于是查不到新榜。这条断言把那处静默漂移改成显式失败。
+    """
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    section = readme.split("内置榜单（", 1)[1].split("**两个下载口径", 1)[0]
+    listed = set(re.findall(r"^\| `([a-z_]+)` \|", section, flags=re.MULTILINE))
+    expected = set(BOARDS)
+
+    assert listed == expected, (
+        f"README 榜单清单与 BOARDS 不一致：缺 {sorted(expected - listed)}，"
+        f"多 {sorted(listed - expected)}"
+    )

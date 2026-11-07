@@ -13,8 +13,10 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from hf_data_crawl.api import HfDatasetApi, HfResponse
-from hf_data_crawl.collect import Collector
+from hf_data_crawl.checkpoint import FileCheckpoint
+from hf_data_crawl.collect import CHECKPOINT_FILENAME, WATERMARK_FILENAME, Collector
 from hf_data_crawl.store import DatasetStore
+from hf_data_crawl.watermark import WatermarkCheckpoint
 
 DAY1 = date(2026, 11, 1)
 DAY2 = date(2026, 11, 2)
@@ -99,7 +101,7 @@ def test_次轮无变更在连续N页后提前停止(store: DatasetStore) -> Non
     again = FakeCursorTransport([page("a", 3), page("b", 2), page("c", 2)])
     summary = collector(again, store).run(DAY2, limit=100, pages_without_new=2)
 
-    assert summary.stopped_reason == "watermark"
+    assert summary.stopped_reason in {"watermark_no_new", "watermark_timestamp"}
     assert summary.new_ids == 0
     assert len(again.calls) == 2
     assert store.read_current().height == 5
@@ -223,3 +225,42 @@ def test_顶部刷新使用下载量排序(store: DatasetStore) -> None:
     downloads_calls = [call for call in transport.calls if call["sort"] == "downloads"]
     assert downloads_calls
     assert downloads_calls[0]["direction"] == "-1"
+
+
+# ---------------------------------------------------------------- 水位线跨轮
+
+
+def _dated(prefix: str, count: int, last_modified: str) -> list[dict[str, Any]]:
+    return [{**row, "lastModified": last_modified} for row in page(prefix, count)]
+
+
+def test_正常完成后水位线留给下一轮(store: DatasetStore) -> None:
+    """完成态清游标、留水线：下轮必须能加载到非空水位线。"""
+    transport = FakeCursorTransport([page("a", 2)])
+    summary = collector(transport, store).run(DAY1, limit=100, pages_without_new=5)
+
+    assert summary.stopped_reason == "end"
+    watermark_path = store.state_dir / WATERMARK_FILENAME
+    assert watermark_path.exists()
+    reloaded = WatermarkCheckpoint(
+        FileCheckpoint(store.state_dir / CHECKPOINT_FILENAME), watermark_path
+    )
+    assert reloaded.watermark.latest_modified == "2026-11-01T00:00:00.000Z"
+    assert reloaded.cursor is None, "完成态游标应作废"
+
+
+def test_次轮凭水位线在越过边界时停止(store: DatasetStore) -> None:
+    """端到端：上轮水线 11-01，下轮首页全比它新 → 触发时间戳停止。
+
+    旧实现下轮加载到的是空水线，永远走不到这个分支，只能靠「连续 N 页无新 id」
+    后备。这条用例把「时间戳机制真的生效」钉住，而非只验文件存在。
+    """
+    first = FakeCursorTransport([page("a", 2)])
+    first_summary = collector(first, store).run(DAY1, limit=100, pages_without_new=5)
+    assert first_summary.stopped_reason == "end"
+
+    again = FakeCursorTransport([_dated("b", 2, "2026-11-02T00:00:00.000Z")])
+    summary = collector(again, store).run(DAY2, limit=100, pages_without_new=5)
+
+    assert summary.stopped_reason == "watermark_timestamp"
+    assert len(again.calls) == 1

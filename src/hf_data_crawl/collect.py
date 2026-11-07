@@ -17,6 +17,7 @@ from .checkpoint import FileCheckpoint
 from .derive import derive_day
 from .scan import ScanRun, ScanSpec, ScanSummary
 from .store import DatasetStore
+from .watermark import WatermarkCheckpoint, extract_last_modified
 
 #: 身份与指标基座：一次请求拿全。含体积（mainSize）、私有与禁用标记、趋势分。
 #:
@@ -51,6 +52,7 @@ IDENTITY_EXPAND: tuple[str, ...] = (
 LEAN_EXPAND: tuple[str, ...] = IDENTITY_EXPAND
 
 CHECKPOINT_FILENAME = "collect-checkpoint.json"
+WATERMARK_FILENAME = "collect-watermark.txt"
 
 
 @dataclass(frozen=True)
@@ -104,32 +106,20 @@ class Collector:
             1, pages_without_new if pages_without_new is not None else self._pages_without_new
         )
         started = time.monotonic()
-        checkpoint = (
-            None if dry_run else FileCheckpoint(self._store.state_dir / self._checkpoint_filename)
-        )
-        known: set[str] = set() if dry_run else set(self._store.read_current()["id"].to_list())
-
-        new_ids = 0
-        streak = 0
-        preview: list[dict[str, Any]] | None = None
-
-        def track(page: Page, _index: int) -> str | None:
-            """维护 watermark：连续 threshold 页没有新 id 就停。"""
-            nonlocal new_ids, streak
-            fresh = sum(1 for record in page.records if record["id"] not in known)
-            known.update(record["id"] for record in page.records)
-            new_ids += fresh
-            streak = 0 if fresh else streak + 1
-            return "watermark" if streak >= threshold else None
-
-        def capture(page: Page, _index: int) -> str | None:
-            nonlocal preview
-            preview = page.records[:5]
-            return "dry_run"
-
         runner = ScanRun(self._api, self._store)
 
+        # 试跑提前返回：此后每条路径都确定要落盘，断点与水线不再有「可能为 None」
+        # 这种状态。原先两类运行混在一条函数里，每个使用点都得写一层
+        # `if checkpoint is not None` 才能骗过类型检查——而那层兜底恰恰遮住了
+        # 「非试跑必有断点」这条不变式：真断了会静默跳过保存，不报错。
         if dry_run:
+            preview: list[dict[str, Any]] | None = None
+
+            def capture(page: Page, _index: int) -> str | None:
+                nonlocal preview
+                preview = page.records[:5]
+                return "dry_run"
+
             scan = runner.run(
                 snapshot_date,
                 ScanSpec(
@@ -156,6 +146,42 @@ class Collector:
                 elapsed_seconds=time.monotonic() - started,
                 preview=preview,
             )
+
+        # 水位线机制：基于时间戳而非「连续 N 页无新 id」。
+        base_checkpoint = FileCheckpoint(self._store.state_dir / self._checkpoint_filename)
+        checkpoint = WatermarkCheckpoint(
+            base_checkpoint, self._store.state_dir / WATERMARK_FILENAME
+        )
+
+        known: set[str] = set(self._store.read_current()["id"].to_list())
+
+        new_ids = 0
+        streak = 0
+        current_watermark = checkpoint.watermark
+
+        def track(page: Page, _index: int) -> str | None:
+            """双重 watermark：既看新 id、也看时间戳。"""
+            nonlocal new_ids, streak, current_watermark
+
+            fresh = sum(1 for record in page.records if record["id"] not in known)
+            known.update(record["id"] for record in page.records)
+            new_ids += fresh
+
+            # 时间戳 watermark：本页最老记录仍晚于上次最新，说明已越过旧数据边界
+            timestamps = extract_last_modified(page.records)
+            if current_watermark.is_stale(timestamps):
+                return "watermark_timestamp"
+
+            # 更新水位线（即使未触发停止，也要记录本页最新时间戳）
+            current_watermark = current_watermark.update(timestamps)
+            # 只写水位线：此刻 checkpoint.cursor 还是上一页的，本页的 next_cursor
+            # 由 ScanRun 在钩子之后统一保存。旧写法把这个 cursor 传给 save，
+            # 首轮它恒为 None，被 save 当成「完成」信号，刚写的水线当场清空。
+            checkpoint.save_watermark(current_watermark)
+
+            # 传统 watermark：连续 N 页无新 id（保留作为后备）
+            streak = 0 if fresh else streak + 1
+            return "watermark_no_new" if streak >= threshold else None
 
         scan = runner.run(
             snapshot_date,
@@ -195,8 +221,13 @@ class Collector:
         state = day.state
 
         # 只有「走到末页」与「触发 watermark」算本轮完成；有界停止要保住游标。
-        if checkpoint is not None and scan.stopped_reason in {"end", "watermark"}:
-            checkpoint.save(None)
+        # 完成只作废游标，水位线留给下一轮判断新旧边界（见 WatermarkCheckpoint.finish）。
+        if scan.stopped_reason in {
+            "end",
+            "watermark_timestamp",
+            "watermark_no_new",
+        }:
+            checkpoint.finish()
 
         return CollectSummary(
             snapshot_date=snapshot_date,

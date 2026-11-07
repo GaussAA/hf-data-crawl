@@ -114,6 +114,14 @@ BOARDS: dict[str, str] = {
         ORDER BY d.downloads DESC NULLS LAST
         LIMIT ?
     """,
+    # 与 ranking 列结构完全一致，只换排序键。页面上「累计」若只是把 30 天榜的
+    # 那几行重排，看到的是「30 天头部里的累计排序」而非累计榜——两者成员都不同。
+    "ranking_alltime": f"""
+        SELECT d.id, {url_expr("d.id")}, d.pretty_name, d.downloads, d.downloads_all_time, d.likes, d.license_name
+        FROM datasets AS d
+        ORDER BY d.downloads_all_time DESC NULLS LAST
+        LIMIT ?
+    """,
     "licenses": """
         SELECT license_name, count(*) AS datasets
         FROM card WHERE license_name IS NOT NULL
