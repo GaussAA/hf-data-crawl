@@ -218,10 +218,10 @@ uv run hf-data-crawl doctor                        # 手动体检；有问题退
 
 - **需要 PowerShell 7**（`pwsh`）。注册时会把 `pwsh` 的绝对路径写进任务动作——计划任务的环境不保证有 `PATH`。
 - 代理默认取 `HF_PROXY`，未设则用 `http://127.0.0.1:7897`。
-- 日志追加到 `data\logs\<任务名>.log`，**UTF-8**。三处编码都设了才有效（`PYTHONIOENCODING` / `Console::OutputEncoding` / `OutputEncoding`），只设一处仍会落成 GBK——中文系统下打开是乱码。
+- 日志按轮写成 `data\logs\<时间戳>-<任务名>.log`（如 `20261108T031000-collect.log`），**UTF-8**，每次跑完自动保留最近 200 个——与 `runs/` 的 500 条同一哲学：有界才不会被计划任务悄悄撑爆。此前是 `collect.log` 单文件永久追加，既对不上 `runs/` 里那轮摘要，也只能靠人手工改名成 `.bak`。三处编码都设了才有效（`PYTHONIOENCODING` / `Console::OutputEncoding` / `OutputEncoding`），只设一处仍会落成 GBK——中文系统下打开是乱码。
 - `uv` 找不到时回退到 `%USERPROFILE%\.local\bin\uv.exe`；两者都没有则直接报错，不会静默跑空。
 
-每轮摘要落在 `runs/`，失败也写并带错误原因，不会静默。
+每轮摘要落在 `runs/`，失败也写并带错误原因，不会静默。`runs/<时间戳>-<命令>.json` 与 `logs/<时间戳>-<命令>.log` 是同一次运行的**两半**（机读结论 / 人读现场），同键不同扩展名，查某一轮取同前缀即可。`doctor` 不写 `runs/`：它退出码 1 表示「有告警」而非「命令失败」，写进去会污染「近 7 天无失败运行」那条判据；体检结论看 `data\ALERT.txt`（覆盖式，只存最新一次）与对应日志。
 
 **写命令互斥**：所有写命令（collect / reconcile / build / enrich / fetch-sizes）持有数据目录的锁，避免 `current.parquet` 被并发覆盖。人工执行时撞上别人会立刻报错并说明占用者；计划任务的包装脚本加了 `--lock-wait 900`，会先等 15 分钟而不是白丢一轮（`fetch-sizes` 一次可能跑一小时，与 03:10 的采集重叠过，曾因此丢过一次采集）。
 

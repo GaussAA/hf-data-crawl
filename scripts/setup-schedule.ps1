@@ -22,7 +22,9 @@
         pwsh -File scripts\setup-schedule.ps1 -Uninstall
 
 .NOTES
-    采集日志落 data\logs\，运行摘要落 data\runs\，任务本身不弹窗。
+    采集日志落 data\logs\（按轮命名 `时间戳-任务名.log`，自动保留最近 200 个），
+    运行摘要落 data\runs\（同样是时间戳-命令，但为结构化 JSON），任务本身不弹窗。
+    两者同键不同扩展名：查某一轮的现场过程与结论，取同前缀即可。
 #>
 [CmdletBinding()]
 param(

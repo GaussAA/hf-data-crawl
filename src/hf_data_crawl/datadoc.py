@@ -53,7 +53,12 @@ _TABLE_GRAIN: dict[str, tuple[str, str]] = {
 
 #: data/ 下不属于任何表的文件与目录。
 SIDE_FILES: tuple[tuple[str, str, str], ...] = (
-    ("logs/", "计划任务的输出日志，按运行日期命名", "不参与任何派生"),
+    (
+        "logs/",
+        "计划任务的输出日志，**按轮命名**（`时间戳-任务名.log`），与 `runs/` 同键"
+        "不同扩展名，自动保留最近 `LOG_KEEP` 个",
+        "不参与任何派生",
+    ),
     (
         "runs/",
         "每轮运行摘要，成功与失败都写（保留最近 `RUNS_KEEP` 条）；"
@@ -195,7 +200,7 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         f"├── reports/                    # 对账清单与榜单页（当前 {_dir_summary(store_root, 'reports')}）",
         f"├── runs/                       # 每轮运行摘要（当前 {_dir_summary(store_root, 'runs')}）",
         f"├── exports/                    # 宽表导出（可重建，当前 {_dir_summary(store_root, 'exports')}）",
-        "└── logs/                       # 计划任务日志",
+        "└── logs/                       # 计划任务日志（按轮命名，最近 200 个）",
         "```",
         "",
         "## 三、各张表",
@@ -283,6 +288,12 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "    后果有二：同一 id 若两边都有，指标以扫描批次为准；某一日补抓覆盖越广，",
         "    该日观测行数就越多——11-07 因补抓覆盖近全库，观测由 20.5 万补到 78.2 万，",
         "    这不是虚增，原先那 20.5 万才是只扫了头部。",
+        "13. **`runs/` 与 `logs/` 不是重复**：前者是机读台账（JSON，doctor 与两轮对比都靠它，",
+        "    保留最近 500 条），后者是人读现场（纯文本，带进度与逐条 `[ok]` / `[!]`）。",
+        "    两者同键不同扩展名：`20261108T031000-collect.json` 与同名 `.log` 是同一次运行。",
+        "    体检结论不进 `runs/`——`doctor` 退出码 1 是「有告警」而非「命令失败」，",
+        "    记成 failed 会污染「近 7 天无失败运行」那条判据；它的结论看 `ALERT.txt`",
+        "    （覆盖式，只存最新一次）与 `logs/` 里那轮的日志。",
         "",
         "## 六、HF 页面上的数字，在表里是哪个字段",
         "",
