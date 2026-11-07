@@ -85,6 +85,12 @@ SIDE_FILES: tuple[tuple[str, str, str], ...] = (
         "**可重建**：删掉后跑 `build --stale` 重放一遍即恢复",
     ),
     (
+        "state/health-history.jsonl",
+        "体检流水：每次 `doctor` 一行（时间、问题条数、问题原文），据它回答"
+        "「断日从哪天开始」；保留最近 `HEALTH_KEEP` 次",
+        "**可重建**：删掉只是丢历史，不影响任何数据",
+    ),
+    (
         "exports/",
         "宽表导出：`gold.datasets` 视图的单文件 parquet，供分析工具直接打开",
         "**可重建**：不参与派生，删掉后重跑 `export-wide`",

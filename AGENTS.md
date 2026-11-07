@@ -31,6 +31,7 @@ Add new terms there first before using them.
 - Derive provenance: `lineage.py` (per-day Raw fingerprint; staleness detection + `build --stale`)
 - Layer reconcile: `doctor._layer_reconcile` (current ↔ observations ↔ silver, plus last_seen_at vs newest Raw)
 - Single day frame: `bronze.day_frame` (Bronze partition + card-batch supplements; shared by `silver` and `state`)
+- Health history: `health.py` (per-run findings log; `runs/` records command outcome, not alerts)
 - See [ADR-0001](docs/adr/0001-metadata-refresh-consistency-hardening.md) for design decisions.
 
 ### Test naming

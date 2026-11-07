@@ -32,7 +32,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `build` | 重建派生层：默认只重放近 7 天热区，`--stale` 只修派生滞后的日子及其后，`--full` 全量重放 | 否 |
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
 | `report` | 生成单文件榜单页（离线可看） | 否 |
-| `doctor` | 体检：任务是否按时、Raw 是否断日、有无残留文件，异常写 `ALERT.txt` | 否 |
+| `doctor` | 体检：调度新鲜度、底库行龄、层间勾稽、派生凭证、断日与残留文件；异常写 `ALERT.txt` 并追加体检流水 | 否 |
 | `archive` | 归档早于 N 天的 Raw 分区：合并小分块并去重，先验证 Bronze 逐行相等，原文件移入 `backup/raw/` | 否 |
 | `compact` | 压缩冷区 Raw：跨天去重成一份基线，原分块移入 `backup/raw/` 不删除 | 否 |
 | `docs` | 生成 `docs/DATA.md`：data 目录结构、各文件作用、全部字段含义 | 否 |
@@ -178,6 +178,11 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 - 启动时自动检查：标记超过 10 分钟 → 清理该日的派生层 → 重新派生
 
 **效果**：派生不一致风险降低 80%+，启动时会显示恢复信息
+
+**2026-11-08 补**：原子替换本身在 Windows 上也会失败——Defender 实时扫描会在文件
+刚写完时短暂持有句柄，`os.replace` 随即报 WinError 5（实测 `reconcile` 第 10 分钟
+替换 checkpoint 失败，整轮 30 分钟作废）。`atomic.replace` 现对 `PermissionError`
+退避重试三次（20/60/180ms），其余异常立即抛出。详见 GLOSSARY #47。
 
 ### 3. 派生凭据：Raw 被改过，就得证明派生跟上了（2026-11-08）
 

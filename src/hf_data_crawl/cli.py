@@ -20,6 +20,7 @@ from .enrich import Enricher, EnrichSummary
 from .env import load_env_file
 from .files import FileFetcher, FileSummary, HfFilesApi
 from .gold import BOARDS, GoldCatalog, GoldNotReady, UnsafeQuery
+from .health import record as record_health
 from .lineage import restamp
 from .lock import LockBusy, exclusive
 from .rebuild import RebuildSummary, divergent_since, rebuild_from_raw, replay_suffix
@@ -634,10 +635,20 @@ def _write_docs(args: argparse.Namespace, store: DatasetStore) -> int:
 
 
 def _doctor(store: DatasetStore) -> int:
-    """只读体检。有问题退出码为 1，并写 ALERT.txt；全部正常则删掉它。"""
+    """体检：有问题退出码为 1，写 ALERT.txt，并把结论追加进体检流水。
+
+    流水（`state/health-history.jsonl`）与 `runs/` 分工不同：`runs/` 记「命令成没
+    成功」，而体检退出码 1 是「有告警」——记进 runs 会让「近 7 天无失败运行」失真。
+    没有流水时，「断日从哪天开始」这类问题只能靠人回忆。
+    """
     now = datetime.now()
     findings = diagnose(store, now)
     sync_alert(store, findings, now)
+    try:
+        record_health(store, findings, now)
+    except OSError as error:
+        # 记不下流水不该让体检本身变成失败：结论仍按 findings 判定。
+        print(f"[!] 体检历史写入失败：{error}")
     for item in findings:
         print(f"{'[!]' if item.problem else '[ok]'} {item.text}")
     return 1 if any(item.problem for item in findings) else 0

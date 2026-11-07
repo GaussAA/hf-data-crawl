@@ -16,13 +16,41 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 import polars as pl
 
+#: `os.replace` 遇到瞬态占用时的重试节奏（秒）。见 `replace` 的说明。
+REPLACE_BACKOFF: tuple[float, ...] = (0.02, 0.06, 0.18)
+
 
 def _temp_for(path: Path) -> Path:
     return path.with_suffix(path.suffix + ".tmp")
+
+
+def replace(temp: Path, target: Path) -> None:
+    """`os.replace` 的重试版：只对**瞬态**占用重试，持续性占用如实失败。
+
+    为什么需要：Windows 不允许替换「正被另一个句柄打开」的文件，而 Defender 的
+    实时扫描与索引服务恰好在文件刚写完时短暂持有它。2026-11-08 实测：`reconcile`
+    跑到第 10 分钟替换 `reconcile-checkpoint.json` 时被 WinError 5 拒绝，整轮
+    30 分钟作废（游标尚可续跑，但那一轮的对账结论全丢）。同一文件此后手动替换
+    立即成功——说明占用是毫秒级的，不是锁。
+
+    只捕 `PermissionError`：其余失败（磁盘满、路径不存在）重试没有意义，应当
+    立刻报出真因。三次退避合计约 0.26 秒，能覆盖扫描器的瞬时窗口，又不会让
+    真正的错误迟到近一秒才浮现。
+    """
+    attempts = len(REPLACE_BACKOFF) + 1
+    for attempt in range(attempts):
+        try:
+            os.replace(temp, target)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(REPLACE_BACKOFF[attempt])
 
 
 def write_bytes(path: Path, payload: bytes) -> None:
@@ -30,7 +58,7 @@ def write_bytes(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = _temp_for(path)
     temp.write_bytes(payload)
-    os.replace(temp, path)
+    replace(temp, path)
 
 
 def write_text(path: Path, content: str) -> None:
@@ -43,7 +71,7 @@ def write_parquet(frame: pl.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = _temp_for(path)
     frame.write_parquet(temp)
-    os.replace(temp, path)
+    replace(temp, path)
 
 
 def write_csv(frame: pl.DataFrame, path: Path) -> None:
@@ -51,4 +79,4 @@ def write_csv(frame: pl.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = _temp_for(path)
     frame.write_csv(temp)
-    os.replace(temp, path)
+    replace(temp, path)
