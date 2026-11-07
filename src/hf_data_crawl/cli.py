@@ -17,6 +17,7 @@ from .collect import Collector, CollectSummary
 from .deriving import check_and_recover
 from .doctor import diagnose, sync_alert
 from .enrich import Enricher, EnrichSummary
+from .env import load_env_file
 from .files import FileFetcher, FileSummary, HfFilesApi
 from .gold import BOARDS, GoldCatalog, GoldNotReady, UnsafeQuery
 from .lock import LockBusy, exclusive
@@ -311,8 +312,24 @@ def _execute(
 
 
 def _open_transport(transport: Transport | None) -> Transport:
-    """联网命令取传输的唯一入口：没注入才构造真实的 httpx 实现。"""
-    return transport if transport is not None else HttpxTransport()
+    """联网命令取传输的唯一入口：没注入才读本机凭据并构造真实的 httpx 实现。
+
+    本机凭据（`HF_TOKEN` / `HF_PROXY`）只在**真要联网**时加载，不在 `main`
+    开头统一读盘：测试注入假传输时便不会碰磁盘上的 `.env`，本机令牌与代理
+    也就不会污染用例。
+    """
+    if transport is not None:
+        return transport
+    load_env_file()
+    return HttpxTransport()
+
+
+def _files_transport(transport: Transport | None, timeout: float) -> Transport:
+    """`fetch-files` 需要自定义超时，故单独留一个同样先加载凭据的入口。"""
+    if transport is not None:
+        return transport
+    load_env_file()
+    return HttpxTransport(timeout=timeout)
 
 
 def _snapshot(args: argparse.Namespace) -> date:
@@ -469,9 +486,7 @@ def _fetch_files(
     ordered = current.sort("downloads", descending=True, nulls_last=True)
     fetcher = FileFetcher(
         api=HfFilesApi(
-            transport=(
-                transport if transport is not None else HttpxTransport(timeout=args.timeout)
-            ),
+            transport=_files_transport(transport, args.timeout),
             max_retries=args.max_retries,
             max_pages=args.max_pages,
         ),
