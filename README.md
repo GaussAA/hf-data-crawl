@@ -57,6 +57,7 @@ hf-data-crawl export-wide  [--out PATH]           # 默认 data/exports/datasets
 hf-data-crawl request      new REQ-0001 --title 标题 --requester 姓名 [--purpose ...] [--cadence once|daily|weekly|monthly|manual]
 hf-data-crawl request      list
 hf-data-crawl request      show REQ-0001
+hf-data-crawl request      run REQ-0001 [--force]   # once 需求交付过要重交须加 --force
 ```
 
 全局参数 `--data-dir` 需放在子命令之前，默认取 `HF_DATA_DIR`，否则 `./data`。
@@ -301,6 +302,16 @@ deliveries/REQ-0001/20261108T1450/
 `manifest.json` 里的 `source.current_md5` 是整份档案的锚点：日后任何一份交付都能
 回答「它基于哪一版底库」。`deliveries/` 的 `data.*` 不进仓库，但 `manifest.json`
 与 `README.md` 进 —— 档案的「话」可评审，档案的「字节」不占仓库，两者靠 sha256 绑定。
+
+**跑一次交付**（`request run`）守三条：0 行不交付、超 `max_rows` 不交付、行数突变
+**标疑但不阻断**。第三条是有意的：`once`/`weekly` 这类需求当天交不出货比数字可疑
+更糟，所以照常交付，但把「与上次相比从 3108 行变成 8900 行」写进 manifest 的
+`health` 与 README 顶部。判疑只在**同一口径版本内**比较——改了口径必然行数大变，
+那时比较只会天天发假警报，而假警报最能训练人忽略告警。
+
+先写 `.tmp-*` 目录、三件齐了再整体改名，所以中途失败绝不会留下「有数据没说明」。
+CSV 装不下的列表列（`tags`、`languages` 等 11 个）以 `;` 连接成一格；要保留原始
+结构请用 parquet。
 
 ## 开发
 

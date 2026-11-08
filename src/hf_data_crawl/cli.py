@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .api import MAX_LIMIT, HfDatasetApi, Transport
 from .collect import Collector, CollectSummary
+from .delivery import DeliveryBlocked, DeliveryResult, deliver
 from .deriving import check_and_recover
 from .doctor import diagnose, sync_alert
 from .enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
@@ -154,6 +155,13 @@ def build_parser() -> argparse.ArgumentParser:
     request_sub.add_parser("list", help="列出全部需求与交付概况")
     request_show = request_sub.add_parser("show", help="查看一份需求的口径、历史版本与交付台账")
     request_show.add_argument("id", help="需求号")
+    request_run = request_sub.add_parser("run", help="按当前口径交付一次，写出三件套")
+    request_run.add_argument("id", help="需求号")
+    request_run.add_argument(
+        "--force",
+        action="store_true",
+        help="一次性需求（once）交付过之后再交一份；不加则拒绝，防误重复交付",
+    )
 
     reconcile = subparsers.add_parser("reconcile", help="全量对账（按 createdAt 稳定序）")
     reconcile.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
@@ -330,7 +338,16 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
     if args.command == "query":
         return _query(args, store)
     if args.command == "request":
-        # 需求管理只读写 requests/，不碰数据目录，因此不参与数据锁。
+        # new / list / show 只读写 requests/，不碰数据目录，不参与数据锁；
+        # run 要读多张表出一个一致快照，与 report / docs 同规矩——先等一会儿锁。
+        if args.request_action == "run":
+            wait = SNAPSHOT_LOCK_WAIT if args.lock_wait is None else args.lock_wait
+            try:
+                with exclusive(store.root, "request-run", wait):
+                    return _request_run(args, store)
+            except LockBusy as error:
+                print(f"交付失败：{error}")
+                return 1
         return _request(args)
     if args.command == "doctor":
         return _doctor(store)
@@ -1006,3 +1023,46 @@ def _request_show(root: Path, request_id: str) -> int:
     for run in runs:
         print(f"  {run.name}{manifest_summary(run)}")
     return 0
+
+
+def _request_run(args: argparse.Namespace, store: DatasetStore) -> int:
+    """交付一次。一次性需求交付过就不再自动重复，加 --force 才重交。"""
+    root = Path(args.requests_dir)
+    request_dir = root / args.id
+    try:
+        spec = load_spec(request_dir / SPEC_NAME)
+    except SpecError as error:
+        print(f"失败：{error}")
+        return 1
+
+    done = deliveries_of(request_dir)
+    if spec.cadence is Cadence.ONCE and done and not args.force:
+        print(f"{spec.id} 是一次性需求，已于 {done[-1].name} 交付过。")
+        print("  确实要再交一份（比如对方要求重出），加 --force。")
+        return 1
+
+    try:
+        result = deliver(store, root, args.id)
+    except DeliveryBlocked as error:
+        print(f"交付失败：{error}")
+        return 1
+    _print_delivery(result)
+    return 0
+
+
+def _print_delivery(result: DeliveryResult) -> None:
+    print(f"已交付 {result.request_id} → {result.directory}")
+    print(f"  {result.rows:,} 行 · {len(result.columns)} 列 · 口径 v{result.spec_version}")
+    for item in result.files:
+        digest = str(item["sha256"])[:16]
+        print(f"  {item['name']}  {item['bytes']:,} 字节  sha256 {digest}…")
+    health = result.health
+    if health.status == "suspect":
+        print(
+            f"  [!] 行数突变：{health.baseline_rows:,} → {result.rows:,}"
+            f"（{health.delta_pct:+.1f}%），已标疑，README 顶部有警告"
+        )
+    elif health.status == "first":
+        print("  首次交付，无基线可比")
+    elif health.note:
+        print(f"  {health.note}")
