@@ -26,7 +26,7 @@ from hf_data_crawl.delivery import (
     run_due,
 )
 from hf_data_crawl.derive import derive_day
-from hf_data_crawl.fields import CONTRACT_VERSION, DEFAULT_COLUMNS
+from hf_data_crawl.fields import CONTRACT_VERSION, DEFAULT_COLUMNS, FLATTEN_NOTE
 from hf_data_crawl.requirement import (
     DELIVERIES_DIR,
     MANIFEST_NAME,
@@ -259,6 +259,27 @@ def test_CSV列表列按页面形式展平() -> None:
     assert out["tags"][0] == "keyword;reranking"
 
 
+def test_CSV字符串列也按页面形式展平() -> None:
+    """v3 默认投影已是 `;` 字符串，CSV 不能只认 LIST 输入。"""
+    from hf_data_crawl.delivery import _flat_for_csv
+
+    frame = pl.DataFrame(
+        {
+            "languages": ["ko;en"],
+            "task_categories": ["text-generation"],
+            "size_categories": ["100K<n<1M"],
+            "tags": ["keyword;reranking"],
+        }
+    )
+
+    out = _flat_for_csv(frame)
+
+    assert out["languages"][0] == "Korean;English"
+    assert out["task_categories"][0] == "Text Generation"
+    assert out["size_categories"][0] == "100K - 1M"
+    assert out["tags"][0] == "keyword;reranking"
+
+
 def test_csv格式(store: DatasetStore, tmp_path: Path) -> None:
     root = tmp_path / "req"
     make_request(root, output={"format": "csv"})
@@ -320,6 +341,7 @@ def test_默认交付README列出逐列定义(store: DatasetStore, tmp_path: Pat
     assert "详情页标签 ↔ 库列" in readme
     assert "| Tasks |" in readme
     assert "| Tags |" in readme
+    assert FLATTEN_NOTE in readme
 
 
 def test_一次性需求重复交付需force(store: DatasetStore, tmp_path: Path) -> None:

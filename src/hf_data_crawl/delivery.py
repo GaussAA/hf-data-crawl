@@ -59,9 +59,11 @@ from .fields import (
     CONTRACT_VERSION,
     DEFAULT_COLUMNS,
     DISPLAY_COLUMNS,
+    FLATTEN_NOTE,
     GROUPS,
     PAGE_FIELDS,
     display_expr,
+    display_text_expr,
 )
 from .gold import GoldCatalog, GoldNotReady
 from .metrics import lookup
@@ -364,9 +366,9 @@ def _query_lines(spec: Spec) -> list[str]:
         lines.append("")
     if spec.output.format is not OutputFormat.PARQUET:
         lines.append(
-            "CSV 里列表列以 `;` 连接成一格；`languages` / `task_categories` / "
-            "`size_categories` 另按页面形式展平（如 `ko` → `Korean`）。"
-            "要保留机器码与原始结构请用 parquet"
+            "CSV 里 `languages` / `task_categories` / `size_categories` 按页面形式展平"
+            "（如 `ko` → `Korean`）；parquet 保留机器码。默认底库的标签列均为 `;` "
+            "连接的字符串，可直接用 Excel / BI 打开"
         )
     if not spec.output.columns and spec.mode is not Mode.SQL:
         lines += [
@@ -383,6 +385,7 @@ def _query_lines(spec: Spec) -> list[str]:
             for index, column in enumerate(columns):
                 label = group if index == 0 else ""
                 lines.append(f"| {label} | `{column}` | {COLUMN_NOTES[column]} |")
+        lines += ["", FLATTEN_NOTE]
         lines += [
             "",
             "### 详情页标签 ↔ 库列",
@@ -686,16 +689,19 @@ def _write_data(directory: Path, spec: Spec, frame: pl.DataFrame) -> list[dict[s
 
 
 def _flat_for_csv(frame: pl.DataFrame) -> pl.DataFrame:
-    """CSV 不支持嵌套类型，列表列先拍平成 `;` 连接的字符串。
+    """CSV 不支持嵌套类型；按列的类型分派，把标签列整理成人读的一格。
 
-    宽表里有十余个列表列（`tags`、`languages`、`plain_tags`…），不拍平的话
-    `write_csv` 直接抛 `CSV format does not support nested data`，一份 csv 都交不出去。
-    选择 `;` 而非 JSON 数组：CSV 是给人拿 Excel 打开的，`a;b` 比 `["a","b"]`
-    少一层引号转义，肉眼也认得出来。空列表留空串。
+    契约 v3 起，默认投影的 9 个标签列已是 `;` 字符串（导出物之所以这样，是因为
+    parquet 的 LIST 三层嵌套会让多数预览器整列显示 NULL）。但 spec 仍可显式投
+    LIST 列，所以两条路都要走：
 
-    语言 / 任务 / 规模三列额外走 `fields.display_expr` 换成页面形式（CSV 是交付给
-    人读的）；parquet 与 SQL 结果仍保留机器码，便于筛算。映射用 Polars 原生表达式，
-    不走逐格 Python 回调——大表交付不能被展示层拖慢。
+    - `LIST` → `display_expr`（逐元素换页面形式）或 `list.join` 拍平；
+    - 已是 `;` 字符串的 → `display_text_expr` 逐元素换页面形式；
+    - 其余列原样。
+
+    不拍平 LIST 的话 `write_csv` 直接抛 `CSV format does not support nested data`。
+    选 `;` 而非 JSON 数组：CSV 是给人拿 Excel 打开的，`a;b` 少一层引号转义。
+    映射全用 Polars 原生表达式，不走逐格 Python 回调——大表交付不能被展示层拖慢。
     """
     exprs: list[pl.Expr] = []
     for name, dtype in frame.schema.items():
@@ -705,6 +711,8 @@ def _flat_for_csv(frame: pl.DataFrame) -> pl.DataFrame:
                 if name in DISPLAY_COLUMNS
                 else pl.col(name).list.join(";").alias(name)
             )
+        elif name in DISPLAY_COLUMNS and dtype == pl.String:
+            exprs.append(display_text_expr(name))
         else:
             exprs.append(pl.col(name))
     return frame.select(exprs)

@@ -672,3 +672,29 @@
     `100K<n<1M`→`100K - 1M`，parquet 与 SQL 结果仍存机器码。数据与展示分开：
     人读的给文本、机读的给码。不用 Python UDF 是因为一次交付可能数十万行，
     逐格回调会把分钟级查询拖成小时级。
+
+64. **默认底库扁平化：列集不变，只把 LIST 压成字符串**（2026-11-08）：大帅在
+    Parquet Viewer 里预览 `datasets.parquet`，看到 `LICENSES.LIST.ELEMENT`、
+    `LANGUAGES.LIST.ELEMENT` 等列**整列 NULL**，问「为什么看不见值」。
+
+    - **两层原因**：① 前 16 行多是 `Physi-Wiki/wiki-*`，HF 源头就没声明语言 / 任务 /
+      许可证，NULL 是真的；② 有值的行也被显示成 NULL——第 11 行
+      `danielwp22/record-combined-v3` 实读 `licenses=['apache-2.0']`、
+      `modalities=['tabular','timeseries','video']`、`task_categories=['robotics']`、
+      `formats=['parquet']`，预览器四格全 NULL。标量列 `license_name` 正常显示
+      `apache-2.0`，正说明问题出在嵌套类型而非数据。
+    - **根因**：Parquet 的 LIST 是三层 schema（`col → list(repeated) → element(UTF8)`）。
+      查看器把内部节点路径拼成 `COL.LIST.ELEMENT` 当列名再拿去查；DuckDB 直接报
+      `BinderException: Cannot extract field 'list' ... it is not a struct`，查看器吞错
+      后一律显示 NULL。
+    - **为什么必须治本**：这份文件的定位是「默认参考交付底库」，若连预览都读不出，
+      对人、对 BI、对模型都不趁手。v2 偏了机读、亏了人读。
+
+    **做法（大帅钦点「扁平化主文件」）**：`projection_sql()` 对 9 个标签列统一
+    `array_to_string(<含卡片兜底的表达式>, ';')`，**列集与别名一字不改**（导出 /
+    编译 / doctor 勾稽三处照旧），变的只有 LIST → VARCHAR；`gold.datasets` 视图
+    保留 LIST 原值，按单个标签精确筛仍回视图。空列表为空串、未声明为 NULL。
+    CSV 交付另用 `display_text_expr` 把 `;` 串逐元素换成页面形式（`ko`→`Korean`），
+    与 spec 显式投 LIST 列时的 `display_expr` 两条路并存。`CONTRACT_VERSION` 升 3。
+    实测重建后 26 列 / 1,123,885 行 / 196.9 MB，第 11 行 `task_categories=robotics`、
+    红圈那条 `plain_tags=keyword;reranking;korean-tv;persona;rolling` 在预览里直接可见。

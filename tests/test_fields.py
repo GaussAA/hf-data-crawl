@@ -15,11 +15,14 @@ from hf_data_crawl.fields import (
     DEFAULT_COLUMNS,
     DISPLAY_COLUMNS,
     FALLBACKS,
+    FLATTEN_COLUMNS,
+    FLATTEN_NOTE,
     GROUPS,
     PAGE_FIELDS,
     contract_errors,
     default_columns,
     display_expr,
+    display_text_expr,
     display_value,
     projection_sql,
     quoted_columns,
@@ -143,7 +146,8 @@ def test_卡片兜底只作用于四列且别名不变() -> None:
     for column, source in FALLBACKS.items():
         assert column in DEFAULT_COLUMNS
         assert source in wide_column_names()
-        assert f'ELSE "{source}" END AS "{column}"' in sql
+        assert f'ELSE "{source}" END' in sql
+        assert f'AS "{column}"' in sql
     assert not set(FALLBACKS.values()) & set(DEFAULT_COLUMNS)
 
 
@@ -183,3 +187,45 @@ def test_契约自检盯住新增的两张表() -> None:
     assert contract_errors() == []
     assert quoted_columns().count('"') == len(DEFAULT_COLUMNS) * 2
     assert not set(DISPLAY_COLUMNS) - set(DEFAULT_COLUMNS)
+
+
+# ---------------------------------------------------------------- v3：默认底库扁平化
+
+
+def test_扁平化只动类型不动列集() -> None:
+    """预览器读不了 LIST，但列集必须与契约逐列一致，doctor 才能照旧勾稽。"""
+    assert len(FLATTEN_COLUMNS) == 9
+    assert FLATTEN_COLUMNS <= set(DEFAULT_COLUMNS)
+    assert set(FALLBACKS) <= FLATTEN_COLUMNS
+    sql = projection_sql()
+    assert sql.count("array_to_string(") == len(FLATTEN_COLUMNS)
+    for column in FLATTEN_COLUMNS:
+        assert f'AS "{column}"' in sql
+    assert "LIST" not in sql.upper()  # 兜底用的是 array_length，不是把 LIST 类型带出去
+
+
+def test_扁平化说明写进口径() -> None:
+    assert ";" in FLATTEN_NOTE
+    assert "gold.datasets" in FLATTEN_NOTE
+    assert CONTRACT_VERSION >= 3
+
+
+def test_字符串列也能展平成页面形式() -> None:
+    """v3 默认投影已是 `;` 字符串，CSV 不能再假定输入一定是 LIST。"""
+    frame = pl.DataFrame(
+        {
+            "languages": ["ko;en", None, ""],
+            "task_categories": ["text-generation;question-answering", None, ""],
+            "size_categories": ["100K<n<1M;n<1K", None, ""],
+            "tags": ["keyword;reranking", None, ""],
+        }
+    )
+    exprs = [
+        display_text_expr(name) if name in DISPLAY_COLUMNS else pl.col(name)
+        for name in frame.columns
+    ]
+    out = frame.select(exprs)
+    assert out["languages"].to_list() == ["Korean;English", None, ""]
+    assert out["task_categories"][0] == "Text Generation;Question Answering"
+    assert out["size_categories"][0] == "100K - 1M;< 1K"
+    assert out["tags"][0] == "keyword;reranking"

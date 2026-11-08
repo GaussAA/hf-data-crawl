@@ -22,7 +22,7 @@ from typing import Any
 import polars as pl
 
 from .fielddocs import describe
-from .fields import CONTRACT_VERSION, DEFAULT_COLUMNS
+from .fields import CONTRACT_VERSION, DEFAULT_COLUMNS, FLATTEN_NOTE
 from .raw import BRONZE_LABELS, CARD_LABEL
 from .tables import TABLES, Origin, TableSpec
 
@@ -379,6 +379,11 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "`gold.datasets` 视图语义不改，内部仍可分列追溯。交付 README 附「页面标签 ↔",
         "库列名 ↔ 值的显示形式」对照表，CSV 把语言 / 任务 / 规模的机器码展平成页面",
         "形式，parquet 与 SQL 结果保留机器码以便筛算。",
+        "",
+        "v3 起标签列在导出物里是 `;` 字符串而非 LIST：parquet 的 LIST 三层嵌套会让",
+        "多数预览器把内部节点 `list` / `element` 当列名、整列显示 NULL。列集与别名",
+        "一字未改，doctor 的列集勾稽照旧。",
+        FLATTEN_NOTE,
         "",
         "**它是可重建的投影，不是第五张状态表**：",
         "",

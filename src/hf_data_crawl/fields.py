@@ -45,6 +45,19 @@ v1 只按覆盖率与语义裁列，没拿 Hugging Face 详情页逐项对值，
 - `display_expr`：CSV 是给人看的，列表值按页面形式展平；parquet / 查询仍存机器码，
   便于筛算。数据与展示分开，谁都不将就。
 
+v3：默认底库扁平化，打开就能看见值
+----------------------------------
+v2 把标签补回来了，但 parquet 里它们是 LIST（三层嵌套 `col → list → element`）。
+主流 parquet 预览器 / Excel / BI 不认这个结构：有的把内部节点拼成
+`LICENSES.LIST.ELEMENT` 当列名，取值失败后一律显示 NULL；有的整列留白。
+大帅实测「预览看不见值」——一份**给人参考的默认底库**若连预览都读不出，
+就没达成目的。
+
+于是默认投影对 9 个标签列用 `array_to_string(..., ';')` 压成字符串：列集与别名
+一字不改，导出物与 `compile_sql` 结果同源，doctor 的列集勾稽照旧；
+`gold.datasets` 视图仍保留 LIST 原值，要按单个标签精确筛就回视图查。
+CSV 交付另用 `display_text_expr` 把机器码换成页面形式——人读给文本，机读给码。
+
 改这份清单要升 `CONTRACT_VERSION`：交付档案会钉住当时的版本号，否则同一份
 需求的两份交付会显得「口径没变却列数变了」。
 """
@@ -55,8 +68,8 @@ import polars as pl
 
 from .gold import wide_column_names
 
-#: 契约版本。增删字段、改列序都要加一；只改说明文字不必。
-CONTRACT_VERSION = 2
+#: 契约版本。增删字段、改列序、改列类型都要加一；只改说明文字不必。
+CONTRACT_VERSION = 3
 
 #: 分组 → 列。顺序即交付列序：标识在前、画像居中、数值在后，便于人读。
 GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -155,6 +168,31 @@ FALLBACKS: dict[str, str] = {
     "plain_tags": "card_tags",
 }
 
+#: 默认投影里要压成字符串的 LIST 列。
+#:
+#: 不是「为了好看」：parquet 的 LIST 是三层嵌套，预览器把内部节点 `list` /
+#: `element` 当列名取值，失败后整列显示 NULL。默认底库是交给人看的文件，
+#: 必须让任何工具打开都能看见值。视图里的 LIST 原值不动，结构化筛选不受影响。
+FLATTEN_COLUMNS: frozenset[str] = frozenset(
+    {
+        "licenses",
+        "languages",
+        "modalities",
+        "task_categories",
+        "formats",
+        "libraries",
+        "size_categories",
+        "tags",
+        "plain_tags",
+    }
+)
+
+#: 交付说明里对扁平列的一句统一口径，README 与数据说明都从这里取。
+FLATTEN_NOTE = (
+    "上述 9 个标签列在默认底库里是 `;` 连接的字符串（空列表为空串、未声明为 NULL）；"
+    "要按单个标签精确筛选，请查 `gold.datasets` 视图里同名的 LIST 原值。"
+)
+
 #: CSV 展平时做「机器码 → 页面形式」变换的列。parquet 与 SQL 结果不变。
 DISPLAY_COLUMNS: frozenset[str] = frozenset({"languages", "task_categories", "size_categories"})
 
@@ -211,21 +249,29 @@ def quoted_columns() -> str:
 
 
 def projection_sql() -> str:
-    """默认投影的 SQL 列清单：契约列序不变，少数列带卡片兜底。
+    """默认投影的 SQL 列清单：列序与别名不变，标签列压成 `;` 字符串。
 
-    别名一律取契约列名，所以导出文件、`compile_sql` 结果与契约三者的列集逐列一致，
-    `doctor` 的勾稽不必为兜底另写一套。视图本身不改，内部查询仍可分列追溯。
+    两层变换叠在一处：先按 `FALLBACKS` 补卡片声明，再按 `FLATTEN_COLUMNS`
+    用 `array_to_string` 压平。别名一律取契约列名，所以导出文件、`compile_sql`
+    结果与契约三者的列集逐列一致，`doctor` 的勾稽不必另写一套；变的只是列类型
+    （LIST → VARCHAR）。`gold.datasets` 视图本身不改，内部仍可按标签精确筛。
     """
     parts: list[str] = []
     for column in DEFAULT_COLUMNS:
         fallback = FALLBACKS.get(column)
         if fallback is None:
-            parts.append(f'"{column}"')
-            continue
-        parts.append(
-            f'CASE WHEN coalesce(array_length("{column}"), 0) > 0 '
-            f'THEN "{column}" ELSE "{fallback}" END AS "{column}"'
-        )
+            expression = f'"{column}"'
+        else:
+            expression = (
+                f'CASE WHEN coalesce(array_length("{column}"), 0) > 0 '
+                f'THEN "{column}" ELSE "{fallback}" END'
+            )
+        if column in FLATTEN_COLUMNS:
+            parts.append(f"array_to_string({expression}, ';') AS \"{column}\"")
+        elif fallback is None:
+            parts.append(expression)
+        else:
+            parts.append(f'{expression} AS "{column}"')
     return ", ".join(parts)
 
 
@@ -246,11 +292,11 @@ def display_value(column: str, value: str) -> str:
     return value
 
 
-def display_expr(column: str) -> pl.Expr:
-    """CSV 展平用的 Polars 原生表达式（逐元素变换后 `;` 连接）。
+def _display_item(column: str) -> pl.Expr:
+    """逐元素映射表达式；必须用在 `list.eval` 里（`pl.element()` 的上下文）。
 
-    刻意不用 Python UDF：一次交付可能几十万行，逐格回调会把分钟级查询拖成小时级。
-    只给 `DISPLAY_COLUMNS` 用，其余列表列仍是原样 `list.join`。
+    刻意全用 Polars 原生表达式而非 Python UDF：一次交付可能几十万行，逐格回调
+    会把分钟级查询拖成小时级。
     """
     item = pl.element()
     if column == "languages":
@@ -259,7 +305,23 @@ def display_expr(column: str) -> pl.Expr:
         item = item.str.replace_all("-", " ").str.to_titlecase()
     elif column == "size_categories":
         item = item.str.replace_all("<n<", " - ").str.replace("^n<", "< ").str.replace("^n>", "> ")
-    return pl.col(column).list.eval(item).list.join(";").alias(column)
+    return item
+
+
+def display_expr(column: str) -> pl.Expr:
+    """LIST 列 → `;` 字符串，并换成页面形式（spec 显式投 LIST 列时用）。"""
+    return pl.col(column).list.eval(_display_item(column)).list.join(";").alias(column)
+
+
+def display_text_expr(column: str) -> pl.Expr:
+    """已是 `;` 字符串的列 → 逐元素换成页面形式（v3 默认投影走这条）。
+
+    `str.split` 对 NULL 返回 NULL，`list.eval` / `list.join` 保持为 NULL；空串仍是
+    空串，不会凭空造出一个空标签。
+    """
+    return (
+        pl.col(column).str.split(";").list.eval(_display_item(column)).list.join(";").alias(column)
+    )
 
 
 def contract_errors() -> list[str]:
@@ -300,4 +362,8 @@ def contract_errors() -> list[str]:
         problems.append(f"页面对照表指向契约之外的列：{missing_page}")
     if not DISPLAY_COLUMNS <= set(DEFAULT_COLUMNS):
         problems.append("CSV 展平映射里有契约之外的列")
+    if not FLATTEN_COLUMNS <= set(DEFAULT_COLUMNS):
+        problems.append("扁平化清单里有契约之外的列")
+    if not set(FALLBACKS) <= FLATTEN_COLUMNS:
+        problems.append("卡片兜底列必须同时扁平化，否则导出物会混着 LIST 与 VARCHAR")
     return problems
