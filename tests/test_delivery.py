@@ -342,6 +342,9 @@ def test_默认交付README列出逐列定义(store: DatasetStore, tmp_path: Pat
     assert "| Tasks |" in readme
     assert "| Tags |" in readme
     assert FLATTEN_NOTE in readme
+    assert "扩展字段（不进默认面，按需取用）" in readme
+    assert "`regions`" in readme
+    assert "output.columns" in readme
 
 
 def test_一次性需求重复交付需force(store: DatasetStore, tmp_path: Path) -> None:

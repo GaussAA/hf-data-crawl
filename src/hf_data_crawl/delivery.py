@@ -59,6 +59,8 @@ from .fields import (
     CONTRACT_VERSION,
     DEFAULT_COLUMNS,
     DISPLAY_COLUMNS,
+    EXTENDED_FIELDS,
+    EXTENDED_NOTE,
     FLATTEN_NOTE,
     GROUPS,
     PAGE_FIELDS,
@@ -399,6 +401,17 @@ def _query_lines(spec: Spec) -> list[str]:
         for label, columns, note in PAGE_FIELDS:
             refs = " / ".join(f"`{column}`" for column in columns)
             lines.append(f"| {label} | {refs} | {note} |")
+        lines += [
+            "",
+            "### 扩展字段（不进默认面，按需取用）",
+            "",
+            EXTENDED_NOTE,
+            "",
+            "| 字段 | 定义 | 覆盖档 |",
+            "| --- | --- | --- |",
+        ]
+        for column, definition, tier in EXTENDED_FIELDS:
+            lines.append(f"| `{column}` | {definition} | {tier} |")
         lines.append("")
     return lines
 

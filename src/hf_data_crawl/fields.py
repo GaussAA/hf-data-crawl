@@ -58,6 +58,20 @@ v2 把标签补回来了，但 parquet 里它们是 LIST（三层嵌套 `col →
 `gold.datasets` 视图仍保留 LIST 原值，要按单个标签精确筛就回视图查。
 CSV 交付另用 `display_text_expr` 把机器码换成页面形式——人读给文本，机读给码。
 
+v4：克制扩充，另立扩展字段清单
+------------------------------
+大帅问「地区、论文、应用能不能也加」。实测两条反直觉的事实：`regions` 虽
+100% 非空，但 **99.94% 是 HF 自动推断的 `us`**，零信息量；论文类 `arxiv_ids`
+3.67% / `dois` 0.42% / `paperswithcode_id` 0.17%，九成以上库没声明。
+HF 列表接口也不提供「被哪些模型 / Space 使用」这类应用字段。
+
+默认面只加 5 列有实际信息量的：`pretty_name`（展示名 14.17%）、
+`multilinguality`、`arxiv_ids`（论文）、`source_datasets` / `task_ids`（用途与来源）。
+其余约 15 个语义字段不进默认面，改由 `EXTENDED_FIELDS` 登记定义与覆盖档：
+它们一直都在 72 列视图里，`spec.output.columns` 点名即可投列——**默认面管的是
+「不指定时给什么」，不是「总共有什么」**。低覆盖列塞回默认面，等于把 v1 裁掉的
+「九成空」问题请回来。
+
 改这份清单要升 `CONTRACT_VERSION`：交付档案会钉住当时的版本号，否则同一份
 需求的两份交付会显得「口径没变却列数变了」。
 """
@@ -69,7 +83,7 @@ import polars as pl
 from .gold import wide_column_names
 
 #: 契约版本。增删字段、改列序、改列类型都要加一；只改说明文字不必。
-CONTRACT_VERSION = 3
+CONTRACT_VERSION = 4
 
 #: 分组 → 列。顺序即交付列序：标识在前、画像居中、数值在后，便于人读。
 GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -97,6 +111,14 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "标签",
         ("tags", "plain_tags"),
+    ),
+    (
+        "补充画像",
+        ("pretty_name", "multilinguality"),
+    ),
+    (
+        "学术关联与用途",
+        ("arxiv_ids", "source_datasets", "task_ids"),
     ),
     (
         "规模",
@@ -134,6 +156,11 @@ COLUMN_NOTES: dict[str, str] = {
     "size_categories": "规模档位标签（页面 Size）；存 100K<n<1M，页面显示 100K - 1M",
     "tags": "API 返回的原样标签全量（含 task_categories: 之类前缀），可追溯、可按任意前缀再拆",
     "plain_tags": "无前缀的自定义标签（页面 Tags，如 keyword / reranking）；本仓库拆分所得",
+    "pretty_name": "卡片里的展示名（可能与作者/名称完全不同）；未声明则为空",
+    "multilinguality": "多语言性标记（单语 / 多语 / 翻译等）；未声明则为空",
+    "arxiv_ids": "关联的 arXiv 论文编号，如 2507.02259；仅少数库在卡片里声明",
+    "source_datasets": "该数据集派生自哪些上游数据集；取值由作者填写，未必是 HF 数据集 id",
+    "task_ids": "具体任务标识，比 task_categories 大类更细；未声明则为空",
     "server_num_rows": "datasets-server 实测行数；与卡片声明行数是两个口径",
     "server_num_columns": "各 config 中列数的最大值",
     "server_config_count": "datasets-server 返回的 config 数量",
@@ -154,6 +181,41 @@ PAGE_FIELDS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("License", ("license_name", "licenses"), "cc-by-nc-4.0 ↔ 标量 + 标签列表"),
     ("Downloads last month", ("downloads",), "12 ↔ 快照时点的近 30 天下载量，会随时间变化"),
     ("Total file size", ("main_size",), "729 MB ↔ 字节数；页面按文件大小统计，口径可能略有出入"),
+)
+
+#: 不进默认面、但一直都在 72 列视图里的语义字段。
+#:
+#: 登记在这里是为了回答「总共有什么、怎么拿」：默认面管「不指定时给什么」，
+#: 不是「总共有什么」。覆盖档刻意写区间而非精确百分比——百分比会随每日采集漂移，
+#: 档位不会。精确值以 `doctor` / 实测为准（本表定档于 2026-11-08，112 万行）。
+EXTENDED_FIELDS: tuple[tuple[str, str, str], ...] = (
+    ("regions", "数据覆盖地区标签", "全库有值但 99.94% 是 HF 自动推断的 us，无区分度"),
+    ("dois", "关联的 DOI 编号", "低（<1%）"),
+    ("paperswithcode_id", "Papers with Code 条目 id", "极低（<0.2%）"),
+    ("arxiv", "卡片里声明的 arXiv 编号", "极低（<0.1%）"),
+    ("citation", "作者给出的引用格式（BibTeX / 纯文本）", "极低（<0.5%，长文本）"),
+    ("license_link", "许可证全文链接", "低（<1%）"),
+    ("card_homepage", "项目主页", "极低（<0.1%）"),
+    ("card_description", "卡片正文的开头摘要，与 description 不是一回事", "极低（<0.1%）"),
+    ("annotations_creators", "标注者类型（专家 / 众包 / 机器生成）", "低（约 1%）"),
+    ("language_creators", "语料来源（原始采集 / 翻译 / 机器生成）", "低（约 1%）"),
+    ("card_multilinguality", "卡片声明的多语言性；与 multilinguality 近重复", "低（约 4%）"),
+    ("card_source_datasets", "卡片声明的上游数据集；与 source_datasets 近重复", "低（约 1%）"),
+    ("card_num_rows", "卡片声明的行数；与 datasets-server 实测行数是两个口径", "低（约 1.6%）"),
+    ("card_dataset_bytes", "卡片声明的数据体积", "低（约 1.4%）"),
+    ("card_config_count", "卡片里列出的 config 个数", "中（约 43%）"),
+    ("server_num_bytes_original", "datasets-server 统计的原始文件体积", "中（约 66%）"),
+    ("server_configs", "datasets-server 返回的 config 明细（JSON 文本）", "中（约 67%）"),
+    ("file_formats", "文件清单试点得到的扩展名计数（JSON 文本）", "极低（约 0.08%，头部子集）"),
+    ("total_bytes", "文件清单试点得到的总字节数（下限）", "极低（约 0.08%，头部子集）"),
+)
+
+#: 交付 README 与数据说明里对扩展字段的统一说明。
+EXTENDED_NOTE = (
+    "以下字段一直都在 `gold.datasets` 视图里，只是**不进默认交付面**：低覆盖列塞回"
+    "默认面会让九成行重新变空。需要时在 spec 里写 `output.columns: [id, <列名>]` "
+    "即可投列（列名既认词条也认视图列名）。空值表示作者未声明，不代表没有。"
+    "覆盖档基于 2026-11-08 全库 112 万行实测，精确值以当期 `doctor` 为准。"
 )
 
 #: 默认投影的兜底：主列为空时取卡片 YAML 声明的同义列。
@@ -184,13 +246,18 @@ FLATTEN_COLUMNS: frozenset[str] = frozenset(
         "size_categories",
         "tags",
         "plain_tags",
+        "multilinguality",
+        "arxiv_ids",
+        "source_datasets",
+        "task_ids",
     }
 )
 
 #: 交付说明里对扁平列的一句统一口径，README 与数据说明都从这里取。
 FLATTEN_NOTE = (
-    "上述 9 个标签列在默认底库里是 `;` 连接的字符串（空列表为空串、未声明为 NULL）；"
-    "要按单个标签精确筛选，请查 `gold.datasets` 视图里同名的 LIST 原值。"
+    f"上述 {len(FLATTEN_COLUMNS)} 个多值列在默认底库里是 `;` 连接的字符串"
+    "（空列表为空串、未声明为 NULL）；要按单个标签精确筛选，请查 "
+    "`gold.datasets` 视图里同名的 LIST 原值。"
 )
 
 #: CSV 展平时做「机器码 → 页面形式」变换的列。parquet 与 SQL 结果不变。
@@ -366,4 +433,13 @@ def contract_errors() -> list[str]:
         problems.append("扁平化清单里有契约之外的列")
     if not set(FALLBACKS) <= FLATTEN_COLUMNS:
         problems.append("卡片兜底列必须同时扁平化，否则导出物会混着 LIST 与 VARCHAR")
+    extended = [column for column, _definition, _tier in EXTENDED_FIELDS]
+    if len(extended) != len(set(extended)):
+        problems.append("扩展字段清单里有重复列")
+    unknown_extended = [column for column in extended if column not in known]
+    if unknown_extended:
+        problems.append(f"扩展字段清单里有视图不存在的列：{unknown_extended}")
+    overlap = sorted(set(extended) & set(DEFAULT_COLUMNS))
+    if overlap:
+        problems.append(f"扩展字段清单与默认面重复：{overlap}")
     return problems

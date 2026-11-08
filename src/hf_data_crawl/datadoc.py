@@ -22,7 +22,13 @@ from typing import Any
 import polars as pl
 
 from .fielddocs import describe
-from .fields import CONTRACT_VERSION, DEFAULT_COLUMNS, FLATTEN_NOTE
+from .fields import (
+    CONTRACT_VERSION,
+    DEFAULT_COLUMNS,
+    EXTENDED_FIELDS,
+    EXTENDED_NOTE,
+    FLATTEN_NOTE,
+)
 from .raw import BRONZE_LABELS, CARD_LABEL
 from .tables import TABLES, Origin, TableSpec
 
@@ -384,6 +390,21 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "多数预览器把内部节点 `list` / `element` 当列名、整列显示 NULL。列集与别名",
         "一字未改，doctor 的列集勾稽照旧。",
         FLATTEN_NOTE,
+        "",
+        f"契约 v{CONTRACT_VERSION} 起默认面扩充到 {len(DEFAULT_COLUMNS)} 列：新增展示名、",
+        "多语言性、arXiv 论文号、上游数据集与细分任务。**地区 `regions` 刻意不进默认面**",
+        "——实测 100% 有值，但 99.94% 是 HF 自动推断的 `us`，等于每行填个常量。",
+        "",
+        "### 扩展字段（不进默认面，按需取用）",
+        "",
+        EXTENDED_NOTE,
+        "",
+        "| 字段 | 定义 | 覆盖档 |",
+        "| --- | --- | --- |",
+        *(
+            f"| `{column}` | {definition} | {tier} |"
+            for column, definition, tier in EXTENDED_FIELDS
+        ),
         "",
         "**它是可重建的投影，不是第五张状态表**：",
         "",

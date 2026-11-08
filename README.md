@@ -68,7 +68,9 @@ hf-data-crawl request      run-due                  # 只跑到期的（计划�
 
 写命令（`collect` / `reconcile` / `build` / `enrich` / `fetch-sizes` / `fetch-files` / `archive` / `compact` / `export-wide`）执行期间持有 `data/.lock` 的独占锁，同一时刻只能跑一个；拿不到锁会失败并在 `runs/` 留记录。进程被杀后系统自动释放，不会留下死锁。`report` 与 `query` 不加锁。
 
-**默认交付底库**：`current` 只保留 19 列状态标量，语义字段分散在 `silver` / `carddata` / `size`。`export-wide` 按 `fields.py` 的**默认交付字段契约**把 `gold.datasets` 视图裁成 26 列，写成 `data/exports/datasets.parquet`——只留与数据集有关、有用且必要的画像字段（标识、描述、热度、许可、语言、模态、任务、数据类型、标签、规模、大小），把水印、抓取状态、卡片凭证与近乎全空的补抓列排除在外。契约 v2 补回详情页 `Tags` 那行对应的 `tags` / `plain_tags`，附「页面标签 ↔ 库列名」对照；少数只在卡片 YAML 里声明、没同步进 `tags` 的，由 `card_*` 兜底。**v3 起 9 个标签列在文件里压成 `;` 连接的字符串**——Parquet 的 LIST 三层嵌套会让多数预览器把内部节点 `list` / `element` 当列名、整列显示 NULL，扁平化后任何预览器 / Excel / BI 打开就能看见值；`gold.datasets` 视图仍保留 LIST 原值供按单标签精确筛选。这份文件直接交给 DuckDB / polars / BI 工具，也是**数据集筛选需求未指定 `output.columns` 时的默认投影**。它是可重建投影，不登记为表、不参与状态更新；视图本身仍保留全部 72 列供内部查询。契约、导出物、查询编译与体检勾稽四处共用一份定义，详见 [docs/DATA.md](docs/DATA.md) 第八节与 [GLOSSARY](GLOSSARY.md) #62、#63、#64。
+**默认交付底库**：`current` 只保留 19 列状态标量，语义字段分散在 `silver` / `carddata` / `size`。`export-wide` 按 `fields.py` 的**默认交付字段契约**把 `gold.datasets` 视图裁成 31 列，写成 `data/exports/datasets.parquet`——只留与数据集有关、有用且必要的画像字段（标识、描述、热度、许可、语言、模态、任务、数据类型、标签、补充画像、学术关联、规模、大小），把水印、抓取状态、卡片凭证与九成空的补抓列排除在外。v2 补回详情页 `Tags`；**v3 把 13 个多值列压成 `;` 字符串**，任何预览器 / Excel / BI 打开就能看见值（Parquet 的 LIST 嵌套会让预览器整列显示 NULL），视图仍留 LIST 原值供精确筛；**v4 克制新增 5 列**：`pretty_name` / `multilinguality` / `arxiv_ids` / `source_datasets` / `task_ids`。
+
+`regions` 实测 100% 有值但 **99.94% 是 HF 自动推断的 `us`**，故不进默认面；它与 DOI、引用、项目主页等共 19 个字段登记在 `EXTENDED_FIELDS`，需要时写 `output.columns: [id, regions, ...]` 点名即可投列——**默认面管「不指定时给什么」，不是「总共有什么」**。完整清单见 [docs/DATA.md](docs/DATA.md) 第八节。这份文件也是**数据集筛选需求未指定 `output.columns` 时的默认投影**；不登记为表、不参与状态更新，视图本身仍保留全部 72 列。四处共用一份定义，详见 [GLOSSARY](GLOSSARY.md) #62–#65。
 
 **文件清单补采（试点）**：列表接口请求也不返回 `siblings`（见 [docs/DATA.md](docs/DATA.md) 第九节）；单库详情虽返回，但下载量头部实测 13-25 MB / 44-76 s，按头部补会反复超时。`fetch-files` 改走 `/tree/main?recursive=true&expand=false`：每页固定 1000 条、约 110-230 KB / 0.4-0.7 s。默认每库只取第一页，有后续页时标 `truncated=true`——此时 `file_count` / `total_bytes` / `file_formats` / `has_readme` 都只是**这一页的下限**，不是全库真值；要完整清单须显式加大 `--max-pages`。结果落 `enrich/files.parquet`（`Origin.NETWORK`，重建不清），自动进入 `datasets` 宽视图。断点续跑、失败分类、写锁与边跑边落库与 `fetch-sizes` 共用 `batch.collect_rows` 骨架；临时失败不入库、下轮自然重试。这是按头部补的**子集**，别拿它算全站分布。匿名配额实测 500 请求 / 300 秒固定窗口，跑满 1000 需分批；429 会按响应头 `Retry-After` 退避，仍不够时临时失败不落库、下次重跑本命令由断点续跑接力。带 `HF_TOKEN` 可提到 **1000 请求 / 300 秒**（实测），写进仓库根 `.env` 即可，命令自动读取且**不覆盖**已 export 的值；令牌只在本机文件里，值绝不进日志与 `runs/`。已标 `truncated` 的行默认被断点续跑跳过，想补成完整清单须显式 `--refresh-truncated --max-pages N`：它只重抓截断行、完整行照旧跳过；`--max-pages` 仍为 1 时命令直接失败，因为一页上限下重抓只是把截断重新确认一遍。
 
@@ -327,14 +329,14 @@ sha256，于是「基于哪一版清单」和「基于哪一版底库」一样�
 历史累计——同一句话两种理解差两个数量级。词表见 `metrics.py` 与
 [GLOSSARY](GLOSSARY.md) #51，`request show` 会把口径连同编译后的 SQL 一起打出来。
 
-**不写 `output.columns` 就按默认底库交付**：26 列字段契约在 `fields.py`（逐列中文
-定义、分组、页面标签对照、`CONTRACT_VERSION`）。`data/exports/datasets.parquet` 是这份
-契约的物化，列序完全一致；`manifest.json` 记 `projection.source = default` 与契约版本，
-README 附逐列定义表及「详情页标签 ↔ 库列」对照表——页面叫 `Tasks` / `Size` / `Tags`，
-库里叫 `task_categories` / `size_categories` / `plain_tags`，值也多为机器码，不对照就会
-以为「库里没内容」。标签列一律是 `;` 连接的字符串（空列表为空串、未声明为 NULL），
-要按单个标签精确筛请查 `gold.datasets` 视图里的 LIST 原值。只有明确要额外字段时才写
-`output.columns`，写了就以它为准。
+**不写 `output.columns` 就按默认底库交付**：31 列字段契约在 `fields.py`（逐列中文
+定义、分组、页面标签对照、`EXTENDED_FIELDS`、`CONTRACT_VERSION`）。`data/exports/datasets.parquet`
+是这份契约的物化，列序完全一致；`manifest.json` 记 `projection.source = default` 与契约版本，
+README 附逐列定义表、「详情页标签 ↔ 库列」对照表及扩展字段清单——页面叫 `Tasks` /
+`Size` / `Tags`，库里叫 `task_categories` / `size_categories` / `plain_tags`，值也多为机器码，
+不对照就会以为「库里没内容」。13 个多值列一律是 `;` 连接的字符串（空列表为空串、未声明
+为 NULL），要按单个标签精确筛请查 `gold.datasets` 视图里的 LIST 原值。需要默认面之外的
+字段时在 spec 写 `output.columns: [id, regions, arxiv_ids]`，`_column()` 认原始视图列名。
 `doctor` 会勾稽导出文件列集与契约，不一致即报「跑 `export-wide` 重建」。
 
 `manifest.json` 里的 `source.current_md5` 是整份档案的锚点：日后任何一份交付都能

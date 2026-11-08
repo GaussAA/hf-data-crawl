@@ -1,6 +1,6 @@
 # data 目录说明
 
-> 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-08 21:58，**请勿手工编辑**。
+> 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-08 22:24，**请勿手工编辑**。
 > 表结构与行数由代码和实际文件算出；字段含义维护在 `src/hf_data_crawl/fielddocs.py`。
 > 改完代码后重新生成即可，`tests/test_docs.py` 会在忘记生成时报错。
 
@@ -36,8 +36,8 @@ data/
 ├── enrich/                     # 卡片与规模（当前 4 个文件 · 138.5 MB）
 ├── meta/                       # 重建中断时留存的状态快照（当前 空）
 ├── reports/                    # 对账清单与榜单页（当前 4 个文件 · 41.0 MB）
-├── runs/                       # 每轮运行摘要（当前 90 个文件 · 47.9 KB）
-├── exports/                    # 宽表导出（可重建，当前 1 个文件 · 187.7 MB）
+├── runs/                       # 每轮运行摘要（当前 91 个文件 · 48.2 KB）
+├── exports/                    # 宽表导出（可重建，当前 1 个文件 · 192.1 MB）
 └── logs/                       # 计划任务日志（按轮命名，最近 200 个）
 ```
 
@@ -391,7 +391,7 @@ DuckDB / Spark / Athena 都能零配置把它当列读出来；表内另有 `sna
 ## 八、宽表导出（可重建，不是事实源）
 
 `hf-data-crawl export-wide` 按**默认交付字段契约**把 `gold.datasets` 视图
-裁成 26 列写成一份 parquet，默认落在 `data/exports/datasets.parquet`，
+裁成 31 列写成一份 parquet，默认落在 `data/exports/datasets.parquet`，
 行数与 `current` 相同。视图本身仍保留全部列供内部查询，导出物只留「与数据集
 有关、有用且必要」的画像字段：标识、描述、热度、许可、语言、模态、任务、
 数据类型、规模、大小。
@@ -400,7 +400,7 @@ DuckDB / Spark / Athena 都能零配置把它当列读出来；表内另有 `sna
 就按同一份契约投影。契约在 `fields.py`（含逐列中文定义与 `CONTRACT_VERSION`），
 导出物、查询编译、体检勾稽三处共用，不在文档里手抄第二份列清单。
 
-契约 v3 共 26 列，含 `tags` / `plain_tags`
+契约 v4 共 31 列，含 `tags` / `plain_tags`
 （API 原样标签与拆出的自定义标签，即详情页 `Tags` 那一行）。少数数据集只在
 卡片 YAML 里声明、没同步进 `tags`，默认投影用 `card_*` 同义列兜底；
 `gold.datasets` 视图语义不改，内部仍可分列追溯。交付 README 附「页面标签 ↔
@@ -410,7 +410,37 @@ DuckDB / Spark / Athena 都能零配置把它当列读出来；表内另有 `sna
 v3 起标签列在导出物里是 `;` 字符串而非 LIST：parquet 的 LIST 三层嵌套会让
 多数预览器把内部节点 `list` / `element` 当列名、整列显示 NULL。列集与别名
 一字未改，doctor 的列集勾稽照旧。
-上述 9 个标签列在默认底库里是 `;` 连接的字符串（空列表为空串、未声明为 NULL）；要按单个标签精确筛选，请查 `gold.datasets` 视图里同名的 LIST 原值。
+上述 13 个多值列在默认底库里是 `;` 连接的字符串（空列表为空串、未声明为 NULL）；要按单个标签精确筛选，请查 `gold.datasets` 视图里同名的 LIST 原值。
+
+契约 v4 起默认面扩充到 31 列：新增展示名、
+多语言性、arXiv 论文号、上游数据集与细分任务。**地区 `regions` 刻意不进默认面**
+——实测 100% 有值，但 99.94% 是 HF 自动推断的 `us`，等于每行填个常量。
+
+### 扩展字段（不进默认面，按需取用）
+
+以下字段一直都在 `gold.datasets` 视图里，只是**不进默认交付面**：低覆盖列塞回默认面会让九成行重新变空。需要时在 spec 里写 `output.columns: [id, <列名>]` 即可投列（列名既认词条也认视图列名）。空值表示作者未声明，不代表没有。覆盖档基于 2026-11-08 全库 112 万行实测，精确值以当期 `doctor` 为准。
+
+| 字段 | 定义 | 覆盖档 |
+| --- | --- | --- |
+| `regions` | 数据覆盖地区标签 | 全库有值但 99.94% 是 HF 自动推断的 us，无区分度 |
+| `dois` | 关联的 DOI 编号 | 低（<1%） |
+| `paperswithcode_id` | Papers with Code 条目 id | 极低（<0.2%） |
+| `arxiv` | 卡片里声明的 arXiv 编号 | 极低（<0.1%） |
+| `citation` | 作者给出的引用格式（BibTeX / 纯文本） | 极低（<0.5%，长文本） |
+| `license_link` | 许可证全文链接 | 低（<1%） |
+| `card_homepage` | 项目主页 | 极低（<0.1%） |
+| `card_description` | 卡片正文的开头摘要，与 description 不是一回事 | 极低（<0.1%） |
+| `annotations_creators` | 标注者类型（专家 / 众包 / 机器生成） | 低（约 1%） |
+| `language_creators` | 语料来源（原始采集 / 翻译 / 机器生成） | 低（约 1%） |
+| `card_multilinguality` | 卡片声明的多语言性；与 multilinguality 近重复 | 低（约 4%） |
+| `card_source_datasets` | 卡片声明的上游数据集；与 source_datasets 近重复 | 低（约 1%） |
+| `card_num_rows` | 卡片声明的行数；与 datasets-server 实测行数是两个口径 | 低（约 1.6%） |
+| `card_dataset_bytes` | 卡片声明的数据体积 | 低（约 1.4%） |
+| `card_config_count` | 卡片里列出的 config 个数 | 中（约 43%） |
+| `server_num_bytes_original` | datasets-server 统计的原始文件体积 | 中（约 66%） |
+| `server_configs` | datasets-server 返回的 config 明细（JSON 文本） | 中（约 67%） |
+| `file_formats` | 文件清单试点得到的扩展名计数（JSON 文本） | 极低（约 0.08%，头部子集） |
+| `total_bytes` | 文件清单试点得到的总字节数（下限） | 极低（约 0.08%，头部子集） |
 
 **它是可重建的投影，不是第五张状态表**：
 

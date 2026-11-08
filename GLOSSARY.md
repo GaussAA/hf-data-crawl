@@ -698,3 +698,26 @@
     与 spec 显式投 LIST 列时的 `display_expr` 两条路并存。`CONTRACT_VERSION` 升 3。
     实测重建后 26 列 / 1,123,885 行 / 196.9 MB，第 11 行 `task_categories=robotics`、
     红圈那条 `plain_tags=keyword;reranking;korean-tv;persona;rolling` 在预览里直接可见。
+
+65. **默认面克制扩充 + 扩展字段清单**（2026-11-08）：大帅问「地区、论文、应用能不能加」。
+    先把「有」与「该进默认面」分开，三条实测反直觉：
+
+    - `regions` **100% 非空，但 99.94%（1,123,184 / 1,123,885）是 `us`**，余下 `eu`
+      702 个、其他个位数——HF 自动推断的默认值，加进去等于每行填个常量。
+    - 论文类 `arxiv_ids` 3.67%、`dois` 0.42%、`paperswithcode_id` 0.17%、`arxiv`
+      0.05%、`citation` 0.34%；语义字段另有 `pretty_name` 14.17%、
+      `multilinguality` 4.32%、`source_datasets` 1.18%、`task_ids` 0.72%。
+    - HF 单条 API 顶层只有 16 个键，**没有「被哪些模型 / Space 使用」这类应用字段**；
+      最接近的是已有 `task_categories` 与 `task_ids` / `source_datasets`。要真做
+      「应用」得另写模型侧反查采集，不是加列。
+
+    **关键澄清**：没进默认面 ≠ 拿不到——`_column()` 认原始视图列名，
+    `output.columns: [id, regions, arxiv_ids]` 即可投列。低覆盖列塞回默认面，等于把
+    v1 裁掉的「九成空」请回来。
+
+    **做法（大帅钦点甲案、应用按任务/用途理解）**：契约升 v4，默认面 26→31 列，
+    新增 `pretty_name` / `multilinguality` / `arxiv_ids` / `source_datasets` / `task_ids`；
+    4 个 LIST 列并入 `FLATTEN_COLUMNS`（共 13 个）。另立 `EXTENDED_FIELDS`（19 项，
+    列名 + 中文定义 + 覆盖档）与 `EXTENDED_NOTE`，交付 README 与 `docs/DATA.md`
+    第八节都从它生成表格，不手抄第二份。覆盖档写区间不写精确百分比——百分比会随
+    每日采集漂移。`regions` 明确列入清单但不进默认面。

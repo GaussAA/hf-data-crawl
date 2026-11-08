@@ -14,6 +14,8 @@ from hf_data_crawl.fields import (
     CONTRACT_VERSION,
     DEFAULT_COLUMNS,
     DISPLAY_COLUMNS,
+    EXTENDED_FIELDS,
+    EXTENDED_NOTE,
     FALLBACKS,
     FLATTEN_COLUMNS,
     FLATTEN_NOTE,
@@ -76,13 +78,11 @@ def test_内部状态列不进默认交付面() -> None:
 
 
 def test_低覆盖补抓列不进默认交付面() -> None:
-    """实测覆盖率：card_* 1%~4%、arxiv_ids 3.7%、task_ids 0.7%，九成行是空。"""
+    """九成空的补抓列仍排除；v4 只放行了用户点名的论文 / 用途两列。"""
     sparse = {
         "card_num_rows",
         "card_dataset_bytes",
         "card_download_bytes",
-        "arxiv_ids",
-        "task_ids",
         "citation",
         "dois",
         "has_readme",
@@ -90,6 +90,8 @@ def test_低覆盖补抓列不进默认交付面() -> None:
         "file_count",
     }
     assert not (sparse & set(DEFAULT_COLUMNS))
+    # 这两列覆盖也低（3.67% / 0.72%），但语义明确、用户点名，故进默认面。
+    assert {"arxiv_ids", "task_ids"} <= set(DEFAULT_COLUMNS)
 
 
 def test_用户点名的画像字段都在契约里() -> None:
@@ -194,7 +196,7 @@ def test_契约自检盯住新增的两张表() -> None:
 
 def test_扁平化只动类型不动列集() -> None:
     """预览器读不了 LIST，但列集必须与契约逐列一致，doctor 才能照旧勾稽。"""
-    assert len(FLATTEN_COLUMNS) == 9
+    assert len(FLATTEN_COLUMNS) == 13
     assert FLATTEN_COLUMNS <= set(DEFAULT_COLUMNS)
     assert set(FALLBACKS) <= FLATTEN_COLUMNS
     sql = projection_sql()
@@ -229,3 +231,34 @@ def test_字符串列也能展平成页面形式() -> None:
     assert out["task_categories"][0] == "Text Generation;Question Answering"
     assert out["size_categories"][0] == "100K - 1M;< 1K"
     assert out["tags"][0] == "keyword;reranking"
+
+
+# ---------------------------------------------------------------- v4：克制扩充 + 扩展清单
+
+
+def test_v4新增五列都在默认面且多值列已扁平化() -> None:
+    added = {"pretty_name", "multilinguality", "arxiv_ids", "source_datasets", "task_ids"}
+    assert added <= set(DEFAULT_COLUMNS)
+    assert {"multilinguality", "arxiv_ids", "source_datasets", "task_ids"} <= FLATTEN_COLUMNS
+    assert "pretty_name" not in FLATTEN_COLUMNS  # 标量列不必压
+    assert len(DEFAULT_COLUMNS) == 31
+    assert CONTRACT_VERSION >= 4
+
+
+def test_地区因无区分度不进默认面但进扩展清单() -> None:
+    assert "regions" not in DEFAULT_COLUMNS
+    extended = {column for column, _definition, _tier in EXTENDED_FIELDS}
+    assert "regions" in extended
+    assert {"dois", "paperswithcode_id", "citation", "card_homepage"} <= extended
+
+
+def test_扩展清单与默认面不重叠且列都存在() -> None:
+    extended = [column for column, _definition, _tier in EXTENDED_FIELDS]
+    assert not set(extended) & set(DEFAULT_COLUMNS)
+    assert set(extended) <= set(wide_column_names())
+    assert all(definition.strip() and tier.strip() for _c, definition, tier in EXTENDED_FIELDS)
+
+
+def test_扩展说明写明按需取用方式() -> None:
+    assert "output.columns" in EXTENDED_NOTE
+    assert "gold.datasets" in EXTENDED_NOTE
