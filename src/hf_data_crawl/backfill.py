@@ -1,4 +1,9 @@
-"""按「给定的 URL 清单」回填表格字段。
+"""回填**执行体**：按「给定的 URL 清单」回填表格字段。
+
+它只是 `delivery.EXECUTORS` 里 `kind: backfill` 对应的那一个执行体，不负责受理、
+编号、节奏、留档——那些对所有需求都一样，归 `requirement` / `delivery` 管。
+本模块只回答「这张表怎么填」，产出一份 `FillReport`，由档案层转成统一的
+`Payload` 后写进 `requests/<编号>/deliveries/<时刻>/`。
 
 这类需求会反复出现：对方给一张表，只有一列 URL（或数据集标识），其余列要按
 约定口径填上。手填一次可以，填到第五次必然出错——尤其「下载量取 30 天还是
@@ -16,31 +21,32 @@
 齐整、实则编造的表，比一份诚实地空着几格表危险得多——空着会有人来问，编造
 不会。
 
-spec 形状（`fills/<编号>/spec.yaml`）：
+口径体形状（`requests/<编号>/spec.yaml` 的 `fill:` 段；上面的公共头由需求层管）：
 
 ```yaml
-name: FILL-0001
-title: 具身感知数据集信息补充
-source:
-  path: C:/Users/me/Downloads/清单.xlsx
-  sheet: Sheet1
-  header_row: 2            # 列名所在行；其上可有多行分组标题
-  key_column: URL          # 用列名定位，不用列号
-output:
-  path: C:/Users/me/Downloads/清单-已补全.xlsx
-columns:
-  来源:      {const: HuggingFace}
-  数据集名称: {field: id}
-  数据大小(GB): {field: main_size, format: gb}
-  数据模态:   {field: modalities, join: "、", translate: true}
-  论文URL:   {template: "https://arxiv.org/abs/{arxiv_id}"}
-  训练阶段:   {manual: README 未明写训练阶段}
-overrides: overrides.json   # 可选，人工判读结果
+kind: backfill
+fill:
+  source:
+    path: C:/Users/me/Downloads/清单.xlsx
+    sheet: Sheet1
+    header_row: 2            # 列名所在行；其上可有多行分组标题
+    key_column: URL          # 用列名定位，不用列号
+  output:
+    name: 清单-已补全.xlsx    # 档案里的文件名
+    copy_to: C:/Users/me/Downloads/清单-已补全.xlsx  # 可选，档案落定后另存一份
+  columns:
+    来源:      {const: HuggingFace}
+    数据集名称: {field: id}
+    数据大小(GB): {field: main_size, format: gb}
+    数据模态:   {field: modalities, join: "、", translate: true}
+    论文URL:   {template: "https://arxiv.org/abs/{arxiv_ids}"}
+    训练阶段:   {manual: README 未明写训练阶段}
+  overrides: overrides.json  # 可选，人工判读结果
 ```
 
 四条只写不说的规矩：
 
-1. **绝不改原件**：`output.path` 与 `source.path` 相同则直接报错。
+1. **绝不改原件**：`output.copy_to` 与 `source.path` 相同则直接报错。
 2. **默认不覆盖已有内容**：只填空格。要覆盖须显式 `overwrite: true`。
 3. **未声明的列一律不碰**，并在报告里列出来，让人看得见还剩多少活。
 4. **未命中底库的行不编值**，整行留空并点名。
@@ -48,6 +54,7 @@ overrides: overrides.json   # 可选，人工判读结果
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import zipfile
@@ -57,12 +64,11 @@ from pathlib import Path
 from typing import Any, Literal
 
 import openpyxl
-import yaml
 from openpyxl.styles import Alignment, Font
 
 from .atomic import replace
-from .delivery import SourceStamp, stamp
 from .gold import GoldCatalog
+from .source import SourceStamp, stamp
 from .store import DatasetStore
 
 #: 底库缺省端口。与 `gold.datasets` 视图同名，换视图时只改这一处。
@@ -133,11 +139,16 @@ class ColumnRule:
 
 @dataclass(frozen=True)
 class FillSpec:
-    name: str
-    title: str
+    """回填的「口径体」。不含 id/title——那是需求的事，不归执行体管。
+
+    产物文件名与「另存一份到」分开：前者进交付档案（`deliveries/<时刻>/`），
+    后者是给人就地取的便利副本。档案里那份是正式存证，副本丢了也不要紧。
+    """
+
     source: TableSource
-    output: Path
+    output_name: str
     columns: tuple[ColumnRule, ...]
+    copy_to: Path | None = None
     overrides: Path | None = None
     overwrite: bool = False
     lexicon: dict[str, str] = field(default_factory=dict)
@@ -161,7 +172,9 @@ class ColumnTally:
 
 @dataclass
 class FillReport:
-    spec_name: str
+    """一次回填的结果。字段与 SQL 型交付对齐，好让上层用同一套档案格式。"""
+
+    request_id: str
     output: Path | None
     rows: int
     tallies: dict[str, ColumnTally]
@@ -169,9 +182,13 @@ class FillReport:
     undeclared: list[str]
     manual: list[tuple[str, str]]
     stamp: SourceStamp | None = None
+    files: list[dict[str, Any]] = field(default_factory=list)
 
     def written(self) -> int:
         return sum(item.written for item in self.tallies.values())
+
+    def columns(self) -> tuple[str, ...]:
+        return tuple(self.tallies)
 
 
 # ---------------------------------------------------------------- URL 解析
@@ -213,81 +230,50 @@ def parse_reference(raw: str) -> str:
 # ---------------------------------------------------------------- spec
 
 
-class _StrictLoader(yaml.SafeLoader):
-    """拒绝重复键。
+def from_mapping(body: Any, base_dir: Path, *, origin: str = "spec") -> FillSpec:
+    """从映射解析 `spec.yaml` 的 `fill:` 段。
 
-    YAML 的默认行为是「后写覆盖前写」，而 spec 里出现两处同名，几乎总是笔误：
-    改了下面那处、上面那处还留着，跑起来用的却是后者——人看着自己写的那行
-    明明对，结果就是不对，最难查。宁可加载期直接拒绝。
+    `base_dir` 是相对路径的基准（需求目录）。读取、重复键校验、公共头校验都在
+    `requirement.load()` 里做完——执行体不该有第二套入口，否则「同一份需求」
+    会有两种读法，迟早对不上。
     """
-
-
-def _strict_mapping(
-    loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False
-) -> dict[Any, Any]:
-    mapping: dict[Any, Any] = {}
-    for key_node, value_node in node.value:
-        key = loader.construct_object(key_node, deep=deep)
-        if key in mapping:
-            raise FillError(f"重复的键 {key!r}（第 {key_node.start_mark.line + 1} 行）")
-        mapping[key] = loader.construct_object(value_node, deep=deep)
-    return mapping
-
-
-_StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _strict_mapping)
-
-
-def load_spec(path: Path) -> FillSpec:
-    try:
-        body = yaml.load(path.read_text(encoding="utf-8"), Loader=_StrictLoader)
-    except FileNotFoundError:
-        raise FillError(f"找不到 spec：{path}") from None
-    except yaml.YAMLError as error:
-        raise FillError(f"{path}: YAML 解析失败：{error}") from None
-    except FillError as error:
-        raise FillError(f"{path}: {error}") from None
     if not isinstance(body, dict):
-        raise FillError(f"{path}: 顶层必须是映射")
-
-    name = _text(body.get("name"), "name", path)
-    title = _text(body.get("title", name), "title", path)
-    source = _source(body.get("source"), path)
-    output = _output(body.get("output"), path, source)
+        raise FillError(f"{origin}: fill 必须是映射（source / output / columns）")
+    source = _source(body.get("source"), base_dir, origin)
+    output_name, copy_to = _output(body.get("output"), base_dir, source, origin)
     columns = tuple(
-        _rule(key, value, path) for key, value in _mapping(body.get("columns"), path).items()
+        _rule(key, value, origin) for key, value in _mapping(body.get("columns"), origin).items()
     )
     if not columns:
-        raise FillError(f"{path}: columns 为空，没有可填的列")
+        raise FillError(f"{origin}: columns 为空，没有可填的列")
 
     seen: set[str] = set()
     for item in columns:
         if item.name in seen:
-            raise FillError(f"{path}: 列 {item.name!r} 声明了两次")
+            raise FillError(f"{origin}: 列 {item.name!r} 声明了两次")
         seen.add(item.name)
 
     overrides = body.get("overrides")
-    overrides_path = None if overrides in (None, "") else (path.parent / str(overrides)).resolve()
+    overrides_path = None if overrides in (None, "") else (base_dir / str(overrides)).resolve()
     lexicon_raw = body.get("lexicon") or {}
     lexicon = (
         {str(k): str(v) for k, v in lexicon_raw.items()} if isinstance(lexicon_raw, dict) else {}
     )
-    notes = _notes(body.get("notes"), path)
 
     return FillSpec(
-        name=name,
-        title=title,
         source=source,
-        output=output,
+        output_name=output_name,
         columns=columns,
+        copy_to=copy_to,
         overrides=overrides_path,
         overwrite=bool(body.get("overwrite", False)),
         lexicon=lexicon,
-        notes=notes,
+        notes=_notes(body.get("notes"), origin),
         stamp_note=None if body.get("stamp_note") in (None, "") else str(body["stamp_note"]),
     )
 
 
-def _notes(raw: Any, path: Path) -> tuple[tuple[str, str], ...]:
+def _notes(raw: Any, origin: str) -> tuple[tuple[str, str], ...]:
     """说明页的补充条目：`notes: [{标题: 正文}]` 或 `notes: [[标题, 正文]]`。"""
     if raw in (None, ""):
         return ()
@@ -302,62 +288,82 @@ def _notes(raw: Any, path: Path) -> tuple[tuple[str, str], ...]:
             elif isinstance(item, (list, tuple)) and len(item) == 2:
                 out.append((str(item[0]), str(item[1])))
             else:
-                raise FillError(f"{path}: notes 的条目须是单键映射或二元组")
+                raise FillError(f"{origin}: notes 的条目须是单键映射或二元组")
         return tuple(out)
-    raise FillError(f"{path}: notes 须是映射或列表")
+    raise FillError(f"{origin}: notes 须是映射或列表")
 
 
-def _source(raw: Any, path: Path) -> TableSource:
+def _source(raw: Any, base_dir: Path, origin: str) -> TableSource:
     if not isinstance(raw, dict):
-        raise FillError(f"{path}: source 必须是映射（path / sheet / header_row / key_column）")
+        raise FillError(f"{origin}: source 必须是映射（path / sheet / header_row / key_column）")
     table = Path(str(raw.get("path", ""))).expanduser()
     if not table.is_absolute():
-        table = (path.parent / table).resolve()
+        table = (base_dir / table).resolve()
     if not table.exists():
-        raise FillError(f"{path}: 输入表不存在：{table}")
+        raise FillError(f"{origin}: 输入表不存在：{table}")
     header_row = int(raw.get("header_row", 1))
     if header_row < 1:
-        raise FillError(f"{path}: header_row 从 1 起算")
+        raise FillError(f"{origin}: header_row 从 1 起算")
     sheet = raw.get("sheet")
     return TableSource(
         path=table,
         sheet=None if sheet in (None, "") else str(sheet),
         header_row=header_row,
-        key_column=_text(raw.get("key_column"), "source.key_column", path),
+        key_column=_text(raw.get("key_column"), "source.key_column", origin),
     )
 
 
-def _output(raw: Any, path: Path, source: TableSource) -> Path:
+def _output(raw: Any, base_dir: Path, source: TableSource, origin: str) -> tuple[str, Path | None]:
+    """解析产物：返回（档案内文件名，另存副本的落点）。
+
+    三种写法都认，前两种是同一套语义，第三种只作兼容：
+    - `output: {name: 已补全.xlsx, copy_to: D:/some}`：显式分开——档案里叫什么、
+      要不要在别处再落一份。
+    - `output: D:/some/已补全.xlsx`：文件名取末段，同时另存到该路径。
+    - `output: {path: D:/some/已补全.xlsx}`：上一版遗留写法，等价上一种。
+    """
     if isinstance(raw, dict):
-        target = raw.get("path")
-        sheet = raw.get("sheet")
+        name = raw.get("name")
+        target = raw.get("copy_to") or raw.get("path")
     else:
-        target, sheet = raw, None
-    del sheet  # 输出 sheet 名保留原样，不需要额外声明
-    if target in (None, ""):
-        raise FillError(f"{path}: output.path 必填")
-    out = Path(str(target)).expanduser()
-    if not out.is_absolute():
-        out = (path.parent / out).resolve()
-    if out.resolve() == source.path.resolve():
+        name, target = None, raw
+    if name in (None, "") and target in (None, ""):
+        raise FillError(f"{origin}: output 必填（文件名，或要另存到的路径）")
+
+    copy_to: Path | None = None
+    if target not in (None, ""):
+        candidate = Path(str(target)).expanduser()
+        if not candidate.is_absolute():
+            candidate = (base_dir / candidate).resolve()
+        copy_to = candidate
+    if name in (None, ""):
+        if copy_to is None:  # 已被上面的必填校验挡掉，留作类型收窄
+            raise FillError(f"{origin}: output 必填")
+        # 目录 → 用输入表名加「-已补全」；文件 → 取其名。
+        name = copy_to.name if copy_to.suffix else f"{source.path.stem}-已补全{source.path.suffix}"
+        if not copy_to.suffix:
+            copy_to = copy_to / str(name)
+
+    assert copy_to is None or isinstance(copy_to, Path)
+    if copy_to is not None and copy_to.resolve() == source.path.resolve():
         # 补全是「产出」，不是「就地修改」。原件是唯一可回退的凭据，不能被写掉。
-        raise FillError(f"{path}: output 不能与 source 相同（{out}），补全请另存")
-    return out
+        raise FillError(f"{origin}: output 不能与 source 相同（{copy_to}），补全请另存")
+    return str(name), copy_to
 
 
-def _mapping(raw: Any, path: Path) -> dict[str, Any]:
+def _mapping(raw: Any, origin: str) -> dict[str, Any]:
     if not isinstance(raw, dict):
-        raise FillError(f"{path}: columns 必须是「列名 → 规则」的映射")
+        raise FillError(f"{origin}: columns 必须是「列名 → 规则」的映射")
     return {str(key): value for key, value in raw.items()}
 
 
-def _rule(name: str, raw: Any, path: Path) -> ColumnRule:
+def _rule(name: str, raw: Any, origin: str) -> ColumnRule:
     if not isinstance(raw, dict):
-        raise FillError(f"{path}: 列 {name!r} 的规则必须是映射")
+        raise FillError(f"{origin}: 列 {name!r} 的规则必须是映射")
     kinds = [key for key in ("field", "template", "const", "manual") if key in raw]
     if len(kinds) != 1:
         raise FillError(
-            f"{path}: 列 {name!r} 必须且只能用 field / template / const / manual 之一，实得 {kinds or '无'}"
+            f"{origin}: 列 {name!r} 必须且只能用 field / template / const / manual 之一，实得 {kinds or '无'}"
         )
     kind = kinds[0]
     join = raw.get("join")
@@ -365,7 +371,7 @@ def _rule(name: str, raw: Any, path: Path) -> ColumnRule:
     return ColumnRule(
         name=name,
         kind=kind,  # type: ignore[arg-type]
-        field=None if kind != "field" else _text(raw["field"], f"{name}.field", path),
+        field=None if kind != "field" else _text(raw["field"], f"{name}.field", origin),
         template=None if kind != "template" else str(raw["template"]),
         const=raw.get("const"),
         reason=None if kind != "manual" else (str(raw["manual"]) or "未说明原因"),
@@ -377,9 +383,9 @@ def _rule(name: str, raw: Any, path: Path) -> ColumnRule:
     )
 
 
-def _text(raw: Any, key: str, path: Path) -> str:
+def _text(raw: Any, key: str, origin: str) -> str:
     if raw in (None, ""):
-        raise FillError(f"{path}: {key} 必填")
+        raise FillError(f"{origin}: {key} 必填")
     return str(raw)
 
 
@@ -545,10 +551,18 @@ def run(
     store: DatasetStore,
     spec: FillSpec,
     *,
+    target_dir: Path,
+    request_id: str = "",
+    title: str = "",
     catalog: GoldCatalog | None = None,
     source: SourceStamp | None = None,
     dry_run: bool = False,
 ) -> FillReport:
+    """跑一次回填，产物写进 `target_dir`（由档案层给的暂存目录）。
+
+    这里**不**碰 `copy_to`：便利副本由 `delivery` 在档案落定之后统一另存，
+    免得出现「副本已更新、档案没有」的半截状态。执行体只管把活干完、把账报清。
+    """
     workbook, sheet = _open_sheet(spec)
     header_row = spec.source.header_row
     index = _column_index(sheet, header_row)
@@ -611,25 +625,39 @@ def run(
     undeclared = [name for name in index if name not in set(declared)]
 
     if not dry_run:
-        _annotate(sheet, header_row, index, declared, tallies, spec, len(rows), missing)
+        _annotate(
+            sheet, header_row, index, declared, tallies, spec, len(rows), missing, request_id, title
+        )
         anchor = _anchor(stamp_value)
         _fix_properties(workbook, anchor)
-        spec.output.parent.mkdir(parents=True, exist_ok=True)
-        temp = spec.output.with_suffix(spec.output.suffix + ".tmp")
+        target_dir.mkdir(parents=True, exist_ok=True)
+        product = target_dir / spec.output_name
+        temp = product.with_suffix(product.suffix + ".tmp")
         workbook.save(temp)
         _normalize_zip(temp, anchor)
-        replace(temp, spec.output)
+        replace(temp, product)
+        files = [
+            {"name": product.name, "bytes": product.stat().st_size, "sha256": _digest(product)}
+        ]
+    else:
+        product = None
+        files = []
 
     return FillReport(
-        spec_name=spec.name,
-        output=None if dry_run else spec.output,
+        request_id=request_id,
+        output=product,
         rows=len(rows),
         tallies=tallies,
         missing_ids=missing,
         undeclared=undeclared,
         manual=manual_columns,
         stamp=stamp_value,
+        files=files,
     )
+
+
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _normalize_zip(path: Path, anchor: datetime) -> None:
@@ -688,6 +716,8 @@ def _annotate(
     spec: FillSpec,
     rows: int,
     missing: list[str],
+    request_id: str,
+    title: str,
 ) -> None:
     """写「补全说明」页，并把长文本列开换行——否则填进去的字会被整片截断。
 
@@ -701,7 +731,7 @@ def _annotate(
     note.column_dimensions["B"].width = 88
 
     lines: list[tuple[str, str]] = [
-        ("任务", f"{spec.name} · {spec.title}"),
+        ("任务", f"{request_id} · {title}" if title else request_id),
         ("范围", f"第 {header_row + 1}–{header_row + rows} 行、共 {rows} 条记录"),
         (
             "写入",

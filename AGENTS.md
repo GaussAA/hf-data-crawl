@@ -35,8 +35,9 @@ Add new terms there first before using them.
 - Change-set cards: `enrich.scan_changed_cards` (same `lastModified` watermark as collect; writes `card-*`, never Bronze)
 - Single day frame: `bronze.day_frame` (Bronze partition + card-batch supplements; shared by `silver` and `state`)
 - Health history: `health.py` (per-run findings log; `runs/` records command outcome, not alerts)
-- Requirements: `requirement.py` (spec → SQL, vocabulary terms only) + `delivery.py` (three-part delivery, source fingerprint, drift marking)
-- Table backfill: `backfill.py` (URL list → filled workbook; mechanical in engine, judgment in `overrides.json`; never edits the source file)
+- Requirements: `requirement.py` (one spec per `REQ-xxxx`; `kind` selects the executor) + `delivery.py` (`EXECUTORS` dispatch, unified `Payload` → three-part archive, source fingerprint, drift marking) + `source.py` (stamp shared by both executors, kept out of the import cycle)
+- Backfill executor: `backfill.py` (`kind: backfill`; URL list → filled workbook; mechanical in engine, judgment in `overrides.json`; never edits the source file)
+- Unified lifecycle: every form of delivery shares `requests/`, `request run/run-due`, `history/`, `deliveries/`. Add a new form by writing one executor and registering it in `EXECUTORS` — never a new directory, command, or ledger. See GLOSSARY #57.
 - See [ADR-0001](docs/adr/0001-metadata-refresh-consistency-hardening.md) for design decisions.
 
 ### Test naming

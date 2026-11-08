@@ -31,8 +31,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `reconcile` | 全量对账：按 `createdAt` 稳定序扫全站，产出新增/删除/转私有/改名/sha 变更 | 是 |
 | `build` | 重建派生层：默认只重放近 7 天热区，`--stale` 只修派生滞后的日子及其后，`--full` 全量重放 | 否 |
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
-| `request` | 需求与交付管理：`new` 建需求、`list` 看全部、`show` 看口径与台账、`run` 交付一次、`run-due` 跑到期的 | 否 |
-| `fill` | 按给定的 URL 清单回填表格：产出新文件，原件不动 | 否 |
+| `request` | 需求与交付管理：`new` 建需求、`list` 看全部、`show` 看口径与台账、`run` 交付一次（`--dry-run` 预演）、`run-due` 跑到期的 | 否 |
 | `report` | 生成单文件榜单页（离线可看） | 否 |
 | `doctor` | 体检：调度新鲜度、底库行龄、层间勾稽、派生凭证、产物新鲜度、断日与残留文件；异常写 `ALERT.txt` 并追加体检流水 | 否 |
 | `archive` | 归档早于 N 天的 Raw 分区：合并小分块并去重，先验证 Bronze 逐行相等，原文件移入 `backup/raw/` | 否 |
@@ -55,14 +54,11 @@ hf-data-crawl report       [--out PATH] [--top 20]
 hf-data-crawl archive      [--older-than-days 30] [--date YYYY-MM-DD]
 hf-data-crawl docs         [--out PATH]           # 默认 docs/DATA.md
 hf-data-crawl export-wide  [--out PATH]           # 默认 data/exports/datasets.parquet
-hf-data-crawl request      new REQ-0001 --title 标题 --requester 姓名 [--purpose ...] [--cadence once|daily|weekly|monthly|manual]
+hf-data-crawl request      new REQ-0001 --title 标题 --requester 姓名 [--purpose ...] [--cadence once|daily|weekly|monthly|manual] [--kind query|backfill] [--source 输入表.xlsx]
 hf-data-crawl request      list
 hf-data-crawl request      show REQ-0001
-hf-data-crawl request      run REQ-0001 [--force]   # once 需求交付过要重交须加 --force
+hf-data-crawl request      run REQ-0001 [--force] [--dry-run]   # once 重交须 --force；--dry-run 只算不写
 hf-data-crawl request      run-due                  # 只跑到期的（计划任务用）
-
-hf-data-crawl fill         fills/FILL-0001/spec.yaml [--dry-run] [--overwrite]
-hf-data-crawl fill         --all                    # 跑 fills/ 下全部 spec
 ```
 
 全局参数 `--data-dir` 需放在子命令之前，默认取 `HF_DATA_DIR`，否则 `./data`。
@@ -289,24 +285,36 @@ uv run hf-data-crawl doctor                        # 手动体检；有问题退
 
 ## 需求与交付
 
-底库建起来是为了用。每份对外的数据交付都是一份**档案**，而不是一次临时的查询：
+底库建起来是为了用。每份对外的数据交付都是一份**档案**，而不是一次临时的查询。
+
+**一套生命周期，变只在 `kind` 与执行体**：出一份清单、按 URL 回填一张表、日后的对账
+报表，本质都是「有人提了需求 → 按节奏跑 → 交得出去 → 说得清来源」。所以它们共用
+同一个 `requests/` 目录、同一套 `REQ-xxxx` 编号、同一条 `request run / run-due` 命令、
+同一份交付档案。按产出形态另开目录或命令，等于把「不变」的部分复制若干份，而形态
+是列不完的。
 
 ```
-requests/REQ-0001/spec.yaml           # 口径，唯一可变的地方
+requests/REQ-0001/spec.yaml           # 公共头 + kind + 该形态的口径体
 requests/REQ-0001/history/v1.yaml     # 交付时自动快照，只留「真的用过」的口径
 requests/REQ-0001/deliveries/20261108T145000/
-  data.parquet      # 字节，不进 git（.gitignore 拦 **/deliveries/**/data.*）
-  manifest.json     # 机器读：底库指纹、行数、列、sha256、健康标记
+  data.parquet / 已补全.xlsx          # 产物字节，不进 git（白名单只放行两份说明）
+  manifest.json     # 机器读：kind、底库指纹、口径、行数、列、sha256、健康标记
   README.md         # 人读：要什么、怎么算的、基于哪天的底库、几行
 ```
 
-**口径只写词条，不写字段名**：`下载量` 是近 30 天，`累计下载量` 才是历史累计——
-同一句话两种理解差两个数量级。词表见 `metrics.py` 与 [GLOSSARY](GLOSSARY.md) #51，
-`request show` 会把口径连同编译后的 SQL 一起打出来，便于贴给对方确认。
+`spec.yaml` 里 `kind: query` 带 `criteria` / `order_by` / `output`，`kind: backfill`
+带 `fill:`（输入表、逐列取值方式）。`requirement.py` 负责读与校验，`delivery.py`
+只认统一的 `Payload`，按 `EXECUTORS` 把活分派给执行体——将来多一种形态，写一个
+执行体、注册一行即可，不必新开目录、命令或台账。
+
+**query 形态的口径只写词条，不写字段名**：`下载量` 是近 30 天，`累计下载量` 才是
+历史累计——同一句话两种理解差两个数量级。词表见 `metrics.py` 与
+[GLOSSARY](GLOSSARY.md) #51，`request show` 会把口径连同编译后的 SQL 一起打出来。
 
 `manifest.json` 里的 `source.current_md5` 是整份档案的锚点：日后任何一份交付都能
-回答「它基于哪一版底库」。`deliveries/` 的 `data.*` 不进仓库，但 `manifest.json`
-与 `README.md` 进 —— 档案的「话」可评审，档案的「字节」不占仓库，两者靠 sha256 绑定。
+回答「它基于哪一版底库」。`.gitignore` 对 `deliveries/` 用的是**白名单**——只放行
+`manifest.json` 与 `README.md`，产物字节一律留在本机，靠 sha256 绑定。按扩展名逐个
+排除永远列不完，因为产物形态会随 `kind` 增加。
 
 **跑一次交付**（`request run`）守三条：0 行不交付、超 `max_rows` 不交付、行数突变
 **标疑但不阻断**。第三条是有意的：`once`/`weekly` 这类需求当天交不出货比数字可疑
@@ -328,17 +336,27 @@ CSV 装不下的列表列（`tags`、`languages` 等 11 个）以 `;` 连接成�
 一个需求失败不挡别的（坏 spec、0 行、查询出错都只记一条继续）；但底库本身不成立
 （`current` 缺失）时整体失败，因为那不是某一条需求的问题。
 
-## 表格回填
+## 回填形态：`kind: backfill`
 
 对方常给一张只有 URL 一列的表，其余列要按约定口径填上。这类活做一次可以，做到第五次
-必然出错——尤其「下载量取 30 天还是累计」这种口径，换个人就重新裁一遍。`fill` 把它变成
-一份可复跑的口径：**机械的归引擎，判断的归人**。
+必然出错——尤其「下载量取 30 天还是累计」换个人就重新裁一遍。**它不是另一套体系**：
+`REQ-0002` 与 `REQ-0001` 的公共头、节奏、护栏、交付档案逐字同形，只是 `kind: backfill`
+并把口径写进 `fill:` 段；跑它的命令也是同一条。
+
+```bash
+hf-data-crawl request new REQ-0002 --title 清单补全 --requester 姓名 --kind backfill --source "C:/.../清单.xlsx"
+hf-data-crawl request run REQ-0002 --dry-run   # 只算不写：逐列能填多少、哪些留空
+hf-data-crawl request run REQ-0002             # 出正式交付档案
+```
 
 ```
-fills/FILL-0001/spec.yaml        # 输入表、标识列、逐列取值方式、留空列清单
-fills/FILL-0001/overrides.json   # 逐库人工判读结果（引擎只合并、不生成）
-fills/FILL-0001/runs/*.json      # 每轮台账：写了多少、基于哪一版底库
+requests/REQ-0002/spec.yaml          # 公共头 + kind + fill: 口径体
+requests/REQ-0002/overrides.json     # 逐库人工判读结果（引擎只合并、不生成）
+requests/REQ-0002/deliveries/<时刻>/
+  已补全.xlsx / manifest.json / README.md   # 台账就是这份 manifest，不再另记一份 runs/*.json
 ```
+
+**机械的归引擎，判断的归人**：一列只能用一种取值方式。
 
 一列只能用一种取值方式：
 
@@ -351,7 +369,7 @@ fills/FILL-0001/runs/*.json      # 每轮台账：写了多少、基于哪一版
 
 **四条只写不说的规矩**：
 
-1. **绝不改原件**：`output` 与 `source` 同路径直接报错。原件是唯一可回退的凭据。
+1. **绝不改原件**：`fill.output.copy_to` 与 `fill.source.path` 同路径直接报错。原件是唯一可回退的凭据。
 2. **默认不覆盖**：只填空格。人家手填的可能比底库新，也可能有底库没有的判断；要覆盖须显式 `overwrite: true`。
 3. **不猜**：判读不出来的列写 `manual`，留空并在「补全说明」页点名。一份看着齐整、实则编造的表，比诚实地空着几格危险得多——空着会有人来问，编造不会。
 4. **未声明的列一律不碰**，并在报告里列出来，让人看得见还剩多少活。
@@ -362,7 +380,10 @@ md5 却每次不同，「这次和上次一样吗」只能靠人肉比对。
 
 判读层（README 里「训练阶段是微调还是后训练」「构造方式是仿真还是真机」）写进
 `overrides.json`，与机械层分开：引擎自己不读 README、不替人下结论，但会把「哪些格子是
-人工判读来的」记进台账。
+人工判读来的」记进 `manifest.json` 的 `fill.tallies` 与 README 的逐列规则表。
+
+产物若另配了 `fill.output.copy_to`，那份便利副本在**档案落定之后**才复制，不会出现
+「副本已更新、档案没有」的半截状态；复制失败只记不抛，因为正式档案已经成立。
 
 ## 开发
 

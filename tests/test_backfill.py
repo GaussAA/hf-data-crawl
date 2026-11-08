@@ -17,16 +17,29 @@ import pytest
 
 from hf_data_crawl.backfill import (
     FillError,
-    load_spec,
+    FillSpec,
     parse_reference,
     render,
     run,
 )
 from hf_data_crawl.delivery import SourceStamp
 from hf_data_crawl.gold import GoldCatalog
+from hf_data_crawl.requirement import SpecError
+from hf_data_crawl.requirement import load as load_request
 from hf_data_crawl.store import DatasetStore
 
 HEADERS = ["URL", "数据集名称", "下载量", "数据模态", "论文URL", "训练阶段", "备注"]
+
+
+def load_spec(path: Path) -> FillSpec:
+    """从**完整 REQ spec** 里取出回填口径体。
+
+    不再有「独立的 fill spec 文件」这种第二套入口：测试也走需求层统一读取，
+    这样 spec 校验、重复键拒绝、相对路径基准都与真实运行时一模一样。
+    """
+    spec = load_request(path)
+    assert spec.fill is not None
+    return spec.fill
 
 
 class FakeCatalog:
@@ -70,10 +83,15 @@ def catalogue(rows: list[dict[str, Any]]) -> GoldCatalog:
 
 
 def run_it(spec: Any, rows: list[dict[str, Any]], *, tmp_path: Path, dry_run: bool = False) -> Any:
-    """跑一遍回填。`catalog` 与 `source` 都注入后，`store` 完全不会被读到。"""
+    """跑一遍回填。`catalog` 与 `source` 都注入后，`store` 完全不会被读到。
+
+    `target_dir` 是档案层给的暂存目录；测试里直接用 tmp_path，于是产物仍落在
+    各用例原本断言的那个路径上。
+    """
     return run(
         DatasetStore(tmp_path / "unused"),
         spec,
+        target_dir=tmp_path,
         catalog=catalogue(rows),
         source=STAMP,
         dry_run=dry_run,
@@ -98,18 +116,30 @@ def build_book(path: Path, keys: list[str], *, header_row: int = 2) -> Path:
 
 
 def write_spec(path: Path, *, book: Path, out: Path, body: str) -> Path:
+    """造一份完整的 REQ spec，回填口径体嵌在 `fill:` 下。
+
+    `out` 既是档案内文件名，也是另存落点；`run_it` 把它的父目录当暂存目录，
+    于是端到端用例仍能在老地方找到产物。
+    """
+    indented = "\n".join(f"  {line}" if line else "" for line in body.splitlines())
     path.write_text(
         f"""
-name: T-0001
+id: REQ-0001
 title: 测试
-source:
-  path: {book.as_posix()}
-  sheet: 数据
-  header_row: 2
-  key_column: URL
-output:
-  path: {out.as_posix()}
-{body}
+requester: 测试者
+version: 1
+cadence: once
+kind: backfill
+fill:
+  source:
+    path: {book.as_posix()}
+    sheet: 数据
+    header_row: 2
+    key_column: URL
+  output:
+    name: {out.name}
+    copy_to: {out.as_posix()}
+{indented}
 """,
         encoding="utf-8",
     )
@@ -161,7 +191,7 @@ def test_输出不能与输入相同(tmp_path: Path) -> None:
         tmp_path / "spec.yaml", book=book, out=book, body='columns:\n  "下载量": {field: downloads}'
     )
 
-    with pytest.raises(FillError, match="不能与 source 相同"):
+    with pytest.raises(SpecError, match="不能与 source 相同"):
         load_spec(spec)
 
 
@@ -174,11 +204,12 @@ def test_一列只能有一种取值方式(tmp_path: Path) -> None:
         body='columns:\n  "下载量": {field: downloads, const: 1}',
     )
 
-    with pytest.raises(FillError, match="之一"):
+    with pytest.raises(SpecError, match="之一"):
         load_spec(spec)
 
 
-def test_同一列写两次要报错(tmp_path: Path) -> None:
+def test_同一列写两次在读入处就被拒(tmp_path: Path) -> None:
+    """两类需求共用一份 spec 后，重复键防线也跟着上移到需求层。"""
     book = build_book(tmp_path / "in.xlsx", ["acme/ds-1"])
     spec = write_spec(
         tmp_path / "spec.yaml",
@@ -187,7 +218,7 @@ def test_同一列写两次要报错(tmp_path: Path) -> None:
         body='columns:\n  "下载量": {field: downloads}\n  "下载量": {const: 1}',
     )
 
-    with pytest.raises(FillError, match="两次"):
+    with pytest.raises(SpecError, match="重复的键"):
         load_spec(spec)
 
 
@@ -197,24 +228,28 @@ def test_空columns要报错(tmp_path: Path) -> None:
         tmp_path / "spec.yaml", book=book, out=tmp_path / "out.xlsx", body="columns: {}"
     )
 
-    with pytest.raises(FillError, match="columns 为空"):
+    with pytest.raises(SpecError, match="columns 为空"):
         load_spec(spec)
 
 
 def test_输入表不存在要报错(tmp_path: Path) -> None:
+    """受理期就该发现：等到执行期才炸，人已经把这份需求当成建好了。"""
     spec = tmp_path / "spec.yaml"
     spec.write_text(
         """
-name: T
-title: t
-source: {path: nope.xlsx, header_row: 2, key_column: URL}
-output: {path: out.xlsx}
-columns: {"下载量": {field: downloads}}
+id: REQ-0001
+title: 测试
+requester: 测试者
+kind: backfill
+fill:
+  source: {path: nope.xlsx, header_row: 2, key_column: URL}
+  output: {name: out.xlsx}
+  columns: {"下载量": {field: downloads}}
 """,
         encoding="utf-8",
     )
 
-    with pytest.raises(FillError, match="输入表不存在"):
+    with pytest.raises(SpecError, match="输入表不存在"):
         load_spec(spec)
 
 

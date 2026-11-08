@@ -5,12 +5,24 @@
 文件一旦离开这台机器，就只剩一份数据。三个月后对方问「这数从哪来的、怎么算的」，
 没有档案就只能回来翻记录。所以每份交付固定三件：
 
-- `data.parquet`（或 csv）：结果本体
+- 产物本体（query 是 `data.parquet` / `data.csv`，backfill 是补全后的表格）
 - `manifest.json`：机器读——底库指纹、口径、行数、列、sha256、健康标记
 - `README.md`：人读——要什么、怎么算的、基于哪天的底库、几行
 
 `manifest.source.current_md5` 是整份档案的锚点。底库每天都变，所以一份交付
 只在「那一版底库」下成立；有这个 md5，任何一份历史交付都能回答它基于什么。
+
+**不变与变**（这套体系的关键）
+------------------------------
+受理、定口径、按节奏跑、护栏、标疑、原子落盘、留档、可复现——对所有需求都一样，
+全在本文件里走一条链。真正会变的只有「这次到底产出什么」，它被收进两处：
+
+- `spec.kind`：形态的名字，只是一个枚举值；
+- `EXECUTORS`：形态对应的执行体，产出统一的 `Payload`。
+
+将来多一种交付形态（对账报表、按名单核验失效…），写一个执行体 + 注册一行即可，
+不必再开一个目录、一套编号、一套命令。`Payload` 是执行体与档案层之间唯一的契约：
+档案层只认「行数、列、产物清单、口径明细」，不认背后是 SQL 还是Excel。
 
 三条硬规矩
 ----------
@@ -21,6 +33,7 @@
    必须留在纸面上，不能靠人回忆上次是多少。
 
 原子性：先写 `.tmp-*` 目录，三件齐了再整体改名。中途失败绝不留半份交付。
+便利副本（`copy_to`）在档案落定之后才复制：否则会出现「副本已更新、档案没有」。
 """
 
 from __future__ import annotations
@@ -28,7 +41,8 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -36,6 +50,7 @@ from typing import Any
 import duckdb
 import polars as pl
 
+from . import backfill
 from .atomic import replace
 from .gold import GoldCatalog, GoldNotReady
 from .metrics import lookup
@@ -45,6 +60,8 @@ from .requirement import (
     README_NAME,
     SPEC_NAME,
     Cadence,
+    Kind,
+    Mode,
     OutputFormat,
     Spec,
     SpecError,
@@ -54,6 +71,7 @@ from .requirement import (
 from .requirement import (
     load as load_spec,
 )
+from .source import SourceMissing, SourceStamp, stamp
 from .store import DatasetStore
 
 #: 交付目录名的时刻格式。到秒：同一分钟内跑两个需求是常态。
@@ -61,16 +79,27 @@ _STAMP_FORMAT = "%Y%m%dT%H%M%S"
 
 
 class DeliveryBlocked(RuntimeError):
-    """按护栏不该交付（0 行、超上限、底库缺失、查询失败）。一律不落盘。"""
+    """按护栏不该交付（0 行、超上限、底库缺失、执行失败）。一律不落盘。"""
 
 
 @dataclass(frozen=True)
-class SourceStamp:
-    """底库指纹：这一份交付到底基于哪一版数据。"""
+class Payload:
+    """执行体的产出，也是**执行体与档案层之间唯一的契约**。
 
-    current_md5: str
-    current_rows: int
-    newest_snapshot_date: date | None = None
+    档案与 README 只认这个结构，不认「这次跑的是 SQL 还是回填」。它们交付的东西
+    不一样，可「交付这件事」是一样的——这正是两类需求能合成一套体系的原因。
+    """
+
+    rows: int
+    columns: tuple[str, ...]
+    #: 产物元数据：name / bytes / sha256。预演时为空。
+    files: list[dict[str, Any]] = field(default_factory=list)
+    #: 写进 manifest 顶层的形态特有口径（query 的 sql/criteria、backfill 的 fill）。
+    definition: dict[str, Any] = field(default_factory=dict)
+    #: 写进 README「口径」段的若干行（markdown）。
+    detail_lines: list[str] = field(default_factory=list)
+    #: 档案落定后要另存的便利副本：（档案内文件名, 目标路径）。
+    copies: tuple[tuple[str, Path], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -99,21 +128,58 @@ class DeliveryResult:
     files: tuple[dict[str, Any], ...]
     health: Health
     spec_version: int
+    kind: Kind
+    #: 便利副本的复制结果。档案已经成立，副本失败只记不抛——不能把「已交付」
+    #: 报成「失败」，也不能静默不提。
+    copy_notes: tuple[str, ...] = ()
 
 
-def stamp(store: DatasetStore) -> SourceStamp:
-    """算底库指纹。一份 run-due 只算一次，传给各个需求复用。"""
-    path = store.path("current")
-    if not path.exists():
-        raise DeliveryBlocked("底库不存在，先跑 `hf-data-crawl collect`")
-    digest = hashlib.md5(path.read_bytes()).hexdigest()
-    frame = store.read("current")
-    newest = frame["last_seen_at"].max() if frame.height else None
-    return SourceStamp(
-        current_md5=digest,
-        current_rows=frame.height,
-        newest_snapshot_date=newest if isinstance(newest, date) else None,
-    )
+@dataclass(frozen=True)
+class Preview:
+    """预演结果：只算不写，不建目录、不留档案，也不受护栏阻断。
+
+    预演的用途恰恰是「看看会不会 0 行」，此时套护栏等于自相矛盾。
+    """
+
+    request_id: str
+    kind: Kind
+    rows: int
+    columns: tuple[str, ...]
+    lines: list[str]
+
+
+@dataclass(frozen=True)
+class RunContext:
+    """执行体拿到的全部上下文。执行体不自己开 catalog、不算指纹、不定目录。"""
+
+    store: DatasetStore
+    spec: Spec
+    staging: Path
+    catalog: GoldCatalog
+    source: SourceStamp
+    dry_run: bool = False
+
+
+#: 形态 → 执行体。**新形态只在这里加一行**，其余生命周期一律复用。
+Executor = Callable[[RunContext], Payload]
+EXECUTORS: dict[Kind, Executor] = {}
+
+
+def _stamp(store: DatasetStore) -> SourceStamp:
+    """把「底库不在」翻译成本模块的失败类型，调用方看到的语义不变。"""
+    try:
+        return stamp(store)
+    except SourceMissing as error:
+        raise DeliveryBlocked(str(error)) from None
+
+
+def _catalog(store: DatasetStore, catalog: GoldCatalog | None) -> GoldCatalog:
+    if catalog is not None:
+        return catalog
+    try:
+        return GoldCatalog(store)
+    except GoldNotReady as error:
+        raise DeliveryBlocked(str(error)) from error
 
 
 def deliver(
@@ -129,23 +195,30 @@ def deliver(
     request_dir = requests_root / request_id
     spec = load_spec(request_dir / SPEC_NAME)
     moment = now or datetime.now().astimezone()
-    stamp_value = source or stamp(store)
-    frame = _query(store, spec, catalog)
-    _check_guard(spec, frame)
-    health = _health(request_dir, spec, frame.height)
+    stamp_value = source or _stamp(store)
+    runner = _catalog(store, catalog)
 
     directory = _reserve_dir(request_dir, moment)
     staging = directory.parent / f".tmp-{directory.name}"
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True)
     try:
-        written = _write_data(staging, spec, frame)
+        payload = _execute(
+            RunContext(
+                store=store,
+                spec=spec,
+                staging=staging,
+                catalog=runner,
+                source=stamp_value,
+            )
+        )
+        _check_guard(spec, payload.rows)
+        health = _health(request_dir, spec, payload.rows)
         manifest = _manifest(
             spec=spec,
             moment=moment,
             stamp_value=stamp_value,
-            frame=frame,
-            files=written,
+            payload=payload,
             health=health,
             previous=_last_delivery_name(request_dir, exclude=directory.name),
         )
@@ -153,7 +226,7 @@ def deliver(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
         (staging / README_NAME).write_text(
-            _readme(spec, moment, stamp_value, frame, written, health), encoding="utf-8"
+            _readme(spec, moment, stamp_value, payload, health), encoding="utf-8"
         )
         # 三件齐了才换名：中途失败最多留下一个 .tmp-* 目录，不会出现「有数据没说明」。
         replace(staging, directory)
@@ -163,36 +236,278 @@ def deliver(
 
     # 首次交付落一份口径快照——只留「真的用过」的版本，没用过的口径没有保留价值。
     snapshot_history(request_dir / SPEC_NAME, spec.version)
+    notes = _copy_out(directory, payload.copies)
 
     return DeliveryResult(
         request_id=spec.id,
         directory=directory,
-        rows=frame.height,
-        columns=tuple(frame.columns),
-        files=tuple(written),
+        rows=payload.rows,
+        columns=payload.columns,
+        files=tuple(payload.files),
         health=health,
         spec_version=spec.version,
+        kind=spec.kind,
+        copy_notes=notes,
     )
 
 
-# ---------------------------------------------------------------- 执行
+def preview(
+    store: DatasetStore,
+    requests_root: Path,
+    request_id: str,
+    *,
+    catalog: GoldCatalog | None = None,
+    source: SourceStamp | None = None,
+) -> Preview:
+    """只算不写：看这次会出多少行、每列能填多少，不产生任何交付档案。"""
+    request_dir = requests_root / request_id
+    spec = load_spec(request_dir / SPEC_NAME)
+    payload = _execute(
+        RunContext(
+            store=store,
+            spec=spec,
+            # 预演下执行体不得写盘；给一个明确的哨兵路径，误写也会立刻暴露在
+            # 这个不存在的目录上，而不是悄悄落到当前工作目录。
+            staging=request_dir / DELIVERIES_DIR / ".preview",
+            catalog=_catalog(store, catalog),
+            source=source or _stamp(store),
+            dry_run=True,
+        )
+    )
+    return Preview(
+        request_id=spec.id,
+        kind=spec.kind,
+        rows=payload.rows,
+        columns=payload.columns,
+        lines=payload.detail_lines,
+    )
 
 
-def _query(store: DatasetStore, spec: Spec, catalog: GoldCatalog | None) -> pl.DataFrame:
+def _execute(ctx: RunContext) -> Payload:
+    """按 kind 分派，并把执行体的失败统一翻译成 `DeliveryBlocked`。
+
+    翻译是给 `run-due` 用的：一份坏 spec 或打不开的输入表只该记一条失败，
+    不该让整批交付一起崩。编程错误（TypeError 之类）不在此列，要照常抛出来。
+    """
+    executor = EXECUTORS.get(ctx.spec.kind)
+    if executor is None:
+        raise DeliveryBlocked(f"{ctx.spec.id}: 未注册的执行体 kind={ctx.spec.kind.value}")
+    try:
+        return executor(ctx)
+    except (backfill.FillError, OSError) as error:
+        raise DeliveryBlocked(f"{ctx.spec.id} 执行失败：{error}") from error
+
+
+# ---------------------------------------------------------------- 执行体：查询
+
+
+def _query_payload(ctx: RunContext) -> Payload:
+    frame = _query(ctx.spec, ctx.catalog)
+    definition = _query_definition(ctx.spec)
+    lines = _query_lines(ctx.spec)
+    if ctx.dry_run:
+        return Payload(
+            rows=frame.height,
+            columns=tuple(frame.columns),
+            definition=definition,
+            detail_lines=lines,
+        )
+    written = _write_data(ctx.staging, ctx.spec, frame)
+    return Payload(
+        rows=frame.height,
+        columns=tuple(frame.columns),
+        files=written,
+        definition=definition,
+        detail_lines=lines,
+    )
+
+
+def _query_definition(spec: Spec) -> dict[str, Any]:
+    """查询形态的机器读口径。`criteria` 带定义，交出去后不必回来翻词表。"""
+    return {
+        "sql": compile_sql(spec),
+        "criteria": [
+            {
+                "metric": item.metric,
+                "field": lookup(item.metric).field,
+                "op": item.op,
+                "value": _jsonable(item.value),
+                "definition": lookup(item.metric).definition,
+            }
+            for item in spec.criteria
+        ],
+    }
+
+
+def _query_lines(spec: Spec) -> list[str]:
+    lines: list[str] = []
+    if spec.mode is Mode.SQL:
+        lines += ["手写 SQL：", "", "```sql", (spec.sql or "").strip(), "```", ""]
+    else:
+        lines += ["| 词条 | 落成字段 | 条件 | 定义 |", "| --- | --- | --- | --- |"]
+        for item in spec.criteria:
+            metric = lookup(item.metric)
+            lines.append(
+                f"| {item.metric} | `{metric.field}` | {item.op} {item.value} | {metric.definition} |"
+            )
+        lines.append("")
+    if spec.output.format is not OutputFormat.PARQUET:
+        lines.append(
+            "CSV 里列表列（`tags`、`languages` 等）以 `;` 连接成一格；要保留原始结构请用 parquet"
+        )
+    return lines
+
+
+def _query(spec: Spec, catalog: GoldCatalog) -> pl.DataFrame:
     sql = compile_sql(spec)
     try:
-        runner = catalog or GoldCatalog(store)
-    except GoldNotReady as error:
-        raise DeliveryBlocked(str(error)) from error
-    try:
-        return runner.run(sql)
+        return catalog.run(sql)
     except duckdb.Error as error:
         # 包一层：裸的 BinderException 看不出是哪条需求、哪条 SQL 出的问题。
         raise DeliveryBlocked(f"{spec.id} 查询失败：{error}\nSQL：\n{sql}") from None
 
 
-def _check_guard(spec: Spec, frame: pl.DataFrame) -> None:
-    rows = frame.height
+# ---------------------------------------------------------------- 执行体：回填
+
+
+def _backfill_payload(ctx: RunContext) -> Payload:
+    fill = ctx.spec.fill
+    if fill is None:  # `_validate` 已挡住，这里只为把类型收窄
+        raise DeliveryBlocked(f"{ctx.spec.id}: kind=backfill 却没有 fill 段")
+    report = backfill.run(
+        ctx.store,
+        fill,
+        target_dir=ctx.staging,
+        request_id=ctx.spec.id,
+        title=ctx.spec.title,
+        catalog=ctx.catalog,
+        source=ctx.source,
+        dry_run=ctx.dry_run,
+    )
+    definition = _fill_definition(fill, report)
+    lines = _fill_lines(fill, report, ctx.dry_run)
+    copies: tuple[tuple[str, Path], ...] = ()
+    if not ctx.dry_run and fill.copy_to is not None:
+        copies = ((fill.output_name, fill.copy_to),)
+    return Payload(
+        rows=report.rows,
+        columns=report.columns(),
+        files=report.files,
+        definition=definition,
+        detail_lines=lines,
+        copies=copies,
+    )
+
+
+def _fill_definition(fill: backfill.FillSpec, report: backfill.FillReport) -> dict[str, Any]:
+    """回填形态的机器读口径：哪一列从哪来、这一轮实际写了多少。"""
+    return {
+        "fill": {
+            "source": {
+                "path": str(fill.source.path),
+                "sheet": fill.source.sheet,
+                "header_row": fill.source.header_row,
+                "key_column": fill.source.key_column,
+            },
+            "output": fill.output_name,
+            "copy_to": str(fill.copy_to) if fill.copy_to else None,
+            "overrides": str(fill.overrides) if fill.overrides else None,
+            "overwrite": fill.overwrite,
+            "stamp_note": fill.stamp_note,
+            "columns": [
+                {
+                    "name": item.name,
+                    "kind": item.kind,
+                    "field": item.field,
+                    "template": item.template,
+                    "const": item.const,
+                    "reason": item.reason,
+                    "format": item.fmt,
+                }
+                for item in fill.columns
+            ],
+            "written": report.written(),
+            "tallies": {
+                name: {
+                    "written": item.written,
+                    "from_override": item.from_override,
+                    "kept": item.kept,
+                    "empty": item.empty,
+                }
+                for name, item in report.tallies.items()
+            },
+            "missing_ids": report.missing_ids,
+            "undeclared": report.undeclared,
+            "manual": [{"column": name, "reason": reason} for name, reason in report.manual],
+            "notes": [{"title": title, "text": text} for title, text in fill.notes],
+        }
+    }
+
+
+def _fill_lines(fill: backfill.FillSpec, report: backfill.FillReport, dry_run: bool) -> list[str]:
+    """回填形态的人读口径：来源、规则、覆盖、以及「哪些是引擎故意没填」。"""
+    lines = [
+        f"- 形态：按 URL 清单回填表格（`kind: backfill`）{' · 预演，未写盘' if dry_run else ''}",
+        f"- 输入表：`{fill.source.path}`（sheet {fill.source.sheet or '首个'}，"
+        f"表头第 {fill.source.header_row} 行，标识列 `{fill.source.key_column}`）",
+        f"- 产物：`{fill.output_name}`；原件绝不改动",
+        f"- 取值：只填空格{'（本份允许覆盖已有内容）' if fill.overwrite else ''}；"
+        "未命中底库的行整行留空；需要判读的列由 `overrides.json` 提供，引擎不猜",
+        f"- 声明 {len(fill.columns)} 列，本轮写入 {report.written()} 格，"
+        f"原有内容保留 {sum(item.kept for item in report.tallies.values())} 格，"
+        f"空 {sum(item.empty for item in report.tallies.values())} 格",
+        "",
+        "### 逐列规则",
+        "",
+        "| 列名 | 来源 | 写入 | 人工判读 | 保留 | 空 |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for item in fill.columns:
+        tally = report.tallies[item.name]
+        origin = {
+            "field": f"`{item.field}`"
+            + (f" · {item.fmt}" if item.fmt else "")
+            + (f" · 拼接 `{item.join}`" if item.join else ""),
+            "template": f"模板 `{item.template}`",
+            "const": f"常量 `{item.const}`",
+            "manual": f"人工判读：{item.reason}",
+        }[item.kind]
+        lines.append(
+            f"| {item.name} | {origin} | {tally.written} | {tally.from_override} "
+            f"| {tally.kept} | {tally.empty} |"
+        )
+    lines.append("")
+    if report.manual:
+        lines += ["### 需人工判读（引擎不猜）", ""]
+        lines += [f"- **{name}**：{reason}" for name, reason in report.manual]
+        lines.append("")
+    if report.missing_ids:
+        sample = "、".join(report.missing_ids[:8])
+        tail = "" if len(report.missing_ids) <= 8 else f" 等 {len(report.missing_ids)} 条"
+        lines += [f"### 未命中底库 {len(report.missing_ids)} 条", "", f"{sample}{tail}", ""]
+    if report.undeclared:
+        lines += [
+            "### 未声明的列（保持空白）",
+            "",
+            "、".join(report.undeclared[:20]),
+            "",
+        ]
+    if fill.notes:
+        lines += ["### 口径补充说明", ""]
+        lines += [f"- **{title}**：{text}" for title, text in fill.notes]
+        lines.append("")
+    if fill.stamp_note:
+        lines += [f"> 数据来源说明：{fill.stamp_note}", ""]
+    return lines
+
+
+EXECUTORS.update({Kind.QUERY: _query_payload, Kind.BACKFILL: _backfill_payload})
+
+
+# ---------------------------------------------------------------- 护栏
+
+
+def _check_guard(spec: Spec, rows: int) -> None:
     if rows < spec.guard.min_rows:
         raise DeliveryBlocked(
             f"{spec.id} 只得到 {rows} 行，低于 min_rows={spec.guard.min_rows}。"
@@ -337,34 +652,35 @@ def _flat_for_csv(frame: pl.DataFrame) -> pl.DataFrame:
     return frame.select(exprs)
 
 
+def _copy_out(directory: Path, copies: tuple[tuple[str, Path], ...]) -> tuple[str, ...]:
+    """档案落定后再另存便利副本。失败只记不抛：档案已经成立，不能误报成失败。"""
+    notes: list[str] = []
+    for name, target in copies:
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(directory / name, target)
+            notes.append(f"已另存 {target}")
+        except OSError as error:
+            notes.append(f"[!] 另存 {target} 失败：{error}（交付档案不受影响）")
+    return tuple(notes)
+
+
 def _manifest(
     *,
     spec: Spec,
     moment: datetime,
     stamp_value: SourceStamp,
-    frame: pl.DataFrame,
-    files: list[dict[str, Any]],
+    payload: Payload,
     health: Health,
     previous: str | None,
 ) -> dict[str, Any]:
-    criteria = [
-        {
-            "metric": item.metric,
-            "field": lookup(item.metric).field,
-            "op": item.op,
-            "value": _jsonable(item.value),
-            "definition": lookup(item.metric).definition,
-        }
-        for item in spec.criteria
-    ]
-    return {
+    manifest: dict[str, Any] = {
         "request_id": spec.id,
         "title": spec.title,
         "requester": spec.requester,
+        "kind": spec.kind.value,
         "spec_version": spec.version,
         "delivered_at": moment.isoformat(timespec="seconds"),
-        "sql": compile_sql(spec),
-        "criteria": criteria,
         "source": {
             "current_md5": stamp_value.current_md5,
             "current_rows": stamp_value.current_rows,
@@ -375,9 +691,9 @@ def _manifest(
             ),
         },
         "result": {
-            "rows": frame.height,
-            "columns": list(frame.columns),
-            "files": files,
+            "rows": payload.rows,
+            "columns": list(payload.columns),
+            "files": payload.files,
         },
         "health": {
             "status": health.status,
@@ -389,6 +705,13 @@ def _manifest(
         },
         "previous": previous,
     }
+    # 形态特有的口径进顶层，便于「读 manifest 就知道这次怎么算的」；公共键不许被
+    # 覆盖——一旦覆盖，「这份交付基于哪版底库」就可能被某个执行体悄悄改写。
+    overlap = manifest.keys() & payload.definition.keys()
+    if overlap:
+        raise DeliveryBlocked(f"{spec.id}: 执行体口径与档案公共字段冲突：{sorted(overlap)}")
+    manifest.update(payload.definition)
+    return manifest
 
 
 def _jsonable(value: Any) -> Any:
@@ -401,70 +724,50 @@ def _readme(
     spec: Spec,
     moment: datetime,
     stamp_value: SourceStamp,
-    frame: pl.DataFrame,
-    files: list[dict[str, Any]],
+    payload: Payload,
     health: Health,
 ) -> str:
     lines: list[str] = [f"# {spec.id} {spec.title}", ""]
     if health.status == "suspect":
         lines += [
             f"> ⚠️ **本次结果与上次相比行数变动 {health.delta_pct:+.1f}%"
-            f"（{health.baseline_rows} → {frame.height}），已标疑。**"
+            f"（{health.baseline_rows} → {payload.rows}），已标疑。**"
             "交出去之前请先确认是底库正常波动，还是口径或上游出了问题。",
             "",
         ]
     elif health.status == "unknown":
         lines += [f"> 上一次交付的档案读不出来，本次未做行数比较（{health.note}）。", ""]
 
-    lines += [
-        f"- 提出人：{spec.requester}",
-    ]
+    lines += [f"- 提出人：{spec.requester}"]
     if spec.purpose:
         lines.append(f"- 用途：{spec.purpose}")
     lines += [
         f"- 交付时刻：{moment.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"- 需求形态：`{spec.kind.value}`",
         f"- 需求版本：v{spec.version}",
         f"- 交付节奏：{spec.cadence.value}",
         "",
         "## 口径",
         "",
-    ]
-    if spec.mode.value == "sql":
-        lines += ["手写 SQL：", "", "```sql", (spec.sql or "").strip(), "```", ""]
-    else:
-        lines += ["| 词条 | 落成字段 | 条件 | 定义 |", "| --- | --- | --- | --- |"]
-        for item in spec.criteria:
-            metric = lookup(item.metric)
-            lines.append(
-                f"| {item.metric} | `{metric.field}` | {item.op} {item.value} | {metric.definition} |"
-            )
-        lines.append("")
-
-    newest = (
-        stamp_value.newest_snapshot_date.isoformat() if stamp_value.newest_snapshot_date else "未知"
-    )
-    lines += [
+        *payload.detail_lines,
+        "",
         "## 基于哪一版底库",
         "",
         f"- `current.parquet` md5：`{stamp_value.current_md5}`",
         f"- 底库总行数：{stamp_value.current_rows:,}",
-        f"- 最新观测日：{newest}",
+        f"- 最新观测日：{_day_text(stamp_value)}",
         "",
         "底库每天都在变，所以这份结果只在「这一版底库」下成立。要核对来源，",
         f"跑 `hf-data-crawl request show {spec.id}` 看交付台账。",
         "",
         "## 结果",
         "",
-        f"- 行数：{frame.height:,}",
-        f"- 列数：{len(frame.columns)}",
+        f"- 行数：{payload.rows:,}",
+        f"- 列数：{len(payload.columns)}",
     ]
-    for entry in files:
+    for entry in payload.files:
         lines.append(
             f"- `{entry['name']}`：{entry['bytes']:,} 字节，sha256 `{entry['sha256'][:16]}…`"
-        )
-    if spec.output.format is not OutputFormat.PARQUET:
-        lines.append(
-            "- CSV 里列表列（`tags`、`languages` 等）以 `;` 连接成一格；要保留原始结构请用 parquet"
         )
     lines += [
         "",
@@ -474,10 +777,17 @@ def _readme(
         f"hf-data-crawl request run {spec.id} --force",
         "```",
         "",
-        "同一版底库下重跑，sha256 应当与上面一致。若不一致，说明底库已经刷新过。",
+        "同一版底库、同一份输入表下重跑，sha256 应当与上面一致。若不一致，",
+        "说明底库或输入表已经变过。",
         "",
     ]
     return "\n".join(lines)
+
+
+def _day_text(stamp_value: SourceStamp) -> str:
+    return (
+        stamp_value.newest_snapshot_date.isoformat() if stamp_value.newest_snapshot_date else "未知"
+    )
 
 
 # ---------------------------------------------------------------- 到期判断
@@ -543,13 +853,13 @@ def run_due(
 ) -> DueReport:
     """把所有到期的需求各跑一次。
 
-    一个需求失败不挡别的：坏 spec、0 行、查询出错都只记一条，继续下一个。
+    一个需求失败不挡别的：坏 spec、0 行、执行出错都只记一条，继续下一个。
     但底库本身不成立（`current` 缺失）时整体失败——那不是某一条需求的问题，
     报十遍同样的错只会把真正的原因埋掉。
     """
     moment = now or datetime.now().astimezone()
-    stamp_value = source or stamp(store)
-    runner = catalog or GoldCatalog(store)
+    stamp_value = source or _stamp(store)
+    runner = _catalog(store, catalog)
 
     delivered: list[DeliveryResult] = []
     skipped: list[tuple[str, str]] = []

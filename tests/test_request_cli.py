@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import openpyxl
 import pytest
 import yaml
 
 from hf_data_crawl.cli import main
-from hf_data_crawl.requirement import SPEC_NAME, load
+from hf_data_crawl.requirement import SPEC_NAME, Kind, load
 
 
 def run(tmp_path: Path, *argv: str) -> int:
@@ -111,3 +112,92 @@ def test_show打印口径与编译后的SQL(tmp_path: Path, capsys: pytest.Captu
 
 def test_show不存在的需求返回非零(tmp_path: Path) -> None:
     assert run(tmp_path, "request", "show", "REQ-9999") == 1
+
+
+# ---------------------------------------------------------------- 单一入口
+
+
+def make_book(path: Path) -> Path:
+    openpyxl.Workbook().save(path)
+    return path
+
+
+def test_fill命令已退役(tmp_path: Path) -> None:
+    """回填不是另一套命令，它只是 `request` 的一种 kind。"""
+    with pytest.raises(SystemExit) as caught:
+        run(tmp_path, "fill")
+
+    assert caught.value.code == 2
+
+
+def test_新建回填需求走统一入口(tmp_path: Path) -> None:
+    book = make_book(tmp_path / "in.xlsx")
+    code = run(
+        tmp_path,
+        "request",
+        "new",
+        "REQ-0002",
+        "--title",
+        "清单补全",
+        "--requester",
+        "大帅",
+        "--kind",
+        "backfill",
+        "--source",
+        str(book),
+    )
+
+    assert code == 0
+    spec = load(tmp_path / "req" / "REQ-0002" / SPEC_NAME)
+    assert spec.kind is Kind.BACKFILL
+    assert spec.fill is not None
+    assert spec.fill.source.path == book.resolve()
+
+
+def test_回填需求缺输入表被拒且不留半成品(tmp_path: Path) -> None:
+    code = run(
+        tmp_path,
+        "request",
+        "new",
+        "REQ-0002",
+        "--title",
+        "清单补全",
+        "--requester",
+        "大帅",
+        "--kind",
+        "backfill",
+    )
+
+    assert code == 1
+    assert not (tmp_path / "req" / "REQ-0002").exists()
+
+
+def test_列表同时显示两种形态(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    make(tmp_path)
+    book = make_book(tmp_path / "in.xlsx")
+    assert (
+        run(
+            tmp_path,
+            "request",
+            "new",
+            "REQ-0002",
+            "--title",
+            "清单补全",
+            "--requester",
+            "大帅",
+            "--kind",
+            "backfill",
+            "--source",
+            str(book),
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert run(tmp_path, "request", "list") == 0
+
+    printed = capsys.readouterr().out
+    assert "query" in printed
+    assert "backfill" in printed
+    assert "REQ-0001" in printed
+    assert "REQ-0002" in printed

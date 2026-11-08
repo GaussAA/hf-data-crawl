@@ -10,11 +10,13 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import openpyxl
 import pytest
 import yaml
 
 from hf_data_crawl.requirement import (
     Cadence,
+    Kind,
     Mode,
     SpecError,
     compile_sql,
@@ -225,3 +227,72 @@ def test_快照版本可列举(tmp_path: Path) -> None:
     snapshot_history(path, 2)
 
     assert history_versions(path) == [1, 2]
+
+
+# ---------------------------------------------------------------- 统一的「变」
+
+
+def test_未知形态在受理期报出可选值(tmp_path: Path) -> None:
+    with pytest.raises(SpecError, match="query"):
+        load(write_spec(tmp_path, kind="对账"))
+
+
+def test_重复键在读入处被拒(tmp_path: Path) -> None:
+    """两类需求共用一份 spec，这道防线不能只挂在回填口径体上。"""
+    path = tmp_path / "REQ-0001" / "spec.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "id: REQ-0001\ntitle: 第一次\nrequester: 张三\ntitle: 又改了一次\n"
+        "criteria: [{metric: 下载量, op: '>', value: 1}]\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SpecError, match="重复的键"):
+        load(path)
+
+
+def test_回填骨架能原样读回(tmp_path: Path) -> None:
+    """骨架建完就得按真规矩回读通过——输入表必须真实存在，否则新建即自毁。"""
+    book = tmp_path / "in.xlsx"
+    workbook = openpyxl.Workbook()
+    workbook.save(book)
+    path = tmp_path / "REQ-0001" / "spec.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        skeleton(
+            request_id="REQ-0001",
+            title="清单补全",
+            requester="大帅",
+            kind=Kind.BACKFILL,
+            source_path=book.as_posix(),
+        ),
+        encoding="utf-8",
+    )
+
+    spec = load(path)
+
+    assert spec.kind is Kind.BACKFILL
+    assert spec.criteria == ()
+    assert spec.fill is not None
+    assert len(spec.fill.columns) == 4
+    assert spec.guard.min_rows == 1
+
+
+def test_两种骨架的公共头一致(tmp_path: Path) -> None:
+    """变的只有 kind 与口径体；节奏、护栏、标疑、编号都得是同一套。"""
+    book = tmp_path / "in.xlsx"
+    openpyxl.Workbook().save(book)
+    query = skeleton(request_id="REQ-0001", title="x", requester="y")
+    fill = skeleton(
+        request_id="REQ-0001",
+        title="x",
+        requester="y",
+        kind=Kind.BACKFILL,
+        source_path=book.as_posix(),
+    )
+
+    for key in ("id: REQ-0001", "requester: y", "version: 1", "cadence: once", "guard:", "alert:"):
+        assert key in query
+        assert key in fill
+    assert "kind: backfill" in fill
+    assert "kind:" not in query

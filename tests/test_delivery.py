@@ -11,14 +11,22 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
+import openpyxl
 import polars as pl
 import pytest
 import yaml
 
-from hf_data_crawl.cli import main
-from hf_data_crawl.delivery import DeliveryBlocked, deliver, due_state, run_due
+from hf_data_crawl.cli import deliveries_of, main
+from hf_data_crawl.delivery import (
+    EXECUTORS,
+    DeliveryBlocked,
+    deliver,
+    due_state,
+    preview,
+    run_due,
+)
 from hf_data_crawl.derive import derive_day
-from hf_data_crawl.requirement import DELIVERIES_DIR, MANIFEST_NAME, SPEC_NAME
+from hf_data_crawl.requirement import DELIVERIES_DIR, MANIFEST_NAME, SPEC_NAME, Kind
 from hf_data_crawl.store import DatasetStore
 
 DAY = date(2026, 11, 1)
@@ -417,3 +425,164 @@ def test_批量交付共享一次底库指纹(store: DatasetStore, tmp_path: Pat
     report = run_due(store, root, now=NOW)
 
     assert len(report.delivered) == 2
+
+
+# ---------------------------------------------------------------- 统一生命周期
+#
+# 这些用例守的不是「回填能跑」，而是「回填与查询跑的是同一套东西」：同一套编号、
+# 护栏、标疑、原子落盘、快照、台账。形态只在 kind 与执行体里变。
+
+
+def make_book(path: Path, keys: list[str]) -> Path:
+    """造一张与真实回填同构的表：第 2 行是列名，其上有一行分组标题。"""
+    book = openpyxl.Workbook()
+    sheet = book.active
+    assert sheet is not None
+    sheet.cell(row=1, column=1, value="基础信息")
+    sheet.cell(row=2, column=1, value="URL")
+    sheet.cell(row=2, column=2, value="下载量")
+    sheet.cell(row=2, column=3, value="训练阶段")
+    for offset, key in enumerate(keys):
+        sheet.cell(row=3 + offset, column=1, value=key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    book.save(path)
+    return path
+
+
+def make_backfill_request(
+    root: Path, book: Path, *, copy_to: Path | None = None, **overrides: Any
+) -> Path:
+    """造一份 `kind: backfill` 的需求，公共头与查询型逐字同形。"""
+    output: dict[str, Any] = {"name": "已补全.xlsx"}
+    if copy_to is not None:
+        output["copy_to"] = copy_to.as_posix()
+    body: dict[str, Any] = {
+        "id": "REQ-0002",
+        "title": "清单补全",
+        "requester": "大帅",
+        "version": 1,
+        "cadence": "once",
+        "kind": "backfill",
+        "fill": {
+            "source": {"path": book.as_posix(), "header_row": 2, "key_column": "URL"},
+            "output": output,
+            "columns": {
+                "下载量": {"field": "downloads"},
+                "训练阶段": {"manual": "须读 README 判定"},
+            },
+        },
+    }
+    body.update(overrides)
+    path = root / str(body["id"]) / SPEC_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(body, allow_unicode=True), encoding="utf-8")
+    return path
+
+
+def test_执行体注册表覆盖全部形态() -> None:
+    """加了新 kind 却忘了注册执行体，交付时才炸太晚；这里当场发现。"""
+    assert set(EXECUTORS) == set(Kind)
+
+
+def test_两种形态共用一套交付档案(store: DatasetStore, tmp_path: Path) -> None:
+    root = tmp_path / "req"
+    make_request(root)
+    book = make_book(tmp_path / "in.xlsx", ["acme/ds-1", "acme/ds-2"])
+    make_backfill_request(root, book)
+
+    query = deliver(store, root, "REQ-0001", now=NOW)
+    fill = deliver(store, root, "REQ-0002", now=NOW)
+
+    assert query.kind is Kind.QUERY
+    assert fill.kind is Kind.BACKFILL
+    for result in (query, fill):
+        names = {path.name for path in result.directory.iterdir()}
+        assert {MANIFEST_NAME, "README.md"} <= names
+        body = json.loads((result.directory / MANIFEST_NAME).read_text(encoding="utf-8"))
+        assert body["kind"] == result.kind.value
+        assert len(body["source"]["current_md5"]) == 32
+        assert body["result"]["rows"] == 2
+        assert (root / result.request_id / "history" / "v1.yaml").exists()
+
+    assert (fill.directory / "已补全.xlsx").exists()
+    assert fill.files[0]["name"] == "已补全.xlsx"
+    assert len(fill.files[0]["sha256"]) == 64
+    assert "逐列规则" in (fill.directory / "README.md").read_text(encoding="utf-8")
+    assert "sql" not in json.loads((fill.directory / MANIFEST_NAME).read_text(encoding="utf-8"))
+
+
+def test_回填档案记下逐列口径与覆盖(store: DatasetStore, tmp_path: Path) -> None:
+    """机器读的那份要能回答「哪一列从哪来、这轮到底写了多少格」。"""
+    root = tmp_path / "req"
+    book = make_book(tmp_path / "in.xlsx", ["acme/ds-1", "acme/ds-2"])
+    make_backfill_request(root, book)
+
+    result = deliver(store, root, "REQ-0002", now=NOW)
+
+    body = json.loads((result.directory / MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert body["result"]["rows"] == 2
+    assert body["fill"]["written"] == 2
+    assert body["fill"]["tallies"]["下载量"]["written"] == 2
+    assert body["fill"]["tallies"]["训练阶段"]["empty"] == 2
+    assert body["fill"]["manual"] == [{"column": "训练阶段", "reason": "须读 README 判定"}]
+    assert body["fill"]["columns"][0]["field"] == "downloads"
+
+
+def test_回填与查询共用护栏(store: DatasetStore, tmp_path: Path) -> None:
+    root = tmp_path / "req"
+    book = make_book(tmp_path / "in.xlsx", ["acme/ds-1", "acme/ds-2"])
+    make_backfill_request(root, book, guard={"min_rows": 99, "max_rows": 500000})
+
+    with pytest.raises(DeliveryBlocked, match="min_rows"):
+        deliver(store, root, "REQ-0002", now=NOW)
+
+    assert deliveries_of(root / "REQ-0002") == []
+
+
+def test_预演不落盘也不受护栏阻断(store: DatasetStore, tmp_path: Path) -> None:
+    """预演正是为了看出「会不会 0 行」，此时套护栏等于自相矛盾。"""
+    root = tmp_path / "req"
+    book = make_book(tmp_path / "in.xlsx", ["acme/ds-1", "acme/ds-2"])
+    make_backfill_request(root, book, guard={"min_rows": 999, "max_rows": 500000})
+
+    looked = preview(store, root, "REQ-0002")
+
+    assert looked.kind is Kind.BACKFILL
+    assert looked.rows == 2
+    assert any("逐列规则" in line for line in looked.lines)
+    assert not (root / "REQ-0002" / DELIVERIES_DIR).exists()
+
+
+def test_便利副本在档案落定后才写(store: DatasetStore, tmp_path: Path) -> None:
+    root = tmp_path / "req"
+    book = make_book(tmp_path / "in.xlsx", ["acme/ds-1", "acme/ds-2"])
+    target = tmp_path / "copies" / "给对方.xlsx"
+    make_backfill_request(root, book, copy_to=target)
+
+    result = deliver(store, root, "REQ-0002", now=NOW)
+
+    assert result.copy_notes and "已另存" in result.copy_notes[0]
+    assert target.read_bytes() == (result.directory / "已补全.xlsx").read_bytes()
+
+
+def test_混合形态批量交付一份失败不挡另一份(store: DatasetStore, tmp_path: Path) -> None:
+    root = tmp_path / "req"
+    make_request(root, id="REQ-0001", cadence="daily")
+    book = make_book(tmp_path / "in.xlsx", ["acme/ds-1"])
+    make_backfill_request(root, book)
+    book.unlink()  # 输入表丢了：受理期就该失败，且不能拖累别的需求
+
+    report = run_due(store, root, now=NOW)
+
+    assert [item.request_id for item in report.delivered] == ["REQ-0001"]
+    assert [item[0] for item in report.failed] == ["REQ-0002"]
+    assert "输入表不存在" in report.failed[0][1]
+
+
+def test_暂存目录不算一次交付(tmp_path: Path) -> None:
+    """`.tmp-*` 若算进台账，「once 已交付过」会凭空成立。"""
+    root = tmp_path / "req"
+    base = root / "REQ-0002" / DELIVERIES_DIR / ".tmp-20261108T000000"
+    base.mkdir(parents=True)
+
+    assert deliveries_of(root / "REQ-0002") == []

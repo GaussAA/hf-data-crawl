@@ -14,11 +14,8 @@ from datetime import date, datetime
 from pathlib import Path
 
 from .api import MAX_LIMIT, HfDatasetApi, Transport
-from .backfill import FillError, FillReport
-from .backfill import load_spec as load_fill_spec
-from .backfill import run as run_fill
 from .collect import Collector, CollectSummary
-from .delivery import DeliveryBlocked, DeliveryResult, deliver, run_due
+from .delivery import DeliveryBlocked, DeliveryResult, Preview, deliver, preview, run_due
 from .deriving import check_and_recover
 from .doctor import diagnose, sync_alert
 from .enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
@@ -37,6 +34,7 @@ from .requirement import (
     MANIFEST_NAME,
     SPEC_NAME,
     Cadence,
+    Kind,
     Mode,
     Spec,
     SpecError,
@@ -79,10 +77,6 @@ LOCKED_COMMANDS = WRITE_COMMANDS | SNAPSHOT_COMMANDS
 #: 时干等一会儿比直接失败有用；等不到仍会如实报错。可用 `--lock-wait` 覆盖。
 SNAPSHOT_LOCK_WAIT = 60.0
 
-#: 回填台账保留轮数。日更任务一年三百多条，不修剪迟早拖慢目录列表；
-#: 与日志同一套有界修剪思路（见 `_write_fill_record`）。
-FILL_RUNS_KEEP = 200
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -98,11 +92,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--requests-dir",
         default=os.environ.get("HF_REQUESTS_DIR", "requests"),
         help="需求目录（默认取 HF_REQUESTS_DIR，否则 ./requests）；与数据目录分开",
-    )
-    parser.add_argument(
-        "--fills-dir",
-        default=os.environ.get("HF_FILLS_DIR", "fills"),
-        help="回填任务目录（默认取 HF_FILLS_DIR，否则 ./fills）；与需求目录分开",
     )
     parser.add_argument(
         "--lock-wait",
@@ -164,6 +153,17 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[member.value for member in Cadence],
         help="交付节奏：once 只跑一次 / daily / weekly / monthly / manual 只等人跑",
     )
+    request_new.add_argument(
+        "--kind",
+        default=Kind.QUERY.value,
+        choices=[member.value for member in Kind],
+        help="交付形态：query 出数据表 / backfill 回填给定表格；形态只换口径体与执行体",
+    )
+    request_new.add_argument(
+        "--source",
+        default="",
+        help="kind=backfill 必填：对方给的原始表格路径（必须已存在，且引擎绝不改动它）",
+    )
     request_sub.add_parser("list", help="列出全部需求与交付概况")
     request_show = request_sub.add_parser("show", help="查看一份需求的口径、历史版本与交付台账")
     request_show.add_argument("id", help="需求号")
@@ -174,27 +174,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="一次性需求（once）交付过之后再交一份；不加则拒绝，防误重复交付",
     )
-    request_sub.add_parser("run-due", help="跑所有到期的需求（计划任务用）")
-
-    fill = subparsers.add_parser(
-        "fill", help="按给定的 URL 清单回填表格字段（产出新文件，绝不改原件）"
-    )
-    fill.add_argument(
-        "spec", nargs="?", help="spec 路径，如 fills/FILL-0001/spec.yaml；用 --all 时省略"
-    )
-    fill.add_argument(
-        "--all", action="store_true", help="跑 fills 目录下全部 spec（每份各自产出自己的文件）"
-    )
-    fill.add_argument(
+    request_run.add_argument(
         "--dry-run",
         action="store_true",
-        help="只算不写：报告每列能填多少、缺哪些，不产生产物文件",
+        help="只算不写：报行数与逐列覆盖，不建交付档案、不受护栏阻断",
     )
-    fill.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="覆盖表里已有的非空单元格；默认只填空格（已有内容一律不动）",
-    )
+    request_sub.add_parser("run-due", help="跑所有到期的需求（计划任务用）")
 
     reconcile = subparsers.add_parser("reconcile", help="全量对账（按 createdAt 稳定序）")
     reconcile.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
@@ -384,9 +369,6 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
                 print(f"交付失败：{error}")
                 return 1
         return _request(args)
-    if args.command == "fill":
-        # 回填只读底库、只写 spec 指定的产物文件（在 data/ 之外），不持数据锁。
-        return _fill(args, store)
     if args.command == "doctor":
         return _doctor(store)
     if args.command == "docs":
@@ -924,15 +906,28 @@ def _print_enrich(summary: EnrichSummary) -> None:
 
 
 def deliveries_of(request_dir: Path) -> list[Path]:
-    """一次需求的交付目录，按名字升序——名字是时间戳，字典序即时间序。"""
+    """一次需求的交付目录，按名字升序——名字是时间戳，字典序即时间序。
+
+    以 `.` 开头的是原子写留下的 `.tmp-*` 暂存目录，它**不是**一次交付：算进台账
+    会让「once 已交付过」凭空成立，把真正需要的那份挡在门外。
+    """
     base = request_dir / DELIVERIES_DIR
     if not base.is_dir():
         return []
-    return sorted(path for path in base.iterdir() if path.is_dir())
+    return sorted(
+        path for path in base.iterdir() if path.is_dir() and not path.name.startswith(".")
+    )
 
 
 def criteria_text(spec: Spec) -> str:
-    """把口径说成一句话，供 list 打印；手写 SQL 的只报「手写」。"""
+    """把口径说成一句话，供 list 打印。形态不同，但都只报「这次要什么」。"""
+    if spec.kind is Kind.BACKFILL:
+        fill = spec.fill
+        if fill is None:
+            return "回填表格（fill 段待补）"
+        return (
+            f"回填 {fill.source.path.name}：{len(fill.columns)} 列，标识列 {fill.source.key_column}"
+        )
     if spec.mode is Mode.SQL:
         return "手写 SQL（见 spec.yaml）"
     return " 且 ".join(f"{item.metric} {item.op} {item.value}" for item in spec.criteria)
@@ -967,6 +962,20 @@ def _request_new(args: argparse.Namespace, root: Path) -> int:
     if target.exists():
         print(f"失败：{target} 已存在。要改口径请直接编辑它，并把 version 加一。")
         return 1
+    kind = Kind(args.kind)
+    source_path = ""
+    if kind is Kind.BACKFILL:
+        # 输入表是回填口径的一部分，必须真实存在：新建完立刻回读校验，不该因为
+        # 一个还没放好的文件把骨架判死、又删掉。
+        if not args.source:
+            print("失败：kind=backfill 需要 --source 指向对方给的原始表格（文件须已存在）。")
+            return 1
+        given = Path(args.source).expanduser()
+        if not given.is_file():
+            print(f"失败：输入表不存在或不是文件：{given}")
+            return 1
+        # 统一写成 posix 风格绝对路径：Windows 反斜杠在 YAML 双引号里会被当转义符。
+        source_path = given.resolve().as_posix()
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
         skeleton(
@@ -975,6 +984,8 @@ def _request_new(args: argparse.Namespace, root: Path) -> int:
             requester=args.requester,
             purpose=args.purpose,
             cadence=Cadence(args.cadence),
+            kind=kind,
+            source_path=source_path,
         ),
         encoding="utf-8",
     )
@@ -991,8 +1002,14 @@ def _request_new(args: argparse.Namespace, root: Path) -> int:
             pass
         print(f"失败：{error}")
         return 1
-    print(f"已建需求：{target}")
-    print("  下一步：编辑 criteria 与 output（metric 只写词表词条），再跑 `request run`")
+    print(f"已建需求：{target}（{kind.value}）")
+    if kind is Kind.BACKFILL:
+        print(
+            "  下一步：核对 fill.source 的 sheet / header_row / key_column 与逐列规则，"
+            "改完把 version 加一，先跑 `request run <id> --dry-run`"
+        )
+    else:
+        print("  下一步：编辑 criteria 与 output（metric 只写词表词条），再跑 `request run`")
     return 0
 
 
@@ -1012,9 +1029,41 @@ def _request_list(root: Path) -> int:
         runs = deliveries_of(path.parent)
         last = runs[-1].name if runs else "从未交付"
         print(f"{spec.id}  {spec.title}")
-        print(f"  {spec.cadence.value} · v{spec.version} · 交付 {len(runs)} 次 · 最后 {last}")
+        print(
+            f"  {spec.kind.value} · {spec.cadence.value} · v{spec.version} · "
+            f"交付 {len(runs)} 次 · 最后 {last}"
+        )
         print(f"  口径：{criteria_text(spec)}")
     return 0
+
+
+def _show_fill(spec: Spec) -> None:
+    """打印回填口径体。与「编译后的 SQL」并列，同属「这次到底怎么算」。"""
+    fill = spec.fill
+    if fill is None:
+        print("口径：（fill 段缺失，spec 校验应已拦下）")
+        return
+    sheet = fill.source.sheet or "首个 sheet"
+    print("口径：")
+    print(
+        f"  输入表：{fill.source.path}（{sheet}，表头第 {fill.source.header_row} 行，"
+        f"标识列 {fill.source.key_column}）"
+    )
+    extra = f" → 另存 {fill.copy_to}" if fill.copy_to else ""
+    print(f"  产物：{fill.output_name}{extra}；原件绝不改动")
+    print(
+        f"  声明 {len(fill.columns)} 列 · overwrite={fill.overwrite} · "
+        f"overrides={fill.overrides or '无'}"
+    )
+    for item in fill.columns:
+        origin = {
+            "field": f"底库 `{item.field}`" + (f" · {item.fmt}" if item.fmt else ""),
+            "template": f"模板 `{item.template}`",
+            "const": f"常量 `{item.const}`",
+            "manual": f"人工判读：{item.reason}",
+        }[item.kind]
+        print(f"    {item.name}  ← {origin}")
+    print()
 
 
 def _request_show(root: Path, request_id: str) -> int:
@@ -1029,7 +1078,7 @@ def _request_show(root: Path, request_id: str) -> int:
     print(f"  提出人：{spec.requester}")
     if spec.purpose:
         print(f"  用途：{spec.purpose}")
-    print(f"  节奏：{spec.cadence.value} · 版本：v{spec.version}")
+    print(f"  形态：{spec.kind.value} · 节奏：{spec.cadence.value} · 版本：v{spec.version}")
     limit = spec.guard.max_rows if spec.guard.max_rows is not None else "不限"
     print(f"  护栏：{spec.guard.min_rows} ≤ 行数 ≤ {limit}")
     print(
@@ -1038,18 +1087,20 @@ def _request_show(root: Path, request_id: str) -> int:
     )
     print()
 
-    if spec.criteria:
-        print("口径：")
-        for index, item in enumerate(spec.criteria, 1):
-            metric = lookup(item.metric)
-            print(f"  {index}. {item.metric} {item.op} {item.value}")
-            print(f"     落成列 {metric.field} —— {metric.definition}")
+    if spec.kind is Kind.BACKFILL:
+        _show_fill(spec)
+    else:
+        if spec.criteria:
+            print("口径：")
+            for index, item in enumerate(spec.criteria, 1):
+                metric = lookup(item.metric)
+                print(f"  {index}. {item.metric} {item.op} {item.value}")
+                print(f"     落成列 {metric.field} —— {metric.definition}")
+            print()
+        print("编译后的 SQL：")
+        for line in compile_sql(spec).splitlines():
+            print(f"  {line}")
         print()
-
-    print("编译后的 SQL：")
-    for line in compile_sql(spec).splitlines():
-        print(f"  {line}")
-    print()
 
     versions = history_versions(path)
     if versions:
@@ -1073,6 +1124,16 @@ def _request_run(args: argparse.Namespace, store: DatasetStore) -> int:
         print(f"失败：{error}")
         return 1
 
+    if args.dry_run:
+        # 预演不写盘、也不占「once 已交付」的名额——它本来就是给人先看一眼的。
+        try:
+            looked = preview(store, root, args.id)
+        except (DeliveryBlocked, SpecError) as error:
+            print(f"预演失败：{error}")
+            return 1
+        _print_preview(looked)
+        return 0
+
     done = deliveries_of(request_dir)
     if spec.cadence is Cadence.ONCE and done and not args.force:
         print(f"{spec.id} 是一次性需求，已于 {done[-1].name} 交付过。")
@@ -1081,15 +1142,21 @@ def _request_run(args: argparse.Namespace, store: DatasetStore) -> int:
 
     try:
         result = deliver(store, root, args.id)
-    except DeliveryBlocked as error:
+    except (DeliveryBlocked, SpecError) as error:
         print(f"交付失败：{error}")
         return 1
     _print_delivery(result)
     return 0
 
 
+def _print_preview(result: Preview) -> None:
+    print(f"预演 {result.request_id}（{result.kind.value}）· {result.rows:,} 行 · 未写盘")
+    for line in result.lines:
+        print(f"  {line}")
+
+
 def _print_delivery(result: DeliveryResult) -> None:
-    print(f"已交付 {result.request_id} → {result.directory}")
+    print(f"已交付 {result.request_id}（{result.kind.value}） → {result.directory}")
     print(f"  {result.rows:,} 行 · {len(result.columns)} 列 · 口径 v{result.spec_version}")
     for item in result.files:
         digest = str(item["sha256"])[:16]
@@ -1104,6 +1171,8 @@ def _print_delivery(result: DeliveryResult) -> None:
         print("  首次交付，无基线可比")
     elif health.note:
         print(f"  {health.note}")
+    for note in result.copy_notes:
+        print(f"  {note}")
 
 
 def _request_run_due(args: argparse.Namespace, store: DatasetStore) -> int:
@@ -1132,109 +1201,3 @@ def _request_run_due(args: argparse.Namespace, store: DatasetStore) -> int:
         f"共 {len(report.delivered)} 交付 / {len(report.skipped)} 跳过 / {len(report.failed)} 失败"
     )
     return 1 if report.failed else 0
-
-
-# ---------------------------------------------------------------- 表格回填
-
-
-def _fill(args: argparse.Namespace, store: DatasetStore) -> int:
-    """按 spec 回填表格。一份失败不挡其余：一批十份、坏一份，剩下九份照样该出。"""
-    from dataclasses import replace as dc_replace
-
-    if args.all:
-        specs = sorted(Path(args.fills_dir).glob("*/spec.yaml"))
-        if not specs:
-            print(f"{Path(args.fills_dir)} 下还没有回填任务。")
-            print("  建一份：fills/FILL-0001/spec.yaml，再跑 `fill fills/FILL-0001/spec.yaml`")
-            return 0
-    elif args.spec:
-        specs = [Path(args.spec)]
-    else:
-        print("要给一个 spec 路径，或用 --all 跑整个目录。")
-        return 2
-
-    failed = 0
-    for path in specs:
-        try:
-            spec = load_fill_spec(path)
-        except (FillError, OSError) as error:
-            print(f"[!] {path}：{error}")
-            failed += 1
-            continue
-        if args.overwrite and not spec.overwrite:
-            spec = dc_replace(spec, overwrite=True)
-        try:
-            report = run_fill(store, spec, dry_run=args.dry_run)
-        except (FillError, OSError) as error:
-            print(f"[!] {spec.name}：{error}")
-            failed += 1
-            continue
-        _print_fill(report, dry_run=args.dry_run)
-        if not args.dry_run:
-            _write_fill_record(path, report)
-    return 1 if failed else 0
-
-
-def _print_fill(report: FillReport, *, dry_run: bool) -> None:
-    head = "预演（未写盘）" if dry_run else f"已写出 → {report.output}"
-    print(f"\n{report.spec_name}  {report.rows} 行 · {head}")
-    for name, tally in report.tallies.items():
-        bits = [f"写入 {tally.written}"]
-        if tally.from_override:
-            bits.append(f"其中人工判读 {tally.from_override}")
-        if tally.kept:
-            bits.append(f"原有保留 {tally.kept}")
-        if tally.empty:
-            bits.append(f"空 {tally.empty}")
-        print(f"  {name:16s} {' · '.join(bits)}")
-    if report.manual:
-        print("  需人工判读：")
-        for name, reason in report.manual:
-            print(f"    {name} —— {reason}")
-    if report.missing_ids:
-        print(f"  未命中底库 {len(report.missing_ids)} 条：{'、'.join(report.missing_ids[:5])}")
-    if report.undeclared:
-        print(f"  未声明的列（保持空白）：{'、'.join(report.undeclared[:10])}")
-
-
-def _write_fill_record(spec_path: Path, report: FillReport) -> None:
-    """在 spec 旁留一份运行台账：这一版产物基于哪一版底库。
-
-    写在 spec 所在目录而不是全局 runs/：回填的执行者是这份 spec，台账跟着走，
-    十份 spec 各自都能自证。
-    """
-    folder = spec_path.parent / "runs"
-    folder.mkdir(parents=True, exist_ok=True)
-    body = {
-        "spec": report.spec_name,
-        "ran_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "rows": report.rows,
-        "output": str(report.output) if report.output else None,
-        "source": None
-        if report.stamp is None
-        else {
-            "current_md5": report.stamp.current_md5,
-            "current_rows": report.stamp.current_rows,
-            "newest_snapshot_date": str(report.stamp.newest_snapshot_date),
-        },
-        "written": report.written(),
-        "columns": {
-            name: {
-                "written": item.written,
-                "from_override": item.from_override,
-                "kept": item.kept,
-                "empty": item.empty,
-            }
-            for name, item in report.tallies.items()
-        },
-        "missing": report.missing_ids,
-        "manual": [{"column": name, "reason": reason} for name, reason in report.manual],
-        "undeclared": report.undeclared,
-    }
-    target = folder / f"{datetime.now().strftime('%Y%m%dT%H%M%S')}.json"
-    target.write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
-    # 台账按轮累积：日更任务一年三百多条，不修剪迟早拖慢目录列表。
-    # 按文件名排序即可——名字就是时间戳。
-    stale = sorted(folder.glob("*.json"))[:-FILL_RUNS_KEEP]
-    for item in stale:
-        item.unlink(missing_ok=True)

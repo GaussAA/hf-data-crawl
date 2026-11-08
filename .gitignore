@@ -13,19 +13,18 @@ wheels/
 data/
 runs/
 
-# 回填台账要入库：它记「这份产物基于哪一版底库」，本身是交付档案的一部分。
-# 目录须先放行，否则里面的文件再放行也没用——git 不会进被排除的目录。
-!fills/*/runs/
-!fills/*/runs/**
-
 # 临时探查脚本与中间产物
 .scratch/
 
-# 交付档案的「字节」不入库，但「话」（manifest.json / README.md）要入库：
-# 档案可评审、可追溯，而占地方的 parquet/csv 留在本机，由 manifest 里的 sha256 绑定。
-# 前导 `**/` 不能省：交付目录实际在 requests/<需求号>/deliveries/<时刻>/ 下，
-# 而 `deliveries/**/data.*` 含斜杠会被锚定到仓库根，那里没有 deliveries/。
-**/deliveries/**/data.*
+# 交付档案只把「话」入库：manifest.json / README.md 可评审、可追溯；产物字节
+# 留在本机，由 manifest 里的 sha256 绑定。用白名单而非按扩展名排除——产物形态
+# 由 kind 决定（今天是 parquet/csv/xlsx，明天还会有别的），逐个列永远列不完。
+# 前导 `**/` 不能省：交付目录实际在 requests/<需求号>/deliveries/<时刻>/ 下。
+# 目录要先放行，否则里面的文件再放行也没用——git 不会进被排除的目录。
+**/deliveries/**/*
+!**/deliveries/**/
+!**/deliveries/**/manifest.json
+!**/deliveries/**/README.md
 
 # 接口探测的临时样本
 .probe/

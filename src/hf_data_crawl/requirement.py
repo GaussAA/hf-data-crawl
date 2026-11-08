@@ -25,11 +25,14 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from .metrics import Metric, MetricKind, lookup
+
+if TYPE_CHECKING:
+    from .backfill import FillSpec
 
 #: 需求目录下的固定文件名。
 SPEC_NAME = "spec.yaml"
@@ -49,6 +52,44 @@ PLAIN_COLUMNS: frozenset[str] = frozenset({"id", "url"})
 
 class SpecError(ValueError):
     """spec 不合法。信息要说清「哪一项、为什么不行」，别只说「格式错误」。"""
+
+
+class _StrictLoader(yaml.SafeLoader):
+    """拒绝重复键。
+
+    YAML 默认「后写覆盖前写」，而 spec 里出现两处同名几乎总是笔误：改了下面
+    那处、上面还留着，跑起来用的却是后者——人看着自己写的那行明明对，结果
+    就是不对，最难查。两类需求共用一份 spec 后，这条防线必须放在读入处，
+    不能只挂在回填口径体上。
+    """
+
+
+def _strict_mapping(
+    loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False
+) -> dict[Any, Any]:
+    mapping: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise SpecError(f"重复的键 {key!r}（第 {key_node.start_mark.line + 1} 行）")
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _strict_mapping)
+
+
+class Kind(StrEnum):
+    """需求的产出形态。
+
+    这是整套体系里**唯一**的「变」。受理、定口径、按节奏跑、交付留档、可追溯
+    这些环节对每一种形态都一样，所以它们必须共用一套容器、一套编号、一套台账。
+    按形态分目录、分命令，等于把「不变」的那部分复制若干份——而形态是列不完的：
+    今天查询、明天回填，后天会有对账报表、按名单核验失效。
+    """
+
+    QUERY = "query"
+    BACKFILL = "backfill"
 
 
 class Cadence(StrEnum):
@@ -156,6 +197,9 @@ class Spec:
     sql: str | None = None
     purpose: str = ""
     notes: str = ""
+    kind: Kind = Kind.QUERY
+    #: `kind: backfill` 时的口径体；由 `backfill.from_mapping` 解析校验。
+    fill: FillSpec | None = None
 
     @property
     def slug(self) -> str:
@@ -166,9 +210,11 @@ class Spec:
 def load(path: Path) -> Spec:
     """读一个 spec.yaml。任何不合法的字段都在这里一次性报出来。"""
     try:
-        body = yaml.safe_load(path.read_text(encoding="utf-8"))
+        body = yaml.load(path.read_text(encoding="utf-8"), Loader=_StrictLoader)
     except FileNotFoundError:
         raise SpecError(f"找不到 {path}") from None
+    except SpecError as error:
+        raise SpecError(f"{path}: {error}") from None
     except yaml.YAMLError as error:
         raise SpecError(f"{path} 不是合法 YAML：{error}") from None
     if not isinstance(body, dict):
@@ -182,6 +228,8 @@ def _from_mapping(body: dict[str, Any], path: Path) -> Spec:
             raise SpecError(f"{path}: 缺少必填项 {key!r}")
         return body[key]
 
+    kind = _enum(Kind, body.get("kind", Kind.QUERY), "kind", path)
+    fill = _fill_body(body, path) if kind is Kind.BACKFILL else None
     criteria = tuple(_criterion(item, path) for item in _as_list(body.get("criteria")))
     mode = _enum(Mode, body.get("mode", Mode.CRITERIA), "mode", path)
 
@@ -200,9 +248,22 @@ def _from_mapping(body: dict[str, Any], path: Path) -> Spec:
         sql=_optional_text(body.get("sql")),
         purpose=str(body.get("purpose") or ""),
         notes=str(body.get("notes") or ""),
+        kind=kind,
+        fill=fill,
     )
     _validate(spec, path)
     return spec
+
+
+def _fill_body(body: dict[str, Any], path: Path) -> FillSpec:
+    """解析回填口径体。运行期才导入 `backfill`——它要算指纹、又要被本模块的类型引用。"""
+    from .backfill import FillError
+    from .backfill import from_mapping as fill_from_mapping
+
+    try:
+        return fill_from_mapping(body.get("fill"), path.parent, origin=str(path))
+    except FillError as error:
+        raise SpecError(str(error)) from None
 
 
 def _validate(spec: Spec, path: Path) -> None:
@@ -214,6 +275,11 @@ def _validate(spec: Spec, path: Path) -> None:
         raise SpecError(f"{path}: title 不能为空白")
     if not spec.requester.strip():
         raise SpecError(f"{path}: requester 不能为空白——交付单要能回答「给谁」")
+    if spec.kind is Kind.BACKFILL:
+        # 回填的护栏在口径体里（输出文件名、必填列）；criteria / order_by 对它无意义。
+        if spec.fill is None:
+            raise SpecError(f"{path}: kind=backfill 时必须有 fill 段")
+        return
     if spec.mode is Mode.CRITERIA and not spec.criteria:
         raise SpecError(f"{path}: mode=criteria 时 criteria 不能为空（要手写 SQL 请写 mode: sql）")
     if spec.mode is Mode.SQL and not (spec.sql or "").strip():
@@ -521,6 +587,55 @@ alert:
 #   SELECT ...
 """
 
+#: 回填形态的骨架。公共头一模一样，只有 `kind` 与 `fill:` 段不同——这正是
+#: 「变只在 kind 与口径体」落到文件上的样子。
+_FILL_SKELETON = """\
+# 需求 {id}：{title}
+#
+# 公共头、节奏、护栏、标疑与查询型需求完全相同；改口径必须把 version 加一。
+# 不同的只有下面两处：kind 与它对应的 fill: 口径体。
+id: {id}
+title: {title}
+requester: {requester}
+purpose: "{purpose}"
+version: 1
+
+# 交付节奏：once / daily / weekly / monthly / manual
+cadence: {cadence}
+kind: backfill
+
+# 护栏与标疑对所有形态同义：rows 是这次交付的记录数（回填即输入表数据行数）。
+guard:
+  min_rows: 1
+  max_rows: 500000
+alert:
+  row_delta_pct: 20
+  row_delta_abs: 100
+
+fill:
+  source:
+    path: "{source_path}"     # 对方给的表，绝不改动；相对路径以本目录为基准
+    sheet: Sheet1            # 不写则取第一个 sheet
+    header_row: 2            # 列名所在行；其上可有多行分组标题
+    key_column: URL          # 用列名定位，不用列号
+  output:
+    name: 清单-已补全.xlsx    # 交付档案里的文件名
+    # copy_to: D:/somewhere/清单-已补全.xlsx   # 可选：档案落定后另存一份
+  # overrides: overrides.json # 逐库人工判读结果；引擎只合并、不生成
+  overwrite: false           # 只填空格；表里已有内容一律不动
+
+  # 一列只能用一种取值方式：
+  #   field    取底库某列（可配 join / translate / format / width / wrap）
+  #   template 按底库列拼字符串，占位符缺值就整格留空，不拼半截链接
+  #   const    常量
+  #   manual   引擎不猜，值留空、原因进「补全说明」页；真值从 overrides 来
+  columns:
+    "数据集名称": {field: id}
+    "下载量": {field: downloads}
+    "来源": {const: HuggingFace}
+    "训练阶段": {manual: 须读 README 判定，引擎不猜}
+"""
+
 
 def skeleton(
     *,
@@ -529,11 +644,13 @@ def skeleton(
     requester: str,
     purpose: str = "",
     cadence: Cadence = Cadence.ONCE,
+    kind: Kind = Kind.QUERY,
+    source_path: str = "",
 ) -> str:
     """生成一份带注释的 spec 骨架。注释是给人看的，所以不走 YAML dump。
 
     用逐项 `replace` 而非 `str.format`：模板里本来就带 YAML 的花括号
-    （`{metric: 下载量}`），`format` 会把它们当占位符，直接抛 KeyError。
+    （`{metric: 下载量}`、`{field: id}`），`format` 会把它们当占位符，直接抛 KeyError。
     """
     values = {
         "{id}": request_id,
@@ -542,7 +659,11 @@ def skeleton(
         "{purpose}": purpose,
         "{cadence}": cadence.value,
     }
-    text = _SKELETON
+    if kind is Kind.BACKFILL:
+        # 输入表必须真实存在：新建完立刻按真规矩回读一遍，否则骨架会被自己判成
+        # 「输入表不存在」而删掉。所以 --source 是这个形态的必填项。
+        values["{source_path}"] = source_path
+    text = _FILL_SKELETON if kind is Kind.BACKFILL else _SKELETON
     for placeholder, value in values.items():
         text = text.replace(placeholder, value)
     return text
