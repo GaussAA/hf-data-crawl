@@ -13,6 +13,14 @@ wheels/
 data/
 runs/
 
+# 回填台账要入库：它记「这份产物基于哪一版底库」，本身是交付档案的一部分。
+# 目录须先放行，否则里面的文件再放行也没用——git 不会进被排除的目录。
+!fills/*/runs/
+!fills/*/runs/**
+
+# 临时探查脚本与中间产物
+.scratch/
+
 # 交付档案的「字节」不入库，但「话」（manifest.json / README.md）要入库：
 # 档案可评审、可追溯，而占地方的 parquet/csv 留在本机，由 manifest 里的 sha256 绑定。
 # 前导 `**/` 不能省：交付目录实际在 requests/<需求号>/deliveries/<时刻>/ 下，

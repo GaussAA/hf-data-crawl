@@ -14,6 +14,9 @@ from datetime import date, datetime
 from pathlib import Path
 
 from .api import MAX_LIMIT, HfDatasetApi, Transport
+from .backfill import FillError, FillReport
+from .backfill import load_spec as load_fill_spec
+from .backfill import run as run_fill
 from .collect import Collector, CollectSummary
 from .delivery import DeliveryBlocked, DeliveryResult, deliver, run_due
 from .deriving import check_and_recover
@@ -76,6 +79,10 @@ LOCKED_COMMANDS = WRITE_COMMANDS | SNAPSHOT_COMMANDS
 #: 时干等一会儿比直接失败有用；等不到仍会如实报错。可用 `--lock-wait` 覆盖。
 SNAPSHOT_LOCK_WAIT = 60.0
 
+#: 回填台账保留轮数。日更任务一年三百多条，不修剪迟早拖慢目录列表；
+#: 与日志同一套有界修剪思路（见 `_write_fill_record`）。
+FILL_RUNS_KEEP = 200
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -91,6 +98,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--requests-dir",
         default=os.environ.get("HF_REQUESTS_DIR", "requests"),
         help="需求目录（默认取 HF_REQUESTS_DIR，否则 ./requests）；与数据目录分开",
+    )
+    parser.add_argument(
+        "--fills-dir",
+        default=os.environ.get("HF_FILLS_DIR", "fills"),
+        help="回填任务目录（默认取 HF_FILLS_DIR，否则 ./fills）；与需求目录分开",
     )
     parser.add_argument(
         "--lock-wait",
@@ -163,6 +175,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="一次性需求（once）交付过之后再交一份；不加则拒绝，防误重复交付",
     )
     request_sub.add_parser("run-due", help="跑所有到期的需求（计划任务用）")
+
+    fill = subparsers.add_parser(
+        "fill", help="按给定的 URL 清单回填表格字段（产出新文件，绝不改原件）"
+    )
+    fill.add_argument(
+        "spec", nargs="?", help="spec 路径，如 fills/FILL-0001/spec.yaml；用 --all 时省略"
+    )
+    fill.add_argument(
+        "--all", action="store_true", help="跑 fills 目录下全部 spec（每份各自产出自己的文件）"
+    )
+    fill.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只算不写：报告每列能填多少、缺哪些，不产生产物文件",
+    )
+    fill.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="覆盖表里已有的非空单元格；默认只填空格（已有内容一律不动）",
+    )
 
     reconcile = subparsers.add_parser("reconcile", help="全量对账（按 createdAt 稳定序）")
     reconcile.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
@@ -352,6 +384,9 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
                 print(f"交付失败：{error}")
                 return 1
         return _request(args)
+    if args.command == "fill":
+        # 回填只读底库、只写 spec 指定的产物文件（在 data/ 之外），不持数据锁。
+        return _fill(args, store)
     if args.command == "doctor":
         return _doctor(store)
     if args.command == "docs":
@@ -1097,3 +1132,109 @@ def _request_run_due(args: argparse.Namespace, store: DatasetStore) -> int:
         f"共 {len(report.delivered)} 交付 / {len(report.skipped)} 跳过 / {len(report.failed)} 失败"
     )
     return 1 if report.failed else 0
+
+
+# ---------------------------------------------------------------- 表格回填
+
+
+def _fill(args: argparse.Namespace, store: DatasetStore) -> int:
+    """按 spec 回填表格。一份失败不挡其余：一批十份、坏一份，剩下九份照样该出。"""
+    from dataclasses import replace as dc_replace
+
+    if args.all:
+        specs = sorted(Path(args.fills_dir).glob("*/spec.yaml"))
+        if not specs:
+            print(f"{Path(args.fills_dir)} 下还没有回填任务。")
+            print("  建一份：fills/FILL-0001/spec.yaml，再跑 `fill fills/FILL-0001/spec.yaml`")
+            return 0
+    elif args.spec:
+        specs = [Path(args.spec)]
+    else:
+        print("要给一个 spec 路径，或用 --all 跑整个目录。")
+        return 2
+
+    failed = 0
+    for path in specs:
+        try:
+            spec = load_fill_spec(path)
+        except (FillError, OSError) as error:
+            print(f"[!] {path}：{error}")
+            failed += 1
+            continue
+        if args.overwrite and not spec.overwrite:
+            spec = dc_replace(spec, overwrite=True)
+        try:
+            report = run_fill(store, spec, dry_run=args.dry_run)
+        except (FillError, OSError) as error:
+            print(f"[!] {spec.name}：{error}")
+            failed += 1
+            continue
+        _print_fill(report, dry_run=args.dry_run)
+        if not args.dry_run:
+            _write_fill_record(path, report)
+    return 1 if failed else 0
+
+
+def _print_fill(report: FillReport, *, dry_run: bool) -> None:
+    head = "预演（未写盘）" if dry_run else f"已写出 → {report.output}"
+    print(f"\n{report.spec_name}  {report.rows} 行 · {head}")
+    for name, tally in report.tallies.items():
+        bits = [f"写入 {tally.written}"]
+        if tally.from_override:
+            bits.append(f"其中人工判读 {tally.from_override}")
+        if tally.kept:
+            bits.append(f"原有保留 {tally.kept}")
+        if tally.empty:
+            bits.append(f"空 {tally.empty}")
+        print(f"  {name:16s} {' · '.join(bits)}")
+    if report.manual:
+        print("  需人工判读：")
+        for name, reason in report.manual:
+            print(f"    {name} —— {reason}")
+    if report.missing_ids:
+        print(f"  未命中底库 {len(report.missing_ids)} 条：{'、'.join(report.missing_ids[:5])}")
+    if report.undeclared:
+        print(f"  未声明的列（保持空白）：{'、'.join(report.undeclared[:10])}")
+
+
+def _write_fill_record(spec_path: Path, report: FillReport) -> None:
+    """在 spec 旁留一份运行台账：这一版产物基于哪一版底库。
+
+    写在 spec 所在目录而不是全局 runs/：回填的执行者是这份 spec，台账跟着走，
+    十份 spec 各自都能自证。
+    """
+    folder = spec_path.parent / "runs"
+    folder.mkdir(parents=True, exist_ok=True)
+    body = {
+        "spec": report.spec_name,
+        "ran_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "rows": report.rows,
+        "output": str(report.output) if report.output else None,
+        "source": None
+        if report.stamp is None
+        else {
+            "current_md5": report.stamp.current_md5,
+            "current_rows": report.stamp.current_rows,
+            "newest_snapshot_date": str(report.stamp.newest_snapshot_date),
+        },
+        "written": report.written(),
+        "columns": {
+            name: {
+                "written": item.written,
+                "from_override": item.from_override,
+                "kept": item.kept,
+                "empty": item.empty,
+            }
+            for name, item in report.tallies.items()
+        },
+        "missing": report.missing_ids,
+        "manual": [{"column": name, "reason": reason} for name, reason in report.manual],
+        "undeclared": report.undeclared,
+    }
+    target = folder / f"{datetime.now().strftime('%Y%m%dT%H%M%S')}.json"
+    target.write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
+    # 台账按轮累积：日更任务一年三百多条，不修剪迟早拖慢目录列表。
+    # 按文件名排序即可——名字就是时间戳。
+    stale = sorted(folder.glob("*.json"))[:-FILL_RUNS_KEEP]
+    for item in stale:
+        item.unlink(missing_ok=True)

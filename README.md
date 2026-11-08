@@ -32,6 +32,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `build` | 重建派生层：默认只重放近 7 天热区，`--stale` 只修派生滞后的日子及其后，`--full` 全量重放 | 否 |
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
 | `request` | 需求与交付管理：`new` 建需求、`list` 看全部、`show` 看口径与台账、`run` 交付一次、`run-due` 跑到期的 | 否 |
+| `fill` | 按给定的 URL 清单回填表格：产出新文件，原件不动 | 否 |
 | `report` | 生成单文件榜单页（离线可看） | 否 |
 | `doctor` | 体检：调度新鲜度、底库行龄、层间勾稽、派生凭证、产物新鲜度、断日与残留文件；异常写 `ALERT.txt` 并追加体检流水 | 否 |
 | `archive` | 归档早于 N 天的 Raw 分区：合并小分块并去重，先验证 Bronze 逐行相等，原文件移入 `backup/raw/` | 否 |
@@ -59,6 +60,9 @@ hf-data-crawl request      list
 hf-data-crawl request      show REQ-0001
 hf-data-crawl request      run REQ-0001 [--force]   # once 需求交付过要重交须加 --force
 hf-data-crawl request      run-due                  # 只跑到期的（计划任务用）
+
+hf-data-crawl fill         fills/FILL-0001/spec.yaml [--dry-run] [--overwrite]
+hf-data-crawl fill         --all                    # 跑 fills/ 下全部 spec
 ```
 
 全局参数 `--data-dir` 需放在子命令之前，默认取 `HF_DATA_DIR`，否则 `./data`。
@@ -323,6 +327,42 @@ CSV 装不下的列表列（`tags`、`languages` 等 11 个）以 `;` 连接成�
 
 一个需求失败不挡别的（坏 spec、0 行、查询出错都只记一条继续）；但底库本身不成立
 （`current` 缺失）时整体失败，因为那不是某一条需求的问题。
+
+## 表格回填
+
+对方常给一张只有 URL 一列的表，其余列要按约定口径填上。这类活做一次可以，做到第五次
+必然出错——尤其「下载量取 30 天还是累计」这种口径，换个人就重新裁一遍。`fill` 把它变成
+一份可复跑的口径：**机械的归引擎，判断的归人**。
+
+```
+fills/FILL-0001/spec.yaml        # 输入表、标识列、逐列取值方式、留空列清单
+fills/FILL-0001/overrides.json   # 逐库人工判读结果（引擎只合并、不生成）
+fills/FILL-0001/runs/*.json      # 每轮台账：写了多少、基于哪一版底库
+```
+
+一列只能用一种取值方式：
+
+| 方式 | 含义 | 例 |
+|---|---|---|
+| `field` | 取底库某列 | `{field: main_size, format: gb}` |
+| `template` | 按底库列拼串，占位符缺值整格留空 | `{template: "https://arxiv.org/abs/{arxiv_ids}"}` |
+| `const` | 常量 | `{const: HuggingFace}` |
+| `manual` | 引擎不填，值留空、原因进说明页 | `{manual: README 明写训练阶段才算}` |
+
+**四条只写不说的规矩**：
+
+1. **绝不改原件**：`output` 与 `source` 同路径直接报错。原件是唯一可回退的凭据。
+2. **默认不覆盖**：只填空格。人家手填的可能比底库新，也可能有底库没有的判断；要覆盖须显式 `overwrite: true`。
+3. **不猜**：判读不出来的列写 `manual`，留空并在「补全说明」页点名。一份看着齐整、实则编造的表，比诚实地空着几格危险得多——空着会有人来问，编造不会。
+4. **未声明的列一律不碰**，并在报告里列出来，让人看得见还剩多少活。
+
+产物是**新文件**，附一页「补全说明」（口径、留空原因、未命中清单）。同输入同底库连跑两次
+**逐字节相同**：xlsx 里的条目时间戳与 `dcterms:modified` 都锚到底库快照日，否则内容全同、
+md5 却每次不同，「这次和上次一样吗」只能靠人肉比对。
+
+判读层（README 里「训练阶段是微调还是后训练」「构造方式是仿真还是真机」）写进
+`overrides.json`，与机械层分开：引擎自己不读 README、不替人下结论，但会把「哪些格子是
+人工判读来的」记进台账。
 
 ## 开发
 

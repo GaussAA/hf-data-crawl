@@ -1,0 +1,61 @@
+# 回填任务：具身感知数据集信息补充
+#
+# 对方给的是一张 40 列的空表，只有 E 列 URL 有值。这份 spec 说明「哪一列从哪来」。
+# 复跑：hf-data-crawl fill fills/FILL-0001/spec.yaml
+# 先看效果再加 --dry-run，它不写盘、只报每列能填多少。
+#
+# 四种取值方式，一列只能用一种：
+#   field    取底库某列（可配 join / translate / format / width / wrap）
+#   template 按底库列拼字符串，占位符缺值就整格留空
+#   const    常量
+#   manual   引擎不填，值留空、原因进「补全说明」页；真值从 overrides 来
+name: FILL-0001
+title: 具身感知数据集信息补充
+
+source:
+  path: C:/Users/JaNiy/Downloads/具身感知数据集信息补充1106.xlsx
+  sheet: Sheet1
+  header_row: 2            # 第 1 行是阶段分组，第 2 行才是 40 个列名
+  key_column: URL
+
+output:
+  path: C:/Users/JaNiy/Downloads/具身感知数据集信息补充1106-已补全.xlsx
+
+overrides: overrides.json  # 逐库人工判读结果；engine 只合并、不生成
+overwrite: false           # 只填空格；表里已有的内容一律不动
+
+columns:
+  "来源": {const: HuggingFace}
+  "发布组织/作者": {field: author}
+  "数据集名称": {field: id, width: 34, wrap: true}
+  "简介": {field: description, format: prose, width: 46, wrap: true}
+  "发布时间": {field: created_at, format: date}
+  "更新时间": {field: last_modified, format: date}
+  # 底库这列只对头部一万条抓过，为空不等于没有 README，故归判读。
+  "是否包含README": {manual: 底库该列仅头部有值，须确认仓库是否真带 README}
+  # 各库自述的实例数单位不一（轨迹/回合/问答对/小时），机械折不出可比数字。
+  "数据量级(条)": {manual: README 自述的实例数，单位不统一须逐条判读}
+  "数据大小(GB)": {field: main_size, format: gb}
+  "下载量": {field: downloads}
+  "点赞量": {field: likes}
+  "训练阶段": {manual: README 明写 pretrain/fine-tune/post-training 才算}
+  "数据构成": {manual: 需读 README 才能概括}
+  "数据模态": {field: modalities, join: "、", translate: true, width: 22, wrap: true}
+  "语种": {field: languages, join: "、", translate: true}
+  "技术方向": {field: task_categories, join: "、", translate: true, width: 22, wrap: true}
+  "是否为答题": {manual: 须看数据形态是不是问答对}
+  "是否为benchmark": {manual: 须看 README 或论文标题是否自称 benchmark}
+  # 占位符取底库的 arxiv_ids（列表）首项；该库没登记 arXiv 号则整格留空，
+  # 不拼出半截链接。
+  "论文URL": {template: "https://arxiv.org/abs/{arxiv_ids}", width: 34, wrap: true}
+  "是否有测试集": {manual: 须看 datasets-server 的 splits 里有没有 test 划分}
+  "构造方式": {manual: 仿真合成 / 真机遥操作 / 多源整理，须读 README 判定}
+
+notes:
+  "下载量口径": 近 30 天下载量（downloads），即 HuggingFace 数据集页面显示的那个数字；历史累计值（downloads_all_time）未采用，普遍大一个量级。
+  "数据大小口径": 仓库实际字节数（main_size）按十进制折算 GB（1 GB = 10^9 字节），与 HF 页面及 README 自述「4.5TB」同一口径；不是解压后大小。
+  "数据量级口径": 优先采用 README 自述的实例数并注明单位；README 未给时退回 datasets-server 统计行数。该列单位本身不统一，故逐格标明。
+  "内部流程列": 「筛选是否可用」及其后 14 列（下载/存储路径、优先级、处理人、质检结果、是否训练等）属于你们的内部流程，底库无权填，保持空白。
+  "无客观来源的三列": 「是否关联榜单」「是否有测试结果」「数据集质量评估分」没有可查的数据源，一律留空。
+
+stamp_note: 取自本地 HuggingFace 底库（对账后快照），辅以 16 份 README 与 datasets-server splits 作判据；未凭记忆填写。

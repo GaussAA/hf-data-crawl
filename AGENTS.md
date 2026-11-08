@@ -35,6 +35,8 @@ Add new terms there first before using them.
 - Change-set cards: `enrich.scan_changed_cards` (same `lastModified` watermark as collect; writes `card-*`, never Bronze)
 - Single day frame: `bronze.day_frame` (Bronze partition + card-batch supplements; shared by `silver` and `state`)
 - Health history: `health.py` (per-run findings log; `runs/` records command outcome, not alerts)
+- Requirements: `requirement.py` (spec → SQL, vocabulary terms only) + `delivery.py` (three-part delivery, source fingerprint, drift marking)
+- Table backfill: `backfill.py` (URL list → filled workbook; mechanical in engine, judgment in `overrides.json`; never edits the source file)
 - See [ADR-0001](docs/adr/0001-metadata-refresh-consistency-hardening.md) for design decisions.
 
 ### Test naming
