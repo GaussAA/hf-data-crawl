@@ -35,6 +35,9 @@ _VIEW_RENAMES: dict[str, dict[str, str]] = {
     # files.status 与 current.status 是两回事：前者只说这次文件清单补采成功与否。
     # files.formats 是扩展名计数，与 silver.formats（标签维度）同名不同义。
     "files": {"status": "files_status", "formats": "file_formats"},
+    # 卡片表里只有这一个 sha，表内不必限定；但并进宽表后它左边就是 `sha`（仓库
+    # 当前版本），不限定会被读成「另一个 sha」而不是「抓卡片时的 sha」。
+    "carddata": {"source_sha": "card_source_sha"},
 }
 
 #: 宽视图里刻意不带的列。

@@ -77,6 +77,9 @@ def extract_card_row(record: dict[str, Any], snapshot_date: Any) -> dict[str, An
         "id": record["id"],
         "url": url_for(record["id"]),
         "snapshot_date": snapshot_date,
+        # 卡片内容属于哪个仓库版本。取值来自同一条记录（列表接口必带 sha），
+        # 不额外请求，也不从 lastModified 推断——sha 才是 commit 的身份。
+        "source_sha": as_text(record.get("sha")),
         "pretty_name": as_text(card.get("pretty_name")),
         "paperswithcode_id": as_text(
             record.get("paperswithcode_id") or card.get("paperswithcode_id")

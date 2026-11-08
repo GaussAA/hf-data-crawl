@@ -2,6 +2,17 @@
 
 停止条件有三：走到末页、连续 N 页无新记录（watermark）、达到页数上限（有界试跑）。
 其中「有界」不是完成态，必须保住游标以便下次续跑。
+
+卡片随带（`cards=True`）
+------------------------
+同一批「今天变过的库」再扫一趟，`expand` 多带 `cardData`，写进 `card-*` 批次。
+驱动字段是 `lastModified` 而非 sha：HF 没有「给我这批 id 的卡片」的接口，
+先算出哪些 sha 变了再去抓并无路可走；而 sha 变必然伴随一次 commit，
+`lastModified` 必变，日增量本来就按它排序——变化集现成就在手里，不必另建索引。
+`source_sha` 只用来记账与核对（见 `card.extract_card_row`）。
+
+没有水位线时**不跑**这一趟：首轮没有「变化」可言，抓全站是 6.7 GB、14 小时的事，
+属一次性补齐，不该混进日常增量。
 """
 
 from __future__ import annotations
@@ -15,6 +26,7 @@ from typing import Any
 from .api import IDENTITY_EXPAND, MAX_LIMIT, HfDatasetApi, Page
 from .checkpoint import FileCheckpoint
 from .derive import derive_day
+from .enrich import CARD_PAGES_CAP, scan_changed_cards
 from .runs import COLLECT_COMPLETE_REASONS
 from .scan import ScanRun, ScanSpec, ScanSummary
 from .store import DatasetStore
@@ -51,6 +63,11 @@ class CollectSummary:
     preview: list[dict[str, Any]] | None = None
     top_pages: int = 0
     refreshed: int = 0
+    #: 变化集卡片扫描的页数与记录数；未开启时为 0。
+    card_pages: int = 0
+    card_records: int = 0
+    #: 卡片趟的停止原因；`skipped` 表示没开，`no_watermark` 表示首轮无变化集。
+    card_reason: str = "skipped"
 
 
 class Collector:
@@ -77,6 +94,8 @@ class Collector:
         max_pages: int | None = None,
         pages_without_new: int | None = None,
         refresh_top: int = 0,
+        cards: bool = False,
+        card_max_pages: int | None = CARD_PAGES_CAP,
         dry_run: bool = False,
     ) -> CollectSummary:
         threshold = max(
@@ -203,7 +222,28 @@ class Collector:
                 ),
             )
 
-        day = derive_day(self._store, snapshot_date)
+        # 变化集卡片：同一批「今天变过的库」再扫一趟，多带 cardData。
+        # 用本轮开始时的 baseline，不能用刚被本轮推高的新水位线——后者会在第一页
+        # 就判定越界，等于什么都没抓。没有水位线（首轮）时不做：那不是增量，是全量。
+        card_scan = ScanSummary(
+            pages=0, records=0, skipped=0, rate_remaining=None, stopped_reason="skipped"
+        )
+        card_reason = "skipped"
+        if cards:
+            if baseline_time is None:
+                card_reason = "no_watermark"
+            else:
+                card_scan = scan_changed_cards(
+                    self._api,
+                    self._store,
+                    snapshot_date,
+                    baseline=baseline,
+                    limit=limit,
+                    max_pages=card_max_pages,
+                )
+                card_reason = card_scan.stopped_reason
+
+        day = derive_day(self._store, snapshot_date, enrich=cards)
         bronze_rows = day.bronze_rows
         silver_rows = day.silver_rows
         state = day.state
@@ -230,4 +270,7 @@ class Collector:
             elapsed_seconds=time.monotonic() - started,
             top_pages=top.pages,
             refreshed=top.records,
+            card_pages=card_scan.pages,
+            card_records=card_scan.records,
+            card_reason=card_reason,
         )

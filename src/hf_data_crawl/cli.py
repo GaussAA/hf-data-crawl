@@ -16,7 +16,7 @@ from .api import MAX_LIMIT, HfDatasetApi, Transport
 from .collect import Collector, CollectSummary
 from .deriving import check_and_recover
 from .doctor import diagnose, sync_alert
-from .enrich import Enricher, EnrichSummary
+from .enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
 from .env import load_env_file
 from .files import FileFetcher, FileSummary, HfFilesApi
 from .gold import BOARDS, GoldCatalog, GoldNotReady, UnsafeQuery
@@ -98,6 +98,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="额外按下载量补扫前 N 名（0 表示不补），用于让增速榜每天有新读数",
+    )
+
+    collect.add_argument(
+        "--cards",
+        action="store_true",
+        help="随日增量补抓卡片：同一批「今天变过的库」再扫一趟，多带 cardData（约 +17 分钟）",
+    )
+    collect.add_argument(
+        "--card-pages",
+        type=int,
+        default=None,
+        help="变化集卡片扫描的页数上限，默认 200；防止水位线异常时把全站拉完",
     )
 
     collect.add_argument(
@@ -380,6 +392,8 @@ def _collect(args: argparse.Namespace, store: DatasetStore, transport: Transport
         limit=args.limit,
         max_pages=args.max_pages,
         refresh_top=args.refresh_top,
+        cards=args.cards,
+        card_max_pages=CARD_PAGES_CAP if args.card_pages is None else args.card_pages,
         dry_run=args.dry_run,
     )
     _print_collect(summary)
@@ -709,6 +723,10 @@ def _print_collect(summary: CollectSummary) -> None:
     print(f"  配额余量 {summary.rate_remaining} · 停止原因 {summary.stopped_reason}")
     if summary.top_pages:
         print(f"  顶部池刷新 {summary.top_pages} 页 / {summary.refreshed} 条")
+    if summary.card_pages:
+        print(f"  变化集卡片 {summary.card_pages} 页 / {summary.card_records} 条")
+    elif summary.card_reason == "no_watermark":
+        print("  变化集卡片：无水位线（首轮），跳过——那是全量补齐，不是增量")
 
 
 def _print_reconcile(summary: ReconcileSummary) -> None:

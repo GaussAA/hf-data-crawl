@@ -41,7 +41,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 常用参数：
 
 ```bash
-hf-data-crawl collect      [--date YYYY-MM-DD] [--limit 1000] [--max-pages N] [--pages-without-new 3] [--refresh-top 20000] [--dry-run]
+hf-data-crawl collect      [--date YYYY-MM-DD] [--limit 1000] [--max-pages N] [--pages-without-new 3] [--refresh-top 20000] [--cards] [--card-pages 200] [--dry-run]
 hf-data-crawl enrich       [--date YYYY-MM-DD] [--top 20000] [--limit 1000]
 hf-data-crawl fetch-sizes  [--date YYYY-MM-DD] [--top 20000] [--workers 16] [--retry-unavailable]
 hf-data-crawl fetch-files  [--date YYYY-MM-DD] [--top 1000] [--workers 8] [--retry-unavailable] [--timeout 30] [--max-retries 1] [--max-pages 1] [--refresh-truncated]
@@ -144,7 +144,12 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 - **派生层可重建**：`build` 只读 Raw，断网即可回填。派生规则变更后一条命令重算历史。
 - **顶部池刷新**：`collect --refresh-top 20000` 在增量之后按 `sort=downloads` 补扫前 2 万名。日增量只覆盖「最近更新的万把条」，若不补这一趟，增速榜长期只有零星读数。成本约 20 页。
 - **`downloads` 非实时**：实测同一集相隔 9 小时读数完全相同，故增速必须跨日观测；同日重复扫描不产生新读数。
-- **卡片只能按榜单补**：单库详情即使带 `blobs=false` 仍达 1.17MB（含 `siblings`），逐条补不可行。`enrich` 走列表接口带 `expand[]=cardData` 取前 N 名，2 万条约 22 秒；实测前 2 万名中约 68% 带卡片。卡片表落 `enrich/carddata.parquet`，`datasets` 视图已左连其字段。
+- **卡片只能按榜单或按变化集补**：单库详情即使带 `blobs=false` 仍达 1.17MB（含 `siblings`），逐条补不可行；列表接口只能 sort + 翻页，**不接受 id 过滤**，所以「先算出哪些 sha 变了再去抓」这条路走不通。两条可行的路各管一段：
+
+  - `enrich` 走列表接口带 `expand[]=cardData` 取下载量前 N 名，2 万条约 22 秒；实测前 2 万名中约 68% 带卡片。它补的是**从没抓过的头部**——sha 多年不变的库永远不会进入增量范围，只能靠这一趟覆盖。
+  - `collect --cards` 跟着日增量走：sha 变必然伴随一次 commit，`lastModified` 必变，而日增量本来就按它排序，所以「今天变过的库」现成就在手里，重翻同一批页、多带 `cardData` 即可。约 22 页 / +17 分钟 / raw 每日 +15MB。首轮没有水位线时不跑——那时没有「变化」可言，抓全站是 6.7GB、14 小时的一次性补齐，不该混进日常增量。
+
+  卡片表落 `enrich/carddata.parquet`，`datasets` 视图已左连其字段。表里记 `source_sha`（抓这张卡时的仓库版本），拿它跟 `sha`（仓库当前）对照就能判断卡片是否落后——`snapshot_date` 只说什么时候抓的，不说内容对应哪一版。`doctor` 的「卡片凭证」一项报的就是这个比例，只看最近 3 天活跃的库（长尾几百万年不动，卡片本就该保持原样）。
 - **`expand[]` 是白名单裁剪，不是增补**（2026-11-04 踩过的坑）：传了它就只返回列出的字段，连默认响应里本就有的 `private` / `disabled` 都会被裁掉。此前 `LEAN_EXPAND` 没请求 `private`，而 Bronze 已声明该列，结果 111.5 万行整列为空且管线照常报成功。现由 `tests/test_schema_contract.py` 把「表结构的列」与「请求的字段」钉成唯一真相源，另有 16 项断言防止再次漂移。
 - **卡片抽取看 `dataset_info`**：它带每个 config 的 `dataset_size` / `download_size` / `features`（列名+dtype）/ `splits`（`num_examples`），是整条管线里唯一能回答「多少行、多少列」的来源。宽表抽 22 列，另落 `card_configs.parquet`（一行一个 config/split，实测 13,651 张卡展开 142,552 行）。
 

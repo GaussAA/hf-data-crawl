@@ -75,6 +75,11 @@ FIELD_DOCS: dict[str, dict[str, str]] = {
         "status": "`active` 在架 / `disappeared` 已删除 / `restricted` 转私有 / `renamed` 已改名",
     },
     "carddata": {
+        "source_sha": (
+            "抓这张卡时该库的 commit sha。拿它与 `sha`（仓库当前版本）对照，"
+            "就能判断卡片是否落后——`snapshot_date` 只说什么时候抓的，不说内容对应哪一版。"
+            "加列之前抓的行为空，属预期"
+        ),
         "pretty_name": "卡片里的展示名（可能与 `作者/名称` 完全不同）",
         "paperswithcode_id": "Papers with Code 上的条目 id",
         "arxiv": "卡片声明的 arXiv 编号",

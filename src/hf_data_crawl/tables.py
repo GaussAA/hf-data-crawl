@@ -228,6 +228,10 @@ ENRICH_SCHEMA: dict[str, PolarsType] = {
     "id": pl.Utf8,
     "url": pl.Utf8,
     "snapshot_date": pl.Date,
+    # 抓这张卡时该库的 commit sha。没有它，「卡片是否落后于仓库当前版本」无从判定：
+    # snapshot_date 只说明抓取时间，不说明内容对应哪一版。doctor 拿它和 current.sha
+    # 对照，把「卡片陈旧」从感觉变成数字。历史行为空，属预期（那时没记）。
+    "source_sha": pl.Utf8,
     "pretty_name": pl.Utf8,
     "paperswithcode_id": pl.Utf8,
     "arxiv": pl.Utf8,

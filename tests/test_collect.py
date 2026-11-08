@@ -54,12 +54,17 @@ class FakeCursorTransport:
         )
 
 
-def page(prefix: str, count: int, downloads: int = 100) -> list[dict[str, Any]]:
+def page(
+    prefix: str,
+    count: int,
+    downloads: int = 100,
+    last_modified: str = "2026-11-01T00:00:00.000Z",
+) -> list[dict[str, Any]]:
     return [
         {
             "id": f"{prefix}/ds-{index}",
             "author": prefix,
-            "lastModified": "2026-11-01T00:00:00.000Z",
+            "lastModified": last_modified,
             "createdAt": "2025-01-01T00:00:00.000Z",
             "sha": f"sha-{prefix}-{index}",
             "downloads": downloads,
@@ -72,6 +77,16 @@ def page(prefix: str, count: int, downloads: int = 100) -> list[dict[str, Any]]:
         }
         for index in range(count)
     ]
+
+
+def card_page(
+    prefix: str, count: int, last_modified: str = "2026-11-02T00:00:00.000Z"
+) -> list[dict[str, Any]]:
+    """同一批记录，但带上 cardData——变化集卡片扫描请求的就是这一档。"""
+    records = page(prefix, count, last_modified=last_modified)
+    for item in records:
+        item["cardData"] = {"pretty_name": f"卡片 {item['id']}", "license": "mit"}
+    return records
 
 
 @pytest.fixture()
@@ -269,3 +284,39 @@ def test_次轮凭水位线在越过边界时停止(store: DatasetStore) -> None
 
     assert summary.stopped_reason == "watermark_timestamp"
     assert len(again.calls) == 2
+
+
+def test_首轮没有水位线时不跑卡片趟(store: DatasetStore) -> None:
+    """没有「变化」可言时抓全站等于那 14 小时的一次性补齐，不该混进日常增量。"""
+    transport = FakeCursorTransport([card_page("a", 2)])
+
+    summary = collector(transport, store).run(DAY1, limit=100, cards=True)
+
+    assert summary.card_reason == "no_watermark"
+    assert summary.card_pages == 0
+
+
+def test_有水位线时卡片随增量抓且不进bronze(store: DatasetStore) -> None:
+    collector(FakeCursorTransport([page("a", 2)]), store).run(DAY1, limit=100, pages_without_new=5)
+
+    transport = FakeCursorTransport([card_page("b", 2)])
+    summary = collector(transport, store).run(DAY2, limit=100, cards=True)
+
+    assert summary.card_reason == "end"
+    assert summary.card_records == 2
+    # 卡片批次不进 Bronze 去重池：两页同为 b/ds-0、b/ds-1，bronze 仍是 2 行。
+    assert summary.bronze_rows == 2
+    assert store.read_enrich().height == 2
+    names = [p.name for p in (store.raw_dir / f"dt={DAY2.isoformat()}").glob("*.json.gz")]
+    assert any(name.startswith("card-") for name in names)
+
+
+def test_卡片趟受页数上限保护(store: DatasetStore) -> None:
+    """水位线异常或过长时，不能一次把全站 1117 页拉完。"""
+    collector(FakeCursorTransport([page("a", 2)]), store).run(DAY1, limit=100, pages_without_new=5)
+
+    transport = FakeCursorTransport([card_page("b", 2), card_page("c", 2), card_page("d", 2)])
+    summary = collector(transport, store).run(DAY2, limit=100, cards=True, card_max_pages=2)
+
+    assert summary.card_pages == 2
+    assert summary.card_reason == "max_pages"

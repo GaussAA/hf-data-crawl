@@ -55,6 +55,14 @@ STALENESS_ALERT_DAYS = 7
 #: 说明那条链路已经停了，而不是「它本来就慢」。
 ARTIFACT_MAX_AGE_DAYS = 7
 
+#: 「活跃库」的判定窗口：日增量按 lastModified 扫到水位线，最近一天基本覆盖；
+#: 留 3 天是给漏跑与补跑留余量，而不把长尾算进卡片凭证的落后比例。
+ACTIVE_DAYS = 3
+#: 活跃库里卡片对不上当前 sha 的告警比例。判据不是「必须有变化」——变化本来就是
+#: 常态，卡片抓在 commit 之后、下一轮增量之前，短暂不一致是正常的；超过这个比例
+#: 说明整趟没跑，而不是个别库在窗口边缘。
+CARD_BEHIND_ALERT_SHARE = 20.0
+
 #: 有界试跑（max_pages）与 dry_run 不是完成；collect 的完成态与 cli 共用一份枚举。
 _RECONCILE_DONE = frozenset({"end"})
 
@@ -347,6 +355,70 @@ def _artifact_freshness(store: DatasetStore, today: date) -> Finding:
     return Finding(False, "产物新鲜度：" + "；".join(notes))
 
 
+def _card_provenance(store: DatasetStore, today: date) -> Finding:
+    """卡片落后于仓库多少：拿 `carddata.source_sha` 对 `current.sha`。
+
+    为什么要有这一项：卡片是「仓库里 README 的渲染结果」，仓库一变它就旧了。
+    此前没有任何列记「这张卡抓自哪一版」，于是「卡片陈旧」只能靠感觉——`snapshot_date`
+    只说抓取时间，不说内容对应哪一版，一个 2025 年抓的卡和昨天抓的卡看起来一样新鲜。
+
+    判据只看**活跃库**（最近 `ACTIVE_DAYS` 天被观测到）：长尾几百万年不动的库，
+    卡片本来就该保持原样，把它们算进来会让比例永远难看。活跃库是日增量真正扫过的
+    那批，也正是 `collect --cards` 该覆盖的那批；它们对不上，说明那趟没跑。
+
+    历史行 `source_sha` 为空（加列之前抓的），单独计数、不计入落后比例：空值是
+    「没记账」，不是「记错了」，混在一起会把补记和漏抓说成同一件事。
+    """
+    pattern = f"{store.root.as_posix()}/{table('carddata').glob()}"
+    # 旧表没有 source_sha 列（加列之前抓的），直接按两列 select 会整表读不出来，
+    # 那会被误读成「没有卡片」。先看列名，缺了就补一列空值——空值是「没记账」。
+    try:
+        names = pl.scan_parquet(pattern).collect_schema().names()
+    except (OSError, pl.exceptions.PolarsError):
+        return Finding(False, "卡片凭证：尚无卡片表，无从对照")
+    columns = ["id", "source_sha"] if "source_sha" in names else ["id"]
+    card_frame = _scan_frame(pattern, columns)
+    if card_frame is None or card_frame.height == 0:
+        return Finding(False, "卡片凭证：尚无卡片表，无从对照")
+    if "source_sha" not in card_frame.columns:
+        card_frame = card_frame.with_columns(pl.lit(None, dtype=pl.Utf8).alias("source_sha"))
+
+    current = _scan_frame(store.path("current").as_posix(), ["id", "sha", "last_seen_at"])
+    if current is None or current.height == 0:
+        return Finding(True, "卡片凭证：current 读取失败，无法对照")
+
+    active = current.filter(
+        (pl.lit(today) - pl.col("last_seen_at").dt.date()).dt.total_days() <= ACTIVE_DAYS
+    )
+    joined = card_frame.join(active, on="id", how="inner", suffix="_now")
+    if joined.height == 0:
+        return Finding(False, "卡片凭证：最近没有活跃库，无从对照")
+
+    recorded = joined.filter(pl.col("source_sha").is_not_null() & (pl.col("source_sha") != ""))
+    blank = joined.height - recorded.height
+    if recorded.height == 0:
+        return Finding(
+            True,
+            f"卡片凭证：活跃库 {joined.height} 个全无 source_sha（均为加列之前抓的），"
+            "跑一次 enrich 或 collect --cards 即可补记",
+        )
+
+    behind = recorded.filter(pl.col("source_sha") != pl.col("sha")).height
+    share = behind / recorded.height * 100
+    tail = f"，另有 {blank} 个无凭证" if blank else ""
+    if share > CARD_BEHIND_ALERT_SHARE:
+        return Finding(
+            True,
+            f"卡片凭证：活跃库中 {behind}/{recorded.height}（{share:.0f}%）的卡片落后于"
+            f"仓库当前 sha{tail}；检查 collect --cards 是否在跑",
+        )
+    return Finding(
+        False,
+        f"卡片凭证：活跃库中 {recorded.height - behind}/{recorded.height}"
+        f"（{(1 - behind / recorded.height) * 100:.0f}%）与当前 sha 一致{tail}",
+    )
+
+
 def _raw_growth(store: DatasetStore) -> Finding:
     """盯住 Raw 规模：compact 压跨天重复，热区仍会逐日增长，靠阈值兜底。"""
     files = (
@@ -504,6 +576,7 @@ def diagnose(store: DatasetStore, now: datetime | None = None) -> list[Finding]:
         _raw_gaps(store, now.date()),
         _derive_state(store),
         _artifact_freshness(store, now.date()),
+        _card_provenance(store, now.date()),
         _raw_growth(store),
         _cold_backlog(store, now.date()),
         _archive_backlog(store, now.date()),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,7 @@ from hf_data_crawl.lineage import path_of as lineage_path
 from hf_data_crawl.retention import REPLAY_WINDOW_DAYS, manifest_path
 from hf_data_crawl.runs import Outcome, write_run
 from hf_data_crawl.store import DatasetStore
-from hf_data_crawl.tables import CURRENT_SCHEMA
+from hf_data_crawl.tables import CURRENT_SCHEMA, ENRICH_SCHEMA
 
 NOW = datetime(2026, 11, 10, 12, 0, 0)
 
@@ -47,6 +48,24 @@ def put_current(store: DatasetStore, seen: date, rows: int = 3) -> None:
     data["id"] = [f"acme/ds-{index}" for index in range(rows)]
     data["last_seen_at"] = [seen] * rows
     store.write("current", pl.DataFrame(data, schema=CURRENT_SCHEMA))
+
+
+def put_current_shas(store: DatasetStore, seen: date, shas: Mapping[str, str | None]) -> None:
+    """带 sha 的 current；卡片凭证检查要拿它与 `carddata.source_sha` 对照。"""
+    data: dict[str, list[Any]] = {name: [None] * len(shas) for name in CURRENT_SCHEMA}
+    data["id"] = list(shas)
+    data["sha"] = list(shas.values())
+    data["last_seen_at"] = [seen] * len(shas)
+    store.write("current", pl.DataFrame(data, schema=CURRENT_SCHEMA))
+
+
+def put_cards(store: DatasetStore, day: date, source_shas: Mapping[str, str | None]) -> None:
+    """只造 id / source_sha / snapshot_date 三列，凭证检查只读它们。"""
+    data: dict[str, list[Any]] = {name: [None] * len(source_shas) for name in ENRICH_SCHEMA}
+    data["id"] = list(source_shas)
+    data["source_sha"] = list(source_shas.values())
+    data["snapshot_date"] = [day] * len(source_shas)
+    store.write("carddata", pl.DataFrame(data, schema=ENRICH_SCHEMA))
 
 
 def put_ids(store: DatasetStore, name: str, day: date, ids: list[str]) -> None:
@@ -511,3 +530,57 @@ def test_富化表覆盖不全不算问题(tmp_path: Path) -> None:
     put_artifact(store, "carddata", ["acme/ds-0"], NOW.date() - timedelta(days=1))
 
     assert not any("产物新鲜度" in text for text in problems(store))
+
+
+def test_卡片凭证发现活跃库整趟未抓(tmp_path: Path) -> None:
+    """活跃库是日增量真正扫过的那批，也正是卡片趟该覆盖的那批。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    shas = {f"acme/ds-{index}": f"new-{index}" for index in range(10)}
+    put_current_shas(store, NOW.date(), shas)
+    put_cards(store, NOW.date(), {key: f"old-{index}" for index, key in enumerate(shas)})
+
+    found = [text for text in problems(store) if "卡片凭证" in text]
+
+    assert found and "10/10" in found[0] and "collect --cards" in found[0]
+
+
+def test_卡片凭证全部对齐时正常(tmp_path: Path) -> None:
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    shas = {f"acme/ds-{index}": f"same-{index}" for index in range(4)}
+    put_current_shas(store, NOW.date(), shas)
+    put_cards(store, NOW.date(), shas)
+
+    found = [text for text in problems(store) if "卡片凭证" in text]
+
+    assert not found  # 一致时不成问题项
+
+
+def test_无凭证单独计数而非算作落后(tmp_path: Path) -> None:
+    """加列之前的行 source_sha 为空——那是「没记账」，不是「记错了」。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    put_current_shas(store, NOW.date(), {"acme/ds-0": "x"})
+    put_cards(store, NOW.date(), {"acme/ds-0": None})
+
+    found = [text for text in problems(store) if "卡片凭证" in text]
+
+    assert found and "全无 source_sha" in found[0]
+
+
+def test_长尾库不计入卡片凭证的落后比例(tmp_path: Path) -> None:
+    """几百万年不动的库，卡片本就该保持原样，算进来比例永远难看。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    data: dict[str, list[Any]] = {name: [None, None] for name in CURRENT_SCHEMA}
+    data["id"] = ["acme/fresh", "acme/stale"]
+    data["sha"] = ["a", "b"]
+    data["last_seen_at"] = [NOW.date(), NOW.date() - timedelta(days=400)]
+    store.write("current", pl.DataFrame(data, schema=CURRENT_SCHEMA))
+    put_cards(store, NOW.date(), {"acme/fresh": "a", "acme/stale": "zzz"})
+
+    found = [text for text in problems(store) if "卡片凭证" in text]
+
+    # acme/stale 不在活跃集里，它的「对不上」不参与比例计算。
+    assert not found
