@@ -46,6 +46,8 @@ class HealthRecord:
     at: datetime
     total: int
     problems: tuple[str, ...]
+    #: 这次体检是否在一份一致快照上跑；旧记录没有该字段，读作 True。
+    snapshot: bool = True
 
     @property
     def healthy(self) -> bool:
@@ -77,6 +79,7 @@ def read(store: DatasetStore) -> list[HealthRecord]:
                     at=datetime.fromisoformat(str(payload["at"])),
                     total=int(payload.get("total", 0)),
                     problems=tuple(str(item) for item in payload.get("problems", [])),
+                    snapshot=bool(payload.get("snapshot", True)),
                 )
             )
         except (KeyError, TypeError, ValueError):
@@ -84,7 +87,13 @@ def read(store: DatasetStore) -> list[HealthRecord]:
     return records
 
 
-def record(store: DatasetStore, findings: Iterable[Finding], now: datetime) -> HealthRecord:
+def record(
+    store: DatasetStore,
+    findings: Iterable[Finding],
+    now: datetime,
+    *,
+    snapshot: bool = True,
+) -> HealthRecord:
     """追加一次体检结论，并按 `HEALTH_KEEP` 修剪。
 
     整份重写而非追加：文件只有几十 KB，而「读—修剪—原子替换」能保证任何时刻
@@ -93,7 +102,7 @@ def record(store: DatasetStore, findings: Iterable[Finding], now: datetime) -> H
     """
     items = list(findings)
     problems = tuple(item.text for item in items if item.problem)
-    entry = HealthRecord(at=now, total=len(items), problems=problems)
+    entry = HealthRecord(at=now, total=len(items), problems=problems, snapshot=snapshot)
 
     history = [*read(store), entry][-HEALTH_KEEP:]
     write_text(
@@ -104,6 +113,7 @@ def record(store: DatasetStore, findings: Iterable[Finding], now: datetime) -> H
                     "at": item.at.isoformat(timespec="seconds"),
                     "total": item.total,
                     "problems": list(item.problems),
+                    "snapshot": item.snapshot,
                 },
                 ensure_ascii=False,
             )

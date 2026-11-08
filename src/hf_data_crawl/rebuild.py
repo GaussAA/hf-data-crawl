@@ -37,15 +37,12 @@ import shutil
 from dataclasses import dataclass
 from datetime import date
 
-from . import lineage
+from . import deriving, lineage, raw
 from .derive import derive_day
 from .retention import REPLAY_WINDOW_DAYS
 from .status import restore, retain
 from .store import DatasetStore
 from .tables import TABLES, Origin, TableSpec
-
-#: 冷区权威层的分区表：局部重放只删热区日期的分区，不清整表。
-_AUTHORITY_PARTITIONED = ("silver", "observations")
 
 
 @dataclass(frozen=True)
@@ -63,24 +60,8 @@ class RebuildSummary:
 
 
 def discover_raw_dates(store: DatasetStore) -> list[date]:
-    """扫描 raw/dt=YYYY-MM-DD 目录，返回按时间升序的日期。"""
-    if not store.raw_dir.exists():
-        return []
-    dates: list[date] = []
-    for path in store.raw_dir.iterdir():
-        if not path.is_dir() or not path.name.startswith("dt="):
-            continue
-        # compact 把冷区原分块移进 backup 后会留下空的 dt= 目录；若仍算有效
-        # 日期，build 会对没有 Raw 的日子跑 state.update，拿空 Bronze 改写
-        # current。目录名只是壳，有没有分块才是「这天有观测」的判据。
-        if not any(path.glob("*.json.gz")):
-            continue
-        try:
-            dates.append(date.fromisoformat(path.name[3:]))
-        except ValueError:
-            # 不符合命名的目录不参与重建，跳过总比整轮失败强。
-            continue
-    return sorted(dates)
+    """可从主目录重放的日期（含归档分片与 card 补位），按时间升序。"""
+    return [day.snapshot_date for day in raw.replayable_days(store)]
 
 
 def _authority_intact(store: DatasetStore) -> bool:
@@ -194,9 +175,9 @@ def clear_derived(store: DatasetStore, *, hot_dates: set[date] | None = None) ->
     `hot_dates=None` 是全量模式：按 `Origin` 清掉所有 RAW/STATE 表（NETWORK
     不可重算，跳过），并作废对账会话文件——旧行为，供 `--full` 逃生舱使用。
 
-    给了 `hot_dates` 是局部模式：只清 Bronze 整表与热区日期的
-    silver/observations 分区；冷区分区、单文件表（current / 卡片表 / 规模表）
-    与 state 会话文件**一律保留**，它们已是权威层，清掉就重建不回来。
+    给了 `hot_dates` 是局部模式：只清热区日期在 `tables.DERIVED_DAY_TABLES`
+    里的分区；冷区分区、单文件表（current / 卡片表 / 规模表）与 state 会话
+    文件**一律保留**，它们已是权威层，清掉就重建不回来。
     """
     if hot_dates is None:
         for spec in TABLES.values():
@@ -206,10 +187,10 @@ def clear_derived(store: DatasetStore, *, hot_dates: set[date] | None = None) ->
         _clear_stale_state(store)
         return
 
-    _clear(store, TABLES["bronze"])
+    # 局部重放只清热区日期的分区，Bronze 也按日清：此前整表清除会把冷区
+    # 日期的 Bronze 一并删掉，而这些日子不在本次重放范围内。
     for snapshot in hot_dates:
-        for name in _AUTHORITY_PARTITIONED:
-            store.path(name, snapshot).unlink(missing_ok=True)
+        deriving.clear_day(store, snapshot)
 
 
 def _clear_stale_state(store: DatasetStore) -> None:

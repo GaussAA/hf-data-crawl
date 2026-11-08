@@ -81,7 +81,9 @@ def mark_status(store: DatasetStore, updates: Mapping[str, str]) -> int:
     return changed
 
 
-def update(store: DatasetStore, snapshot_date: date) -> StateUpdate:
+def update(
+    store: DatasetStore, snapshot_date: date, *, frame: pl.DataFrame | None = None
+) -> StateUpdate:
     """按当日帧更新观测流水与当前态。
 
     观测只在该日指标与「该日之前的最后一条观测」不同时追加；
@@ -89,9 +91,9 @@ def update(store: DatasetStore, snapshot_date: date) -> StateUpdate:
 
     当日帧取自 `bronze.day_frame`：Bronze 分区加上只在补抓批次里出现的库。补位
     放在读时而不写进 Bronze，协议见该函数；`silver` 用的是同一份帧，属性、当前态、
-    观测三者才不会各说各话。
+    观测三者才不会各说各话。`frame` 由 `derive_day` 传入时直接复用，省掉第二次读。
     """
-    today_frame = bronze.day_frame(store, snapshot_date)
+    today_frame = frame if frame is not None else bronze.day_frame(store, snapshot_date)
     if today_frame.height == 0:
         return StateUpdate(appended=0, current_rows=store.read_current().height)
 

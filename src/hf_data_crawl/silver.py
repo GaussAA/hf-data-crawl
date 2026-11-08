@@ -241,16 +241,19 @@ def changed_rows(today: pl.DataFrame, previous: pl.DataFrame) -> pl.DataFrame:
     return joined.filter(differs).select(list(SILVER_SCHEMA))
 
 
-def build(store: DatasetStore, snapshot_date: date) -> int:
+def build(store: DatasetStore, snapshot_date: date, *, frame: pl.DataFrame | None = None) -> int:
     """由当日帧追加属性变更，返回写入的行数；当日无任何记录则不动。
 
     取 `bronze.day_frame` 而不是 Bronze 分区本身：只在补抓批次里出现的库同样是
     「这天观察到的数据集」，属性必须与当前态、观测同进同出。此前只有状态层补位，
     结果是 203 个库有当前态、有观测，却没有一行属性——宽表里它们整片为空。
 
+    `frame` 由 `derive_day` 传入时直接复用：同一份当日帧 `state.update` 也要读，
+    重复调用等于把补抓批次再解压一遍（11-07 的 1,350 个文件实测约 34 秒）。
+
     没有任何变化时不留空分区，并清掉同日重跑前遗留的旧分区。
     """
-    today = day_frame(store, snapshot_date)
+    today = frame if frame is not None else day_frame(store, snapshot_date)
     if today.height == 0:
         return 0
     delta = changed_rows(derive(today, snapshot_date), latest(store, before=snapshot_date))

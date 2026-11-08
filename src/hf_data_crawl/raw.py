@@ -17,10 +17,12 @@ import gzip
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from . import retention
 from .atomic import write_bytes
 
 if TYPE_CHECKING:
@@ -256,3 +258,97 @@ def _utc_now() -> str:
     用 UTC 而非本地时间，避免跨时区迁移后序颠倒。
     """
     return datetime.now(UTC).isoformat(timespec="microseconds")
+
+
+@dataclass(frozen=True)
+class RawDay:
+    """某一天在 Raw 主目录里的形态。
+
+    此前「哪天有 Raw、哪天可重放」有三套答案：`rebuild.discover_raw_dates`
+    只看目录里有没有任意 `*.json.gz`，`deriving._has_raw` 只认 `part` / `top`，
+    `doctor._raw_gaps` 又自行并上冷区清单。恢复、重建、体检对同一天可能给出
+    不同结论。这个模型把它们收成一处。
+
+    判据按文件形态而不是目录名：空 `dt=` 目录只是壳（compact 移走原分块后
+    会留下），「这天采过」必须有分块。
+    """
+
+    snapshot_date: date
+    #: part/top 分块，含归档分片（`bronze_files` 的 glob 已覆盖 `*-archive-*`）。
+    bronze: tuple[Path, ...]
+    #: card 补充分块，只在 Bronze 主批次未见该 id 时补位。
+    supplements: tuple[Path, ...]
+    #: 已由 compact 压进冷区基线，主目录已无该日分块。
+    compacted: bool = False
+
+    @property
+    def files(self) -> tuple[Path, ...]:
+        """派生的输入全集：与 `lineage.source_fingerprint` 当前口径一致。"""
+        return (*self.bronze, *self.supplements)
+
+    @property
+    def replayable(self) -> bool:
+        """能从主目录的 Raw 重放：有 part/top 或有 card 补位。
+
+        与 `lineage.DayStatus.replayable`（`current` 指纹非空）是同一判断的两层
+        表达：`RawDay.replayable == (lineage.source_fingerprint(...) is not None)`。
+        """
+        return bool(self.bronze or self.supplements)
+
+    @property
+    def observed(self) -> bool:
+        """这一天确实采过：可重放，或已压缩进冷区基线。"""
+        return self.replayable or self.compacted
+
+    @property
+    def archived(self) -> bool:
+        """是否存在归档分片（用于体检与测试断言）。"""
+        return any(is_archive(path) for path in self.files)
+
+
+def describe_day(store: DatasetStore, snapshot_date: date) -> RawDay:
+    """读出某一天的形态；不判断它是否存在于主目录。"""
+    return _describe(store, snapshot_date, retention.read_compressed_dates(store))
+
+
+def observed_days(store: DatasetStore) -> list[RawDay]:
+    """全部「采过」的日期：主目录有分块的日期 ∪ 冷区清单，按日期升序。
+
+    只认至少有一个 `*.json.gz` 的目录，空 `dt=` 目录不算——沿用
+    `rebuild.discover_raw_dates` 的既有判据。
+    """
+    compressed = retention.read_compressed_dates(store)
+    days: dict[date, RawDay] = {}
+    if store.raw_dir.exists():
+        for path in sorted(store.raw_dir.glob("dt=*")):
+            if not path.is_dir():
+                continue
+            try:
+                snapshot_date = date.fromisoformat(path.name.removeprefix("dt="))
+            except ValueError:
+                # 不符合命名的目录不参与判定，跳过总比整轮失败强。
+                continue
+            if not any(path.glob("*.json.gz")):
+                continue
+            days[snapshot_date] = _describe(store, snapshot_date, compressed)
+    for snapshot_date in compressed:
+        days.setdefault(
+            snapshot_date,
+            RawDay(snapshot_date=snapshot_date, bronze=(), supplements=(), compacted=True),
+        )
+    return [days[key] for key in sorted(days)]
+
+
+def replayable_days(store: DatasetStore) -> list[RawDay]:
+    """全部可从主目录重放的日期，按日期升序。"""
+    return [day for day in observed_days(store) if day.replayable]
+
+
+def _describe(store: DatasetStore, snapshot_date: date, compressed: set[date]) -> RawDay:
+    """构造 `RawDay`；调用方传入已读的冷区日期集合，避免逐日重读清单。"""
+    return RawDay(
+        snapshot_date=snapshot_date,
+        bronze=tuple(bronze_files(store, snapshot_date)),
+        supplements=tuple(supplement_files(store, snapshot_date)),
+        compacted=snapshot_date in compressed,
+    )

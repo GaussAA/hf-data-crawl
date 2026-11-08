@@ -14,7 +14,12 @@ HF 卡片结构不统一：license 可能是字符串或列表，arxiv 同理，
 
 from __future__ import annotations
 
+import os
+from collections.abc import Sequence
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from datetime import date
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
@@ -25,6 +30,17 @@ from .tables import CARD_CONFIGS_SCHEMA, ENRICH_SCHEMA, url_for
 
 if TYPE_CHECKING:
     from .store import DatasetStore
+
+#: 每个进程任务处理多少卡片文件。11-07 的 1,350 个分块按 64 个一组 ≈ 21 个任务。
+CHUNK_FILES = 64
+#: 分块数达到此值才起进程池；Windows 上起进程要秒级，小批量并行不如串行。
+PARALLEL_MIN_FILES = 64
+#: 卡片解析进程数。父进程还要收齐结果建表，进程数不宜过高以免峰值内存翻倍。
+MAX_WORKERS = min(8, os.cpu_count() or 1)
+
+#: 一个分块产出的 (排序键, 宽表, 明细表)。按分块而不是整体回传，父进程才能
+#: 按与 `read_batches` 相同的键序归并，保证「同 id 以最后写入者为准」不变。
+_CardPart = tuple[tuple[Any, ...], pl.DataFrame, pl.DataFrame]
 
 #: 卡片里可直接取出的标量/列表字段：卡片键 → 宽表列。
 _CARD_LIST_FIELDS: dict[str, str] = {
@@ -44,26 +60,91 @@ def build(store: DatasetStore, snapshot_date: date) -> tuple[int, int]:
     返回 (宽表行数, 明细行数)。一次扫描产出两张表：卡片体量小但字段多，
     重扫两次的代价（重复解压 25 个分块）没有必要。
     """
-    batches = raw.read_batches(store, snapshot_date, label=raw.CARD_LABEL)
-    if not batches:
+    files = raw.batch_files(store, snapshot_date, label=raw.CARD_LABEL)
+    if not files:
         return store.read_enrich().height, store.read_card_configs().height
 
-    card_rows: list[dict[str, Any]] = []
-    config_rows: list[dict[str, Any]] = []
-    for batch in batches:
-        for record in batch.records:
-            row = extract_card_row(record, snapshot_date)
-            if row is not None:
-                card_rows.append(row)
-            config_rows.extend(extract_config_rows(record, snapshot_date))
-
-    table_rows = store.upsert("carddata", pl.DataFrame(card_rows, schema=ENRICH_SCHEMA))
-    config_count = store.upsert(
-        "card_configs",
-        pl.DataFrame(config_rows, schema=CARD_CONFIGS_SCHEMA),
-        dedupe=["id", "config_name", "split"],
+    cards, configs = extract_files(files, snapshot_date)
+    return (
+        store.upsert("carddata", cards),
+        store.upsert(
+            "card_configs",
+            configs,
+            dedupe=["id", "config_name", "split"],
+        ),
     )
-    return table_rows, config_count
+
+
+def extract_files(
+    files: Sequence[Path], snapshot_date: date, *, parallel: bool = True
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """把卡片文件抽成 (宽表, 明细表)。
+
+    抽行与建表都下沉到子进程：11-07 有 1,350 个文件 / 135 万条记录，串行解压、
+    抽行、再一次性 `pl.DataFrame(dicts)` 约 250 秒；而把原始记录字典回传父进程
+    反而比串行更慢（实测 103s → 116s，pickle 吃掉了解压收益），所以子进程直接
+    构造 DataFrame，只回传 Arrow 序列化后的表。
+
+    每个分块带回自己的排序键，父进程按既有键序归并后再落表，因此与串行
+    「`read_batches` 排序 → 逐条抽取」逐行等价（见 tests/test_card.py 的等价测试）。
+    """
+    stamp = snapshot_date.isoformat()
+    jobs = [(tuple(str(path) for path in chunk), stamp) for chunk in _chunks(files)]
+    parts: list[list[_CardPart]] = []
+    if parallel and len(files) >= PARALLEL_MIN_FILES:
+        try:
+            with ProcessPoolExecutor(max_workers=MAX_WORKERS) as pool:
+                parts = list(pool.map(_extract_chunk, jobs))
+        except BrokenProcessPool:
+            # 并行只是加速，抽取是纯函数：池坏了就重算，不能让构建整体失败。
+            parts = [_extract_chunk(job) for job in jobs]
+    else:
+        parts = [_extract_chunk(job) for job in jobs]
+
+    flat = [part for result in parts for part in result]
+    flat.sort(key=lambda part: part[0])
+    return (
+        _concat([part[1] for part in flat], ENRICH_SCHEMA),
+        _concat([part[2] for part in flat], CARD_CONFIGS_SCHEMA),
+    )
+
+
+def _chunks(files: Sequence[Path]) -> list[Sequence[Path]]:
+    return [files[start : start + CHUNK_FILES] for start in range(0, len(files), CHUNK_FILES)]
+
+
+def _extract_chunk(job: tuple[tuple[str, ...], str]) -> list[_CardPart]:
+    """子进程入口：解析一批文件，每个分块产出一对 DataFrame。
+
+    必须是模块级函数才能被进程池 pickle。入参用字符串而不是 `date` / `Path`，
+    Windows 的 spawn 模式对这两者的序列化更挑剔。
+    """
+    paths, stamp = job
+    snapshot_date = date.fromisoformat(stamp)
+    parts: list[_CardPart] = []
+    for path in paths:
+        for batch in raw.load_batches(Path(path)):
+            card_rows: list[dict[str, Any]] = []
+            config_rows: list[dict[str, Any]] = []
+            for record in batch.records:
+                row = extract_card_row(record, snapshot_date)
+                if row is not None:
+                    card_rows.append(row)
+                config_rows.extend(extract_config_rows(record, snapshot_date))
+            parts.append(
+                (
+                    batch.key,
+                    pl.DataFrame(card_rows, schema=ENRICH_SCHEMA),
+                    pl.DataFrame(config_rows, schema=CARD_CONFIGS_SCHEMA),
+                )
+            )
+    return parts
+
+
+def _concat(frames: list[pl.DataFrame], schema: Any) -> pl.DataFrame:
+    if not frames:
+        return pl.DataFrame(schema=schema)
+    return pl.concat(frames, how="vertical_relaxed")
 
 
 def extract_card_row(record: dict[str, Any], snapshot_date: Any) -> dict[str, Any] | None:

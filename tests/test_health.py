@@ -106,6 +106,20 @@ def test_流水本身进体检而不算问题(tmp_path: Path) -> None:
     assert [item.text for item in diagnose(store, NOW)] == before
 
 
+def test_记录快照标记且旧记录读作一致(tmp_path: Path) -> None:
+    """非快照体检要留痕；旧流水没有该字段，不能因此判成非快照。"""
+    store = DatasetStore(tmp_path / "data")
+
+    health.record(store, entries(), NOW, snapshot=False)
+    assert health.read(store)[0].snapshot is False
+
+    target = store.state_dir / HEALTH_NAME
+    target.write_text(
+        '{"at": "2026-11-09T12:00:00", "total": 1, "problems": []}\n', encoding="utf-8"
+    )
+    assert health.read(store)[0].snapshot is True
+
+
 def test_记录的是问题原文而不是序号(tmp_path: Path) -> None:
     store = DatasetStore(tmp_path / "data")
     health.record(store, entries("层间勾稽：3 个数据集缺属性行"), NOW)

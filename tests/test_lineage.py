@@ -38,7 +38,7 @@ def test_分块增减会改变指纹(tmp_path: Path) -> None:
 
 
 def test_补抓批次也在指纹里(tmp_path: Path) -> None:
-    """补抓批次会经 `state._with_supplements` 直接写进 current 与观测。
+    """补抓批次会经 `bronze.day_frame` 直接补进 current 与观测。
 
     只盯 part/top 的话，重写卡片批次而派生没重跑，会留下「今天的 current 用了
     前天的补抓」，且没有任何痕迹。
@@ -48,6 +48,18 @@ def test_补抓批次也在指纹里(tmp_path: Path) -> None:
     before = lineage.source_fingerprint(store, DAY)
 
     put_raw(store, DAY, ("part-1.json.gz", "card-1.json.gz"))
+
+    assert lineage.source_fingerprint(store, DAY) != before
+
+
+def test_归档分片被替换后指纹变化(tmp_path: Path) -> None:
+    """归档分片是可重放输入，替换后必须判为派生滞后。"""
+    store = DatasetStore(tmp_path / "data")
+    put_raw(store, DAY, ("part-archive-000001-aaaa.json.gz",))
+    before = lineage.source_fingerprint(store, DAY)
+
+    (store.raw_dir / f"dt={DAY.isoformat()}" / "part-archive-000001-aaaa.json.gz").unlink()
+    put_raw(store, DAY, ("part-archive-000001-bbbb.json.gz",))
 
     assert lineage.source_fingerprint(store, DAY) != before
 

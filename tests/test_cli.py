@@ -12,12 +12,15 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 import pytest
 
 from hf_data_crawl.api import HfResponse
 from hf_data_crawl.cli import main
 from hf_data_crawl.derive import derive_day
+from hf_data_crawl.lock import exclusive
 from hf_data_crawl.runs import read_runs
+from hf_data_crawl.sizes import SIZE_SCHEMA, StagingWriter, staged_shards
 from hf_data_crawl.store import DatasetStore
 
 DAY = date(2026, 11, 4)
@@ -168,3 +171,123 @@ def test_日期写错记成失败而不是抛到外面(root: Path, command: str)
     assert [item["status"] for item in runs] == ["failed"]
     assert "ValueError" in runs[0]["reason"]
     assert transport.calls == [], "日期解析失败时不该发出任何请求"
+
+
+# ---------------------------------------------------------------- 规模补齐：锁外抓取
+
+
+def _stage_sizes(root: Path, ids: list[str]) -> None:
+    """模拟上一轮中断留下的暂存分片。"""
+    store = DatasetStore(root)
+    rows = [
+        {name: None for name in SIZE_SCHEMA}
+        | {"id": dataset_id, "snapshot_date": DAY, "status": "ok"}
+        for dataset_id in ids
+    ]
+    StagingWriter(store, DAY).write(pl.DataFrame(rows, schema=SIZE_SCHEMA))
+
+
+def test_fetch_sizes抓取期间不持锁(root: Path) -> None:
+    """全量抓取跑三小时，整段持锁会让当天的 collect 拿不到锁而失败。"""
+    store = DatasetStore(root)
+    store.write_raw(
+        snapshot_date=DAY, page_index=1, records=[record(1), record(2), record(3)], meta={}
+    )
+    derive_day(store, DAY)
+
+    class ProbeTransport(SizeTransport):
+        def get(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> HfResponse:
+            # 抓取期间若还持有数据目录锁，这里会抛 LockBusy。
+            with exclusive(root, "probe"):
+                pass
+            return super().get(url, params, headers)
+
+    code = run(
+        root,
+        "fetch-sizes",
+        "--date",
+        DAY_ARG,
+        "--top",
+        "3",
+        "--workers",
+        "1",
+        transport=ProbeTransport(),
+    )
+
+    assert code == 0
+    assert store.read_sizes().height == 3
+    assert staged_shards(store) == [], "成功合并后不应留下分片"
+
+
+def test_残留分片会被续抓并合入正式表(root: Path) -> None:
+    """中断后已抓到的批次不该重烧请求；分片在下一轮收尾时并入正式表。"""
+    store = DatasetStore(root)
+    store.write_raw(
+        snapshot_date=DAY, page_index=1, records=[record(1), record(2), record(3)], meta={}
+    )
+    derive_day(store, DAY)
+    _stage_sizes(root, ["acme/ds-1", "acme/ds-2"])
+    transport = SizeTransport()
+
+    code = run(
+        root,
+        "fetch-sizes",
+        "--date",
+        DAY_ARG,
+        "--top",
+        "3",
+        "--workers",
+        "1",
+        transport=transport,
+    )
+
+    assert code == 0
+    assert transport.calls == ["acme/ds-3"], "残留分片里的 id 应跳过"
+    assert sorted(store.read_sizes()["id"].to_list()) == ["acme/ds-1", "acme/ds-2", "acme/ds-3"]
+    assert staged_shards(store) == []
+
+
+def test_合并拿不到锁时保留分片供下轮继续(root: Path) -> None:
+    """合并是短锁；抓不到就如实失败，但抓到的数据不能丢。"""
+    store = DatasetStore(root)
+    store.write_raw(snapshot_date=DAY, page_index=1, records=[record(1)], meta={})
+    derive_day(store, DAY)
+
+    with exclusive(root, "collect"):
+        code = run(
+            root,
+            "fetch-sizes",
+            "--date",
+            DAY_ARG,
+            "--top",
+            "1",
+            "--workers",
+            "1",
+            transport=SizeTransport(),
+        )
+
+    assert code == 1
+    assert staged_shards(store), "拿不到锁时应把分片留着"
+    assert store.read_sizes().height == 0
+    runs = read_runs(store)
+    assert [item["status"] for item in runs] == ["failed"]
+    assert "LockBusy" in runs[0]["reason"]
+
+    # 下一轮锁空闲时续抓：不再请求任何 id，直接合并残留分片。
+    transport = SizeTransport()
+    code = run(
+        root,
+        "fetch-sizes",
+        "--date",
+        DAY_ARG,
+        "--top",
+        "1",
+        "--workers",
+        "1",
+        transport=transport,
+    )
+
+    assert code == 0
+    assert transport.calls == []
+    assert store.read_sizes().height == 1
+    assert staged_shards(store) == []

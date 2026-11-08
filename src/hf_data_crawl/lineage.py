@@ -106,18 +106,15 @@ def _fingerprint(files: list[Path]) -> str | None:
 def source_fingerprint(store: DatasetStore, snapshot_date: date) -> str | None:
     """某日 Raw 的指纹：进入 Bronze 的分块，加上只在补抓批次里出现的补位来源。
 
-    为什么含 `card-*`：`state._with_supplements` 会把补抓批次里独有的 id 补进当日帧，
+    为什么含 `card-*`：`bronze.day_frame` 会把补抓批次里独有的 id 补进当日帧，
     补位结果直接写进 `current` 与 `observations`。只盯 `part` / `top` 的话，
     补抓批次被重写而派生没重跑，同样会留下「今天的 current 用了前天的补抓」。
 
-    为什么取 `bronze_files + supplement_files` 而不是全部分块：这两组正是派生的
-    输入全集，`raw.batch_files` 里若将来出现第三种标签，它会先在这两处登记。
+    为什么取 `RawDay.files` 而不是全部分块：这组正是派生的输入全集，口径与
+    `RawDay.replayable` 共用一处，`raw.batch_files` 里若将来出现第三种标签，
+    它会先在 `raw.py` 登记，再决定是否进入 `files`。
     """
-    files = [
-        *raw.bronze_files(store, snapshot_date),
-        *raw.supplement_files(store, snapshot_date),
-    ]
-    return _fingerprint(files)
+    return _fingerprint(list(raw.describe_day(store, snapshot_date).files))
 
 
 def read(store: DatasetStore) -> dict[date, DayStamp]:

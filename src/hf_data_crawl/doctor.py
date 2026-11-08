@@ -19,7 +19,7 @@ from pathlib import Path
 
 import polars as pl
 
-from . import lineage, raw, retention
+from . import lineage, raw
 from .lock import LOCK_NAME, LockBusy, describe_holder, exclusive
 from .rebuild import discover_raw_dates
 from .retention import (
@@ -73,6 +73,8 @@ class Finding:
 
     problem: bool
     text: str
+    #: 只有在一份一致快照上才有意义；非快照模式下降级为提示，不参与退出码。
+    snapshot_dependent: bool = False
 
 
 def _last_success(runs: list[dict], command: str, done_reasons: frozenset[str]) -> datetime | None:
@@ -150,7 +152,7 @@ def _catalog_staleness(store: DatasetStore, today: date) -> Finding:
 def _raw_gaps(store: DatasetStore, today: date) -> Finding:
     # 冷区分区已被 compact 移出 data/raw，但那天确实采过：
     # 部分压缩后残留的早分区会把窗口拉长，已压缩的日子不登记就被误判成断日。
-    dates = set(discover_raw_dates(store)) | retention.read_compressed_dates(store)
+    dates = {day.snapshot_date for day in raw.observed_days(store)}
     if not dates:
         return Finding(True, "Raw：没有任何分区")
     start = max(min(dates), today - timedelta(days=GAP_WINDOW_DAYS - 1))
@@ -177,7 +179,7 @@ def _derive_state(store: DatasetStore) -> Finding:
     判据取 `lineage` 的戳记：Raw 指纹变了而戳记没变，就是落后。没有戳记
     按「无凭证」报——它与落后在执行上是同一件事：都得跑一次派生才有据可查。
     """
-    statuses = lineage.compare(store, discover_raw_dates(store))
+    statuses = lineage.compare(store, [day.snapshot_date for day in raw.replayable_days(store)])
     if not statuses:
         return Finding(False, "派生凭证：没有可重放的 Raw 日期")
 
@@ -440,7 +442,9 @@ def _raw_growth(store: DatasetStore) -> Finding:
 def _cold_backlog(store: DatasetStore, today: date) -> Finding:
     """超过重放窗口仍留在 data/raw 的分区：compact 没跟上，冷区未压缩。"""
     cutoff = today - timedelta(days=REPLAY_WINDOW_DAYS)
-    pending = [day for day in discover_raw_dates(store) if day < cutoff]
+    pending = [
+        day.snapshot_date for day in raw.replayable_days(store) if day.snapshot_date < cutoff
+    ]
     if pending:
         shown = "、".join(day.isoformat() for day in pending[:5])
         more = f" 等 {len(pending)} 天" if len(pending) > 5 else ""
@@ -454,22 +458,12 @@ def _cold_backlog(store: DatasetStore, today: date) -> Finding:
 
 def _archive_backlog(store: DatasetStore, today: date) -> Finding:
     """超过保留窗口仍是原始分块：写入序未冻结、同天重复未压缩。"""
-    if not store.raw_dir.exists():
-        return Finding(False, "Raw 归档：无分区")
     cutoff = today - timedelta(days=ARCHIVE_AFTER_DAYS)
-    pending: list[date] = []
-    for path in sorted(store.raw_dir.glob("dt=*")):
-        if not path.is_dir():
-            continue
-        try:
-            day = date.fromisoformat(path.name.removeprefix("dt="))
-        except ValueError:
-            continue
-        if day >= cutoff:
-            continue
-        files = list(path.glob("*.json.gz"))
-        if files and not all(raw.is_archive(item) for item in files):
-            pending.append(day)
+    pending = [
+        day.snapshot_date
+        for day in raw.replayable_days(store)
+        if day.snapshot_date < cutoff and any(not raw.is_archive(path) for path in day.files)
+    ]
     if pending:
         shown = "、".join(day.isoformat() for day in pending[:5])
         more = f" 等 {len(pending)} 天" if len(pending) > 5 else ""
@@ -565,36 +559,72 @@ def _lock_state(store: DatasetStore) -> Finding:
     return Finding(False, "写锁：空闲")
 
 
-def diagnose(store: DatasetStore, now: datetime | None = None) -> list[Finding]:
+def _snapshot_dependent(finding: Finding) -> Finding:
+    """把一条跨表检查的结论标记为「只有一致快照上才有意义」。"""
+    return Finding(finding.problem, finding.text, snapshot_dependent=True)
+
+
+def diagnose(
+    store: DatasetStore,
+    now: datetime | None = None,
+    *,
+    snapshot: bool = True,
+) -> list[Finding]:
+    """跑全部体检项。
+
+    `snapshot=False` 表示调用方没拿到写锁：跨表对比（current / observations /
+    silver / 导出物 / 卡片）可能在写入中途读到瞬时缺行，这类结论降级为提示，
+    不参与退出码与告警文件；文件系统与单表检查照常判定。
+
+    快照模式下 **不跑 `_lock_state`**：本次体检已经持有写锁，它内部会再次抢锁，
+    自己和自己冲突。锁被占用只可能发生在非快照模式，那里才需要报告占用者。
+    """
     now = now or datetime.now()
     runs = read_runs(store)
-    return [
+    findings = [
         _freshness(runs, now, "collect", COLLECT_COMPLETE_REASONS, COLLECT_MAX_AGE, "日增量采集"),
         _freshness(runs, now, "reconcile", _RECONCILE_DONE, RECONCILE_MAX_AGE, "全量对账"),
         _catalog_staleness(store, now.date()),
-        _layer_reconcile(store),
+        _snapshot_dependent(_layer_reconcile(store)),
         _raw_gaps(store, now.date()),
         _derive_state(store),
-        _artifact_freshness(store, now.date()),
-        _card_provenance(store, now.date()),
+        _snapshot_dependent(_artifact_freshness(store, now.date())),
+        _snapshot_dependent(_card_provenance(store, now.date())),
         _raw_growth(store),
         _cold_backlog(store, now.date()),
         _archive_backlog(store, now.date()),
         _backup_backlog(store, now),
         _recent_failures(runs, now),
         _stale_temp_files(store, now),
-        _lock_state(store),
+    ]
+    if snapshot:
+        return findings
+    findings.append(_lock_state(store))
+    return [
+        Finding(False, f"[非快照] {item.text}", snapshot_dependent=True)
+        if item.snapshot_dependent
+        else item
+        for item in findings
     ]
 
 
-def sync_alert(store: DatasetStore, findings: list[Finding], now: datetime) -> None:
-    """有问题就写 `ALERT.txt`，没有就删掉，让这个文件的存在本身就是信号。"""
+def sync_alert(
+    store: DatasetStore, findings: list[Finding], now: datetime, *, snapshot: bool = True
+) -> None:
+    """有问题就写 `ALERT.txt`，没有就删掉，让这个文件的存在本身就是信号。
+
+    非快照模式会在首行写明：这次读数可能跨时点，问题清单未必完整；写命令结束后
+    应重跑一次。没有问题时仍删文件——锁占用本身不是数据告警。
+    """
     path = store.root / ALERT_NAME
     problems = [item.text for item in findings if item.problem]
     if not problems:
         path.unlink(missing_ok=True)
         return
-    lines = [f"hf-data-crawl 体检发现 {len(problems)} 个问题（{now:%Y-%m-%d %H:%M}）：", ""]
+    lines: list[str] = []
+    if not snapshot:
+        lines.append("[非快照] 写锁被占用，跨表读数可能跨时点；请在写命令结束后重跑 doctor")
+    lines += [f"hf-data-crawl 体检发现 {len(problems)} 个问题（{now:%Y-%m-%d %H:%M}）：", ""]
     lines += [f"- {text}" for text in problems]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -257,3 +257,81 @@ def test_旧版卡片表缺列时能继续并入(store: DatasetStore) -> None:
     assert table.height == 2
     assert set(table.columns) == set(ENRICH_SCHEMA)
     assert table.filter(pl.col("id") == "acme/old").row(0, named=True)["card_num_rows"] is None
+
+
+# ---------------------------------------------------------------- 并行与串行等价
+
+
+def _seed_card_pages(store: DatasetStore) -> None:
+    """多页、跨页同 id，且每页的卡片内容不同：后写入的页必须胜出。"""
+    for page in range(1, 6):
+        record = wikitext_style()
+        record["cardData"]["pretty_name"] = f"WikiText-{page}"
+        store.write_raw(
+            snapshot_date=DAY,
+            page_index=page,
+            records=[record, {**wikitext_style(), "id": "acme/other", "downloads": page}],
+            meta={},
+            label="card",
+            written_at=f"2026-11-04T00:00:0{page}.000000+00:00",
+        )
+
+
+def test_串行与并行产出逐字节等价(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """并行只是加速：两路产出的行序、内容与落盘字节都必须相同。"""
+    serial_store = DatasetStore(tmp_path / "serial")
+    parallel_store = DatasetStore(tmp_path / "parallel")
+    for store in (serial_store, parallel_store):
+        _seed_card_pages(store)
+
+    # 只有 5 个文件，靠降阈值与分块强制走出不同的执行路径。
+    monkeypatch.setattr(card, "PARALLEL_MIN_FILES", 10_000)
+    card.build(serial_store, DAY)
+
+    monkeypatch.setattr(card, "PARALLEL_MIN_FILES", 1)
+    monkeypatch.setattr(card, "CHUNK_FILES", 2)
+    card.build(parallel_store, DAY)
+
+    for name in ("carddata", "card_configs"):
+        assert serial_store.path(name).read_bytes() == parallel_store.path(name).read_bytes()
+    # 顺带确认「同 id 以最后写入者为准」没有在归并时被改掉。
+    assert (
+        parallel_store.read_enrich()
+        .filter(pl.col("id") == "acme/wikitext")
+        .row(0, named=True)["pretty_name"]
+        == "WikiText-5"
+    )
+
+
+def test_进程池崩溃时退回串行且结果不变(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """抽行是纯函数：池坏了重算就行，不能让可重算的 build 整体失败。"""
+    from concurrent.futures.process import BrokenProcessPool
+
+    serial_store = DatasetStore(tmp_path / "serial")
+    broken_store = DatasetStore(tmp_path / "broken")
+    for store in (serial_store, broken_store):
+        _seed_card_pages(store)
+
+    monkeypatch.setattr(card, "PARALLEL_MIN_FILES", 10_000)
+    card.build(serial_store, DAY)
+
+    class BrokenPool:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> BrokenPool:
+            return self
+
+        def __exit__(self, *exc: Any) -> None:
+            return None
+
+        def map(self, *args: Any, **kwargs: Any) -> list[Any]:
+            raise BrokenProcessPool("子进程异常终止")
+
+    monkeypatch.setattr(card, "PARALLEL_MIN_FILES", 1)
+    monkeypatch.setattr(card, "CHUNK_FILES", 2)
+    monkeypatch.setattr(card, "ProcessPoolExecutor", BrokenPool)
+    card.build(broken_store, DAY)
+
+    for name in ("carddata", "card_configs"):
+        assert serial_store.path(name).read_bytes() == broken_store.path(name).read_bytes()

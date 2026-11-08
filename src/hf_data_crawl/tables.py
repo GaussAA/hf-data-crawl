@@ -324,6 +324,10 @@ TABLES: dict[str, TableSpec] = {
     "files": TableSpec("files", "enrich/files.parquet", FILES_SCHEMA, Origin.NETWORK),
 }
 
+#: `derive_day` 按日产出的分区表。恢复与局部重建都按这张清单清层，
+#: 新增派生层时只改这里，不再让两处硬编码各自漂移。
+DERIVED_DAY_TABLES: tuple[str, ...] = ("bronze", "silver", "observations")
+
 
 def table(name: str) -> TableSpec:
     """按逻辑名取表。写错名字时立刻失败，而不是拼出一条错误的路径。"""

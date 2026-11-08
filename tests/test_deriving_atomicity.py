@@ -306,7 +306,7 @@ def test_有Raw时清理后重新派生(tmp_path: Path, monkeypatch) -> None:
     )
 
     rederived: list[date] = []
-    monkeypatch.setattr("hf_data_crawl.deriving._has_raw", lambda *_: True)
+    monkeypatch.setattr("hf_data_crawl.deriving.has_raw", lambda *_: True)
     monkeypatch.setattr(
         "hf_data_crawl.deriving._rederive", lambda _store, day: rederived.append(day)
     )
@@ -318,8 +318,8 @@ def test_有Raw时清理后重新派生(tmp_path: Path, monkeypatch) -> None:
     assert rederived == [snapshot_date]
 
 
-def test_只有卡片批次时不重派生(tmp_path: Path, monkeypatch) -> None:
-    """卡片批次不进 Bronze，恢复时不应把它当成可重派生的一天。"""
+def test_只有卡片批次时按可重放处理(tmp_path: Path, monkeypatch) -> None:
+    """仅 card 批次的日子也算可重放：补位会进 current 与 observations，跳过反而制造不一致。"""
     store = DatasetStore(tmp_path)
     snapshot_date = date(2026, 11, 7)
     store.write_raw(
@@ -351,7 +351,7 @@ def test_只有卡片批次时不重派生(tmp_path: Path, monkeypatch) -> None:
     recovered = check_and_recover(store)
 
     assert recovered == [snapshot_date]
-    assert rederived == []
+    assert rederived == [snapshot_date]
 
 
 def test_阈值边界(tmp_path: Path) -> None:

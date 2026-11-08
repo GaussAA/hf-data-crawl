@@ -109,9 +109,9 @@ def check_and_recover(store: DatasetStore) -> list[date]:
         elapsed = (now - started).total_seconds()
         if elapsed > STALE_THRESHOLD_SECONDS:
             # 超过阈值：先清掉残留的派生层，再视 Raw 是否还在决定是否重派生。
-            _clean_derived_partitions(store, flag.snapshot_date)
+            clear_day(store, flag.snapshot_date)
             path.unlink(missing_ok=True)
-            if _has_raw(store, flag.snapshot_date):
+            if has_raw(store, flag.snapshot_date):
                 _rederive(store, flag.snapshot_date)
             recovered.append(flag.snapshot_date)
 
@@ -129,26 +129,29 @@ def _load_flag(path: Path) -> DerivingFlag | None:
         return None
 
 
-def _clean_derived_partitions(store: DatasetStore, snapshot_date: date) -> None:
-    """删除某一天的所有派生层分区（bronze/silver/observations）。
+def clear_day(store: DatasetStore, snapshot_date: date) -> None:
+    """删除某一天的所有派生层分区（`tables.DERIVED_DAY_TABLES`）。
 
     不删 current（它是全局的、不按日分区）；清理后由 `_rederive` 依据 Raw
-    重建，Raw 已不存在时 current 保持原状。
+    重建，Raw 已不存在时 current 保持原状。层清单只在 `tables` 登记一处，
+    新增派生层时不会漏掉这里。
     """
-    for name in ["bronze", "silver", "observations"]:
-        partition = store.path(name, snapshot_date)
-        partition.unlink(missing_ok=True)
+    from .tables import DERIVED_DAY_TABLES
+
+    for name in DERIVED_DAY_TABLES:
+        store.path(name, snapshot_date).unlink(missing_ok=True)
 
 
-def _has_raw(store: DatasetStore, snapshot_date: date) -> bool:
-    """该日是否还有可重建派生层的 Raw。
+def has_raw(store: DatasetStore, snapshot_date: date) -> bool:
+    """该日是否还有可重放的 Raw（`RawDay.replayable`）。
 
-    只看 Bronze 消费的 `part` / `top`：只剩卡片批次时重派生不出任何标量数据，
-    却会触发 `bronze.prune` 删掉旧分区，反而制造不一致。
+    包含仅 card 补抓批次的日子：这类日子会通过 `bronze.day_frame` 的补位进入
+    current 与 observations，恢复时跳过它才会制造不一致。空目录、只剩冷区清单
+    的日子仍不算——主目录没有分块，重放不出任何东西。
     """
-    from .raw import bronze_files
+    from .raw import describe_day
 
-    return bool(bronze_files(store, snapshot_date))
+    return describe_day(store, snapshot_date).replayable
 
 
 def _rederive(store: DatasetStore, snapshot_date: date) -> None:

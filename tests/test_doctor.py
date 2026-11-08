@@ -14,8 +14,10 @@ import polars as pl
 from hf_data_crawl import lineage
 from hf_data_crawl.api import HfResponse
 from hf_data_crawl.cli import main
-from hf_data_crawl.doctor import ALERT_NAME, diagnose, sync_alert
+from hf_data_crawl.doctor import ALERT_NAME, Finding, diagnose, sync_alert
+from hf_data_crawl.health import read as read_health
 from hf_data_crawl.lineage import path_of as lineage_path
+from hf_data_crawl.lock import LockBusy
 from hf_data_crawl.retention import REPLAY_WINDOW_DAYS, manifest_path
 from hf_data_crawl.runs import Outcome, write_run
 from hf_data_crawl.store import DatasetStore
@@ -584,3 +586,60 @@ def test_长尾库不计入卡片凭证的落后比例(tmp_path: Path) -> None:
 
     # acme/stale 不在活跃集里，它的「对不上」不参与比例计算。
     assert not found
+
+
+# ---------------------------------------------------------------- 快照锁
+
+
+def test_非快照模式降级跨表检查并报告锁状态(tmp_path: Path) -> None:
+    """拿不到锁时跨表结论只作提示；快照模式下不重复抢锁。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    # 只破坏跨表的层间勾稽：current 多出 observations / silver 没有的 id。
+    put_current(store, NOW.date(), rows=5)
+
+    strict = diagnose(store, NOW)
+    assert any(item.problem and "层间勾稽" in item.text for item in strict)
+    assert not any("写锁" in item.text for item in strict)
+
+    loose = diagnose(store, NOW, snapshot=False)
+    downgraded = [item for item in loose if "层间勾稽" in item.text]
+    assert downgraded and all(not item.problem for item in downgraded)
+    assert all(item.text.startswith("[非快照]") for item in downgraded)
+    assert any("写锁" in item.text for item in loose)
+
+
+def test_非快照告警首行标注(tmp_path: Path) -> None:
+    """非快照的告警文件要自证口径，否则会被当成一次完整体检的结论。"""
+    store = DatasetStore(tmp_path / "data")
+
+    sync_alert(store, [Finding(True, "Raw 断日：2026-11-06")], NOW, snapshot=False)
+
+    first = (store.root / ALERT_NAME).read_text(encoding="utf-8").splitlines()[0]
+    assert first.startswith("[非快照]")
+
+
+def test_doctor拿不到锁时降级为非快照(tmp_path: Path, monkeypatch: Any) -> None:
+    """锁被占用不阻塞排障：照常体检，跨表问题不参与退出码与告警文件。"""
+    root = tmp_path / "data"
+
+    def busy(*_args: Any, **_kwargs: Any) -> Any:
+        raise LockBusy("数据目录正被另一个写命令占用：collect")
+
+    def fake_diagnose(*_args: Any, snapshot: bool = True, **_kwargs: Any) -> list[Finding]:
+        return [
+            Finding(
+                snapshot,
+                "层间勾稽：x" if snapshot else "[非快照] 层间勾稽：x",
+                snapshot_dependent=True,
+            )
+        ]
+
+    monkeypatch.setattr("hf_data_crawl.cli.exclusive", busy)
+    monkeypatch.setattr("hf_data_crawl.cli.diagnose", fake_diagnose)
+
+    code = main(["--data-dir", str(root), "doctor", "--lock-wait", "0"])
+
+    assert code == 0
+    assert not (root / ALERT_NAME).exists()
+    assert read_health(DatasetStore(root))[-1].snapshot is False

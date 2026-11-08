@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
+import json
 import shutil
 from datetime import date
 from pathlib import Path
@@ -14,6 +16,7 @@ from typing import Any
 import polars as pl
 import pytest
 
+from hf_data_crawl import raw
 from hf_data_crawl.cli import main
 from hf_data_crawl.derive import derive_day
 from hf_data_crawl.lineage import path_of as lineage_path
@@ -62,6 +65,30 @@ def store(tmp_path: Path) -> DatasetStore:
 
 def test_发现的日期按升序排列(store: DatasetStore) -> None:
     assert discover_raw_dates(store) == [DAY1, DAY2]
+
+
+def test_归档日参与重放且与全量结果一致(store: DatasetStore) -> None:
+    """仅归档分片的日子也算可重放；局部重放与全量重放逐行等价。"""
+    archive_day = date(2026, 11, 3)
+    partition = raw.partition_dir(store, archive_day)
+    partition.mkdir(parents=True)
+    payload = {"meta": {}, "records": [record(1, 300), record(2, 50)]}
+    (partition / "part-archive-000001-abcd1234.json.gz").write_bytes(
+        gzip.compress(json.dumps(payload).encode("utf-8"))
+    )
+
+    assert discover_raw_dates(store) == [DAY1, DAY2, archive_day]
+
+    local = rebuild_from_raw(store, days=replay_suffix(store, archive_day))
+    local_current = store.read_current()
+    local_observations = store.read_observations()
+
+    full = rebuild_from_raw(store, window_days=None)
+
+    assert local.dates == [archive_day]
+    assert full.dates == [DAY1, DAY2, archive_day]
+    assert store.read_current().equals(local_current)
+    assert store.read_observations().equals(local_observations)
 
 
 def test_重建后的current与原结果完全一致(store: DatasetStore) -> None:

@@ -14,6 +14,8 @@ from collections.abc import Callable
 from datetime import date, datetime
 from pathlib import Path
 
+import polars as pl
+
 from .api import MAX_LIMIT, HfDatasetApi, Transport
 from .collect import Collector, CollectSummary
 from .delivery import DeliveryBlocked, DeliveryResult, Preview, deliver, preview, run_due
@@ -49,7 +51,15 @@ from .requirement import (
 from .requirement import load as load_spec
 from .retention import REPLAY_WINDOW_DAYS
 from .runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs, write_run
-from .sizes import HfSizeApi, SizeFetcher, SizeSummary, tail
+from .sizes import (
+    HfSizeApi,
+    SizeFetcher,
+    SizeSummary,
+    StagingWriter,
+    clear_staged,
+    read_staged,
+    tail,
+)
 from .store import DatasetStore
 from .transport import HttpxTransport
 
@@ -77,9 +87,19 @@ SNAPSHOT_COMMANDS = frozenset({"report", "docs"})
 #: 需要持锁的命令全集。
 LOCKED_COMMANDS = WRITE_COMMANDS | SNAPSHOT_COMMANDS
 
+#: 自己安排锁的命令：长耗时的网络抓取在锁外做，只把「并入正式表」包在短锁里。
+#: 它们仍在 WRITE_COMMANDS 里（启动检查/恢复未完成的派生照旧），但不走
+#: `_execute` 的整段锁。原因见 `sizes.StagingWriter`：全量抓取要跑三小时，
+#: 整段持锁会直接让当天的 collect 等锁失败（2026-11-07 实际事故）。
+SELF_LOCKED_COMMANDS = frozenset({"fetch-sizes"})
+
 #: 生成命令默认等锁时长（秒）。它们通常由计划任务或人工临时触发，撞上采集
 #: 时干等一会儿比直接失败有用；等不到仍会如实报错。可用 `--lock-wait` 覆盖。
 SNAPSHOT_LOCK_WAIT = 60.0
+
+#: 体检等锁时长（秒）。体检是人工排障入口，撞上写命令时宁可降级为「非快照」
+#: 也不要卡住；等不到锁会照常体检，并把跨表检查降级为提示。
+DOCTOR_LOCK_WAIT = 2.0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -103,7 +123,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "拿不到数据目录锁时最多等几秒；默认写命令 0（立刻失败），"
-            f"report/docs 等 {SNAPSHOT_LOCK_WAIT:g} 秒"
+            f"report/docs 等 {SNAPSHOT_LOCK_WAIT:g} 秒，doctor 等 {DOCTOR_LOCK_WAIT:g} 秒后"
+            "降级为非快照"
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -276,7 +297,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="每处理多少条就落一次库，中断时最多损失这一批",
     )
 
-    subparsers.add_parser("doctor", help="体检：任务是否按时、Raw 是否断日、有无残留文件")
+    doctor = subparsers.add_parser("doctor", help="体检：任务是否按时、Raw 是否断日、有无残留文件")
+    # 未显式给时沿用全局默认；SUPPRESS 避免把全局 --lock-wait 覆盖回 None。
+    doctor.add_argument(
+        "--lock-wait",
+        type=float,
+        default=argparse.SUPPRESS,
+        help=f"等锁秒数（默认 {DOCTOR_LOCK_WAIT:g}）；超时降级为非快照，照常体检",
+    )
 
     archive = subparsers.add_parser(
         "archive", help="归档早于 N 天的 Raw 分区：合并小分块并去重，原文件移入 backup/raw"
@@ -320,10 +348,16 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
     """命令行入口。`transport` 是唯一的注入缝：测试传假实现，生产不传。"""
     args = build_parser().parse_args(argv)
     store = DatasetStore(Path(args.data_dir))
-    # 未显式给 --lock-wait 时按命令取默认值：写命令立即失败，生成命令先等一会儿。
+    # 未显式给 --lock-wait 时按命令取默认值：写命令立即失败，生成命令先等一会儿；
+    # 体检只等 2 秒，等不到就降级为非快照而不是阻塞排障。
     lock_wait = args.lock_wait
     if lock_wait is None:
-        lock_wait = SNAPSHOT_LOCK_WAIT if args.command in SNAPSHOT_COMMANDS else 0.0
+        if args.command == "doctor":
+            lock_wait = DOCTOR_LOCK_WAIT
+        elif args.command in SNAPSHOT_COMMANDS:
+            lock_wait = SNAPSHOT_LOCK_WAIT
+        else:
+            lock_wait = 0.0
 
     # 启动时自动检查和恢复未完成的派生
     # 只有写命令才做：恢复本身会改派生层，只读快照命令（report/docs）不应顺手写数据。
@@ -347,7 +381,10 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         return _execute(store, "enrich", lambda: _enrich(args, store, transport), lock_wait)
     if args.command == "fetch-sizes":
         return _execute(
-            store, "fetch-sizes", lambda: _fetch_sizes(args, store, transport), lock_wait
+            store,
+            "fetch-sizes",
+            lambda: _fetch_sizes(args, store, transport, lock_wait),
+            lock_wait,
         )
     if args.command == "fetch-files":
         return _execute(
@@ -374,7 +411,7 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
                 return 1
         return _request(args)
     if args.command == "doctor":
-        return _doctor(store)
+        return _doctor_locked(store, lock_wait)
     if args.command == "docs":
         # docs 不写 runs/，但同样要在一致快照上生成；拿不到锁就明确失败。
         try:
@@ -401,9 +438,10 @@ def _execute(
     """
     started = datetime.now()
     try:
-        if command in LOCKED_COMMANDS:
+        if command in LOCKED_COMMANDS and command not in SELF_LOCKED_COMMANDS:
             # 写命令互斥，生成命令则等一个完整快照：拿不到锁就如实失败并留下
-            # runs 记录，而不是并发读到新旧混合的表。
+            # runs 记录，而不是并发读到新旧混合的表。自己排锁的命令（fetch-sizes）
+            # 由动作内部只锁真正写表的短段。
             with exclusive(store.root, command, lock_wait):
                 outcome = action()
         else:
@@ -570,13 +608,30 @@ def _enrich(args: argparse.Namespace, store: DatasetStore, transport: Transport 
 
 
 def _fetch_sizes(
-    args: argparse.Namespace, store: DatasetStore, transport: Transport | None
+    args: argparse.Namespace,
+    store: DatasetStore,
+    transport: Transport | None,
+    lock_wait: float = 0.0,
 ) -> Outcome:
+    """锁外抓取、锁内合并。
+
+    全量抓取要三小时，整段持锁会挡住当天的 collect（2026-11-07 实际事故）。
+    现在只有两处短锁：收尾合并正式表时独占，合并本身是把新批 upsert 进
+    `enrich/size.parquet`，与原来的逐批 `merge_sizes` 语义相同（同 id 以新值为准）。
+    抓取期间的结果写进 `data/.staging/sizes/` 的原子分片，不碰任何正式表；
+    中断后分片还在，下一轮据此续抓。
+    """
     snapshot = _snapshot(args)
     current = store.read_current()
     if current.height == 0:
         print("尚无采集数据，请先运行 `hf-data-crawl collect`。")
         return Outcome({"error": "empty"}, code=1, reason="尚无采集数据，请先运行 collect")
+
+    # 残留分片同样是「已处理」的 id：上一轮中断前抓到的结果不该再请求一遍。
+    existing = store.read_sizes()
+    staged, _ = read_staged(store)
+    if staged.height:
+        existing = pl.concat([existing, staged], how="vertical_relaxed")
 
     ordered = current.sort("downloads", descending=True, nulls_last=True)
     fetcher = SizeFetcher(
@@ -584,20 +639,32 @@ def _fetch_sizes(
         workers=args.workers,
         progress=_progress_line,
     )
+    writer = StagingWriter(store, snapshot)
     summary, frame = fetcher.run(
         snapshot,
         dataset_ids=ordered["id"].to_list(),
         top=max(1, args.top),
         retry_unavailable=args.retry_unavailable,
-        existing=store.read_sizes(),
-        # 边跑边落库：十万条要跑一小时，不能把一小时的成果押在最后一次写入上。
-        flush=store.merge_sizes,
+        existing=existing,
+        # 边跑边落暂存分片：中断时最多损失一个批次，但写入发生在锁外。
+        flush=writer.write,
         flush_every=args.flush_every,
     )
+    # `flush` 只在攒满一批时触发；不足一批的尾巴必须补写进分片，否则合并只读
+    # 分片时会漏掉它们。`frame` 的行序与写入序一致，尾巴从已写行数处切。
+    if frame.height > writer.flushed:
+        writer.write(frame.slice(writer.flushed, frame.height - writer.flushed))
     # 进度条走的是 \r 原地刷新，收尾必须换行，否则摘要会贴在同一行上。
     print()
-    if frame.height:
-        store.merge_sizes(frame)
+
+    # 短锁：只在这段独占数据目录，把本轮结果与残留分片一次并入正式表。
+    # 抓不到锁就失败，分片原样留着，下一轮继续（不丢已抓到的数据）。
+    with exclusive(store.root, "fetch-sizes:merge", lock_wait):
+        merged, paths = read_staged(store)
+        if merged.height:
+            store.merge_sizes(merged)
+        clear_staged(store, paths)
+
     _print_sizes(summary, store.read_sizes().height)
     return Outcome(summary)
 
@@ -729,18 +796,39 @@ def _write_docs(args: argparse.Namespace, store: DatasetStore) -> int:
     return 0
 
 
-def _doctor(store: DatasetStore) -> int:
+def _doctor_locked(store: DatasetStore, wait: float) -> int:
+    """体检优先在一致快照上跑；等不到写锁就降级，不阻塞人工排障。
+
+    与 report/docs 不同：那两个命令拿不到锁直接失败，因为产出的文件必须基于
+    一致快照；体检的价值在于「现在就告诉我大致哪里不对」，标注非快照比拒绝
+    执行更有用。
+    """
+    try:
+        with exclusive(store.root, "doctor", wait):
+            return _doctor(store, snapshot=True)
+    except LockBusy:
+        return _doctor(store, snapshot=False)
+
+
+def _doctor(store: DatasetStore, *, snapshot: bool) -> int:
     """体检：有问题退出码为 1，写 ALERT.txt，并把结论追加进体检流水。
 
     流水（`state/health-history.jsonl`）与 `runs/` 分工不同：`runs/` 记「命令成没
     成功」，而体检退出码 1 是「有告警」——记进 runs 会让「近 7 天无失败运行」失真。
     没有流水时，「断日从哪天开始」这类问题只能靠人回忆。
+
+    `snapshot=False` 时跨表检查已由 `diagnose` 降级为提示，退出码与 `ALERT.txt`
+    只反映不依赖一致快照的问题。
     """
     now = datetime.now()
-    findings = diagnose(store, now)
-    sync_alert(store, findings, now)
+    if snapshot:
+        print("快照：一致（已持有写锁）")
+    else:
+        print("快照：不可用（写锁被占用，未取得锁）；跨表读数可能跨时点，跨表检查已降级")
+    findings = diagnose(store, now, snapshot=snapshot)
+    sync_alert(store, findings, now, snapshot=snapshot)
     try:
-        record_health(store, findings, now)
+        record_health(store, findings, now, snapshot=snapshot)
     except OSError as error:
         # 记不下流水不该让体检本身变成失败：结论仍按 findings 判定。
         print(f"[!] 体检历史写入失败：{error}")

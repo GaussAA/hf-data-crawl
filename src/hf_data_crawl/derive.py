@@ -64,12 +64,15 @@ def derive_day(store: DatasetStore, snapshot_date: date, *, enrich: bool = False
 
     try:
         bronze_rows = bronze.build(store, snapshot_date)
-        silver_rows = silver.build(store, snapshot_date)
+        # 当日帧只读一次，交给 silver 与 state 共用：两次调用会把补抓批次
+        # （11-07 有 1,350 个卡片文件）完整解压两遍，而两处要的是同一份帧。
+        today = bronze.day_frame(store, snapshot_date)
+        silver_rows = silver.build(store, snapshot_date, frame=today)
         card_rows: int | None = None
         config_rows: int | None = None
         if enrich:
             card_rows, config_rows = card.build(store, snapshot_date)
-        update = state.update(store, snapshot_date)
+        update = state.update(store, snapshot_date, frame=today)
         lineage.stamp(
             store,
             snapshot_date,

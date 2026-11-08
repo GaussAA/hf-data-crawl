@@ -287,11 +287,11 @@ DuckDB / Spark / Athena 都能零配置把它当列读出来；表内另有 `sna
 | `logs/` | 计划任务的输出日志，**按轮命名**（`时间戳-任务名.log`），与 `runs/` 同键不同扩展名，自动保留最近 `LOG_KEEP` 个 | 不参与任何派生 |
 | `runs/` | 每轮运行摘要，成功与失败都写（保留最近 `RUNS_KEEP` 条）；`status` 与 `reason` 由命令结局推出 | 只读，供对比两轮退化 |
 | `reports/` | 对账差异清单（`reconcile-YYYY-MM-DD.csv`，保留最近 `REPORT_KEEP` 份）与榜单页 `dashboard.html` | 只读，供人工核对 |
-| `ALERT.txt` | 体检发现异常时写入，正常时不存在 | `doctor` 写 |
+| `ALERT.txt` | 体检发现异常时写入，正常时不存在；拿不到锁的非快照体检首行会标注 | `doctor` 写 |
 | `state/reconcile-seen.csv` | 对账会话的已见集合，续跑时靠它避免把前半段误判下架 | 对账完成后删除 |
 | `state/*-checkpoint.json` | 扫描游标，记录下一页从哪开始 | 走到末页后清空 |
 | `state/lineage.json` | 派生戳记：逐日记下当日 Raw 分块指纹、派生时刻与三层行数；`doctor` 据此判断「Raw 改过、派生有没有跟上」 | **可重建**：删掉后跑 `build --stale` 重放一遍即恢复 |
-| `state/health-history.jsonl` | 体检流水：每次 `doctor` 一行（时间、问题条数、问题原文），据它回答「断日从哪天开始」；保留最近 `HEALTH_KEEP` 次 | **可重建**：删掉只是丢历史，不影响任何数据 |
+| `state/health-history.jsonl` | 体检流水：每次 `doctor` 一行（时间、问题条数、问题原文、是否快照），据它回答「断日从哪天开始」；保留最近 `HEALTH_KEEP` 次 | **可重建**：删掉只是丢历史，不影响任何数据 |
 | `exports/` | 宽表导出：`gold.datasets` 视图的单文件 parquet，供分析工具直接打开；每日 04:50 自动重导出（物化投影不会跟着派生自己更新） | **可重建**：不参与派生，删掉后重跑 `export-wide` |
 
 ## 五、几个容易误解的地方
