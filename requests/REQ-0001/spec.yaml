@@ -1,0 +1,47 @@
+# 需求 REQ-0001：高热度数据集清单
+#
+# 这份文件是「口径」——需求到底要什么，全写在这里。
+# 改动它必须同时把 version 加一：交付档案会钉住当时的版本号，
+# 否则同一份需求的两份交付会显得「口径没变却行数大变」。
+id: REQ-0001
+title: 高热度数据集清单
+requester: 张三
+purpose: "选型参考：同时有下载量与点赞量的成熟数据集"
+version: 1
+
+# 交付节奏：once（只跑一次）/ daily / weekly / monthly / manual（只等人跑）
+cadence: once
+
+# 口径：metric 只写词表里的词条（见 GLOSSARY 的「交付口径」一节）
+# 最常见的歧义是「下载量」——它指近 30 天，不是累计值。要累计请写「累计下载量」。
+criteria:
+  - metric: 下载量
+    op: ">"
+    value: 1000
+  - metric: 点赞数
+    op: ">"
+    value: 1000
+
+# 交付物里的行序。不写则按 id 升序——顺序固定，两次交付才能逐字节比对。
+order_by:
+  - {metric: 下载量, direction: desc}
+
+output:
+  format: parquet      # parquet / csv / both
+  # columns: [id, url, 下载量, 点赞数]   # 不写则全列
+
+# 硬性护栏：0 行不交付（几乎总是口径写错了）；超过上限不交付（防误写倒出百万行）。
+guard:
+  min_rows: 1
+  max_rows: 500000
+
+# 与上一次交付相比，行数波动超过「百分比且绝对值」两个条件才标疑，不阻断交付。
+alert:
+  row_delta_pct: 20
+  row_delta_abs: 100
+
+# 逃生舱：join / 聚合 / 窗口函数这类 criteria 表达不了的，改 mode 为 sql 并把
+# 整条查询写在下面。SQL 必须从 datasets 或其它登记视图出发，连接层只读。
+# mode: sql
+# sql: |
+#   SELECT ...

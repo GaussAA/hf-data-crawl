@@ -31,7 +31,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `reconcile` | 全量对账：按 `createdAt` 稳定序扫全站，产出新增/删除/转私有/改名/sha 变更 | 是 |
 | `build` | 重建派生层：默认只重放近 7 天热区，`--stale` 只修派生滞后的日子及其后，`--full` 全量重放 | 否 |
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
-| `request` | 需求与交付管理：`new` 建需求、`list` 看全部、`show` 看口径与交付台账 | 否 |
+| `request` | 需求与交付管理：`new` 建需求、`list` 看全部、`show` 看口径与台账、`run` 交付一次、`run-due` 跑到期的 | 否 |
 | `report` | 生成单文件榜单页（离线可看） | 否 |
 | `doctor` | 体检：调度新鲜度、底库行龄、层间勾稽、派生凭证、产物新鲜度、断日与残留文件；异常写 `ALERT.txt` 并追加体检流水 | 否 |
 | `archive` | 归档早于 N 天的 Raw 分区：合并小分块并去重，先验证 Bronze 逐行相等，原文件移入 `backup/raw/` | 否 |
@@ -58,6 +58,7 @@ hf-data-crawl request      new REQ-0001 --title 标题 --requester 姓名 [--pur
 hf-data-crawl request      list
 hf-data-crawl request      show REQ-0001
 hf-data-crawl request      run REQ-0001 [--force]   # once 需求交付过要重交须加 --force
+hf-data-crawl request      run-due                  # 只跑到期的（计划任务用）
 ```
 
 全局参数 `--data-dir` 需放在子命令之前，默认取 `HF_DATA_DIR`，否则 `./data`。
@@ -261,15 +262,15 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 ## 定时
 
 ```powershell
-pwsh -File scripts\setup-schedule.ps1              # 注册：03:10 增量 · 04:00 对账 · 04:50 导出 · 09:00 体检 · 00:30 压缩（+ 周日 06:00 规模、周一 05:00 归档）
+pwsh -File scripts\setup-schedule.ps1              # 注册：03:10 增量 · 04:00 对账 · 04:50 导出 · 07:00 交付 · 09:00 体检 · 00:30 压缩（+ 周日 06:00 规模、周一 05:00 归档）
 pwsh -File scripts\setup-schedule.ps1 -Uninstall   # 卸载
 Get-ScheduledTask -TaskName hf-* | Get-ScheduledTaskInfo   # 核对
 uv run hf-data-crawl doctor                        # 手动体检；有问题退出码 1，并写 data\ALERT.txt
 ```
 
-计划任务调 `scripts\*.ps1` **七个**包装脚本（collect / reconcile / export / doctor / sizes / archive / compact），全部是 PowerShell 7 脚本，由 `pwsh -File` 执行。公共部分（定位 `uv`、代理默认值、日志、退出码）抽在 `scripts\_common.ps1`，各脚本只声明跑哪个子命令。
+计划任务调 `scripts\*.ps1` **八个**包装脚本（collect / reconcile / export / deliver / doctor / sizes / archive / compact），全部是 PowerShell 7 脚本，由 `pwsh -File` 执行。公共部分（定位 `uv`、代理默认值、日志、退出码）抽在 `scripts\_common.ps1`，各脚本只声明跑哪个子命令。
 
-七项任务的时刻是按「写命令互斥」排的，不是随手定的：00:30 压缩 → 03:10 增量 → 04:00 对账 → **04:50 导出** → 05:00 归档（仅周一）→ 06:00 规模（仅周日）→ 09:00 体检。导出必须在对账之后：它是物化投影，不会跟着派生自动更新，排在前面就等于每天导出一份旧的。
+八项任务的时刻是按「写命令互斥」排的，不是随手定的：00:30 压缩 → 03:10 增量 → 04:00 对账 → **04:50 导出** → 05:00 归档（仅周一）→ 06:00 规模（仅周日）→ **07:00 交付** → 09:00 体检。导出必须在对账之后：它是物化投影，不会跟着派生自动更新，排在前面就等于每天导出一份旧的。交付必须排在导出之后、体检之前：前者让它拿到当天的底库，后者让「某条需求 0 行被阻断」当天就能在告警里看见。
 
 要点：
 
@@ -289,8 +290,8 @@ uv run hf-data-crawl doctor                        # 手动体检；有问题退
 ```
 requests/REQ-0001/spec.yaml           # 口径，唯一可变的地方
 requests/REQ-0001/history/v1.yaml     # 交付时自动快照，只留「真的用过」的口径
-deliveries/REQ-0001/20261108T1450/
-  data.parquet      # 字节，不进 git（.gitignore 只拦 data.*）
+requests/REQ-0001/deliveries/20261108T145000/
+  data.parquet      # 字节，不进 git（.gitignore 拦 **/deliveries/**/data.*）
   manifest.json     # 机器读：底库指纹、行数、列、sha256、健康标记
   README.md         # 人读：要什么、怎么算的、基于哪天的底库、几行
 ```
@@ -312,6 +313,16 @@ deliveries/REQ-0001/20261108T1450/
 先写 `.tmp-*` 目录、三件齐了再整体改名，所以中途失败绝不会留下「有数据没说明」。
 CSV 装不下的列表列（`tags`、`languages` 等 11 个）以 `;` 连接成一格；要保留原始
 结构请用 parquet。
+
+**跑一批交付**：`request run-due` 扫 `requests/` 下所有 spec，按各自 `cadence` 判断
+「今天是否到期」，到期的才跑。判断依据是**上一次交付的时刻**，不是上一次运行成功
+与否——后者在 0 行被阻断或查询失败时会让它每天重试，制造噪音。`once` 交过即永久跳过
+（要重交用 `request run <id> --force`），`manual` 从不自动跑，`daily`/`weekly`/`monthly`
+按日历日差算：`daily` 用 1 天而非 24 小时，所以昨晚 23:50 交过、今早仍会再交一份——
+昨天那份属于昨天。
+
+一个需求失败不挡别的（坏 spec、0 行、查询出错都只记一条继续）；但底库本身不成立
+（`current` 缺失）时整体失败，因为那不是某一条需求的问题。
 
 ## 开发
 

@@ -16,7 +16,7 @@ import pytest
 import yaml
 
 from hf_data_crawl.cli import main
-from hf_data_crawl.delivery import DeliveryBlocked, deliver
+from hf_data_crawl.delivery import DeliveryBlocked, deliver, due_state, run_due
 from hf_data_crawl.derive import derive_day
 from hf_data_crawl.requirement import DELIVERIES_DIR, MANIFEST_NAME, SPEC_NAME
 from hf_data_crawl.store import DatasetStore
@@ -69,7 +69,8 @@ def make_request(root: Path, **overrides: Any) -> Path:
         "criteria": [{"metric": "下载量", "op": ">", "value": 1000}],
     }
     body.update(overrides)
-    path = root / "REQ-0001" / SPEC_NAME
+    # 目录跟 id 走，不写死：多需求共存的测试全靠这一点。
+    path = root / str(body["id"]) / SPEC_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(body, allow_unicode=True), encoding="utf-8")
     return path
@@ -276,3 +277,143 @@ def test_一次性需求重复交付需force(store: DatasetStore, tmp_path: Path
     assert main(argv) == 0
     assert main(argv) == 1
     assert main([*argv, "--force"]) == 0
+
+
+# ---------------------------------------------------------------- 到期判断
+
+
+def seed_delivery(root: Path, *, delivered_at: str, rows: int = 2, version: int = 1) -> None:
+    """造一份「上次交付」的档案，只放到期判断与比较要用的字段。"""
+    directory = root / "REQ-0001" / DELIVERIES_DIR / "20261101T000000"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / MANIFEST_NAME).write_text(
+        json.dumps(
+            {"spec_version": version, "delivered_at": delivered_at, "result": {"rows": rows}}
+        ),
+        encoding="utf-8",
+    )
+
+
+def spec_of(root: Path, **overrides: Any) -> Any:
+    make_request(root, **overrides)
+    from hf_data_crawl.requirement import load
+
+    return load(root / "REQ-0001" / SPEC_NAME)
+
+
+def test_从未交付即到期(tmp_path: Path) -> None:
+    root = tmp_path / "req"
+    spec = spec_of(root, cadence="weekly")
+
+    due, reason = due_state(spec, root / "REQ-0001", NOW)
+
+    assert due
+    assert reason == "从未交付"
+
+
+def test_一次性交过就不再跑(tmp_path: Path) -> None:
+    root = tmp_path / "req"
+    spec = spec_of(root, cadence="once")
+    seed_delivery(root, delivered_at="2026-11-08T10:00:00+00:00")
+
+    due, reason = due_state(spec, root / "REQ-0001", NOW)
+
+    assert not due
+    assert "once" in reason
+
+
+def test_manual只等人跑(tmp_path: Path) -> None:
+    root = tmp_path / "req"
+    spec = spec_of(root, cadence="manual")
+
+    due, reason = due_state(spec, root / "REQ-0001", NOW)
+
+    assert not due
+    assert "manual" in reason
+
+
+def test_每日按日历日而非24小时(tmp_path: Path) -> None:
+    """昨晚 23:50 交过，今早该再交一份——昨天那份属于昨天。"""
+    root = tmp_path / "req"
+    spec = spec_of(root, cadence="daily")
+    seed_delivery(root, delivered_at="2026-11-07T23:50:00+00:00")
+
+    due, _ = due_state(spec, root / "REQ-0001", NOW)
+
+    assert due
+
+
+def test_每日同一天内不重复(tmp_path: Path) -> None:
+    root = tmp_path / "req"
+    spec = spec_of(root, cadence="daily")
+    seed_delivery(root, delivered_at="2026-11-08T01:00:00+00:00")
+
+    due, reason = due_state(spec, root / "REQ-0001", NOW)
+
+    assert not due
+    assert "未满 1 天" in reason
+
+
+@pytest.mark.parametrize(("days", "expected"), [(6, False), (7, True)])
+def test_每周满七天(tmp_path: Path, days: int, expected: bool) -> None:
+    root = tmp_path / "req"
+    spec = spec_of(root, cadence="weekly")
+    seed_delivery(root, delivered_at=f"2026-11-{8 - days:02d}T10:00:00+00:00")
+
+    due, _ = due_state(spec, root / "REQ-0001", NOW)
+
+    assert due is expected
+
+
+def test_批量交付只跑到期的(store: DatasetStore, tmp_path: Path) -> None:
+    root = tmp_path / "req"
+    make_request(root, id="REQ-0001", cadence="daily")
+    make_request(root, id="REQ-0002", cadence="daily")
+    # REQ-0002 刚交过，REQ-0001 从未交过
+    recent = root / "REQ-0002" / DELIVERIES_DIR / "20261108T010000"
+    recent.mkdir(parents=True)
+    (recent / MANIFEST_NAME).write_text(
+        json.dumps(
+            {"spec_version": 1, "delivered_at": "2026-11-08T01:00:00+00:00", "result": {"rows": 2}}
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_due(store, root, now=NOW)
+
+    assert [item.request_id for item in report.delivered] == ["REQ-0001"]
+    assert [item[0] for item in report.skipped] == ["REQ-0002"]
+
+
+def test_一个需求失败不挡别的(store: DatasetStore, tmp_path: Path) -> None:
+    root = tmp_path / "req"
+    make_request(root, id="REQ-0001")
+    broken = root / "REQ-0002" / SPEC_NAME
+    broken.parent.mkdir(parents=True)
+    broken.write_text("id: REQ-0002\n", encoding="utf-8")
+
+    report = run_due(store, root, now=NOW)
+
+    assert [item.request_id for item in report.delivered] == ["REQ-0001"]
+    assert [item[0] for item in report.failed] == ["REQ-0002"]
+
+
+def test_底库缺失时整体失败(tmp_path: Path) -> None:
+    """这不是某一条需求的问题，报十遍同样的错只会把真因埋掉。"""
+    root = tmp_path / "req"
+    make_request(root)
+    empty = DatasetStore(tmp_path / "empty")
+
+    with pytest.raises(DeliveryBlocked, match="底库不存在"):
+        run_due(empty, root, now=NOW)
+
+
+def test_批量交付共享一次底库指纹(store: DatasetStore, tmp_path: Path) -> None:
+    """十个需求算十遍 70MB 的 md5 是纯浪费。"""
+    root = tmp_path / "req"
+    make_request(root, id="REQ-0001")
+    make_request(root, id="REQ-0002")
+
+    report = run_due(store, root, now=NOW)
+
+    assert len(report.delivered) == 2

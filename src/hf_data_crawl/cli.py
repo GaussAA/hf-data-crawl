@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .api import MAX_LIMIT, HfDatasetApi, Transport
 from .collect import Collector, CollectSummary
-from .delivery import DeliveryBlocked, DeliveryResult, deliver
+from .delivery import DeliveryBlocked, DeliveryResult, deliver, run_due
 from .deriving import check_and_recover
 from .doctor import diagnose, sync_alert
 from .enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
@@ -162,6 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="一次性需求（once）交付过之后再交一份；不加则拒绝，防误重复交付",
     )
+    request_sub.add_parser("run-due", help="跑所有到期的需求（计划任务用）")
 
     reconcile = subparsers.add_parser("reconcile", help="全量对账（按 createdAt 稳定序）")
     reconcile.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
@@ -340,11 +341,13 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
     if args.command == "request":
         # new / list / show 只读写 requests/，不碰数据目录，不参与数据锁；
         # run 要读多张表出一个一致快照，与 report / docs 同规矩——先等一会儿锁。
-        if args.request_action == "run":
+        if args.request_action in {"run", "run-due"}:
             wait = SNAPSHOT_LOCK_WAIT if args.lock_wait is None else args.lock_wait
             try:
                 with exclusive(store.root, "request-run", wait):
-                    return _request_run(args, store)
+                    if args.request_action == "run":
+                        return _request_run(args, store)
+                    return _request_run_due(args, store)
             except LockBusy as error:
                 print(f"交付失败：{error}")
                 return 1
@@ -1066,3 +1069,31 @@ def _print_delivery(result: DeliveryResult) -> None:
         print("  首次交付，无基线可比")
     elif health.note:
         print(f"  {health.note}")
+
+
+def _request_run_due(args: argparse.Namespace, store: DatasetStore) -> int:
+    """跑所有到期的需求。一个失败不挡别的，但整体退出码会反映出来。"""
+    root = Path(args.requests_dir)
+    if not root.is_dir():
+        print(f"{root} 下还没有需求，无需交付。")
+        return 0
+
+    try:
+        report = run_due(store, root)
+    except DeliveryBlocked as error:
+        # 底库本身不成立（current 缺失）：这不是某一条需求的问题，整体失败。
+        print(f"交付失败：{error}")
+        return 1
+
+    for result in report.delivered:
+        mark = "  [!] 已标疑" if result.health.status == "suspect" else ""
+        print(f"  {result.request_id}  已交付 {result.rows:,} 行 → {result.directory.name}{mark}")
+    for request_id, reason in report.skipped:
+        print(f"  {request_id}  跳过：{reason}")
+    for request_id, reason in report.failed:
+        print(f"  [!] {request_id}  失败：{reason}")
+
+    print(
+        f"共 {len(report.delivered)} 交付 / {len(report.skipped)} 跳过 / {len(report.failed)} 失败"
+    )
+    return 1 if report.failed else 0

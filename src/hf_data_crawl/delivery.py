@@ -44,8 +44,10 @@ from .requirement import (
     MANIFEST_NAME,
     README_NAME,
     SPEC_NAME,
+    Cadence,
     OutputFormat,
     Spec,
+    SpecError,
     compile_sql,
     snapshot_history,
 )
@@ -476,3 +478,108 @@ def _readme(
         "",
     ]
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- 到期判断
+
+
+#: 各节奏要求的最小间隔（日历日）。`daily` 用 1 天而非 24 小时：昨晚 23:50 交过，
+#: 今早 07:00 该不该再交一次？按「每天一份」的语义，该——昨天那份属于昨天。
+_CADENCE_DAYS: dict[Cadence, int] = {
+    Cadence.DAILY: 1,
+    Cadence.WEEKLY: 7,
+    Cadence.MONTHLY: 30,
+}
+
+
+@dataclass(frozen=True)
+class DueReport:
+    delivered: list[DeliveryResult]
+    skipped: list[tuple[str, str]]
+    failed: list[tuple[str, str]]
+
+
+def last_delivered_at(request_dir: Path) -> datetime | None:
+    """上一次交付的时刻。读不出来就返回 None——调用方会当成「从未交付」。"""
+    last = _last_delivery(request_dir)
+    if last is None:
+        return None
+    body = _read_manifest(last)
+    if body is None:
+        return None
+    raw = body.get("delivered_at")
+    if not isinstance(raw, str):
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def due_state(spec: Spec, request_dir: Path, now: datetime) -> tuple[bool, str]:
+    """这份需求今天该不该跑，以及为什么。第二个返回值直接进日志。"""
+    if spec.cadence is Cadence.MANUAL:
+        return False, "manual：只等人跑"
+    moment = last_delivered_at(request_dir)
+    if moment is None:
+        return True, "从未交付"
+    if spec.cadence is Cadence.ONCE:
+        return False, f"once 已交付过（{moment:%Y-%m-%d %H:%M}）"
+
+    need = _CADENCE_DAYS[spec.cadence]
+    elapsed = (now.date() - moment.date()).days
+    if elapsed >= need:
+        return True, f"距上次 {elapsed} 天，满 {need} 天"
+    return False, f"距上次 {elapsed} 天，未满 {need} 天"
+
+
+def run_due(
+    store: DatasetStore,
+    requests_root: Path,
+    *,
+    now: datetime | None = None,
+    catalog: GoldCatalog | None = None,
+    source: SourceStamp | None = None,
+) -> DueReport:
+    """把所有到期的需求各跑一次。
+
+    一个需求失败不挡别的：坏 spec、0 行、查询出错都只记一条，继续下一个。
+    但底库本身不成立（`current` 缺失）时整体失败——那不是某一条需求的问题，
+    报十遍同样的错只会把真正的原因埋掉。
+    """
+    moment = now or datetime.now().astimezone()
+    stamp_value = source or stamp(store)
+    runner = catalog or GoldCatalog(store)
+
+    delivered: list[DeliveryResult] = []
+    skipped: list[tuple[str, str]] = []
+    failed: list[tuple[str, str]] = []
+
+    for spec_path in sorted(requests_root.glob(f"*/{SPEC_NAME}")):
+        request_id = spec_path.parent.name
+        try:
+            spec = load_spec(spec_path)
+        except SpecError as error:
+            failed.append((request_id, str(error)))
+            continue
+
+        due, reason = due_state(spec, spec_path.parent, moment)
+        if not due:
+            skipped.append((spec.id, reason))
+            continue
+
+        try:
+            result = deliver(
+                store,
+                requests_root,
+                request_id,
+                catalog=runner,
+                source=stamp_value,
+                now=moment,
+            )
+        except (DeliveryBlocked, SpecError) as error:
+            failed.append((request_id, str(error)))
+            continue
+        delivered.append(result)
+
+    return DueReport(delivered=delivered, skipped=skipped, failed=failed)

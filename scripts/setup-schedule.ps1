@@ -12,6 +12,7 @@
     hf-sizes      每周日 06:00 补数据集规模（行数/列数），最慢的一步，增量可续。
     hf-archive    每周一 05:00 归档满 30 天的 Raw（去重小分块、冻结写入序），原文件移入 backup。
     hf-compact    每日 00:30 压缩满 7 天的冷区 Raw（跨天去重成基线），原分块移入 backup 不删。
+    hf-deliver    每日 07:00 把到期需求的当前口径各跑一次，写带底库指纹的交付档案。
 
     与旧版的差别（旧版是笔记本上三天漏采的原因）：
       - StartWhenAvailable：关机错过的任务，开机后补跑；
@@ -37,6 +38,7 @@ param(
     [string]$SizesTime = "06:00",
     [string]$ArchiveTime = "05:00",
     [string]$CompactTime = "00:30",
+    [string]$DeliverTime = "07:00",
     [switch]$Uninstall
 )
 
@@ -49,7 +51,8 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
 $taskNames = @(
-    "hf-collect", "hf-reconcile", "hf-export", "hf-doctor", "hf-sizes", "hf-archive", "hf-compact"
+    "hf-collect", "hf-reconcile", "hf-export", "hf-deliver", "hf-doctor", "hf-sizes",
+    "hf-archive", "hf-compact"
 )
 
 if ($Uninstall) {
@@ -103,6 +106,12 @@ $jobs = @(
     @{ Name = "hf-compact"; Script = "compact.ps1"; Hours = 2
        Triggers = @((New-ScheduledTaskTrigger -Daily -At $CompactTime))
        LogonDelay = $null }
+    # 交付排在对账与导出之后：拿到的必然是当天的底库。一次任务跑全部到期需求，
+    # 新增需求只加一个目录、不动系统计划任务——一需求一任务会让一年后堆几十个
+    # hf-req-00xx，谁也不敢删。它很轻（一条 SQL + 几个文件），所以给 1 小时上限。
+    @{ Name = "hf-deliver"; Script = "deliver.ps1"; Hours = 1
+       Triggers = @((New-ScheduledTaskTrigger -Daily -At $DeliverTime))
+       LogonDelay = $null }
 )
 
 foreach ($job in $jobs) {
@@ -153,6 +162,7 @@ Write-Host "  hf-doctor     每日 $DoctorTime + 登录后体检，问题写 dat
 Write-Host "  hf-sizes      每周日 $SizesTime 补规模数据，增量合并、中断可续"
 Write-Host "  hf-archive    每周一 $ArchiveTime 归档满 30 天的 Raw，原文件移入 backup"
 Write-Host "  hf-compact    每日 $CompactTime 压缩满 7 天的冷区 Raw，原分块移入 backup 不删"
+Write-Host "  hf-deliver    每日 $DeliverTime 交付到期需求，写 data 与档案三件套"
 Write-Host "日志目录：$(Join-Path $root 'data\logs')"
 Write-Host "运行摘要：$(Join-Path $root 'data\runs')"
 Write-Host "核对：Get-ScheduledTask -TaskName hf-* | Get-ScheduledTaskInfo"
