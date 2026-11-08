@@ -20,6 +20,7 @@ from pathlib import Path
 import polars as pl
 
 from . import lineage, raw
+from .fields import DEFAULT_COLUMNS, contract_errors
 from .lock import LOCK_NAME, LockBusy, describe_holder, exclusive
 from .rebuild import discover_raw_dates
 from .retention import (
@@ -324,6 +325,20 @@ def _artifact_freshness(store: DatasetStore, today: date) -> Finding:
                 problems.append(f"宽表导出落后：缺 {missing} 行、多 {surplus} 行（跑 export-wide）")
             else:
                 notes.append(f"导出与底库一致（{len(exported)} 行）")
+
+            # 列集勾稽：这份文件是「默认交付字段」的物化，列被手改或仍是旧版
+            # 72 列时，查询交付按新契约投列、文件却按旧口径，两者就漂移了。
+            columns = tuple(pl.scan_parquet(export.as_posix()).collect_schema().names())
+            if columns != DEFAULT_COLUMNS:
+                problems.append(
+                    f"宽表导出列集与默认交付契约不一致（{len(columns)} vs "
+                    f"{len(DEFAULT_COLUMNS)} 列），跑 export-wide 重建"
+                )
+            else:
+                notes.append(f"导出列集与默认交付契约一致（{len(columns)} 列）")
+        issues = contract_errors()
+        if issues:
+            problems.append(f"默认交付字段契约不自洽：{'；'.join(issues)}")
 
     for name, label in (("carddata", "卡片"), ("size", "规模"), ("files", "文件清单")):
         spec = table(name)

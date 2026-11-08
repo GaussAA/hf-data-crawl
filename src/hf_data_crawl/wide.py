@@ -1,8 +1,10 @@
-"""宽表导出：把 `gold.datasets` 视图物化成一份可重建的 parquet。
+"""默认交付底库导出：把 `gold.datasets` 视图按字段契约裁成一份可重建的 parquet。
 
 定位
 ----
-这是**只读投影的物化快照**，不是事实源，也不是状态表：
+这是**只读投影的物化快照**，不是事实源，也不是状态表。它同时是「默认交付
+字段」的物化：`fields.DEFAULT_COLUMNS` 是唯一契约，导出物与查询交付都按它投列，
+`doctor` 勾稽两者不漂移。视图本身仍保留全部 72 列供内部查询用。
 
 - 不登记进 `tables.TABLES`，不参与 `state.update` / `rebuild` / `compact` 的状态机；
 - 随时可删、随时可由 `export-wide` 重建，删它不影响任何派生；
@@ -37,6 +39,7 @@ from pathlib import Path
 
 import polars as pl
 
+from .fields import DEFAULT_COLUMNS, FALLBACKS, contract_errors, projection_sql
 from .gold import GoldCatalog, wide_column_names
 from .store import DatasetStore
 
@@ -75,11 +78,14 @@ def _current_rows(store: DatasetStore) -> int:
 
 
 def export_wide(store: DatasetStore, target: Path | None = None) -> WideExportSummary:
-    """把 `datasets` 视图流式写成 parquet，校验通过后才原子替换目标。
+    """按默认交付字段契约，把 `datasets` 视图流式写成 parquet。
 
-    先在同目录写 `.tmp`，再对临时文件做三项校验，任一不符就抛
-    `WideExportMismatch` 并在 `finally` 里撤销——绝不让半截或错口径的文件
-    顶替上一版。校验在替换**之前**做，是这里最关键的顺序。
+    投的是契约列而非 `SELECT *`：这份文件是给人当**默认参考底库**用的，不是
+    管道全景。视图仍保留全部 72 列供内部查询，两者不必相同。
+
+    先在同目录写 `.tmp`，再做四项校验（视图/静态清单、契约自洽、导出列集、
+    行数），任一不符就抛 `WideExportMismatch` 并在 `finally` 里撤销——绝不让
+    半截或错口径的文件顶替上一版。校验在替换**之前**做，是这里最关键的顺序。
     """
     destination = Path(target) if target is not None else default_target(store)
     _assert_inside(store.root, destination)
@@ -101,15 +107,25 @@ def export_wide(store: DatasetStore, target: Path | None = None) -> WideExportSu
                 "多半是改了 _wide_view_sql 却没同步 wide_columns()"
             )
 
+        problems = contract_errors()
+        if problems:
+            raise WideExportMismatch(f"默认交付字段契约不自洽：{'；'.join(problems)}")
+        needed = (*DEFAULT_COLUMNS, *FALLBACKS.values())
+        outside = [column for column in needed if column not in view_columns]
+        if outside:
+            raise WideExportMismatch(f"契约列或卡片兜底列在视图里找不到：{outside}")
+
         escaped = temp.resolve().as_posix().replace("'", "''")
-        connection.execute(f"COPY (SELECT * FROM datasets) TO '{escaped}' (FORMAT PARQUET)")
+        connection.execute(
+            f"COPY (SELECT {projection_sql()} FROM datasets) TO '{escaped}' (FORMAT PARQUET)"
+        )
 
         frame = pl.scan_parquet(temp)
         actual = tuple(frame.collect_schema().names())
-        if actual != expected:
+        if actual != DEFAULT_COLUMNS:
             raise WideExportMismatch(
-                f"导出文件列与视图不一致：缺 {sorted(set(expected) - set(actual))}，"
-                f"多 {sorted(set(actual) - set(expected))}"
+                f"导出文件列与默认交付契约不一致：缺 {sorted(set(DEFAULT_COLUMNS) - set(actual))}，"
+                f"多 {sorted(set(actual) - set(DEFAULT_COLUMNS))}"
             )
 
         rows = int(frame.select(pl.len()).collect().item())

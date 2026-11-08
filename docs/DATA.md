@@ -1,6 +1,6 @@
 # data 目录说明
 
-> 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-08 12:49，**请勿手工编辑**。
+> 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-08 21:29，**请勿手工编辑**。
 > 表结构与行数由代码和实际文件算出；字段含义维护在 `src/hf_data_crawl/fielddocs.py`。
 > 改完代码后重新生成即可，`tests/test_docs.py` 会在忘记生成时报错。
 
@@ -36,8 +36,8 @@ data/
 ├── enrich/                     # 卡片与规模（当前 4 个文件 · 138.5 MB）
 ├── meta/                       # 重建中断时留存的状态快照（当前 空）
 ├── reports/                    # 对账清单与榜单页（当前 4 个文件 · 41.0 MB）
-├── runs/                       # 每轮运行摘要（当前 85 个文件 · 46.4 KB）
-├── exports/                    # 宽表导出（可重建，当前 1 个文件 · 327.0 MB）
+├── runs/                       # 每轮运行摘要（当前 89 个文件 · 47.6 KB）
+├── exports/                    # 宽表导出（可重建，当前 1 个文件 · 193.6 MB）
 └── logs/                       # 计划任务日志（按轮命名，最近 200 个）
 ```
 
@@ -287,11 +287,11 @@ DuckDB / Spark / Athena 都能零配置把它当列读出来；表内另有 `sna
 | `logs/` | 计划任务的输出日志，**按轮命名**（`时间戳-任务名.log`），与 `runs/` 同键不同扩展名，自动保留最近 `LOG_KEEP` 个 | 不参与任何派生 |
 | `runs/` | 每轮运行摘要，成功与失败都写（保留最近 `RUNS_KEEP` 条）；`status` 与 `reason` 由命令结局推出 | 只读，供对比两轮退化 |
 | `reports/` | 对账差异清单（`reconcile-YYYY-MM-DD.csv`，保留最近 `REPORT_KEEP` 份）与榜单页 `dashboard.html` | 只读，供人工核对 |
-| `ALERT.txt` | 体检发现异常时写入，正常时不存在；拿不到锁的非快照体检首行会标注 | `doctor` 写 |
+| `ALERT.txt` | 体检发现异常时写入，正常时不存在 | `doctor` 写 |
 | `state/reconcile-seen.csv` | 对账会话的已见集合，续跑时靠它避免把前半段误判下架 | 对账完成后删除 |
 | `state/*-checkpoint.json` | 扫描游标，记录下一页从哪开始 | 走到末页后清空 |
 | `state/lineage.json` | 派生戳记：逐日记下当日 Raw 分块指纹、派生时刻与三层行数；`doctor` 据此判断「Raw 改过、派生有没有跟上」 | **可重建**：删掉后跑 `build --stale` 重放一遍即恢复 |
-| `state/health-history.jsonl` | 体检流水：每次 `doctor` 一行（时间、问题条数、问题原文、是否快照），据它回答「断日从哪天开始」；保留最近 `HEALTH_KEEP` 次 | **可重建**：删掉只是丢历史，不影响任何数据 |
+| `state/health-history.jsonl` | 体检流水：每次 `doctor` 一行（时间、问题条数、问题原文），据它回答「断日从哪天开始」；保留最近 `HEALTH_KEEP` 次 | **可重建**：删掉只是丢历史，不影响任何数据 |
 | `exports/` | 宽表导出：`gold.datasets` 视图的单文件 parquet，供分析工具直接打开；每日 04:50 自动重导出（物化投影不会跟着派生自己更新） | **可重建**：不参与派生，删掉后重跑 `export-wide` |
 
 ## 五、几个容易误解的地方
@@ -390,10 +390,22 @@ DuckDB / Spark / Athena 都能零配置把它当列读出来；表内另有 `sna
 
 ## 八、宽表导出（可重建，不是事实源）
 
-`hf-data-crawl export-wide` 把 `gold.datasets` 视图原样写成一份 parquet，
-默认落在 `data/exports/datasets.parquet`，当前共 72 列、
-行数与 `current` 相同。列清单不在这里手抄：`gold.wide_columns()` 是唯一真相源，
-视图 SQL、导出校验与本节列数都从它取，加一个附表字段三处一起跟上。
+`hf-data-crawl export-wide` 按**默认交付字段契约**把 `gold.datasets` 视图
+裁成 26 列写成一份 parquet，默认落在 `data/exports/datasets.parquet`，
+行数与 `current` 相同。视图本身仍保留全部列供内部查询，导出物只留「与数据集
+有关、有用且必要」的画像字段：标识、描述、热度、许可、语言、模态、任务、
+数据类型、规模、大小。
+
+这份文件同时是**默认参考交付底库**：数据集筛选需求若未写 `output.columns`，
+就按同一份契约投影。契约在 `fields.py`（含逐列中文定义与 `CONTRACT_VERSION`），
+导出物、查询编译、体检勾稽三处共用，不在文档里手抄第二份列清单。
+
+契约 v2 共 26 列，含 `tags` / `plain_tags`
+（API 原样标签与拆出的自定义标签，即详情页 `Tags` 那一行）。少数数据集只在
+卡片 YAML 里声明、没同步进 `tags`，默认投影用 `card_*` 同义列兜底；
+`gold.datasets` 视图语义不改，内部仍可分列追溯。交付 README 附「页面标签 ↔
+库列名 ↔ 值的显示形式」对照表，CSV 把语言 / 任务 / 规模的机器码展平成页面
+形式，parquet 与 SQL 结果保留机器码以便筛算。
 
 **它是可重建的投影，不是第五张状态表**：
 

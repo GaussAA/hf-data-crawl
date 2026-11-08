@@ -23,6 +23,7 @@ import pytest
 from hf_data_crawl import wide as wide_module
 from hf_data_crawl.cli import WRITE_COMMANDS, main
 from hf_data_crawl.derive import derive_day
+from hf_data_crawl.fields import DEFAULT_COLUMNS
 from hf_data_crawl.gold import GoldCatalog, wide_column_names
 from hf_data_crawl.runs import read_runs
 from hf_data_crawl.store import DatasetStore
@@ -75,13 +76,13 @@ def _temp_for(path: Path) -> Path:
     return path.with_suffix(path.suffix + ".tmp")
 
 
-def test_导出列集合与视图及静态清单完全一致(store: DatasetStore) -> None:
+def test_导出列集合与默认交付契约一致(store: DatasetStore) -> None:
+    """导出物是给人用的裁剪投影；视图本身仍保留全列供内部查询。"""
     summary = export_wide(store)
     frame = pl.read_parquet(summary.path)
-    expected = list(wide_column_names())
 
-    assert frame.columns == expected
-    assert summary.columns == len(expected)
+    assert frame.columns == list(DEFAULT_COLUMNS)
+    assert summary.columns == len(DEFAULT_COLUMNS)
     assert summary.rows == store.read_current().height
 
     catalog = GoldCatalog(store)
@@ -92,7 +93,8 @@ def test_导出列集合与视图及静态清单完全一致(store: DatasetStore
         ]
     finally:
         catalog.close()
-    assert view == frame.columns
+    assert view == list(wide_column_names())
+    assert len(view) > len(frame.columns)
 
 
 def test_默认产物落在_exports_目录(store: DatasetStore) -> None:
@@ -142,6 +144,18 @@ def test_静态清单与视图不一致时拒绝导出(
     assert not (store.root / "exports" / "datasets.parquet").exists()
 
 
+def test_契约列在视图里找不到时拒绝导出(
+    store: DatasetStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """反向验证三：契约拼错列名，不能等 COPY 之后才发现文件少一列。"""
+    monkeypatch.setattr(wide_module, "DEFAULT_COLUMNS", (*DEFAULT_COLUMNS, "不存在的列"))
+
+    with pytest.raises(WideExportMismatch, match="视图里找不到"):
+        export_wide(store)
+
+    assert not (store.root / "exports" / "datasets.parquet").exists()
+
+
 def test_行数不符时撤销临时文件且不覆盖旧产物(
     store: DatasetStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -164,7 +178,7 @@ def test_命令行导出成功并留下运行摘要(
     code = main(["--data-dir", str(store.root), "export-wide"])
 
     assert code == 0
-    assert f"{len(wide_column_names())} 列" in capsys.readouterr().out
+    assert f"{len(DEFAULT_COLUMNS)} 列" in capsys.readouterr().out
     assert (store.root / "exports" / "datasets.parquet").exists()
     last = read_runs(store)[-1]
     assert last["command"] == "export-wide"

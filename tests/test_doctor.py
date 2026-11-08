@@ -82,10 +82,14 @@ def put_ids(store: DatasetStore, name: str, day: date, ids: list[str]) -> None:
 
 
 def put_export(store: DatasetStore, ids: list[str]) -> None:
-    """造一份宽表导出；体检只读它的 id 列做差集。"""
+    """造一份符合默认交付契约的宽表导出；体检比对 id 差集与列集。"""
+    from hf_data_crawl.fields import DEFAULT_COLUMNS
+
     target = store.root / "exports" / "datasets.parquet"
     target.parent.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame({"id": ids}).write_parquet(target)
+    pl.DataFrame(
+        {column: ids if column == "id" else [None] * len(ids) for column in DEFAULT_COLUMNS}
+    ).write_parquet(target)
 
 
 def put_artifact(store: DatasetStore, name: str, ids: list[str], day: date) -> None:
@@ -513,6 +517,16 @@ def test_宽表导出缺失要报(tmp_path: Path) -> None:
     (store.root / "exports" / "datasets.parquet").unlink()
 
     assert any("导出不存在" in text for text in problems(store))
+
+
+def test_宽表导出列集不符契约要报(tmp_path: Path) -> None:
+    """文件被手改回旧版全列时，体检要发现「默认交付口径与底库漂移」。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    target = store.root / "exports" / "datasets.parquet"
+    pl.DataFrame({"id": ["acme/ds-0", "acme/ds-1", "acme/ds-2"]}).write_parquet(target)
+
+    assert any("列集与默认交付契约不一致" in text for text in problems(store))
 
 
 def test_富化表停更超过七天要报(tmp_path: Path) -> None:

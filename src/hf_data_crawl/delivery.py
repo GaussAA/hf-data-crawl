@@ -54,6 +54,15 @@ import polars as pl
 
 from . import backfill
 from .atomic import replace
+from .fields import (
+    COLUMN_NOTES,
+    CONTRACT_VERSION,
+    DEFAULT_COLUMNS,
+    DISPLAY_COLUMNS,
+    GROUPS,
+    PAGE_FIELDS,
+    display_expr,
+)
 from .gold import GoldCatalog, GoldNotReady
 from .metrics import lookup
 from .requirement import (
@@ -320,8 +329,14 @@ def _query_payload(ctx: RunContext) -> Payload:
 
 def _query_definition(spec: Spec) -> dict[str, Any]:
     """查询形态的机器读口径。`criteria` 带定义，交出去后不必回来翻词表。"""
+    using_default = not spec.output.columns
     return {
         "sql": compile_sql(spec),
+        "projection": {
+            "source": "default" if using_default else "spec",
+            "default_columns_version": CONTRACT_VERSION,
+            "columns": list(DEFAULT_COLUMNS) if using_default else list(spec.output.columns),
+        },
         "criteria": [
             {
                 "metric": item.metric,
@@ -349,8 +364,39 @@ def _query_lines(spec: Spec) -> list[str]:
         lines.append("")
     if spec.output.format is not OutputFormat.PARQUET:
         lines.append(
-            "CSV 里列表列（`tags`、`languages` 等）以 `;` 连接成一格；要保留原始结构请用 parquet"
+            "CSV 里列表列以 `;` 连接成一格；`languages` / `task_categories` / "
+            "`size_categories` 另按页面形式展平（如 `ko` → `Korean`）。"
+            "要保留机器码与原始结构请用 parquet"
         )
+    if not spec.output.columns and spec.mode is not Mode.SQL:
+        lines += [
+            "",
+            f"### 默认交付字段（契约 v{CONTRACT_VERSION}，共 {len(DEFAULT_COLUMNS)} 列）",
+            "",
+            "未指定 `output.columns`，按 `data/exports/datasets.parquet` 的字段契约投影；",
+            "该文件即默认参考底库，列序与此处完全一致。",
+            "",
+            "| 分组 | 字段 | 说明 |",
+            "| --- | --- | --- |",
+        ]
+        for group, columns in GROUPS:
+            for index, column in enumerate(columns):
+                label = group if index == 0 else ""
+                lines.append(f"| {label} | `{column}` | {COLUMN_NOTES[column]} |")
+        lines += [
+            "",
+            "### 详情页标签 ↔ 库列",
+            "",
+            "页面标签行与库里列名不同、值也多为机器码，按此表对照；",
+            "空值表示作者未在卡片里声明，不代表该数据集没有这一属性。",
+            "",
+            "| 页面 | 库列 | 值的显示形式 |",
+            "| --- | --- | --- |",
+        ]
+        for label, columns, note in PAGE_FIELDS:
+            refs = " / ".join(f"`{column}`" for column in columns)
+            lines.append(f"| {label} | {refs} | {note} |")
+        lines.append("")
     return lines
 
 
@@ -642,15 +688,23 @@ def _write_data(directory: Path, spec: Spec, frame: pl.DataFrame) -> list[dict[s
 def _flat_for_csv(frame: pl.DataFrame) -> pl.DataFrame:
     """CSV 不支持嵌套类型，列表列先拍平成 `;` 连接的字符串。
 
-    宽表里有 11 个列表列（`tags`、`languages`、`card_tags`…），不拍平的话
+    宽表里有十余个列表列（`tags`、`languages`、`plain_tags`…），不拍平的话
     `write_csv` 直接抛 `CSV format does not support nested data`，一份 csv 都交不出去。
     选择 `;` 而非 JSON 数组：CSV 是给人拿 Excel 打开的，`a;b` 比 `["a","b"]`
     少一层引号转义，肉眼也认得出来。空列表留空串。
+
+    语言 / 任务 / 规模三列额外走 `fields.display_expr` 换成页面形式（CSV 是交付给
+    人读的）；parquet 与 SQL 结果仍保留机器码，便于筛算。映射用 Polars 原生表达式，
+    不走逐格 Python 回调——大表交付不能被展示层拖慢。
     """
     exprs: list[pl.Expr] = []
     for name, dtype in frame.schema.items():
         if isinstance(dtype, pl.List):
-            exprs.append(pl.col(name).list.join(";").alias(name))
+            exprs.append(
+                display_expr(name)
+                if name in DISPLAY_COLUMNS
+                else pl.col(name).list.join(";").alias(name)
+            )
         else:
             exprs.append(pl.col(name))
     return frame.select(exprs)

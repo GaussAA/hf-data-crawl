@@ -26,6 +26,7 @@ from hf_data_crawl.delivery import (
     run_due,
 )
 from hf_data_crawl.derive import derive_day
+from hf_data_crawl.fields import CONTRACT_VERSION, DEFAULT_COLUMNS
 from hf_data_crawl.requirement import (
     DELIVERIES_DIR,
     MANIFEST_NAME,
@@ -123,6 +124,9 @@ def test_manifest记下底库指纹与校验和(store: DatasetStore, tmp_path: P
     assert len(body["result"]["files"][0]["sha256"]) == 64
     assert body["criteria"][0]["field"] == "downloads"
     assert body["health"]["status"] == "first"
+    assert body["projection"]["source"] == "default"
+    assert body["projection"]["default_columns_version"] == CONTRACT_VERSION
+    assert body["projection"]["columns"] == list(DEFAULT_COLUMNS)
 
 
 def test_同一底库两次交付逐字节相同(store: DatasetStore, tmp_path: Path) -> None:
@@ -234,6 +238,27 @@ def test_上次档案读不出来时如实说明而非假装正常(store: Datase
     assert "读不出来" in result.health.note
 
 
+def test_CSV列表列按页面形式展平() -> None:
+    """CSV 给人读，语言/任务/规模换成人话；parquet 仍留机器码。"""
+    from hf_data_crawl.delivery import _flat_for_csv
+
+    frame = pl.DataFrame(
+        {
+            "languages": [["ko", "en"]],
+            "task_categories": [["text-generation"]],
+            "size_categories": [["100K<n<1M"]],
+            "tags": [["keyword", "reranking"]],
+        }
+    )
+
+    out = _flat_for_csv(frame)
+
+    assert out["languages"][0] == "Korean;English"
+    assert out["task_categories"][0] == "Text Generation"
+    assert out["size_categories"][0] == "100K - 1M"
+    assert out["tags"][0] == "keyword;reranking"
+
+
 def test_csv格式(store: DatasetStore, tmp_path: Path) -> None:
     root = tmp_path / "req"
     make_request(root, output={"format": "csv"})
@@ -273,6 +298,28 @@ def test_输出列可写词条(store: DatasetStore, tmp_path: Path) -> None:
 
     assert result.columns == ("id", "downloads")
     assert pl.read_parquet(result.directory / "data.parquet").height == 2
+    body = json.loads((result.directory / MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert body["projection"]["source"] == "spec"
+    assert body["projection"]["columns"] == ["id", "下载量"]
+    assert "默认交付字段" not in (result.directory / "README.md").read_text(encoding="utf-8")
+
+
+def test_默认交付README列出逐列定义(store: DatasetStore, tmp_path: Path) -> None:
+    """不指定字段时，README 要能回答「每一列各是什么意思」。"""
+    root = tmp_path / "req"
+    make_request(root)
+
+    result = deliver(store, root, "REQ-0001", now=NOW)
+
+    readme = (result.directory / "README.md").read_text(encoding="utf-8")
+    assert f"默认交付字段（契约 v{CONTRACT_VERSION}" in readme
+    assert "近 30 天下载量，不是累计值" in readme
+    for column in DEFAULT_COLUMNS:
+        assert f"`{column}`" in readme
+    # 页面标签名与库列名对不上，是「详情页有、库里像没有」的主因。
+    assert "详情页标签 ↔ 库列" in readme
+    assert "| Tasks |" in readme
+    assert "| Tags |" in readme
 
 
 def test_一次性需求重复交付需force(store: DatasetStore, tmp_path: Path) -> None:

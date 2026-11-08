@@ -605,3 +605,70 @@
     - **快照模式下不跑锁状态检查**：此时体检自己持有写锁，`_lock_state` 再抢一次
       会自锁；锁状态只在非快照模式出现。
     - `health` 流水新增 `snapshot` 字段，旧记录缺省读作 `True`。
+
+62. **默认交付字段契约：把「全都给」改成一份定义好的口径**（2026-11-08）：大帅点破
+    「只留与数据集有关、有用且必要的字段，并让这份导出成为筛选需求的默认交付底库」。
+
+    **为什么不这么做不行**：`compile_sql` 原先在 `output.columns` 为空时给 `SELECT *`，
+    把 `datasets` 视图 72 列原样倒出去。里头混着水印（`first_seen_at` / `last_seen_at`）、
+    抓取状态（`files_status` / `truncated`）、卡片凭证（`source_sha`）、内部标记
+    （`xet_enabled` / `resource_group`），还有一批只对头部补过的近乎全空列。
+    **「全都给」等于没有口径**：对方得自己猜哪列能用，而 `downloads` 与
+    `downloads_all_time` 并列出现又不附定义，词表在「条件」侧管住的歧义会在
+    「投影」侧原样复发。此外每来一条筛选需求都要重新裁一次字段，口径必然漂。
+
+    **裁列是数据驱动的**（112 万行逐列实测非空率，非空字符串/非空列表才算）：
+    `card_num_rows` 1.6%、`card_dataset_bytes` 1.4%、`arxiv_ids` 3.7%、`task_ids` 0.7%、
+    `has_readme` / `total_bytes` / `file_count` 均 0.1%——这些不是有效信息，是补抓
+    留下的空壳。反过来 `server_num_rows` 74.2%、`size_categories` 72.0%、
+    `modalities` 70.1%、`formats` 67.2% 才是能用的规模与类型口径。用户点名要的
+    `languages`（16.7%）与 `task_categories`（22.5%）虽覆盖偏低仍保留，并在
+    `COLUMN_NOTES` 里写明「未声明则为空，不代表没有」。
+
+    **四条判据**：① 描述数据集本身，不是管道内部状态；② 覆盖可用；③ 同一语义
+    只留主口径（确需并列的两个字节列在说明里写清区别）；④ 词表登记过的口径优先。
+    v1 结果 24 列八组：标识与来源 5、内容描述 1、热度 3、可用性与许可 4、语言与模态 2、
+    任务与数据类型 3、规模 4、大小 2。文件由 342.9 MB 降到 148.8 MB，行数不变。
+    **后来证明 v1 裁错了一组**：只按覆盖率与语义裁列、没拿详情页逐项对值，把
+    无前缀标签（页面 `Tags`）整组丢了，v2 补回 `tags` / `plain_tags` 升到 26 列，
+    见 #63。
+
+    **三处共用一份契约**（`fields.py`）：`wide.export_wide` 按它写文件、
+    `requirement.compile_sql` 按它投影、`doctor._artifact_freshness` 勾稽导出列集。
+    **刻意不让查询运行时去读导出文件的 schema**：导出物每天才刷新一次，可能滞后于
+    底库；若口径依赖它，就会出现「数据来自 A 版导出、manifest 记着 B 版 current
+    指纹」的不一致。文件是契约的物化与可交付底库，不是运行时的口径源。
+    `CONTRACT_VERSION` 钉进 `manifest.projection`，改清单必须升版本；交付 README
+    附逐列定义表，于是「这列什么意思」不必回来翻代码。
+
+63. **「页面有、库里空」不是漏抓：列名、机器码、稀疏度三重叠加**（2026-11-08）：
+    大帅拿 `ENERZAiKR/LGUplus_keyword_rerank_top1_rolling` 详情页红圈追问「库里那些
+    字段根本没内容，难道没爬下来」。四步实测把判断坐实：
+
+    - **那条其实全有值**：`task_categories=["text-generation"]`、`modalities=["tabular","text"]`、
+      `formats=["json"]`、`languages=["ko"]`、`size_categories=["100K<n<1M"]`、
+      `libraries` 四项、`license_name=cc-by-nc-4.0`；`plain_tags` 正是页面那五个标签。
+      页面名与库列名不同（Tasks↔task_categories、Size↔size_categories、Tags↔plain_tags），
+      值是机器码 + List，而不少 parquet 查看器不渲染嵌套列——三者叠加就成了「没内容」。
+    - **源头本就稀疏**：全库 112 万行非空率 `languages` 16.72%、`task_categories` 22.47%、
+      `license_name` 35.78%。直连 HF 单条接口抽 5 条热门样本，`tags` / `cardData` 与本库
+      逐项一致；例如 `huggingface/documentation-images` 源头只有 license / size / format /
+      modality / library，压根没有 Tasks 与 Languages 可爬。**空值不等于漏抓**。
+    - **真缺口极小**：`tags` 与 `cardData` 是两套来源，银层只拆 `tags`。差集实测
+      「卡片有、标签列空」仅 1,795 行任务 / 894 行规模 / 11 行语言 / 64 行自定义标签，
+      合计不到 0.25%。全量重抓 cardData（6.7 GB / 14 小时）对红圈这八项边际收益
+      不到 0.25%，不划算；它真正缺的是 `dataset_info` 的 config / split / features /
+      num_examples 一类。
+    - **臣的错**：v1 裁列只按覆盖率，没拿详情页逐项对值，把 `tags` / `plain_tags`
+      整组裁掉——29.3 万行（26.1%）有值却交不出去。**裁列前必须先问「页面这一项
+      落在哪一列、值长什么样」**，否则「越裁越干净」其实是「越裁越缺」。
+
+    **v2 做法（甲案，不重抓）**：契约升 26 列补回两列；`PAGE_FIELDS` 把页面标签 ↔
+    库列名 ↔ 值的显示形式照抄进交付 README；`FALLBACKS` 让四列在默认投影里以
+    `card_*` 兜底（`CASE WHEN coalesce(array_length(...),0) > 0 THEN ... ELSE ... END`，
+    别名仍取契约列名，故导出 / 编译 / 勾稽三者列集不变），**不改 `gold.datasets`
+    视图语义**——内部查询仍要能分清是哪一侧缺；`display_expr` 用 Polars 原生表达式
+    把 CSV 里的 `ko`→`Korean`、`text-generation`→`Text Generation`、
+    `100K<n<1M`→`100K - 1M`，parquet 与 SQL 结果仍存机器码。数据与展示分开：
+    人读的给文本、机读的给码。不用 Python UDF 是因为一次交付可能数十万行，
+    逐格回调会把分钟级查询拖成小时级。

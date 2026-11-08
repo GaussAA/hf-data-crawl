@@ -22,7 +22,7 @@ from typing import Any
 import polars as pl
 
 from .fielddocs import describe
-from .gold import wide_column_names
+from .fields import CONTRACT_VERSION, DEFAULT_COLUMNS
 from .raw import BRONZE_LABELS, CARD_LABEL
 from .tables import TABLES, Origin, TableSpec
 
@@ -363,10 +363,22 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "",
         "## 八、宽表导出（可重建，不是事实源）",
         "",
-        "`hf-data-crawl export-wide` 把 `gold.datasets` 视图原样写成一份 parquet，",
-        f"默认落在 `data/exports/datasets.parquet`，当前共 {len(wide_column_names())} 列、",
-        "行数与 `current` 相同。列清单不在这里手抄：`gold.wide_columns()` 是唯一真相源，",
-        "视图 SQL、导出校验与本节列数都从它取，加一个附表字段三处一起跟上。",
+        "`hf-data-crawl export-wide` 按**默认交付字段契约**把 `gold.datasets` 视图",
+        f"裁成 {len(DEFAULT_COLUMNS)} 列写成一份 parquet，默认落在 `data/exports/datasets.parquet`，",
+        "行数与 `current` 相同。视图本身仍保留全部列供内部查询，导出物只留「与数据集",
+        "有关、有用且必要」的画像字段：标识、描述、热度、许可、语言、模态、任务、",
+        "数据类型、规模、大小。",
+        "",
+        "这份文件同时是**默认参考交付底库**：数据集筛选需求若未写 `output.columns`，",
+        "就按同一份契约投影。契约在 `fields.py`（含逐列中文定义与 `CONTRACT_VERSION`），",
+        "导出物、查询编译、体检勾稽三处共用，不在文档里手抄第二份列清单。",
+        "",
+        f"契约 v{CONTRACT_VERSION} 共 {len(DEFAULT_COLUMNS)} 列，含 `tags` / `plain_tags`",
+        "（API 原样标签与拆出的自定义标签，即详情页 `Tags` 那一行）。少数数据集只在",
+        "卡片 YAML 里声明、没同步进 `tags`，默认投影用 `card_*` 同义列兜底；",
+        "`gold.datasets` 视图语义不改，内部仍可分列追溯。交付 README 附「页面标签 ↔",
+        "库列名 ↔ 值的显示形式」对照表，CSV 把语言 / 任务 / 规模的机器码展平成页面",
+        "形式，parquet 与 SQL 结果保留机器码以便筛算。",
         "",
         "**它是可重建的投影，不是第五张状态表**：",
         "",

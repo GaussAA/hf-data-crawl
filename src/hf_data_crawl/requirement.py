@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from .fields import projection_sql
 from .metrics import Metric, MetricKind, lookup
 
 if TYPE_CHECKING:
@@ -202,7 +203,8 @@ class OrderKey:
 @dataclass(frozen=True)
 class Output:
     format: OutputFormat = OutputFormat.PARQUET
-    #: 空表示全列。允许写词条或视图列名。
+    #: 空表示按默认交付字段契约（`fields.DEFAULT_COLUMNS`）投列；写了才按词条
+    #: 或视图列名逐列指定。「全都给」不是口径，所以默认值必须是一份定义好的清单。
     columns: tuple[str, ...] = ()
 
 
@@ -556,8 +558,13 @@ def _quote(text: str) -> str:
 
 
 def _select_list(spec: Spec) -> str:
+    """未指定字段时投默认交付契约；指定时按 spec 逐列投（词条先翻成字段名）。
+
+    不再是 `SELECT *`：宽视图 72 列里混着水印、抓取状态与近乎全空的补抓列，
+    默认全给等于没定义口径。契约列与 `export-wide` 产物逐列一致，由 doctor 勾稽。
+    """
     if not spec.output.columns:
-        return "*"
+        return projection_sql()
     return ", ".join(f'"{_column(name)}"' for name in spec.output.columns)
 
 
@@ -611,7 +618,7 @@ criteria:
 
 output:
   format: parquet      # parquet / csv / both
-  # columns: [id, url, 下载量, 点赞数]   # 不写则全列
+  # columns: [id, url, 下载量, 点赞数]   # 不写则按默认交付底库字段（fields.DEFAULT_COLUMNS）
 
 # 硬性护栏：0 行不交付（几乎总是口径写错了）；超过上限不交付（防误写倒出百万行）。
 guard:

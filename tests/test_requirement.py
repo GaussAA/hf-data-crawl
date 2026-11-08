@@ -14,6 +14,7 @@ import openpyxl
 import pytest
 import yaml
 
+from hf_data_crawl.fields import DEFAULT_COLUMNS, projection_sql
 from hf_data_crawl.requirement import (
     Cadence,
     Kind,
@@ -120,8 +121,18 @@ def test_版本号必须为正(tmp_path: Path) -> None:
 
 def test_单条件编译出只读查询(tmp_path: Path) -> None:
     assert sql_of(tmp_path, criteria=[{"metric": "下载量", "op": ">", "value": 1000}]) == (
-        'SELECT *\nFROM datasets\nWHERE "downloads" > 1000\nORDER BY "id" ASC'
+        f'SELECT {projection_sql()}\nFROM datasets\nWHERE "downloads" > 1000\nORDER BY "id" ASC'
     )
+
+
+def test_不指定字段时投默认契约而非全列(tmp_path: Path) -> None:
+    """`SELECT *` 会把水印、抓取状态与近乎全空的补抓列一起倒给对方。"""
+    sql = sql_of(tmp_path)
+
+    assert "SELECT *" not in sql
+    assert sql.startswith(f"SELECT {projection_sql()}\nFROM datasets")
+    for column in DEFAULT_COLUMNS:
+        assert f'"{column}"' in sql
 
 
 def test_多条件用AND连接(tmp_path: Path) -> None:
@@ -159,7 +170,9 @@ def test_显式排序仍追加id兜底(tmp_path: Path) -> None:
 def test_排序已含id时不重复追加(tmp_path: Path) -> None:
     sql = sql_of(tmp_path, order_by=[{"metric": "id", "direction": "asc"}])
 
-    assert sql.count('"id"') == 1
+    # 默认投影里本来就有 `"id"`，不能再数全文出现次数；只看 ORDER BY 子句。
+    assert sql.endswith('ORDER BY "id" ASC')
+    assert sql.count("ORDER BY") == 1
 
 
 def test_文本值里的单引号被转义(tmp_path: Path) -> None:

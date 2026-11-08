@@ -68,7 +68,7 @@ hf-data-crawl request      run-due                  # 只跑到期的（计划�
 
 写命令（`collect` / `reconcile` / `build` / `enrich` / `fetch-sizes` / `fetch-files` / `archive` / `compact` / `export-wide`）执行期间持有 `data/.lock` 的独占锁，同一时刻只能跑一个；拿不到锁会失败并在 `runs/` 留记录。进程被杀后系统自动释放，不会留下死锁。`report` 与 `query` 不加锁。
 
-**宽表导出**：`current` 只保留 19 列状态标量，语义字段分散在 `silver` / `carddata` / `size`。`export-wide` 把 `gold.datasets` 视图物化成单文件 parquet，直接交给 DuckDB / polars / BI 工具；它是**可重建投影**——不登记为表、不参与 `state.update` / `build` / `compact`，删掉重跑本命令即可，也不改动任何状态表。列口径由 `gold.wide_columns()` 一处生成，加附表字段时视图与导出一起跟上。详见 [docs/DATA.md](docs/DATA.md) 第八节。
+**默认交付底库**：`current` 只保留 19 列状态标量，语义字段分散在 `silver` / `carddata` / `size`。`export-wide` 按 `fields.py` 的**默认交付字段契约**把 `gold.datasets` 视图裁成 26 列，写成 `data/exports/datasets.parquet`——只留与数据集有关、有用且必要的画像字段（标识、描述、热度、许可、语言、模态、任务、数据类型、标签、规模、大小），把水印、抓取状态、卡片凭证与近乎全空的补抓列排除在外。契约 v2 补回详情页 `Tags` 那行对应的 `tags` / `plain_tags`，附「页面标签 ↔ 库列名」对照；少数只在卡片 YAML 里声明、没同步进 `tags` 的，由 `card_*` 兜底。这份文件直接交给 DuckDB / polars / BI 工具，也是**数据集筛选需求未指定 `output.columns` 时的默认投影**。它是可重建投影，不登记为表、不参与状态更新；视图本身仍保留全部 72 列供内部查询。契约、导出物、查询编译与体检勾稽四处共用一份定义，详见 [docs/DATA.md](docs/DATA.md) 第八节与 [GLOSSARY](GLOSSARY.md) #62、#63。
 
 **文件清单补采（试点）**：列表接口请求也不返回 `siblings`（见 [docs/DATA.md](docs/DATA.md) 第九节）；单库详情虽返回，但下载量头部实测 13-25 MB / 44-76 s，按头部补会反复超时。`fetch-files` 改走 `/tree/main?recursive=true&expand=false`：每页固定 1000 条、约 110-230 KB / 0.4-0.7 s。默认每库只取第一页，有后续页时标 `truncated=true`——此时 `file_count` / `total_bytes` / `file_formats` / `has_readme` 都只是**这一页的下限**，不是全库真值；要完整清单须显式加大 `--max-pages`。结果落 `enrich/files.parquet`（`Origin.NETWORK`，重建不清），自动进入 `datasets` 宽视图。断点续跑、失败分类、写锁与边跑边落库与 `fetch-sizes` 共用 `batch.collect_rows` 骨架；临时失败不入库、下轮自然重试。这是按头部补的**子集**，别拿它算全站分布。匿名配额实测 500 请求 / 300 秒固定窗口，跑满 1000 需分批；429 会按响应头 `Retry-After` 退避，仍不够时临时失败不落库、下次重跑本命令由断点续跑接力。带 `HF_TOKEN` 可提到 **1000 请求 / 300 秒**（实测），写进仓库根 `.env` 即可，命令自动读取且**不覆盖**已 export 的值；令牌只在本机文件里，值绝不进日志与 `runs/`。已标 `truncated` 的行默认被断点续跑跳过，想补成完整清单须显式 `--refresh-truncated --max-pages N`：它只重抓截断行、完整行照旧跳过；`--max-pages` 仍为 1 时命令直接失败，因为一页上限下重抓只是把截断重新确认一遍。
 
@@ -327,6 +327,14 @@ sha256，于是「基于哪一版清单」和「基于哪一版底库」一样�
 历史累计——同一句话两种理解差两个数量级。词表见 `metrics.py` 与
 [GLOSSARY](GLOSSARY.md) #51，`request show` 会把口径连同编译后的 SQL 一起打出来。
 
+**不写 `output.columns` 就按默认底库交付**：26 列字段契约在 `fields.py`（逐列中文
+定义、分组、页面标签对照、`CONTRACT_VERSION`）。`data/exports/datasets.parquet` 是这份
+契约的物化，列序完全一致；`manifest.json` 记 `projection.source = default` 与契约版本，
+README 附逐列定义表及「详情页标签 ↔ 库列」对照表——页面叫 `Tasks` / `Size` / `Tags`，
+库里叫 `task_categories` / `size_categories` / `plain_tags`，值也多为机器码，不对照就会
+以为「库里没内容」。只有明确要额外字段时才写 `output.columns`，写了就以它为准。
+`doctor` 会勾稽导出文件列集与契约，不一致即报「跑 `export-wide` 重建」。
+
 `manifest.json` 里的 `source.current_md5` 是整份档案的锚点：日后任何一份交付都能
 回答「它基于哪一版底库」。`.gitignore` 对 `deliveries/` 用的是**白名单**——只放行
 `manifest.json` 与 `README.md`，产物字节一律留在本机，靠 sha256 绑定。按扩展名逐个
@@ -339,8 +347,9 @@ sha256，于是「基于哪一版清单」和「基于哪一版底库」一样�
 那时比较只会天天发假警报，而假警报最能训练人忽略告警。
 
 先写 `.tmp-*` 目录、三件齐了再整体改名，所以中途失败绝不会留下「有数据没说明」。
-CSV 装不下的列表列（`tags`、`languages` 等 11 个）以 `;` 连接成一格；要保留原始
-结构请用 parquet。
+CSV 装不下的列表列（`tags`、`languages`、`plain_tags` 等）以 `;` 连接成一格；
+`languages` / `task_categories` / `size_categories` 另按页面形式展平（`ko` → `Korean`），
+parquet 保留机器码与原始嵌套结构，便于筛算。
 
 **跑一批交付**：`request run-due` 扫 `requests/` 下所有 spec，按各自 `cadence` 判断
 「今天是否到期」，到期的才跑。判断依据是**上一次交付的时刻**，不是上一次运行成功
