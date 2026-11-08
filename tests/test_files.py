@@ -562,11 +562,8 @@ def test_宽视图收进files的列且不放大行数(store_with_data: DatasetSt
 
     catalog = GoldCatalog(store)
     try:
-        columns = [
-            row[0]
-            for row in catalog.connection.execute("DESCRIBE SELECT * FROM datasets").fetchall()
-        ]
-        rows = catalog.connection.execute("SELECT count(*) FROM datasets").fetchall()[0][0]
+        columns = catalog.run("SELECT * FROM datasets LIMIT 0").columns
+        rows = int(catalog.run("SELECT count(*) AS n FROM datasets")["n"].item())
     finally:
         catalog.close()
 

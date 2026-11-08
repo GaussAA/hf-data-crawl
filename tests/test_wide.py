@@ -90,10 +90,7 @@ def test_导出列集合与默认交付契约一致(store: DatasetStore) -> None
 
     catalog = GoldCatalog(store)
     try:
-        view = [
-            row[0]
-            for row in catalog.connection.execute("DESCRIBE SELECT * FROM datasets").fetchall()
-        ]
+        view = catalog.run("SELECT * FROM datasets LIMIT 0").columns
     finally:
         catalog.close()
     assert view == list(wide_column_names())

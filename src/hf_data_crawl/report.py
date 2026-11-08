@@ -288,28 +288,7 @@ class Reporter:
         self._catalog = catalog
 
     def _overview(self) -> dict[str, Any]:
-        return self._catalog.run(
-            """
-            SELECT (SELECT count(*) FROM current) AS datasets,
-                   (SELECT count(*) FROM current WHERE status <> 'active') AS gone,
-                   (SELECT coalesce(sum(CASE WHEN status = 'active' THEN 1 ELSE 0 END), 0)
-                      FROM current) AS active,
-                   (SELECT coalesce(sum(CASE WHEN status = 'disappeared' THEN 1 ELSE 0 END), 0)
-                      FROM current) AS disappeared,
-                   (SELECT coalesce(sum(CASE WHEN status = 'restricted' THEN 1 ELSE 0 END), 0)
-                      FROM current) AS restricted,
-                   (SELECT coalesce(sum(CASE WHEN status = 'renamed' THEN 1 ELSE 0 END), 0)
-                      FROM current) AS renamed,
-                   (SELECT count(*) FROM card) AS cards,
-                   (SELECT count(*) FROM dataset_size WHERE status = 'ok') AS sized,
-                   (SELECT count(*) FROM v_growth) AS growth_ready,
-                   (SELECT count(*) FROM observations
-                     WHERE snapshot_date = (SELECT max(snapshot_date) FROM observations)) AS moved,
-                   (SELECT max(snapshot_date) FROM observations) AS as_of,
-                   (SELECT max(last_seen_at) FROM current) AS last_seen,
-                   (SELECT coalesce(sum(downloads), 0) FROM current) AS total_downloads
-            """
-        ).row(0, named=True)
+        return self._catalog.overview()
 
     @staticmethod
     def _state_html(overview: dict[str, Any]) -> str:

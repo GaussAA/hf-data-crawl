@@ -77,9 +77,6 @@ from .gold import GoldCatalog
 from .source import SourceStamp, stamp
 from .store import DatasetStore
 
-#: 底库缺省端口。与 `gold.datasets` 视图同名，换视图时只改这一处。
-VIEW = "datasets"
-
 #: HF 的标签是英文枚举，回填进中文表要归一；词表外的新枚举原样保留，不硬猜。
 #: spec 里可用 `lexicon:` 追加，但追加项只对本份 spec 生效。
 LEXICON: dict[str, str] = {
@@ -501,13 +498,8 @@ def resolve_ids(values: list[str]) -> tuple[list[str | None], list[str]]:
 
 def fetch_rows(catalog: GoldCatalog, ids: list[str]) -> dict[str, dict[str, Any]]:
     """一次取回全部行。逐条查会把 72 列 112 万行的视图点开上千遍。"""
-    if not ids:
-        return {}
-    unique = sorted({item for item in ids})
-    quoted = ",".join("'" + item.replace("'", "''") + "'" for item in unique)
-    frame = catalog.run(f"SELECT * FROM {VIEW} WHERE id IN ({quoted})")
     # id 不 pop：它本身就是要填的「数据集名称」列。
-    return {str(row["id"]): row for row in frame.to_dicts()}
+    return catalog.rows(ids)
 
 
 def load_overrides(path: Path | None) -> dict[str, dict[str, Any]]:

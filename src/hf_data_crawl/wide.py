@@ -27,8 +27,9 @@
 安全边界
 --------
 `GoldCatalog` 的连接关闭了外部访问，只留数据目录这一处例外（视图要读
-parquet）。导出借此流式 COPY，不必把 112 万行读进内存；这里再验一次目标
-确实在数据目录内：万一将来有人放宽连接配置，`--out` 也不该写到别处。
+parquet），且不再对外暴露连接本身：导出只经 `copy_wide()` 这一条受控通道
+流式 COPY，不必把 112 万行读进内存；`copy_wide()` 与这里各验一次目标确实
+在数据目录内：万一将来有人放宽连接配置，`--out` 也不该写到别处。
 """
 
 from __future__ import annotations
@@ -96,11 +97,8 @@ def export_wide(store: DatasetStore, target: Path | None = None) -> WideExportSu
     temp.unlink(missing_ok=True)
 
     try:
-        connection = catalog.connection
         expected = wide_column_names()
-        view_columns = tuple(
-            row[0] for row in connection.execute("DESCRIBE SELECT * FROM datasets").fetchall()
-        )
+        view_columns = tuple(catalog.run("SELECT * FROM datasets LIMIT 0").columns)
         if view_columns != expected:
             raise WideExportMismatch(
                 f"视图实际列与静态清单不一致（{len(view_columns)} vs {len(expected)}），"
@@ -115,10 +113,7 @@ def export_wide(store: DatasetStore, target: Path | None = None) -> WideExportSu
         if outside:
             raise WideExportMismatch(f"契约列或卡片兜底列在视图里找不到：{outside}")
 
-        escaped = temp.resolve().as_posix().replace("'", "''")
-        connection.execute(
-            f"COPY (SELECT {projection_sql()} FROM datasets) TO '{escaped}' (FORMAT PARQUET)"
-        )
+        catalog.copy_wide(temp, projection=projection_sql())
 
         frame = pl.scan_parquet(temp)
         actual = tuple(frame.collect_schema().names())

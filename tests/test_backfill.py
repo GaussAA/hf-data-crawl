@@ -46,10 +46,14 @@ class FakeCatalog:
     """只回一张定表的伪查询口。真视图要 72 列百万行，测边界不必背这个包袱。"""
 
     def __init__(self, rows: list[dict[str, Any]]) -> None:
-        self.rows = rows
+        self.data = rows
 
     def run(self, sql: str) -> pl.DataFrame:  # noqa: ARG002 - 桩不解析 SQL
-        return pl.DataFrame(self.rows)
+        return pl.DataFrame(self.data)
+
+    def rows(self, ids: Any) -> dict[str, dict[str, Any]]:
+        wanted = set(ids)
+        return {row["id"]: row for row in self.data if row["id"] in wanted}
 
 
 STAMP = SourceStamp(current_md5="deadbeef", current_rows=10, newest_snapshot_date=date(2026, 11, 8))

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -115,6 +116,10 @@ def url_expr(column: str = "id") -> str:
 
 #: 内置榜单。`?` 为条数上限占位。
 #:
+#: 每个榜都以唯一键收尾（数据集榜用 `id`，聚合榜用分组键）：只按计数排序时，
+#: 并列行的次序由 DuckDB 的哈希聚合顺序决定，同一份数据两次运行可能给出不同
+#: 页面，报告产物就不再可复现。
+#:
 #: 带数据集列表的榜单都附 `url` 列：报告页据此把名字渲染成链接，查询者也能
 #: 直接拿到可点开的地址。聚合类榜单（分类、许可证、模态）没有单一数据集，不加。
 BOARDS: dict[str, str] = {
@@ -122,7 +127,7 @@ BOARDS: dict[str, str] = {
         SELECT id, {url_expr()}, downloads_start, downloads_now, growth, span_days, from_date, to_date
         FROM v_growth
         WHERE growth > 0
-        ORDER BY growth DESC
+        ORDER BY growth DESC, id
         LIMIT ?
     """,
     "growth_pct": f"""
@@ -130,32 +135,32 @@ BOARDS: dict[str, str] = {
                round(growth_rate * 100, 1) AS growth_pct, span_days
         FROM v_growth
         WHERE growth > 0 AND downloads_start >= 100
-        ORDER BY growth_rate DESC
+        ORDER BY growth_rate DESC, id
         LIMIT ?
     """,
     "downloads": f"""
         SELECT id, {url_expr()}, downloads, downloads_all_time, likes, gated
         FROM current
-        ORDER BY downloads DESC NULLS LAST
+        ORDER BY downloads DESC NULLS LAST, id
         LIMIT ?
     """,
     "alltime": f"""
         SELECT id, {url_expr()}, downloads_all_time, downloads, likes
         FROM current
-        ORDER BY downloads_all_time DESC NULLS LAST
+        ORDER BY downloads_all_time DESC NULLS LAST, id
         LIMIT ?
     """,
     "categories": """
         SELECT unnest(task_categories) AS category, count(*) AS datasets, sum(downloads) AS downloads
         FROM datasets
         GROUP BY 1
-        ORDER BY downloads DESC NULLS LAST
+        ORDER BY downloads DESC NULLS LAST, category
         LIMIT ?
     """,
     "ranking": f"""
         SELECT d.id, {url_expr("d.id")}, d.pretty_name, d.downloads, d.downloads_all_time, d.likes, d.license_name
         FROM datasets AS d
-        ORDER BY d.downloads DESC NULLS LAST
+        ORDER BY d.downloads DESC NULLS LAST, d.id
         LIMIT ?
     """,
     # 与 ranking 列结构完全一致，只换排序键。页面上「累计」若只是把 30 天榜的
@@ -163,13 +168,13 @@ BOARDS: dict[str, str] = {
     "ranking_alltime": f"""
         SELECT d.id, {url_expr("d.id")}, d.pretty_name, d.downloads, d.downloads_all_time, d.likes, d.license_name
         FROM datasets AS d
-        ORDER BY d.downloads_all_time DESC NULLS LAST
+        ORDER BY d.downloads_all_time DESC NULLS LAST, d.id
         LIMIT ?
     """,
     "licenses": """
         SELECT license_name, count(*) AS datasets
         FROM card WHERE license_name IS NOT NULL
-        GROUP BY 1 ORDER BY datasets DESC LIMIT ?
+        GROUP BY 1 ORDER BY datasets DESC, license_name LIMIT ?
     """,
     "volume": f"""
         SELECT d.id, {url_expr("d.id")}, ds.num_rows, ds.num_columns_max,
@@ -177,15 +182,38 @@ BOARDS: dict[str, str] = {
         FROM dataset_size AS ds
         JOIN datasets AS d ON d.id = ds.id
         WHERE ds.status = 'ok' AND ds.num_rows IS NOT NULL
-        ORDER BY ds.num_rows DESC NULLS LAST
+        ORDER BY ds.num_rows DESC NULLS LAST, d.id
         LIMIT ?
     """,
     "modalities": """
         SELECT unnest(modalities) AS modality, count(*) AS datasets,
                sum(downloads) AS downloads
-        FROM datasets GROUP BY 1 ORDER BY datasets DESC NULLS LAST LIMIT ?
+        FROM datasets GROUP BY 1 ORDER BY datasets DESC NULLS LAST, modality LIMIT ?
     """,
 }
+
+#: 报告首屏的整库概览：单行聚合。不放 `BOARDS`——榜单返回多行、概览返回单行，
+#: 也不该出现在 `query --board` 的可选值里。SQL 与 `report` 原先执行的一字不差。
+OVERVIEW_SQL = """
+    SELECT (SELECT count(*) FROM current) AS datasets,
+           (SELECT count(*) FROM current WHERE status <> 'active') AS gone,
+           (SELECT coalesce(sum(CASE WHEN status = 'active' THEN 1 ELSE 0 END), 0)
+              FROM current) AS active,
+           (SELECT coalesce(sum(CASE WHEN status = 'disappeared' THEN 1 ELSE 0 END), 0)
+              FROM current) AS disappeared,
+           (SELECT coalesce(sum(CASE WHEN status = 'restricted' THEN 1 ELSE 0 END), 0)
+              FROM current) AS restricted,
+           (SELECT coalesce(sum(CASE WHEN status = 'renamed' THEN 1 ELSE 0 END), 0)
+              FROM current) AS renamed,
+           (SELECT count(*) FROM card) AS cards,
+           (SELECT count(*) FROM dataset_size WHERE status = 'ok') AS sized,
+           (SELECT count(*) FROM v_growth) AS growth_ready,
+           (SELECT count(*) FROM observations
+             WHERE snapshot_date = (SELECT max(snapshot_date) FROM observations)) AS moved,
+           (SELECT max(snapshot_date) FROM observations) AS as_of,
+           (SELECT max(last_seen_at) FROM current) AS last_seen,
+           (SELECT coalesce(sum(downloads), 0) FROM current) AS total_downloads
+    """
 
 _DUCKDB_TYPES: dict[PolarsType, str] = {
     pl.Utf8: "VARCHAR",
@@ -293,10 +321,6 @@ class GoldCatalog:
     def store(self) -> DatasetStore:
         return self._store
 
-    @property
-    def connection(self) -> duckdb.DuckDBPyConnection:
-        return self._connection
-
     def run(self, sql: str, params: list[Any] | None = None) -> pl.DataFrame:
         _guard(sql)
         try:
@@ -309,6 +333,42 @@ class GoldCatalog:
         if sql is None:
             raise ValueError(f"未知榜单 {name!r}，可选：{sorted(BOARDS)}")
         return self.run(sql, [limit])
+
+    def overview(self) -> dict[str, Any]:
+        """整库概览：单行聚合，返回列名到值。"""
+        return self.run(OVERVIEW_SQL).row(0, named=True)
+
+    def rows(self, ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """按 id 取 `datasets` 整行；参数化 `IN`，不拼 SQL 字符串。
+
+        空集合直接返回空字典：`id IN ()` 在 DuckDB 里是语法错误，而「没要任何
+        行」本就是一个正常答案。
+        """
+        unique = sorted({str(item) for item in ids})
+        if not unique:
+            return {}
+        placeholders = ", ".join("?" for _ in unique)
+        frame = self.run(f"SELECT * FROM datasets WHERE id IN ({placeholders})", list(unique))
+        return {str(row["id"]): row for row in frame.to_dicts()}
+
+    def copy_wide(self, target: Path, *, projection: str | None = None) -> None:
+        """把 `datasets` 按投影写成 parquet；目标必须在数据目录内。
+
+        `COPY` 不是 SELECT，进不了 `_guard` 的口子，所以走内部连接——这正是
+        这条通道必须收进接口里的原因。`allowed_directories` 仍只放开数据目录，
+        这里再把目标校一次：接口自己就不可越界，不靠调用方守规矩。
+
+        `projection` 是一段列表达式（来自 `fields.projection_sql()`），不是第二
+        条 SQL：它嵌在 `COPY (...)` 的括号里，无法提前结束语句。
+        """
+        destination = Path(target)
+        root = self._store.root.resolve()
+        if not destination.resolve().is_relative_to(root):
+            raise ValueError(f"导出目标必须在数据目录内：{destination}（数据目录 {root}）")
+        escaped = destination.resolve().as_posix().replace("'", "''")
+        self._connection.execute(
+            f"COPY (SELECT {projection or '*'} FROM datasets) TO '{escaped}' (FORMAT PARQUET)"
+        )
 
     def close(self) -> None:
         self._connection.close()

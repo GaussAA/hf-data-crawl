@@ -147,6 +147,19 @@ def test_新增数据在同一连接内即时可见(catalog: GoldCatalog) -> Non
     assert ds1["span_days"] == 1
 
 
+def test_并列时按唯一键稳定排序(tmp_path: Path) -> None:
+    """并列行不能交给哈希顺序：同一份数据两次运行会给出不同的榜单与报告。"""
+    store = DatasetStore(tmp_path / "data")
+    seed(store, DAY1, [record(2, downloads=100), record(1, downloads=100)])
+    catalog = GoldCatalog(store)
+    try:
+        rows = catalog.board("downloads", limit=10)
+    finally:
+        catalog.close()
+
+    assert rows["id"].to_list() == ["acme/ds-1", "acme/ds-2"]
+
+
 def test_无数据时给出可读错误(tmp_path: Path) -> None:
     from hf_data_crawl.gold import GoldNotReady
 
@@ -338,6 +351,51 @@ def test_聚合类榜单不需要地址(catalog: GoldCatalog) -> None:
     assert "url" not in frame.columns
 
 
+# ---------------------------------------------------------------- 能力接口
+
+
+def test_overview_returns_single_named_row(catalog: GoldCatalog) -> None:
+    """概览是单行聚合，字段固定；它不是榜单，也不走 board。"""
+    row = catalog.overview()
+
+    assert set(row) == {
+        "datasets",
+        "gone",
+        "active",
+        "disappeared",
+        "restricted",
+        "renamed",
+        "cards",
+        "sized",
+        "growth_ready",
+        "moved",
+        "as_of",
+        "last_seen",
+        "total_downloads",
+    }
+    assert row["datasets"] == 4
+    assert row["active"] == 4
+
+
+def test_rows_are_parameterized_and_tolerate_missing_ids(catalog: GoldCatalog) -> None:
+    """按 id 取行不拼 SQL 字符串：带引号的 id 只是「没查到」，不是语法错误。"""
+    found = catalog.rows(["acme/ds-1", "acme/ds-404", "x'y"])
+
+    assert set(found) == {"acme/ds-1"}
+    assert found["acme/ds-1"]["id"] == "acme/ds-1"
+    assert catalog.rows([]) == {}
+
+
+def test_copy_wide_rejects_target_outside_store(catalog: GoldCatalog, tmp_path: Path) -> None:
+    """导出通道自己守住目录边界，不依赖调用方的检查。"""
+    outside = tmp_path / "outside.parquet"
+
+    with pytest.raises(ValueError, match="必须在数据目录内"):
+        catalog.copy_wide(outside)
+
+    assert not outside.exists()
+
+
 # ---------------------------------------------------------------- 只读查询的安全边界
 
 
@@ -362,16 +420,19 @@ def test_不能读取数据目录以外的文件(catalog: GoldCatalog, tmp_path:
 
 
 def test_连接层只读且禁止写文件(catalog: GoldCatalog, tmp_path: Path) -> None:
-    """查询连接本身是只读的，且即便绕过 `run()` 也写不了数据目录外的文件。"""
+    """查询连接本身是只读的，且即便绕过公开 API 也写不了数据目录外的文件。
+
+    这里刻意取私有 `_connection`：要验的是连接层的护栏，公开接口已不再暴露它。
+    """
     import duckdb
 
     with pytest.raises(duckdb.InvalidInputException, match="read-only"):
-        catalog.connection.execute("CREATE TABLE stolen AS SELECT 1")
+        catalog._connection.execute("CREATE TABLE stolen AS SELECT 1")
 
     target = tmp_path / "copied.csv"
 
     with pytest.raises(duckdb.PermissionException):
-        catalog.connection.execute(f"COPY (SELECT 1) TO '{target.as_posix()}'")
+        catalog._connection.execute(f"COPY (SELECT 1) TO '{target.as_posix()}'")
     assert not target.exists()
 
 
@@ -380,7 +441,7 @@ def test_外部访问配置已锁死(catalog: GoldCatalog) -> None:
     import duckdb
 
     with pytest.raises(duckdb.InvalidInputException):
-        catalog.connection.execute("SET enable_external_access = true")
+        catalog._connection.execute("SET enable_external_access = true")
 
 
 def test_query命令行对非只读语句返回失败(tmp_path: Path, capsys: Any) -> None:
