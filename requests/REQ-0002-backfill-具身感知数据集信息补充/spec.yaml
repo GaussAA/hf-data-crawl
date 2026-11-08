@@ -21,16 +21,16 @@ alert:
   row_delta_abs: 100
 
 fill:
-  # 对方给的是一张 40 列的空表，只有 E 列 URL 有值。引擎绝不改动原件。
+  # 对方给的是一张 40 列的空表，只有 E 列 URL 有值。受理时已复制进本目录 input/，
+  # 此后本需求不再依赖 Downloads 里的原件，也绝不改动它。
   source:
-    path: "C:/Users/JaNiy/Downloads/具身感知数据集信息补充1106.xlsx"
+    path: "input/具身感知数据集信息补充1106.xlsx"
     sheet: Sheet1
     header_row: 2            # 第 1 行是阶段分组，第 2 行才是 40 个列名
     key_column: URL
 
   output:
-    name: "具身感知数据集信息补充1106-已补全.xlsx"   # 交付档案里的正式存证
-    copy_to: "C:/Users/JaNiy/Downloads/具身感知数据集信息补充1106-已补全.xlsx"  # 档案落定后另存一份，便于就地取
+    name: "具身感知数据集信息补充1106-已补全.xlsx"   # 产物只进 deliveries/<时刻>/
 
   overrides: overrides.json  # 逐库人工判读结果；引擎只合并、不生成
   overwrite: false           # 只填空格；表里已有的内容一律不动

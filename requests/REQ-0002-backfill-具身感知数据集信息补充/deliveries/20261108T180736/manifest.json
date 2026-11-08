@@ -1,0 +1,470 @@
+{
+  "request_id": "REQ-0002",
+  "title": "具身感知数据集信息补充",
+  "requester": "大帅",
+  "kind": "backfill",
+  "spec_version": 1,
+  "delivered_at": "2026-11-08T18:07:36+08:00",
+  "source": {
+    "current_md5": "b07f52359e26e7bba73205aa43953934",
+    "current_rows": 1123885,
+    "newest_snapshot_date": "2026-11-08"
+  },
+  "result": {
+    "rows": 16,
+    "columns": [
+      "来源",
+      "发布组织/作者",
+      "数据集名称",
+      "简介",
+      "发布时间",
+      "更新时间",
+      "是否包含README",
+      "数据量级(条)",
+      "数据大小(GB)",
+      "下载量",
+      "点赞量",
+      "训练阶段",
+      "数据构成",
+      "数据模态",
+      "语种",
+      "技术方向",
+      "是否为答题",
+      "是否为benchmark",
+      "论文URL",
+      "是否有测试集",
+      "构造方式"
+    ],
+    "files": [
+      {
+        "name": "具身感知数据集信息补充1106-已补全.xlsx",
+        "bytes": 45124,
+        "sha256": "fc79f812860127b50f84e3ea57df02cd132ff813d5ce0d3e5ce951b4e582b996"
+      }
+    ]
+  },
+  "health": {
+    "status": "first",
+    "baseline_rows": null,
+    "delta_pct": null,
+    "delta_abs": null,
+    "supersedes": null,
+    "note": ""
+  },
+  "previous": null,
+  "fill": {
+    "input": {
+      "path": "input/具身感知数据集信息补充1106.xlsx",
+      "bytes": 49297,
+      "sha256": "55957f03fc29e8faa905b28ec41a517c9ec4d3727386eec461d02eedb54a8d9c"
+    },
+    "source": {
+      "path": "input/具身感知数据集信息补充1106.xlsx",
+      "sheet": "Sheet1",
+      "header_row": 2,
+      "key_column": "URL"
+    },
+    "output": "具身感知数据集信息补充1106-已补全.xlsx",
+    "overrides": "overrides.json",
+    "overwrite": false,
+    "stamp_note": "取自本地 HuggingFace 底库（对账后快照），辅以 16 份 README 与 datasets-server splits 作判据；未凭记忆填写。",
+    "columns": [
+      {
+        "name": "来源",
+        "kind": "const",
+        "field": null,
+        "template": null,
+        "const": "HuggingFace",
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "发布组织/作者",
+        "kind": "field",
+        "field": "author",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "数据集名称",
+        "kind": "field",
+        "field": "id",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "简介",
+        "kind": "field",
+        "field": "description",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": "prose"
+      },
+      {
+        "name": "发布时间",
+        "kind": "field",
+        "field": "created_at",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": "date"
+      },
+      {
+        "name": "更新时间",
+        "kind": "field",
+        "field": "last_modified",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": "date"
+      },
+      {
+        "name": "是否包含README",
+        "kind": "manual",
+        "field": null,
+        "template": null,
+        "const": null,
+        "reason": "底库该列仅头部有值，须确认仓库是否真带 README",
+        "format": null
+      },
+      {
+        "name": "数据量级(条)",
+        "kind": "manual",
+        "field": null,
+        "template": null,
+        "const": null,
+        "reason": "README 自述的实例数，单位不统一须逐条判读",
+        "format": null
+      },
+      {
+        "name": "数据大小(GB)",
+        "kind": "field",
+        "field": "main_size",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": "gb"
+      },
+      {
+        "name": "下载量",
+        "kind": "field",
+        "field": "downloads",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "点赞量",
+        "kind": "field",
+        "field": "likes",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "训练阶段",
+        "kind": "manual",
+        "field": null,
+        "template": null,
+        "const": null,
+        "reason": "README 明写 pretrain/fine-tune/post-training 才算",
+        "format": null
+      },
+      {
+        "name": "数据构成",
+        "kind": "manual",
+        "field": null,
+        "template": null,
+        "const": null,
+        "reason": "需读 README 才能概括",
+        "format": null
+      },
+      {
+        "name": "数据模态",
+        "kind": "field",
+        "field": "modalities",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "语种",
+        "kind": "field",
+        "field": "languages",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "技术方向",
+        "kind": "field",
+        "field": "task_categories",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "是否为答题",
+        "kind": "manual",
+        "field": null,
+        "template": null,
+        "const": null,
+        "reason": "须看数据形态是不是问答对",
+        "format": null
+      },
+      {
+        "name": "是否为benchmark",
+        "kind": "manual",
+        "field": null,
+        "template": null,
+        "const": null,
+        "reason": "须看 README 或论文标题是否自称 benchmark",
+        "format": null
+      },
+      {
+        "name": "论文URL",
+        "kind": "template",
+        "field": null,
+        "template": "https://arxiv.org/abs/{arxiv_ids}",
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "是否有测试集",
+        "kind": "manual",
+        "field": null,
+        "template": null,
+        "const": null,
+        "reason": "须看 datasets-server 的 splits 里有没有 test 划分",
+        "format": null
+      },
+      {
+        "name": "构造方式",
+        "kind": "manual",
+        "field": null,
+        "template": null,
+        "const": null,
+        "reason": "仿真合成 / 真机遥操作 / 多源整理，须读 README 判定",
+        "format": null
+      }
+    ],
+    "written": 300,
+    "tallies": {
+      "来源": {
+        "written": 16,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 0
+      },
+      "发布组织/作者": {
+        "written": 16,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 0
+      },
+      "数据集名称": {
+        "written": 16,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 0
+      },
+      "简介": {
+        "written": 15,
+        "from_override": 15,
+        "kept": 0,
+        "empty": 1
+      },
+      "发布时间": {
+        "written": 16,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 0
+      },
+      "更新时间": {
+        "written": 16,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 0
+      },
+      "是否包含README": {
+        "written": 16,
+        "from_override": 16,
+        "kept": 0,
+        "empty": 0
+      },
+      "数据量级(条)": {
+        "written": 14,
+        "from_override": 14,
+        "kept": 0,
+        "empty": 2
+      },
+      "数据大小(GB)": {
+        "written": 16,
+        "from_override": 1,
+        "kept": 0,
+        "empty": 0
+      },
+      "下载量": {
+        "written": 16,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 0
+      },
+      "点赞量": {
+        "written": 16,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 0
+      },
+      "训练阶段": {
+        "written": 13,
+        "from_override": 13,
+        "kept": 0,
+        "empty": 3
+      },
+      "数据构成": {
+        "written": 15,
+        "from_override": 15,
+        "kept": 0,
+        "empty": 1
+      },
+      "数据模态": {
+        "written": 13,
+        "from_override": 7,
+        "kept": 0,
+        "empty": 3
+      },
+      "语种": {
+        "written": 3,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 13
+      },
+      "技术方向": {
+        "written": 15,
+        "from_override": 15,
+        "kept": 0,
+        "empty": 1
+      },
+      "是否为答题": {
+        "written": 15,
+        "from_override": 15,
+        "kept": 0,
+        "empty": 1
+      },
+      "是否为benchmark": {
+        "written": 15,
+        "from_override": 15,
+        "kept": 0,
+        "empty": 1
+      },
+      "论文URL": {
+        "written": 11,
+        "from_override": 10,
+        "kept": 0,
+        "empty": 5
+      },
+      "是否有测试集": {
+        "written": 12,
+        "from_override": 12,
+        "kept": 0,
+        "empty": 4
+      },
+      "构造方式": {
+        "written": 15,
+        "from_override": 15,
+        "kept": 0,
+        "empty": 1
+      }
+    },
+    "missing_ids": [],
+    "undeclared": [
+      "URL",
+      "是否关联榜单",
+      "是否有测试结果",
+      "数据集质量评估分",
+      "筛选是否可用",
+      "下载情况",
+      "下载路径",
+      "存储路径",
+      "优先级",
+      "处理状态",
+      "处理人",
+      "处理后大小(GB)",
+      "处理后量级(条)",
+      "处理后路径",
+      "处理完成时间",
+      "是否提供质检数据",
+      "对应质检数据量",
+      "质检结果",
+      "是否训练"
+    ],
+    "manual": [
+      {
+        "column": "是否包含README",
+        "reason": "底库该列仅头部有值，须确认仓库是否真带 README"
+      },
+      {
+        "column": "数据量级(条)",
+        "reason": "README 自述的实例数，单位不统一须逐条判读"
+      },
+      {
+        "column": "训练阶段",
+        "reason": "README 明写 pretrain/fine-tune/post-training 才算"
+      },
+      {
+        "column": "数据构成",
+        "reason": "需读 README 才能概括"
+      },
+      {
+        "column": "是否为答题",
+        "reason": "须看数据形态是不是问答对"
+      },
+      {
+        "column": "是否为benchmark",
+        "reason": "须看 README 或论文标题是否自称 benchmark"
+      },
+      {
+        "column": "是否有测试集",
+        "reason": "须看 datasets-server 的 splits 里有没有 test 划分"
+      },
+      {
+        "column": "构造方式",
+        "reason": "仿真合成 / 真机遥操作 / 多源整理，须读 README 判定"
+      }
+    ],
+    "notes": [
+      {
+        "title": "下载量口径",
+        "text": "近 30 天下载量（downloads），即 HuggingFace 数据集页面显示的那个数字；历史累计值（downloads_all_time）未采用，普遍大一个量级。"
+      },
+      {
+        "title": "数据大小口径",
+        "text": "仓库实际字节数（main_size）按十进制折算 GB（1 GB = 10^9 字节），与 HF 页面及 README 自述「4.5TB」同一口径；不是解压后大小。"
+      },
+      {
+        "title": "数据量级口径",
+        "text": "优先采用 README 自述的实例数并注明单位；README 未给时退回 datasets-server 统计行数。该列单位本身不统一，故逐格标明。"
+      },
+      {
+        "title": "内部流程列",
+        "text": "「筛选是否可用」及其后 14 列（下载/存储路径、优先级、处理人、质检结果、是否训练等）属于你们的内部流程，底库无权填，保持空白。"
+      },
+      {
+        "title": "无客观来源的三列",
+        "text": "「是否关联榜单」「是否有测试结果」「数据集质量评估分」没有可查的数据源，一律留空。"
+      }
+    ]
+  }
+}

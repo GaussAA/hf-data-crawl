@@ -116,10 +116,10 @@ def build_book(path: Path, keys: list[str], *, header_row: int = 2) -> Path:
 
 
 def write_spec(path: Path, *, book: Path, out: Path, body: str) -> Path:
-    """造一份完整的 REQ spec，回填口径体嵌在 `fill:` 下。
+    """造一份自包含的 REQ spec：输入表与 spec 同目录，路径写相对、产物只给文件名。
 
-    `out` 既是档案内文件名，也是另存落点；`run_it` 把它的父目录当暂存目录，
-    于是端到端用例仍能在老地方找到产物。
+    `out` 只贡献产物文件名；`run_it` 把 spec 所在目录当暂存目录，于是端到端用例
+    仍能在老地方找到产物，而整个目录仍是可整体搬走的封闭单元。
     """
     indented = "\n".join(f"  {line}" if line else "" for line in body.splitlines())
     path.write_text(
@@ -132,13 +132,12 @@ cadence: once
 kind: backfill
 fill:
   source:
-    path: {book.as_posix()}
+    path: {book.name}
     sheet: 数据
     header_row: 2
     key_column: URL
   output:
     name: {out.name}
-    copy_to: {out.as_posix()}
 {indented}
 """,
         encoding="utf-8",
@@ -184,14 +183,60 @@ def test_不是数据集的写法一律报错(raw: str) -> None:
 # ---------------------------------------------------------------- spec 校验
 
 
-def test_输出不能与输入相同(tmp_path: Path) -> None:
-    """补全是产出，不是就地修改：原件是唯一可回退的凭据。"""
-    book = build_book(tmp_path / "in.xlsx", ["acme/ds-1"])
-    spec = write_spec(
-        tmp_path / "spec.yaml", book=book, out=book, body='columns:\n  "下载量": {field: downloads}'
+def spec_text(*, source: str, output: str) -> str:
+    """造一份可改坏某一项的完整 REQ spec，专测受理期的边界。"""
+    return (
+        "id: REQ-0001\ntitle: 测试\nrequester: 测试者\nkind: backfill\n"
+        "fill:\n  source:\n    path: " + source + "\n"
+        "    header_row: 2\n    key_column: URL\n"
+        "  output: " + output + "\n"
+        '  columns: {"下载量": {field: downloads}}\n'
     )
 
-    with pytest.raises(SpecError, match="不能与 source 相同"):
+
+def broken(path: Path, *, source: str, output: str) -> Path:
+    # 先放好合法的输入快照：要测的是 output / 路径形状，不该被「表不存在」抢先报掉。
+    build_book(path.parent / "in.xlsx", ["acme/ds-1"])
+    path.write_text(spec_text(source=source, output=output), encoding="utf-8")
+    return path
+
+
+def test_输入绝对路径被拒(tmp_path: Path) -> None:
+    """绝对路径会让需求目录搬不走，受理期就得断。"""
+    book = build_book(tmp_path / "in.xlsx", ["acme/ds-1"])
+
+    spec = broken(
+        tmp_path / "spec.yaml", source=book.resolve().as_posix(), output="{name: out.xlsx}"
+    )
+
+    with pytest.raises(SpecError, match="相对需求目录"):
+        load_spec(spec)
+
+
+def test_输入越界被拒(tmp_path: Path) -> None:
+    """`..` 会悄悄指到需求目录外，不能靠人自觉。"""
+    spec = broken(tmp_path / "spec.yaml", source="../outside.xlsx", output="{name: out.xlsx}")
+
+    with pytest.raises(SpecError, match="越出了需求目录"):
+        load_spec(spec)
+
+
+def test_另存到外部被拒(tmp_path: Path) -> None:
+    """产物只进交付档案；外部再放一份，三个月后没人说得清哪份正式。"""
+    spec = broken(
+        tmp_path / "spec.yaml",
+        source="in.xlsx",
+        output="{name: out.xlsx, copy_to: D:/somewhere/out.xlsx}",
+    )
+
+    with pytest.raises(SpecError, match="已退役"):
+        load_spec(spec)
+
+
+def test_产物名带路径被拒(tmp_path: Path) -> None:
+    spec = broken(tmp_path / "spec.yaml", source="in.xlsx", output="{name: sub/out.xlsx}")
+
+    with pytest.raises(SpecError, match="只能是文件名"):
         load_spec(spec)
 
 

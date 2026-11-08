@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from collections.abc import Callable
 from datetime import date, datetime
@@ -31,6 +32,7 @@ from .reconcile import Reconciler, ReconcileSummary
 from .report import Reporter
 from .requirement import (
     DELIVERIES_DIR,
+    INPUT_DIR,
     MANIFEST_NAME,
     SPEC_NAME,
     Cadence,
@@ -39,7 +41,9 @@ from .requirement import (
     Spec,
     SpecError,
     compile_sql,
+    directory_name,
     history_versions,
+    resolve_dir,
     skeleton,
 )
 from .requirement import load as load_spec
@@ -958,15 +962,29 @@ def _request(args: argparse.Namespace) -> int:
 
 
 def _request_new(args: argparse.Namespace, root: Path) -> int:
-    target = root / args.id / SPEC_NAME
-    if target.exists():
-        print(f"失败：{target} 已存在。要改口径请直接编辑它，并把 version 加一。")
-        return 1
+    """建需求：目录语义化，外部输入表当场复制进目录，之后与外部再无瓜葛。"""
     kind = Kind(args.kind)
-    source_path = ""
+    folder = root / directory_name(args.id, args.title, kind)
+    # 目录名带语义后缀，判重不能只看同名目录，得看编号前缀——否则同一个
+    # REQ-0002 换个标题就能再建一份，编号的唯一性就废了。
+    taken = (
+        [
+            path
+            for path in root.iterdir()
+            if path.is_dir() and (path.name == args.id or path.name.startswith(f"{args.id}-"))
+        ]
+        if root.is_dir()
+        else []
+    )
+    if taken or folder.exists():
+        names = "、".join(path.name for path in taken) or folder.name
+        print(
+            f"失败：需求号 {args.id} 已有目录（{names}）。要改口径请直接编辑它并把 version 加一。"
+        )
+        return 1
+
+    given: Path | None = None
     if kind is Kind.BACKFILL:
-        # 输入表是回填口径的一部分，必须真实存在：新建完立刻回读校验，不该因为
-        # 一个还没放好的文件把骨架判死、又删掉。
         if not args.source:
             print("失败：kind=backfill 需要 --source 指向对方给的原始表格（文件须已存在）。")
             return 1
@@ -974,36 +992,38 @@ def _request_new(args: argparse.Namespace, root: Path) -> int:
         if not given.is_file():
             print(f"失败：输入表不存在或不是文件：{given}")
             return 1
-        # 统一写成 posix 风格绝对路径：Windows 反斜杠在 YAML 双引号里会被当转义符。
-        source_path = given.resolve().as_posix()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        skeleton(
-            request_id=args.id,
-            title=args.title,
-            requester=args.requester,
-            purpose=args.purpose,
-            cadence=Cadence(args.cadence),
-            kind=kind,
-            source_path=source_path,
-        ),
-        encoding="utf-8",
-    )
-    # 建完立刻按真规矩读一遍：不合法就删掉并报错，好过等下次 run 才发现建错了。
+
+    folder.mkdir(parents=True)
+    snapshot: Path | None = None
     try:
+        if given is not None:
+            # 取材一次，取完即断：外部文件之后被删被改，都影响不到这份需求。
+            snapshot = folder / INPUT_DIR / given.name
+            snapshot.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(given, snapshot)
+        target = folder / SPEC_NAME
+        target.write_text(
+            skeleton(
+                request_id=args.id,
+                title=args.title,
+                requester=args.requester,
+                purpose=args.purpose,
+                cadence=Cadence(args.cadence),
+                kind=kind,
+                source_path=given.name if given else "",
+            ),
+            encoding="utf-8",
+        )
+        # 建完立刻按真规矩读一遍：不合法就整目录收走，好过等下次 run 才发现。
         load_spec(target)
-    except SpecError as error:
-        target.unlink(missing_ok=True)
-        # 空目录也一并收走：留一个空壳同样会让人以为「这里有个需求」。
-        # 目录非空（用户已放入别的东西）时 rmdir 会失败，那就保留，不强行删。
-        try:
-            target.parent.rmdir()
-        except OSError:
-            pass
+    except (SpecError, OSError) as error:
+        shutil.rmtree(folder, ignore_errors=True)
         print(f"失败：{error}")
         return 1
-    print(f"已建需求：{target}（{kind.value}）")
-    if kind is Kind.BACKFILL:
+
+    print(f"已建需求：{folder}（{kind.value}）")
+    if snapshot is not None:
+        print(f"  输入快照：{snapshot}（原件未改动；此后本需求不再依赖外部文件）")
         print(
             "  下一步：核对 fill.source 的 sheet / header_row / key_column 与逐列规则，"
             "改完把 version 加一，先跑 `request run <id> --dry-run`"
@@ -1033,6 +1053,7 @@ def _request_list(root: Path) -> int:
             f"  {spec.kind.value} · {spec.cadence.value} · v{spec.version} · "
             f"交付 {len(runs)} 次 · 最后 {last}"
         )
+        print(f"  目录：{path.parent.name}")
         print(f"  口径：{criteria_text(spec)}")
     return 0
 
@@ -1046,11 +1067,10 @@ def _show_fill(spec: Spec) -> None:
     sheet = fill.source.sheet or "首个 sheet"
     print("口径：")
     print(
-        f"  输入表：{fill.source.path}（{sheet}，表头第 {fill.source.header_row} 行，"
-        f"标识列 {fill.source.key_column}）"
+        f"  输入快照：{fill.source.relative}（需求目录内；{sheet}，"
+        f"表头第 {fill.source.header_row} 行，标识列 {fill.source.key_column}）"
     )
-    extra = f" → 另存 {fill.copy_to}" if fill.copy_to else ""
-    print(f"  产物：{fill.output_name}{extra}；原件绝不改动")
+    print(f"  产物：deliveries/<时刻>/{fill.output_name}；只写在需求目录内")
     print(
         f"  声明 {len(fill.columns)} 列 · overwrite={fill.overwrite} · "
         f"overrides={fill.overrides or '无'}"
@@ -1067,8 +1087,8 @@ def _show_fill(spec: Spec) -> None:
 
 
 def _request_show(root: Path, request_id: str) -> int:
-    path = root / request_id / SPEC_NAME
     try:
+        path = resolve_dir(root, request_id) / SPEC_NAME
         spec = load_spec(path)
     except SpecError as error:
         print(f"失败：{error}")
@@ -1117,8 +1137,8 @@ def _request_show(root: Path, request_id: str) -> int:
 def _request_run(args: argparse.Namespace, store: DatasetStore) -> int:
     """交付一次。一次性需求交付过就不再自动重复，加 --force 才重交。"""
     root = Path(args.requests_dir)
-    request_dir = root / args.id
     try:
+        request_dir = resolve_dir(root, args.id)
         spec = load_spec(request_dir / SPEC_NAME)
     except SpecError as error:
         print(f"失败：{error}")
@@ -1171,8 +1191,6 @@ def _print_delivery(result: DeliveryResult) -> None:
         print("  首次交付，无基线可比")
     elif health.note:
         print(f"  {health.note}")
-    for note in result.copy_notes:
-        print(f"  {note}")
 
 
 def _request_run_due(args: argparse.Namespace, store: DatasetStore) -> int:

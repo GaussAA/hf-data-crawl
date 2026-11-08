@@ -26,7 +26,13 @@ from hf_data_crawl.delivery import (
     run_due,
 )
 from hf_data_crawl.derive import derive_day
-from hf_data_crawl.requirement import DELIVERIES_DIR, MANIFEST_NAME, SPEC_NAME, Kind
+from hf_data_crawl.requirement import (
+    DELIVERIES_DIR,
+    MANIFEST_NAME,
+    SPEC_NAME,
+    Kind,
+    directory_name,
+)
 from hf_data_crawl.store import DatasetStore
 
 DAY = date(2026, 11, 1)
@@ -449,13 +455,12 @@ def make_book(path: Path, keys: list[str]) -> Path:
     return path
 
 
-def make_backfill_request(
-    root: Path, book: Path, *, copy_to: Path | None = None, **overrides: Any
-) -> Path:
-    """造一份 `kind: backfill` 的需求，公共头与查询型逐字同形。"""
-    output: dict[str, Any] = {"name": "已补全.xlsx"}
-    if copy_to is not None:
-        output["copy_to"] = copy_to.as_posix()
+def make_backfill_request(root: Path, book: Path, **overrides: Any) -> Path:
+    """造一份自包含的 `kind: backfill` 需求：输入表复制进 `input/`，spec 只写相对路径。"""
+    folder = root / "REQ-0002"
+    input_dir = folder / "input"
+    input_dir.mkdir(parents=True, exist_ok=True)
+    (input_dir / book.name).write_bytes(book.read_bytes())
     body: dict[str, Any] = {
         "id": "REQ-0002",
         "title": "清单补全",
@@ -464,8 +469,8 @@ def make_backfill_request(
         "cadence": "once",
         "kind": "backfill",
         "fill": {
-            "source": {"path": book.as_posix(), "header_row": 2, "key_column": "URL"},
-            "output": output,
+            "source": {"path": f"input/{book.name}", "header_row": 2, "key_column": "URL"},
+            "output": {"name": "已补全.xlsx"},
             "columns": {
                 "下载量": {"field": "downloads"},
                 "训练阶段": {"manual": "须读 README 判定"},
@@ -553,16 +558,22 @@ def test_预演不落盘也不受护栏阻断(store: DatasetStore, tmp_path: Pat
     assert not (root / "REQ-0002" / DELIVERIES_DIR).exists()
 
 
-def test_便利副本在档案落定后才写(store: DatasetStore, tmp_path: Path) -> None:
+def test_产物只落在需求目录内且输入有指纹(store: DatasetStore, tmp_path: Path) -> None:
+    """自包含的判据：输入、口径、产物全在需求目录，manifest 能自证输入是哪一版。"""
     root = tmp_path / "req"
     book = make_book(tmp_path / "in.xlsx", ["acme/ds-1", "acme/ds-2"])
-    target = tmp_path / "copies" / "给对方.xlsx"
-    make_backfill_request(root, book, copy_to=target)
+    make_backfill_request(root, book)
 
     result = deliver(store, root, "REQ-0002", now=NOW)
 
-    assert result.copy_notes and "已另存" in result.copy_notes[0]
-    assert target.read_bytes() == (result.directory / "已补全.xlsx").read_bytes()
+    body = json.loads((result.directory / MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert body["fill"]["input"]["path"] == f"input/{book.name}"
+    assert body["fill"]["input"]["bytes"] == book.stat().st_size
+    assert len(body["fill"]["input"]["sha256"]) == 64
+    assert "copy_to" not in body["fill"]
+    assert (result.directory / "已补全.xlsx").exists()
+    assert not (tmp_path / "已补全.xlsx").exists()
+    assert "输入快照" in (result.directory / "README.md").read_text(encoding="utf-8")
 
 
 def test_混合形态批量交付一份失败不挡另一份(store: DatasetStore, tmp_path: Path) -> None:
@@ -570,7 +581,8 @@ def test_混合形态批量交付一份失败不挡另一份(store: DatasetStore
     make_request(root, id="REQ-0001", cadence="daily")
     book = make_book(tmp_path / "in.xlsx", ["acme/ds-1"])
     make_backfill_request(root, book)
-    book.unlink()  # 输入表丢了：受理期就该失败，且不能拖累别的需求
+    # 删的是需求目录里的快照，不是外部原件：受理期就该失败，且不能拖累别的需求。
+    (root / "REQ-0002" / "input" / book.name).unlink()
 
     report = run_due(store, root, now=NOW)
 
@@ -586,3 +598,29 @@ def test_暂存目录不算一次交付(tmp_path: Path) -> None:
     base.mkdir(parents=True)
 
     assert deliveries_of(root / "REQ-0002") == []
+
+
+def test_语义化目录仍按编号交付(store: DatasetStore, tmp_path: Path) -> None:
+    """目录名给人看，编号给机器用；换了目录名，交付链路一步不改。"""
+    root = tmp_path / "req"
+    folder = root / directory_name("REQ-0001", "高下载数据集", Kind.QUERY)
+    folder.mkdir(parents=True)
+    (folder / SPEC_NAME).write_text(
+        yaml.safe_dump(
+            {
+                "id": "REQ-0001",
+                "title": "高下载数据集",
+                "requester": "张三",
+                "version": 1,
+                "cadence": "once",
+                "criteria": [{"metric": "下载量", "op": ">", "value": 1000}],
+            },
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+
+    result = deliver(store, root, "REQ-0001", now=NOW)
+
+    assert result.directory.parent == folder / DELIVERIES_DIR
+    assert (result.directory / MANIFEST_NAME).exists()

@@ -13,7 +13,7 @@ import pytest
 import yaml
 
 from hf_data_crawl.cli import main
-from hf_data_crawl.requirement import SPEC_NAME, Kind, load
+from hf_data_crawl.requirement import SPEC_NAME, Kind, load, resolve_dir
 
 
 def run(tmp_path: Path, *argv: str) -> int:
@@ -36,7 +36,8 @@ def make(tmp_path: Path, request_id: str = "REQ-0001") -> Path:
         "选型参考",
     )
     assert code == 0
-    return tmp_path / "req" / request_id / SPEC_NAME
+    # 目录名带语义后缀，按编号解析才找得到。
+    return resolve_dir(tmp_path / "req", request_id) / SPEC_NAME
 
 
 def test_新建后文件落盘且可读(tmp_path: Path) -> None:
@@ -63,7 +64,10 @@ def test_需求号不合法时不留半成品(tmp_path: Path) -> None:
     code = run(tmp_path, "request", "new", "REQ-1", "--title", "x", "--requester", "y")
 
     assert code == 1
-    assert not (tmp_path / "req" / "REQ-1").exists()
+    root = tmp_path / "req"
+    assert not (root / "REQ-1").exists()
+    if root.is_dir():
+        assert list(root.glob("REQ-1*")) == []
 
 
 def test_空目录给出下一步提示(tmp_path: Path) -> None:
@@ -148,10 +152,15 @@ def test_新建回填需求走统一入口(tmp_path: Path) -> None:
     )
 
     assert code == 0
-    spec = load(tmp_path / "req" / "REQ-0002" / SPEC_NAME)
+    folder = resolve_dir(tmp_path / "req", "REQ-0002")
+    spec = load(folder / SPEC_NAME)
     assert spec.kind is Kind.BACKFILL
     assert spec.fill is not None
-    assert spec.fill.source.path == book.resolve()
+    assert spec.fill.source.relative == f"input/{book.name}"
+    snapshot = folder / "input" / book.name
+    assert snapshot.read_bytes() == book.read_bytes()
+    assert spec.fill.source.path == snapshot.resolve()
+    assert "backfill" in folder.name and "清单补全" in folder.name
 
 
 def test_回填需求缺输入表被拒且不留半成品(tmp_path: Path) -> None:
@@ -169,7 +178,10 @@ def test_回填需求缺输入表被拒且不留半成品(tmp_path: Path) -> Non
     )
 
     assert code == 1
-    assert not (tmp_path / "req" / "REQ-0002").exists()
+    root = tmp_path / "req"
+    assert not (root / "REQ-0002").exists()
+    if root.is_dir():
+        assert list(root.glob("REQ-0002*")) == []
 
 
 def test_列表同时显示两种形态(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -201,3 +213,33 @@ def test_列表同时显示两种形态(tmp_path: Path, capsys: pytest.CaptureFi
     assert "backfill" in printed
     assert "REQ-0001" in printed
     assert "REQ-0002" in printed
+
+
+def test_取材后外部文件改动不影响本需求(tmp_path: Path) -> None:
+    """取完即断：外部原件被删被改，需求目录仍是能独立复现的封闭单元。"""
+    book = make_book(tmp_path / "in.xlsx")
+    assert (
+        run(
+            tmp_path,
+            "request",
+            "new",
+            "REQ-0002",
+            "--title",
+            "清单补全",
+            "--requester",
+            "大帅",
+            "--kind",
+            "backfill",
+            "--source",
+            str(book),
+        )
+        == 0
+    )
+    folder = resolve_dir(tmp_path / "req", "REQ-0002")
+    snapshot = folder / "input" / book.name
+    before = snapshot.read_bytes()
+
+    book.write_bytes(b"changed by someone else")
+
+    assert snapshot.read_bytes() == before
+    assert load(folder / SPEC_NAME).fill is not None

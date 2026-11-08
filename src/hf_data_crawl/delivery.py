@@ -33,7 +33,9 @@
    必须留在纸面上，不能靠人回忆上次是多少。
 
 原子性：先写 `.tmp-*` 目录，三件齐了再整体改名。中途失败绝不留半份交付。
-便利副本（`copy_to`）在档案落定之后才复制：否则会出现「副本已更新、档案没有」。
+
+**自包含**：输入快照、口径、判读、历次交付全在需求目录内。产物绝不外写——一经
+外写，「哪一份才是正式的」就说不清，而外部那份还会被随手改动。
 """
 
 from __future__ import annotations
@@ -66,12 +68,13 @@ from .requirement import (
     Spec,
     SpecError,
     compile_sql,
+    resolve_dir,
     snapshot_history,
 )
 from .requirement import (
     load as load_spec,
 )
-from .source import SourceMissing, SourceStamp, stamp
+from .source import SourceMissing, SourceStamp, file_stamp, stamp
 from .store import DatasetStore
 
 #: 交付目录名的时刻格式。到秒：同一分钟内跑两个需求是常态。
@@ -98,8 +101,6 @@ class Payload:
     definition: dict[str, Any] = field(default_factory=dict)
     #: 写进 README「口径」段的若干行（markdown）。
     detail_lines: list[str] = field(default_factory=list)
-    #: 档案落定后要另存的便利副本：（档案内文件名, 目标路径）。
-    copies: tuple[tuple[str, Path], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -129,9 +130,6 @@ class DeliveryResult:
     health: Health
     spec_version: int
     kind: Kind
-    #: 便利副本的复制结果。档案已经成立，副本失败只记不抛——不能把「已交付」
-    #: 报成「失败」，也不能静默不提。
-    copy_notes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -192,7 +190,7 @@ def deliver(
     now: datetime | None = None,
 ) -> DeliveryResult:
     """跑一次交付。任何护栏不通过都抛 `DeliveryBlocked`，且不留任何目录。"""
-    request_dir = requests_root / request_id
+    request_dir = resolve_dir(requests_root, request_id)
     spec = load_spec(request_dir / SPEC_NAME)
     moment = now or datetime.now().astimezone()
     stamp_value = source or _stamp(store)
@@ -236,7 +234,6 @@ def deliver(
 
     # 首次交付落一份口径快照——只留「真的用过」的版本，没用过的口径没有保留价值。
     snapshot_history(request_dir / SPEC_NAME, spec.version)
-    notes = _copy_out(directory, payload.copies)
 
     return DeliveryResult(
         request_id=spec.id,
@@ -247,7 +244,6 @@ def deliver(
         health=health,
         spec_version=spec.version,
         kind=spec.kind,
-        copy_notes=notes,
     )
 
 
@@ -260,7 +256,7 @@ def preview(
     source: SourceStamp | None = None,
 ) -> Preview:
     """只算不写：看这次会出多少行、每列能填多少，不产生任何交付档案。"""
-    request_dir = requests_root / request_id
+    request_dir = resolve_dir(requests_root, request_id)
     spec = load_spec(request_dir / SPEC_NAME)
     payload = _execute(
         RunContext(
@@ -384,34 +380,34 @@ def _backfill_payload(ctx: RunContext) -> Payload:
         source=ctx.source,
         dry_run=ctx.dry_run,
     )
-    definition = _fill_definition(fill, report)
-    lines = _fill_lines(fill, report, ctx.dry_run)
-    copies: tuple[tuple[str, Path], ...] = ()
-    if not ctx.dry_run and fill.copy_to is not None:
-        copies = ((fill.output_name, fill.copy_to),)
+    input_stamp = file_stamp(fill.source.path)
+    definition = _fill_definition(fill, report, input_stamp)
+    lines = _fill_lines(fill, report, ctx.dry_run, input_stamp)
     return Payload(
         rows=report.rows,
         columns=report.columns(),
         files=report.files,
         definition=definition,
         detail_lines=lines,
-        copies=copies,
     )
 
 
-def _fill_definition(fill: backfill.FillSpec, report: backfill.FillReport) -> dict[str, Any]:
+def _fill_definition(
+    fill: backfill.FillSpec, report: backfill.FillReport, input_stamp: dict[str, Any]
+) -> dict[str, Any]:
     """回填形态的机器读口径：哪一列从哪来、这一轮实际写了多少。"""
     return {
         "fill": {
+            # 输入快照的相对路径与指纹：目录搬走后仍能回答「基于哪一版清单」。
+            "input": {"path": fill.source.relative, **input_stamp},
             "source": {
-                "path": str(fill.source.path),
+                "path": fill.source.relative,
                 "sheet": fill.source.sheet,
                 "header_row": fill.source.header_row,
                 "key_column": fill.source.key_column,
             },
             "output": fill.output_name,
-            "copy_to": str(fill.copy_to) if fill.copy_to else None,
-            "overrides": str(fill.overrides) if fill.overrides else None,
+            "overrides": fill.overrides.name if fill.overrides else None,
             "overwrite": fill.overwrite,
             "stamp_note": fill.stamp_note,
             "columns": [
@@ -444,13 +440,21 @@ def _fill_definition(fill: backfill.FillSpec, report: backfill.FillReport) -> di
     }
 
 
-def _fill_lines(fill: backfill.FillSpec, report: backfill.FillReport, dry_run: bool) -> list[str]:
+def _fill_lines(
+    fill: backfill.FillSpec,
+    report: backfill.FillReport,
+    dry_run: bool,
+    input_stamp: dict[str, Any],
+) -> list[str]:
     """回填形态的人读口径：来源、规则、覆盖、以及「哪些是引擎故意没填」。"""
+    digest = str(input_stamp["sha256"])[:16]
     lines = [
         f"- 形态：按 URL 清单回填表格（`kind: backfill`）{' · 预演，未写盘' if dry_run else ''}",
-        f"- 输入表：`{fill.source.path}`（sheet {fill.source.sheet or '首个'}，"
-        f"表头第 {fill.source.header_row} 行，标识列 `{fill.source.key_column}`）",
-        f"- 产物：`{fill.output_name}`；原件绝不改动",
+        f"- 输入快照：`{fill.source.relative}`（需求目录内，"
+        f"{input_stamp['bytes']:,} 字节，sha256 `{digest}…`）",
+        f"- 表结构：sheet {fill.source.sheet or '首个'}，"
+        f"表头第 {fill.source.header_row} 行，标识列 `{fill.source.key_column}`",
+        f"- 产物：`deliveries/<时刻>/{fill.output_name}`，只写在需求目录内；外部文件一律不动",
         f"- 取值：只填空格{'（本份允许覆盖已有内容）' if fill.overwrite else ''}；"
         "未命中底库的行整行留空；需要判读的列由 `overrides.json` 提供，引擎不猜",
         f"- 声明 {len(fill.columns)} 列，本轮写入 {report.written()} 格，"
@@ -650,19 +654,6 @@ def _flat_for_csv(frame: pl.DataFrame) -> pl.DataFrame:
         else:
             exprs.append(pl.col(name))
     return frame.select(exprs)
-
-
-def _copy_out(directory: Path, copies: tuple[tuple[str, Path], ...]) -> tuple[str, ...]:
-    """档案落定后再另存便利副本。失败只记不抛：档案已经成立，不能误报成失败。"""
-    notes: list[str] = []
-    for name, target in copies:
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(directory / name, target)
-            notes.append(f"已另存 {target}")
-        except OSError as error:
-            notes.append(f"[!] 另存 {target} 失败：{error}（交付档案不受影响）")
-    return tuple(notes)
 
 
 def _manifest(
@@ -866,12 +857,14 @@ def run_due(
     failed: list[tuple[str, str]] = []
 
     for spec_path in sorted(requests_root.glob(f"*/{SPEC_NAME}")):
-        request_id = spec_path.parent.name
+        # 目录名带语义后缀，交付时必须把「目录名」换成 spec 里的需求号——
+        # `deliver` 靠编号去解析目录，传目录名会找不到家。
         try:
             spec = load_spec(spec_path)
         except SpecError as error:
-            failed.append((request_id, str(error)))
+            failed.append((spec_path.parent.name, str(error)))
             continue
+        request_id = spec.id
 
         due, reason = due_state(spec, spec_path.parent, moment)
         if not due:

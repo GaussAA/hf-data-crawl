@@ -61,6 +61,9 @@ hf-data-crawl request      run REQ-0001 [--force] [--dry-run]   # once 重交须
 hf-data-crawl request      run-due                  # 只跑到期的（计划任务用）
 ```
 
+`--kind backfill` 时 `--source` 必填：该文件会被复制进 `<需求目录>/input/`，原件不动，
+此后需求不再依赖外部路径。目录名按 `REQ-xxxx-<kind>-<标题短名>` 自动生成，命令仍只用编号。
+
 全局参数 `--data-dir` 需放在子命令之前，默认取 `HF_DATA_DIR`，否则 `./data`。
 
 写命令（`collect` / `reconcile` / `build` / `enrich` / `fetch-sizes` / `fetch-files` / `archive` / `compact` / `export-wide`）执行期间持有 `data/.lock` 的独占锁，同一时刻只能跑一个；拿不到锁会失败并在 `runs/` 留记录。进程被杀后系统自动释放，不会留下死锁。`report` 与 `query` 不加锁。
@@ -294,13 +297,26 @@ uv run hf-data-crawl doctor                        # 手动体检；有问题退
 是列不完的。
 
 ```
-requests/REQ-0001/spec.yaml           # 公共头 + kind + 该形态的口径体
-requests/REQ-0001/history/v1.yaml     # 交付时自动快照，只留「真的用过」的口径
-requests/REQ-0001/deliveries/20261108T145000/
-  data.parquet / 已补全.xlsx          # 产物字节，不进 git（白名单只放行两份说明）
-  manifest.json     # 机器读：kind、底库指纹、口径、行数、列、sha256、健康标记
-  README.md         # 人读：要什么、怎么算的、基于哪天的底库、几行
+requests/REQ-0001-query-高热度数据集清单/
+  spec.yaml                  # 公共头 + kind + 该形态的口径体
+  history/v1.yaml            # 交付时自动快照，只留「真的用过」的口径
+  input/清单.xlsx             # 回填型：受理时复制进来的输入快照（query 型没有）
+  overrides.json             # 回填型：逐库人工判读结果
+  deliveries/20261108T145000/
+    data.parquet / 已补全.xlsx    # 产物字节，不进 git（白名单只放行两份说明）
+    manifest.json            # 机器读：kind、底库指纹、输入指纹、口径、行数、sha256、健康
+    README.md                # 人读：要什么、怎么算的、基于哪天的底库、几行
 ```
+
+**目录名 = `REQ-xxxx-<kind>-<标题短名>`**：编号保唯一与排序，`kind` 一眼看出执行路径，
+标题短名不用打开文件就知道这单是什么。命令始终用编号（`request run REQ-0002`），
+目录改动不必跟着改命令；改标题也不搬目录，正式名字以 `spec.yaml` 为准。
+
+**需求目录自包含**：对方给的文件路径只在受理时用一次——`request new --source` 把输入表
+复制进 `input/`，spec 只写相对路径；产物只进 `deliveries/<时刻>/`。绝对路径、`..` 越界、
+`copy_to` 外写一律在读入时拒绝。整个目录拷走或 clone 下来仍读得懂、跑得动，外部原件
+之后被删被改都影响不到它。每次交付的 `manifest.json` 还会记下输入快照的相对路径与
+sha256，于是「基于哪一版清单」和「基于哪一版底库」一样能自证。
 
 `spec.yaml` 里 `kind: query` 带 `criteria` / `order_by` / `output`，`kind: backfill`
 带 `fill:`（输入表、逐列取值方式）。`requirement.py` 负责读与校验，`delivery.py`
@@ -350,15 +366,20 @@ hf-data-crawl request run REQ-0002             # 出正式交付档案
 ```
 
 ```
-requests/REQ-0002/spec.yaml          # 公共头 + kind + fill: 口径体
-requests/REQ-0002/overrides.json     # 逐库人工判读结果（引擎只合并、不生成）
-requests/REQ-0002/deliveries/<时刻>/
-  已补全.xlsx / manifest.json / README.md   # 台账就是这份 manifest，不再另记一份 runs/*.json
+requests/REQ-0002-backfill-具身感知数据集信息补充/
+  spec.yaml                       # 公共头 + kind + fill: 口径体
+  input/清单.xlsx                  # --source 指定的表，受理时复制进来；原件不动
+  overrides.json                  # 逐库人工判读结果（引擎只合并、不生成）
+  history/v1.yaml                 # 首次交付时留存的口径快照
+  deliveries/<时刻>/
+    清单-已补全.xlsx / manifest.json / README.md
 ```
 
-**机械的归引擎，判断的归人**：一列只能用一种取值方式。
+`--source` 指向的外部路径**只在受理时用一次**；spec 里写的是
+`fill.source.path: input/清单.xlsx`，`output` 只给文件名。产物不会再落到 Downloads 或
+原件同目录，台账就是这份 manifest，不再另记一份 `runs/*.json`。
 
-一列只能用一种取值方式：
+**机械的归引擎，判断的归人**：一列只能用一种取值方式。
 
 | 方式 | 含义 | 例 |
 |---|---|---|
@@ -367,12 +388,13 @@ requests/REQ-0002/deliveries/<时刻>/
 | `const` | 常量 | `{const: HuggingFace}` |
 | `manual` | 引擎不填，值留空、原因进说明页 | `{manual: README 明写训练阶段才算}` |
 
-**四条只写不说的规矩**：
+**五条只写不说的规矩**：
 
-1. **绝不改原件**：`fill.output.copy_to` 与 `fill.source.path` 同路径直接报错。原件是唯一可回退的凭据。
-2. **默认不覆盖**：只填空格。人家手填的可能比底库新，也可能有底库没有的判断；要覆盖须显式 `overwrite: true`。
-3. **不猜**：判读不出来的列写 `manual`，留空并在「补全说明」页点名。一份看着齐整、实则编造的表，比诚实地空着几格危险得多——空着会有人来问，编造不会。
-4. **未声明的列一律不碰**，并在报告里列出来，让人看得见还剩多少活。
+1. **绝不改原件，也绝不外写产物**：输入只读；产物只进 `deliveries/<时刻>/`。`copy_to` 与带路径的 `output` 在读入时直接拒绝。
+2. **输入必须自包含**：`fill.source.path` 只能写需求目录内的相对路径，绝对路径与 `..` 越界直接拒绝。
+3. **默认不覆盖**：只填空格。人家手填的可能比底库新，也可能有底库没有的判断；要覆盖须显式 `overwrite: true`。
+4. **不猜**：判读不出来的列写 `manual`，留空并在「补全说明」页点名。一份看着齐整、实则编造的表，比诚实地空着几格危险得多——空着会有人来问，编造不会。
+5. **未声明的列一律不碰**，并在报告里列出来，让人看得见还剩多少活。
 
 产物是**新文件**，附一页「补全说明」（口径、留空原因、未命中清单）。同输入同底库连跑两次
 **逐字节相同**：xlsx 里的条目时间戳与 `dcterms:modified` 都锚到底库快照日，否则内容全同、
@@ -382,8 +404,9 @@ md5 却每次不同，「这次和上次一样吗」只能靠人肉比对。
 `overrides.json`，与机械层分开：引擎自己不读 README、不替人下结论，但会把「哪些格子是
 人工判读来的」记进 `manifest.json` 的 `fill.tallies` 与 README 的逐列规则表。
 
-产物若另配了 `fill.output.copy_to`，那份便利副本在**档案落定之后**才复制，不会出现
-「副本已更新、档案没有」的半截状态；复制失败只记不抛，因为正式档案已经成立。
+输入快照连同 spec、overrides、history 与历次交付一起构成封闭单元；`manifest.json` 的
+`fill.input` 记着它的相对路径、字节数与 sha256。要换一张新表，把文件放进 `input/`、
+改 `fill.source.path` 并把 `version` 加一即可，全程不必碰外部路径。
 
 ## 开发
 

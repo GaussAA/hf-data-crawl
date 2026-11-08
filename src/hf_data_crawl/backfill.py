@@ -21,19 +21,24 @@
 齐整、实则编造的表，比一份诚实地空着几格表危险得多——空着会有人来问，编造
 不会。
 
-口径体形状（`requests/<编号>/spec.yaml` 的 `fill:` 段；上面的公共头由需求层管）：
+**需求目录必须自包含。** 对方给的表可能在 Downloads、可能在共享盘、三个月后可能
+已被删改；需求一旦受理，就把输入表**复制一份快照**进 `<需求目录>/input/`，spec 只写
+相对路径，之后再不碰外部文件。产物也只写进 `<需求目录>/deliveries/<时刻>/`。整个目录
+拷走仍能读懂、仍能复现——口径、输入、判读、历次交付全在里面。因此引擎在受理期就
+拒绝绝对路径、拒绝 `..` 越界、拒绝任何「另存到外部」的写法，而不是靠人自觉。
+
+口径体形状（`requests/<语义目录>/spec.yaml` 的 `fill:` 段；公共头由需求层管）：
 
 ```yaml
 kind: backfill
 fill:
   source:
-    path: C:/Users/me/Downloads/清单.xlsx
+    path: input/清单.xlsx      # 相对需求目录的输入快照，绝不指向外部
     sheet: Sheet1
     header_row: 2            # 列名所在行；其上可有多行分组标题
     key_column: URL          # 用列名定位，不用列号
   output:
-    name: 清单-已补全.xlsx    # 档案里的文件名
-    copy_to: C:/Users/me/Downloads/清单-已补全.xlsx  # 可选，档案落定后另存一份
+    name: 清单-已补全.xlsx    # 只写文件名：产物固定落在 deliveries/<时刻>/ 里
   columns:
     来源:      {const: HuggingFace}
     数据集名称: {field: id}
@@ -41,15 +46,16 @@ fill:
     数据模态:   {field: modalities, join: "、", translate: true}
     论文URL:   {template: "https://arxiv.org/abs/{arxiv_ids}"}
     训练阶段:   {manual: README 未明写训练阶段}
-  overrides: overrides.json  # 可选，人工判读结果
+  overrides: overrides.json  # 可选，人工判读结果（同样在需求目录里）
 ```
 
-四条只写不说的规矩：
+五条只写不说的规矩：
 
-1. **绝不改原件**：`output.copy_to` 与 `source.path` 相同则直接报错。
-2. **默认不覆盖已有内容**：只填空格。要覆盖须显式 `overwrite: true`。
-3. **未声明的列一律不碰**，并在报告里列出来，让人看得见还剩多少活。
-4. **未命中底库的行不编值**，整行留空并点名。
+1. **绝不改原件，也不外写产物**：输入只读、产物只进交付档案。
+2. **输入必须自包含**：相对路径且不得越出需求目录，绝对路径直接拒绝。
+3. **默认不覆盖已有内容**：只填空格。要覆盖须显式 `overwrite: true`。
+4. **未声明的列一律不碰**，并在报告里列出来，让人看得见还剩多少活。
+5. **未命中底库的行不编值**，整行留空并点名。
 """
 
 from __future__ import annotations
@@ -112,12 +118,15 @@ class FillError(ValueError):
 
 @dataclass(frozen=True)
 class TableSource:
-    """输入表：路径、sheet、列名所在行、标识列名。"""
+    """输入表快照：路径、sheet、列名所在行、标识列名。"""
 
     path: Path
     sheet: str | None
     header_row: int
     key_column: str
+    #: spec 里写的相对路径（如 `input/清单.xlsx`）。manifest 记的是它而非绝对路径：
+    #: 绝对路径会让需求目录搬走之后，档案说不清输入到底在哪。
+    relative: str
 
 
 @dataclass(frozen=True)
@@ -141,14 +150,13 @@ class ColumnRule:
 class FillSpec:
     """回填的「口径体」。不含 id/title——那是需求的事，不归执行体管。
 
-    产物文件名与「另存一份到」分开：前者进交付档案（`deliveries/<时刻>/`），
-    后者是给人就地取的便利副本。档案里那份是正式存证，副本丢了也不要紧。
+    `source.path` 是需求目录内的输入快照，`output_name` 只是文件名：产物固定进
+    `deliveries/<时刻>/`。两者都不允许指向需求目录之外，目录才能整体搬走。
     """
 
     source: TableSource
     output_name: str
     columns: tuple[ColumnRule, ...]
-    copy_to: Path | None = None
     overrides: Path | None = None
     overwrite: bool = False
     lexicon: dict[str, str] = field(default_factory=dict)
@@ -240,7 +248,7 @@ def from_mapping(body: Any, base_dir: Path, *, origin: str = "spec") -> FillSpec
     if not isinstance(body, dict):
         raise FillError(f"{origin}: fill 必须是映射（source / output / columns）")
     source = _source(body.get("source"), base_dir, origin)
-    output_name, copy_to = _output(body.get("output"), base_dir, source, origin)
+    output_name = _output(body.get("output"), origin)
     columns = tuple(
         _rule(key, value, origin) for key, value in _mapping(body.get("columns"), origin).items()
     )
@@ -264,7 +272,6 @@ def from_mapping(body: Any, base_dir: Path, *, origin: str = "spec") -> FillSpec
         source=source,
         output_name=output_name,
         columns=columns,
-        copy_to=copy_to,
         overrides=overrides_path,
         overwrite=bool(body.get("overwrite", False)),
         lexicon=lexicon,
@@ -294,13 +301,25 @@ def _notes(raw: Any, origin: str) -> tuple[tuple[str, str], ...]:
 
 
 def _source(raw: Any, base_dir: Path, origin: str) -> TableSource:
+    """解析输入快照，把「自包含」在受理期就钉死。
+
+    绝对路径会让需求目录搬不走，`..` 会悄悄指到目录外。两者等到三个月后外部
+    文件被删改才暴露，那时这份交付已经无法复现，所以宁可读入时直接拒绝。
+    """
     if not isinstance(raw, dict):
         raise FillError(f"{origin}: source 必须是映射（path / sheet / header_row / key_column）")
-    table = Path(str(raw.get("path", ""))).expanduser()
-    if not table.is_absolute():
-        table = (base_dir / table).resolve()
-    if not table.exists():
-        raise FillError(f"{origin}: 输入表不存在：{table}")
+    given = Path(str(raw.get("path", ""))).expanduser()
+    if given.is_absolute():
+        raise FillError(
+            f"{origin}: source.path 必须是相对需求目录的路径，实得 {str(given)!r}；"
+            "先把输入表复制进 input/ 再引用它（整个需求目录要能搬走）"
+        )
+    base = base_dir.resolve()
+    table = (base / given).resolve()
+    if not table.is_relative_to(base) or table == base:
+        raise FillError(f"{origin}: source.path 越出了需求目录：{str(given)!r}")
+    if not table.is_file():
+        raise FillError(f"{origin}: 输入表不存在或不是文件：{table}")
     header_row = int(raw.get("header_row", 1))
     if header_row < 1:
         raise FillError(f"{origin}: header_row 从 1 起算")
@@ -310,45 +329,35 @@ def _source(raw: Any, base_dir: Path, origin: str) -> TableSource:
         sheet=None if sheet in (None, "") else str(sheet),
         header_row=header_row,
         key_column=_text(raw.get("key_column"), "source.key_column", origin),
+        relative=given.as_posix(),
     )
 
 
-def _output(raw: Any, base_dir: Path, source: TableSource, origin: str) -> tuple[str, Path | None]:
-    """解析产物：返回（档案内文件名，另存副本的落点）。
+def _output(raw: Any, origin: str) -> str:
+    """产物只给一个文件名；任何「另存到外部」的写法都在这里断掉。
 
-    三种写法都认，前两种是同一套语义，第三种只作兼容：
-    - `output: {name: 已补全.xlsx, copy_to: D:/some}`：显式分开——档案里叫什么、
-      要不要在别处再落一份。
-    - `output: D:/some/已补全.xlsx`：文件名取末段，同时另存到该路径。
-    - `output: {path: D:/some/已补全.xlsx}`：上一版遗留写法，等价上一种。
+    曾允许 `copy_to`，于是同一份产物出现在两处：档案里一份、对方目录一份。三个月
+    后没人说得清哪份是正式的，而外部那份还会被随手改动。现在只有档案里那一份，
+    且它就在需求目录内。
     """
     if isinstance(raw, dict):
+        for legacy in ("copy_to", "path"):
+            if legacy in raw:
+                raise FillError(
+                    f"{origin}: output.{legacy} 已退役——产物只写在 "
+                    "`deliveries/<时刻>/` 里，不允许另存到需求目录之外"
+                )
         name = raw.get("name")
-        target = raw.get("copy_to") or raw.get("path")
     else:
-        name, target = None, raw
-    if name in (None, "") and target in (None, ""):
-        raise FillError(f"{origin}: output 必填（文件名，或要另存到的路径）")
-
-    copy_to: Path | None = None
-    if target not in (None, ""):
-        candidate = Path(str(target)).expanduser()
-        if not candidate.is_absolute():
-            candidate = (base_dir / candidate).resolve()
-        copy_to = candidate
+        name = raw
     if name in (None, ""):
-        if copy_to is None:  # 已被上面的必填校验挡掉，留作类型收窄
-            raise FillError(f"{origin}: output 必填")
-        # 目录 → 用输入表名加「-已补全」；文件 → 取其名。
-        name = copy_to.name if copy_to.suffix else f"{source.path.stem}-已补全{source.path.suffix}"
-        if not copy_to.suffix:
-            copy_to = copy_to / str(name)
-
-    assert copy_to is None or isinstance(copy_to, Path)
-    if copy_to is not None and copy_to.resolve() == source.path.resolve():
-        # 补全是「产出」，不是「就地修改」。原件是唯一可回退的凭据，不能被写掉。
-        raise FillError(f"{origin}: output 不能与 source 相同（{copy_to}），补全请另存")
-    return str(name), copy_to
+        raise FillError(f"{origin}: output 必填（产物文件名，如 清单-已补全.xlsx）")
+    text = str(name)
+    if text in {".", ".."} or Path(text).name != text or "/" in text or "\\" in text:
+        raise FillError(
+            f"{origin}: output 只能是文件名、不能带路径，实得 {text!r}；产物固定写在交付档案目录里"
+        )
+    return text
 
 
 def _mapping(raw: Any, origin: str) -> dict[str, Any]:
@@ -560,8 +569,8 @@ def run(
 ) -> FillReport:
     """跑一次回填，产物写进 `target_dir`（由档案层给的暂存目录）。
 
-    这里**不**碰 `copy_to`：便利副本由 `delivery` 在档案落定之后统一另存，
-    免得出现「副本已更新、档案没有」的半截状态。执行体只管把活干完、把账报清。
+    执行体只管把活干完、把账报清：输入从需求目录内的快照读，产物只落到暂存目录，
+    全程不与外部路径发生关系。
     """
     workbook, sheet = _open_sheet(spec)
     header_row = spec.source.header_row

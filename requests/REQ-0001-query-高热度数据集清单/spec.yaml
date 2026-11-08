@@ -9,6 +9,10 @@ requester: 张三
 purpose: "选型参考：同时有下载量与点赞量的成熟数据集"
 version: 1
 
+# 交付形态：query 出数据表 / backfill 回填给定表格。形态只换口径体与执行体，
+# 公共头、节奏、护栏、交付档案对所有形态都一样。
+kind: query
+
 # 交付节奏：once（只跑一次）/ daily / weekly / monthly / manual（只等人跑）
 cadence: once
 

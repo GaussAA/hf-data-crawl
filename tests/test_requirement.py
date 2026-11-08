@@ -20,8 +20,10 @@ from hf_data_crawl.requirement import (
     Mode,
     SpecError,
     compile_sql,
+    directory_name,
     history_versions,
     load,
+    resolve_dir,
     skeleton,
     snapshot_history,
 )
@@ -252,12 +254,12 @@ def test_重复键在读入处被拒(tmp_path: Path) -> None:
 
 
 def test_回填骨架能原样读回(tmp_path: Path) -> None:
-    """骨架建完就得按真规矩回读通过——输入表必须真实存在，否则新建即自毁。"""
-    book = tmp_path / "in.xlsx"
-    workbook = openpyxl.Workbook()
-    workbook.save(book)
-    path = tmp_path / "REQ-0001" / "spec.yaml"
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """骨架建完就得按真规矩回读通过——输入快照必须在需求目录里，否则新建即自毁。"""
+    folder = tmp_path / "REQ-0001"
+    (folder / "input").mkdir(parents=True)
+    book = folder / "input" / "in.xlsx"
+    openpyxl.Workbook().save(book)
+    path = folder / "spec.yaml"
     path.write_text(
         skeleton(
             request_id="REQ-0001",
@@ -296,3 +298,49 @@ def test_两种骨架的公共头一致(tmp_path: Path) -> None:
         assert key in fill
     assert "kind: backfill" in fill
     assert "kind:" not in query
+
+
+# ---------------------------------------------------------------- 语义化目录
+
+
+def test_目录名带编号形态与标题且不含路径分隔符() -> None:
+    name = directory_name("REQ-0002", "具身感知 数据集/信息补充", Kind.BACKFILL)
+
+    assert name.startswith("REQ-0002-backfill-")
+    assert "具身感知" in name
+    assert not any(bad in name for bad in ("/", "\\", " ", ":", "*"))
+
+
+def test_按编号解析语义目录(tmp_path: Path) -> None:
+    root = tmp_path / "req"
+    folder = root / directory_name("REQ-0002", "清单补全", Kind.BACKFILL)
+    folder.mkdir(parents=True)
+    (folder / "spec.yaml").write_text("id: REQ-0002\n", encoding="utf-8")
+
+    assert resolve_dir(root, "REQ-0002") == folder
+
+
+def test_旧的纯编号目录仍可解析(tmp_path: Path) -> None:
+    """兼容存量需求，不必为了改名搬动交付台账。"""
+    root = tmp_path / "req"
+    folder = root / "REQ-0002"
+    folder.mkdir(parents=True)
+    (folder / "spec.yaml").write_text("id: REQ-0002\n", encoding="utf-8")
+
+    assert resolve_dir(root, "REQ-0002") == folder
+
+
+def test_同号多目录要报歧义而不是猜一个(tmp_path: Path) -> None:
+    root = tmp_path / "req"
+    for suffix in ("backfill-甲", "backfill-乙"):
+        folder = root / f"REQ-0002-{suffix}"
+        folder.mkdir(parents=True)
+        (folder / "spec.yaml").write_text("id: REQ-0002\n", encoding="utf-8")
+
+    with pytest.raises(SpecError, match="多个目录"):
+        resolve_dir(root, "REQ-0002")
+
+
+def test_找不到需求时报得清位置(tmp_path: Path) -> None:
+    with pytest.raises(SpecError, match="找不到需求"):
+        resolve_dir(tmp_path / "req", "REQ-9999")

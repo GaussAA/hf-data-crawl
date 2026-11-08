@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -38,9 +39,53 @@ if TYPE_CHECKING:
 SPEC_NAME = "spec.yaml"
 HISTORY_DIR = "history"
 DELIVERIES_DIR = "deliveries"
+#: 输入快照目录。外部给的表受理时复制进来，之后需求目录不再依赖任何外部路径。
+INPUT_DIR = "input"
 #: 每次交付目录里的三件套。`data.*` 是字节（不进 git），后两个是说明（进 git）。
 MANIFEST_NAME = "manifest.json"
 README_NAME = "README.md"
+
+
+def _slug(title: str, limit: int = 24) -> str:
+    """标题短名：只留中英文、数字、连字符，去掉路径分隔符与文件系统禁用的字符。"""
+    text = re.sub(r"[\s/\\:*?\"<>|]+", "-", title.strip())
+    text = re.sub(r"-{2,}", "-", text).strip("-")
+    return text[:limit].rstrip("-")
+
+
+def directory_name(request_id: str, title: str, kind: Kind) -> str:
+    """语义化目录名：`REQ-0002-backfill-具身感知数据集信息补充`。
+
+    编号保唯一与排序；`kind` 让人和模型一眼看出该走哪条执行路径；标题短名让
+    人不打开文件就知道这单是什么。**改名不搬目录**：目录名是受理那一刻的标签，
+    正式标题以 `spec.yaml` 里的 `title` 为准，搬目录会扯断交付台账的路径。
+    """
+    slug = _slug(title)
+    return f"{request_id}-{kind.value}-{slug}" if slug else f"{request_id}-{kind.value}"
+
+
+def resolve_dir(root: Path, request_id: str) -> Path:
+    """用需求号定位目录。目录名带语义后缀，不能再靠字符串拼接。
+
+    兼容旧的纯编号目录（`REQ-0001/`）：先精确匹配，再找 `<id>-*` 前缀。命中多个
+    说明编号撞车，直接报错——猜一个会用错口径，而口径错了整份交付都白做。
+    """
+    if not root.is_dir():
+        raise SpecError(f"找不到需求目录：{root}")
+    hits = sorted(
+        path
+        for path in root.iterdir()
+        if path.is_dir()
+        and (path.name == request_id or path.name.startswith(f"{request_id}-"))
+        and (path / SPEC_NAME).is_file()
+    )
+    if not hits:
+        raise SpecError(f"找不到需求 {request_id}：{root} 下没有对应的 {SPEC_NAME}")
+    if len(hits) > 1:
+        names = "、".join(path.name for path in hits)
+        raise SpecError(f"需求号 {request_id} 对应多个目录：{names}；请合并或改名")
+    return hits[0]
+
 
 #: 需求号的形状。四位起步，够用一千个需求；真要超了再放宽，届时会逼人正视编号。
 _ID_PATTERN = r"^REQ-\d{4,}$"
@@ -203,8 +248,8 @@ class Spec:
 
     @property
     def slug(self) -> str:
-        """目录名：`REQ-0001`。不带标题，改名时不必搬目录。"""
-        return self.id
+        """语义化目录名：`REQ-0002-backfill-具身感知数据集信息补充`。"""
+        return directory_name(self.id, self.title, self.kind)
 
 
 def load(path: Path) -> Spec:
@@ -267,8 +312,6 @@ def _fill_body(body: dict[str, Any], path: Path) -> FillSpec:
 
 
 def _validate(spec: Spec, path: Path) -> None:
-    import re
-
     if not re.match(_ID_PATTERN, spec.id):
         raise SpecError(f"{path}: id 应形如 REQ-0001，实得 {spec.id!r}")
     if not spec.title.strip():
@@ -614,7 +657,7 @@ alert:
 
 fill:
   source:
-    path: "{source_path}"     # 对方给的表，绝不改动；相对路径以本目录为基准
+    path: "input/{source_name}"    # 受理时复制进来的输入快照；绝不指向外部文件
     sheet: Sheet1            # 不写则取第一个 sheet
     header_row: 2            # 列名所在行；其上可有多行分组标题
     key_column: URL          # 用列名定位，不用列号
@@ -660,9 +703,9 @@ def skeleton(
         "{cadence}": cadence.value,
     }
     if kind is Kind.BACKFILL:
-        # 输入表必须真实存在：新建完立刻按真规矩回读一遍，否则骨架会被自己判成
-        # 「输入表不存在」而删掉。所以 --source 是这个形态的必填项。
-        values["{source_path}"] = source_path
+        # 骨架只写文件名：输入表由 `request new` 复制进 input/，spec 里不留任何
+        # 绝对路径，整个需求目录才能搬走。文件必须真实存在，新建完的回读才过得去。
+        values["{source_name}"] = Path(source_path).name if source_path else "清单.xlsx"
     text = _FILL_SKELETON if kind is Kind.BACKFILL else _SKELETON
     for placeholder, value in values.items():
         text = text.replace(placeholder, value)
