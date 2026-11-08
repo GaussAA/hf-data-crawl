@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from collections.abc import Callable
@@ -23,9 +24,23 @@ from .gold import BOARDS, GoldCatalog, GoldNotReady, UnsafeQuery
 from .health import record as record_health
 from .lineage import restamp
 from .lock import LockBusy, exclusive
+from .metrics import lookup
 from .rebuild import RebuildSummary, divergent_since, rebuild_from_raw, replay_suffix
 from .reconcile import Reconciler, ReconcileSummary
 from .report import Reporter
+from .requirement import (
+    DELIVERIES_DIR,
+    MANIFEST_NAME,
+    SPEC_NAME,
+    Cadence,
+    Mode,
+    Spec,
+    SpecError,
+    compile_sql,
+    history_versions,
+    skeleton,
+)
+from .requirement import load as load_spec
 from .retention import REPLAY_WINDOW_DAYS
 from .runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs, write_run
 from .sizes import HfSizeApi, SizeFetcher, SizeSummary, tail
@@ -70,6 +85,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--data-dir",
         default=os.environ.get("HF_DATA_DIR", "data"),
         help="数据根目录（默认取 HF_DATA_DIR，否则 ./data）",
+    )
+    parser.add_argument(
+        "--requests-dir",
+        default=os.environ.get("HF_REQUESTS_DIR", "requests"),
+        help="需求目录（默认取 HF_REQUESTS_DIR，否则 ./requests）；与数据目录分开",
     )
     parser.add_argument(
         "--lock-wait",
@@ -117,6 +137,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="该快照日已有一次完整采集就直接跳过（计划任务补跑用，避免同一天重复采）",
     )
+
+    request = subparsers.add_parser("request", help="需求与交付管理：需求定义、口径、交付档案")
+    request_sub = request.add_subparsers(dest="request_action", required=True)
+    request_new = request_sub.add_parser("new", help="新建一份需求，生成带注释的 spec 骨架")
+    request_new.add_argument("id", help="需求号，形如 REQ-0001")
+    request_new.add_argument("--title", required=True, help="一句话说明要什么")
+    request_new.add_argument("--requester", required=True, help="谁提的——交付单要能回答「给谁」")
+    request_new.add_argument("--purpose", default="", help="拿去做什么，会影响口径取舍")
+    request_new.add_argument(
+        "--cadence",
+        default=Cadence.ONCE.value,
+        choices=[member.value for member in Cadence],
+        help="交付节奏：once 只跑一次 / daily / weekly / monthly / manual 只等人跑",
+    )
+    request_sub.add_parser("list", help="列出全部需求与交付概况")
+    request_show = request_sub.add_parser("show", help="查看一份需求的口径、历史版本与交付台账")
+    request_show.add_argument("id", help="需求号")
 
     reconcile = subparsers.add_parser("reconcile", help="全量对账（按 createdAt 稳定序）")
     reconcile.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
@@ -292,6 +329,9 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         return _execute(store, "export-wide", lambda: _export_wide(args, store), lock_wait)
     if args.command == "query":
         return _query(args, store)
+    if args.command == "request":
+        # 需求管理只读写 requests/，不碰数据目录，因此不参与数据锁。
+        return _request(args)
     if args.command == "doctor":
         return _doctor(store)
     if args.command == "docs":
@@ -823,3 +863,146 @@ def _print_enrich(summary: EnrichSummary) -> None:
         f"  含卡片 {summary.with_card} 条 · 其中带结构明细 {summary.with_structure} 条"
         f" · 卡片表累计 {summary.table_rows} 行 · config 明细 {summary.config_rows} 行"
     )
+
+
+# ---------------------------------------------------------------- 需求管理
+
+
+def deliveries_of(request_dir: Path) -> list[Path]:
+    """一次需求的交付目录，按名字升序——名字是时间戳，字典序即时间序。"""
+    base = request_dir / DELIVERIES_DIR
+    if not base.is_dir():
+        return []
+    return sorted(path for path in base.iterdir() if path.is_dir())
+
+
+def criteria_text(spec: Spec) -> str:
+    """把口径说成一句话，供 list 打印；手写 SQL 的只报「手写」。"""
+    if spec.mode is Mode.SQL:
+        return "手写 SQL（见 spec.yaml）"
+    return " 且 ".join(f"{item.metric} {item.op} {item.value}" for item in spec.criteria)
+
+
+def manifest_summary(directory: Path) -> str:
+    """交付目录的一行摘要。读不到就留空——台账缺一份不该让 show 整体失败。"""
+    path = directory / MANIFEST_NAME
+    if not path.exists():
+        return "  （缺 manifest）"
+    try:
+        body = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "  （manifest 读不出来）"
+    rows = (body.get("result") or {}).get("rows")
+    status = (body.get("health") or {}).get("status", "?")
+    return f"  {rows} 行 · {status}"
+
+
+def _request(args: argparse.Namespace) -> int:
+    """需求管理的三个动作。都不写数据，因此不持数据目录的锁。"""
+    root = Path(args.requests_dir)
+    if args.request_action == "new":
+        return _request_new(args, root)
+    if args.request_action == "list":
+        return _request_list(root)
+    return _request_show(root, args.id)
+
+
+def _request_new(args: argparse.Namespace, root: Path) -> int:
+    target = root / args.id / SPEC_NAME
+    if target.exists():
+        print(f"失败：{target} 已存在。要改口径请直接编辑它，并把 version 加一。")
+        return 1
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        skeleton(
+            request_id=args.id,
+            title=args.title,
+            requester=args.requester,
+            purpose=args.purpose,
+            cadence=Cadence(args.cadence),
+        ),
+        encoding="utf-8",
+    )
+    # 建完立刻按真规矩读一遍：不合法就删掉并报错，好过等下次 run 才发现建错了。
+    try:
+        load_spec(target)
+    except SpecError as error:
+        target.unlink(missing_ok=True)
+        # 空目录也一并收走：留一个空壳同样会让人以为「这里有个需求」。
+        # 目录非空（用户已放入别的东西）时 rmdir 会失败，那就保留，不强行删。
+        try:
+            target.parent.rmdir()
+        except OSError:
+            pass
+        print(f"失败：{error}")
+        return 1
+    print(f"已建需求：{target}")
+    print("  下一步：编辑 criteria 与 output（metric 只写词表词条），再跑 `request run`")
+    return 0
+
+
+def _request_list(root: Path) -> int:
+    specs = sorted(root.glob(f"*/{SPEC_NAME}"))
+    if not specs:
+        print(f"{root} 下还没有需求。")
+        print("  用 `request new REQ-0001 --title 标题 --requester 姓名` 建第一个。")
+        return 0
+    for path in specs:
+        try:
+            spec = load_spec(path)
+        except SpecError as error:
+            # 一个坏 spec 不该挡住其余需求：列出来标红，让人去修。
+            print(f"[!] {path.parent.name}：{error}")
+            continue
+        runs = deliveries_of(path.parent)
+        last = runs[-1].name if runs else "从未交付"
+        print(f"{spec.id}  {spec.title}")
+        print(f"  {spec.cadence.value} · v{spec.version} · 交付 {len(runs)} 次 · 最后 {last}")
+        print(f"  口径：{criteria_text(spec)}")
+    return 0
+
+
+def _request_show(root: Path, request_id: str) -> int:
+    path = root / request_id / SPEC_NAME
+    try:
+        spec = load_spec(path)
+    except SpecError as error:
+        print(f"失败：{error}")
+        return 1
+
+    print(f"{spec.id}  {spec.title}")
+    print(f"  提出人：{spec.requester}")
+    if spec.purpose:
+        print(f"  用途：{spec.purpose}")
+    print(f"  节奏：{spec.cadence.value} · 版本：v{spec.version}")
+    limit = spec.guard.max_rows if spec.guard.max_rows is not None else "不限"
+    print(f"  护栏：{spec.guard.min_rows} ≤ 行数 ≤ {limit}")
+    print(
+        f"  标疑：与上次相比行数变化超 {spec.alert.row_delta_pct:g}% "
+        f"且超 {spec.alert.row_delta_abs} 行"
+    )
+    print()
+
+    if spec.criteria:
+        print("口径：")
+        for index, item in enumerate(spec.criteria, 1):
+            metric = lookup(item.metric)
+            print(f"  {index}. {item.metric} {item.op} {item.value}")
+            print(f"     落成列 {metric.field} —— {metric.definition}")
+        print()
+
+    print("编译后的 SQL：")
+    for line in compile_sql(spec).splitlines():
+        print(f"  {line}")
+    print()
+
+    versions = history_versions(path)
+    if versions:
+        print(f"历史版本：{'、'.join(f'v{version}' for version in versions)}")
+    else:
+        print("历史版本：（尚未快照，首次交付时自动留存）")
+    runs = deliveries_of(path.parent)
+    print(f"交付台账：{len(runs)} 次")
+    for run in runs:
+        print(f"  {run.name}{manifest_summary(run)}")
+    return 0

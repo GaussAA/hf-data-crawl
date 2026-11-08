@@ -31,6 +31,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `reconcile` | 全量对账：按 `createdAt` 稳定序扫全站，产出新增/删除/转私有/改名/sha 变更 | 是 |
 | `build` | 重建派生层：默认只重放近 7 天热区，`--stale` 只修派生滞后的日子及其后，`--full` 全量重放 | 否 |
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
+| `request` | 需求与交付管理：`new` 建需求、`list` 看全部、`show` 看口径与交付台账 | 否 |
 | `report` | 生成单文件榜单页（离线可看） | 否 |
 | `doctor` | 体检：调度新鲜度、底库行龄、层间勾稽、派生凭证、产物新鲜度、断日与残留文件；异常写 `ALERT.txt` 并追加体检流水 | 否 |
 | `archive` | 归档早于 N 天的 Raw 分区：合并小分块并去重，先验证 Bronze 逐行相等，原文件移入 `backup/raw/` | 否 |
@@ -53,6 +54,9 @@ hf-data-crawl report       [--out PATH] [--top 20]
 hf-data-crawl archive      [--older-than-days 30] [--date YYYY-MM-DD]
 hf-data-crawl docs         [--out PATH]           # 默认 docs/DATA.md
 hf-data-crawl export-wide  [--out PATH]           # 默认 data/exports/datasets.parquet
+hf-data-crawl request      new REQ-0001 --title 标题 --requester 姓名 [--purpose ...] [--cadence once|daily|weekly|monthly|manual]
+hf-data-crawl request      list
+hf-data-crawl request      show REQ-0001
 ```
 
 全局参数 `--data-dir` 需放在子命令之前，默认取 `HF_DATA_DIR`，否则 `./data`。
@@ -276,6 +280,27 @@ uv run hf-data-crawl doctor                        # 手动体检；有问题退
 每轮摘要落在 `runs/`，失败也写并带错误原因，不会静默。`runs/<时间戳>-<命令>.json` 与 `logs/<时间戳>-<命令>.log` 是同一次运行的**两半**（机读结论 / 人读现场），同键不同扩展名，查某一轮取同前缀即可。`doctor` 不写 `runs/`：它退出码 1 表示「有告警」而非「命令失败」，写进去会污染「近 7 天无失败运行」那条判据；体检结论看 `data\ALERT.txt`（覆盖式，只存最新一次）、流水 `state\health-history.jsonl`（一行一次，据它追「断日从哪天开始」「这条告警连续几天」，保留最近 `HEALTH_KEEP` 次）与对应日志。
 
 **写命令互斥**：所有写命令（collect / reconcile / build / enrich / fetch-sizes）持有数据目录的锁，避免 `current.parquet` 被并发覆盖。人工执行时撞上别人会立刻报错并说明占用者；计划任务的包装脚本加了 `--lock-wait 900`，会先等 15 分钟而不是白丢一轮（`fetch-sizes` 一次可能跑一小时，与 03:10 的采集重叠过，曾因此丢过一次采集）。
+
+## 需求与交付
+
+底库建起来是为了用。每份对外的数据交付都是一份**档案**，而不是一次临时的查询：
+
+```
+requests/REQ-0001/spec.yaml           # 口径，唯一可变的地方
+requests/REQ-0001/history/v1.yaml     # 交付时自动快照，只留「真的用过」的口径
+deliveries/REQ-0001/20261108T1450/
+  data.parquet      # 字节，不进 git（.gitignore 只拦 data.*）
+  manifest.json     # 机器读：底库指纹、行数、列、sha256、健康标记
+  README.md         # 人读：要什么、怎么算的、基于哪天的底库、几行
+```
+
+**口径只写词条，不写字段名**：`下载量` 是近 30 天，`累计下载量` 才是历史累计——
+同一句话两种理解差两个数量级。词表见 `metrics.py` 与 [GLOSSARY](GLOSSARY.md) #51，
+`request show` 会把口径连同编译后的 SQL 一起打出来，便于贴给对方确认。
+
+`manifest.json` 里的 `source.current_md5` 是整份档案的锚点：日后任何一份交付都能
+回答「它基于哪一版底库」。`deliveries/` 的 `data.*` 不进仓库，但 `manifest.json`
+与 `README.md` 进 —— 档案的「话」可评审，档案的「字节」不占仓库，两者靠 sha256 绑定。
 
 ## 开发
 
