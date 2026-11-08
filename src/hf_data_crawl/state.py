@@ -39,6 +39,52 @@ COMPUTED_COLUMNS: frozenset[str] = frozenset({"first_seen_at", "last_seen_at", "
 METRIC_COLUMNS: tuple[str, ...] = ("downloads", "downloads_all_time", "likes")
 
 
+def _previous_metrics(history: pl.DataFrame) -> pl.DataFrame:
+    """按日取每个 id 的最后一条观测，作为次日的变化锚点。"""
+    return (
+        history.sort("snapshot_date")
+        .group_by("id", maintain_order=True)
+        .agg([pl.col(column).last().alias(f"{column}_prev") for column in METRIC_COLUMNS])
+    )
+
+
+@dataclass
+class Carry:
+    """重放期间顺推的运行态：每 id 的指标锚点 + 当前态。
+
+    `update` 原本每次都要读全部观测流水（求锚点）和全部当前态。全量重放 N 天
+    等于 N 次全表扫描，且观测流水本身随天数增长，总代价是 O(N²)。同一轮重放的
+    日期升序，锚点只在当日有新观测时被替换，因此在内存里顺推即可，判定口径不变。
+
+    调用方只在「已清掉重放日分区」的重放循环里使用它（`rebuild` 即如此），
+    这样当日已有的观测行数为 0，`appended` 与逐日重读的计数一致。
+    """
+
+    previous: pl.DataFrame
+    current: pl.DataFrame
+
+    @classmethod
+    def load(cls, store: DatasetStore, *, before: date) -> Carry:
+        history = store.read_observations()
+        return cls(
+            previous=_previous_metrics(history.filter(pl.col("snapshot_date") < before)),
+            current=store.read_current(),
+        )
+
+    def advance(self, observations: pl.DataFrame) -> None:
+        """用当日新观测替换同名 id 的锚点；没有新观测的日子锚点不动。"""
+        if observations.height == 0:
+            return
+        fresh = observations.select(
+            "id",
+            *[pl.col(column).alias(f"{column}_prev") for column in METRIC_COLUMNS],
+        )
+        self.previous = pl.concat(
+            [self.previous.join(fresh.select("id"), on="id", how="anti"), fresh],
+            how="vertical_relaxed",
+        )
+
+
 @dataclass(frozen=True)
 class StateUpdate:
     """一次状态更新的结果，供运行摘要使用。"""
@@ -82,7 +128,11 @@ def mark_status(store: DatasetStore, updates: Mapping[str, str]) -> int:
 
 
 def update(
-    store: DatasetStore, snapshot_date: date, *, frame: pl.DataFrame | None = None
+    store: DatasetStore,
+    snapshot_date: date,
+    *,
+    frame: pl.DataFrame | None = None,
+    carry: Carry | None = None,
 ) -> StateUpdate:
     """按当日帧更新观测流水与当前态。
 
@@ -92,20 +142,25 @@ def update(
     当日帧取自 `bronze.day_frame`：Bronze 分区加上只在补抓批次里出现的库。补位
     放在读时而不写进 Bronze，协议见该函数；`silver` 用的是同一份帧，属性、当前态、
     观测三者才不会各说各话。`frame` 由 `derive_day` 传入时直接复用，省掉第二次读。
+
+    重放循环传入 `carry` 时，指标锚点与当前态从上一日顺推，不再每天重读全部
+    流水；此时重放日的旧分区已被清除，`before` 恒为 0。
     """
     today_frame = frame if frame is not None else bronze.day_frame(store, snapshot_date)
     if today_frame.height == 0:
-        return StateUpdate(appended=0, current_rows=store.read_current().height)
+        current_rows = carry.current.height if carry is not None else store.read_current().height
+        return StateUpdate(appended=0, current_rows=current_rows)
 
-    existing = store.read_observations()
-    before = existing.filter(pl.col("snapshot_date") == snapshot_date).height
+    if carry is not None:
+        before = 0
+        previous = carry.previous
+        prior_current = carry.current
+    else:
+        existing = store.read_observations()
+        before = existing.filter(pl.col("snapshot_date") == snapshot_date).height
+        previous = _previous_metrics(existing.filter(pl.col("snapshot_date") < snapshot_date))
+        prior_current = None
 
-    previous = (
-        existing.filter(pl.col("snapshot_date") < snapshot_date)
-        .sort("snapshot_date")
-        .group_by("id", maintain_order=True)
-        .agg([pl.col(column).last().alias(f"{column}_prev") for column in METRIC_COLUMNS])
-    )
     joined = today_frame.select(["id", "url", *METRIC_COLUMNS]).join(previous, on="id", how="left")
 
     changed = pl.col(f"{METRIC_COLUMNS[0]}_prev").is_null()
@@ -126,8 +181,11 @@ def update(
     else:
         store.write("observations", new_observations, snapshot_date)
 
-    current = _rebuild_current(store, snapshot_date, today_frame)
+    current = _rebuild_current(store, snapshot_date, today_frame, prior=prior_current)
     store.write("current", current)
+    if carry is not None:
+        carry.advance(new_observations)
+        carry.current = current
 
     return StateUpdate(
         appended=max(0, new_observations.height - before),
@@ -136,11 +194,20 @@ def update(
 
 
 def _rebuild_current(
-    store: DatasetStore, snapshot_date: date, bronze: pl.DataFrame
+    store: DatasetStore,
+    snapshot_date: date,
+    bronze: pl.DataFrame,
+    *,
+    prior: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
-    """勾稽当前态：本轮出现的取当日 Bronze，未出现的沿用原行，不擅自改状态。"""
+    """勾稽当前态：本轮出现的取当日 Bronze，未出现的沿用原行，不擅自改状态。
+
+    `first_seen_at` 直接沿用当前态，而不是每天重扫全部观测流水：一个 id 的第一条
+    观测必定落在它首次被看见的那天，所以 current 里记下的首见日就是流水的 min；
+    只有当日新出现的 id 才需要补当日日期。`prior` 由重放循环传入时省掉读盘。
+    """
     carried_columns = [*CARRIED_COLUMNS, "last_seen_at", "status"]
-    previous = store.read_current()
+    previous = prior if prior is not None else store.read_current()
     today_ids = bronze["id"].to_list()
     carried = previous.filter(~pl.col("id").is_in(today_ids)).select(carried_columns)
 
@@ -149,11 +216,7 @@ def _rebuild_current(
         pl.lit(Status.ACTIVE.value).alias("status"),
     )
 
-    first_seen = (
-        store.read_observations()
-        .group_by("id")
-        .agg(pl.col("snapshot_date").min().alias("first_seen_at"))
-    )
+    first_seen = previous.select("id", pl.col("first_seen_at").alias("__first_seen"))
 
     combined = pl.concat(
         [carried.select(carried_columns), today.select(carried_columns)],
@@ -161,7 +224,11 @@ def _rebuild_current(
     )
     return (
         combined.join(first_seen, on="id", how="left")
-        .with_columns(pl.col("first_seen_at").fill_null(pl.lit(snapshot_date, dtype=pl.Date)))
+        .with_columns(
+            pl.col("__first_seen")
+            .fill_null(pl.lit(snapshot_date, dtype=pl.Date))
+            .alias("first_seen_at")
+        )
         .select(list(CURRENT_SCHEMA))
         .sort("id")
     )

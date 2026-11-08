@@ -45,11 +45,40 @@ class DayResult:
     config_rows: int | None = None
 
 
-def derive_day(store: DatasetStore, snapshot_date: date, *, enrich: bool = False) -> DayResult:
+@dataclass(frozen=True)
+class ReplayCarry:
+    """一次重放内跨日顺推的历史态。
+
+    逐日重放时，每天都把全部 silver / observations / current 读一遍，代价随天数
+    平方增长。重放日期升序，前一天的锚点就是第二天的输入，把两份锚点留在内存里
+    顺推即可；变化判定仍然只看「严格早于该日的最后一行」，口径没有变化。
+    """
+
+    silver: silver.Latest
+    state: state.Carry
+
+    @classmethod
+    def load(cls, store: DatasetStore, *, before: date) -> ReplayCarry:
+        return cls(
+            silver=silver.Latest.load(store, before=before),
+            state=state.Carry.load(store, before=before),
+        )
+
+
+def derive_day(
+    store: DatasetStore,
+    snapshot_date: date,
+    *,
+    enrich: bool = False,
+    carry: ReplayCarry | None = None,
+) -> DayResult:
     """按固定顺序推导一天：bronze → silver →（enrich 时）card → state。
 
     空日不提前返回：每一步读到空表自会返回 0，而 `state.update` 在空 Silver 时
     仍会给出现有的当前态行数，调用方的摘要要用到它。
+
+    `carry` 由重放循环传入时，silver 与 state 的历史锚点从上一日顺推；单日
+    派生（`collect` / `reconcile`）不传，仍按该日重读一次。
 
     原子性保护：开始前标记、完成后清除。如果中途崩溃，下次启动时
     `check_and_recover()` 会检测到标记文件并清理该日的派生层。
@@ -67,12 +96,22 @@ def derive_day(store: DatasetStore, snapshot_date: date, *, enrich: bool = False
         # 当日帧只读一次，交给 silver 与 state 共用：两次调用会把补抓批次
         # （11-07 有 1,350 个卡片文件）完整解压两遍，而两处要的是同一份帧。
         today = bronze.day_frame(store, snapshot_date)
-        silver_rows = silver.build(store, snapshot_date, frame=today)
+        silver_rows = silver.build(
+            store,
+            snapshot_date,
+            frame=today,
+            latest_state=carry.silver if carry is not None else None,
+        )
         card_rows: int | None = None
         config_rows: int | None = None
         if enrich:
             card_rows, config_rows = card.build(store, snapshot_date)
-        update = state.update(store, snapshot_date, frame=today)
+        update = state.update(
+            store,
+            snapshot_date,
+            frame=today,
+            carry=carry.state if carry is not None else None,
+        )
         lineage.stamp(
             store,
             snapshot_date,

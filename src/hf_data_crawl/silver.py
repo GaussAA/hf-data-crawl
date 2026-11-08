@@ -227,6 +227,35 @@ def latest(store: DatasetStore, *, before: date | None = None) -> pl.DataFrame:
     return history.sort("snapshot_date").unique(subset=["id"], keep="last", maintain_order=True)
 
 
+class Latest:
+    """重放期间顺推的「每 id 最近一行属性」。
+
+    `latest()` 每次都要读全部 silver 分区：全量重放 N 天等于 N 次全表扫描，
+    而分区总量还随天数增长，总代价是 O(N²)。同一轮重放的日期只升不降，
+    把结果留在内存里、用当日增量替换同名 id，得到的锚点与逐日重读完全一致。
+    """
+
+    def __init__(self, frame: pl.DataFrame) -> None:
+        self._frame = frame
+
+    @classmethod
+    def load(cls, store: DatasetStore, *, before: date | None = None) -> Latest:
+        return cls(latest(store, before=before))
+
+    @property
+    def frame(self) -> pl.DataFrame:
+        return self._frame
+
+    def advance(self, delta: pl.DataFrame) -> None:
+        """并入当日新增行；同一 id 只保留当日这行，等价于按日重读。"""
+        if delta.height == 0:
+            return
+        self._frame = pl.concat(
+            [self._frame.join(delta.select("id"), on="id", how="anti"), delta],
+            how="vertical_relaxed",
+        )
+
+
 def changed_rows(today: pl.DataFrame, previous: pl.DataFrame) -> pl.DataFrame:
     """今日属性里「没见过」或「与上一行不同」的行。比较对空值敏感。"""
     known = previous.select(
@@ -241,7 +270,13 @@ def changed_rows(today: pl.DataFrame, previous: pl.DataFrame) -> pl.DataFrame:
     return joined.filter(differs).select(list(SILVER_SCHEMA))
 
 
-def build(store: DatasetStore, snapshot_date: date, *, frame: pl.DataFrame | None = None) -> int:
+def build(
+    store: DatasetStore,
+    snapshot_date: date,
+    *,
+    frame: pl.DataFrame | None = None,
+    latest_state: Latest | None = None,
+) -> int:
     """由当日帧追加属性变更，返回写入的行数；当日无任何记录则不动。
 
     取 `bronze.day_frame` 而不是 Bronze 分区本身：只在补抓批次里出现的库同样是
@@ -251,14 +286,22 @@ def build(store: DatasetStore, snapshot_date: date, *, frame: pl.DataFrame | Non
     `frame` 由 `derive_day` 传入时直接复用：同一份当日帧 `state.update` 也要读，
     重复调用等于把补抓批次再解压一遍（11-07 的 1,350 个文件实测约 34 秒）。
 
+    `latest_state` 由重放循环传入时，锚点从内存里的上一日状态顺推，不再每天
+    重读全部 silver 分区；单日派生（`collect` / `reconcile`）仍走 `latest()`。
+
     没有任何变化时不留空分区，并清掉同日重跑前遗留的旧分区。
     """
     today = frame if frame is not None else day_frame(store, snapshot_date)
     if today.height == 0:
         return 0
-    delta = changed_rows(derive(today, snapshot_date), latest(store, before=snapshot_date))
+    previous = (
+        latest_state.frame if latest_state is not None else latest(store, before=snapshot_date)
+    )
+    delta = changed_rows(derive(today, snapshot_date), previous)
     if delta.height == 0:
         store.path("silver", snapshot_date).unlink(missing_ok=True)
         return 0
     store.write("silver", delta, snapshot_date)
+    if latest_state is not None:
+        latest_state.advance(delta)
     return delta.height

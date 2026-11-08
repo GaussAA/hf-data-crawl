@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from . import deriving, lineage, raw
-from .derive import derive_day
+from .derive import ReplayCarry, derive_day
 from .retention import REPLAY_WINDOW_DAYS
 from .status import restore, retain
 from .store import DatasetStore
@@ -150,8 +150,11 @@ def rebuild_from_raw(
 
     bronze_rows = 0
     silver_rows = 0
+    # 日期升序重放，历史锚点从上一日顺推：否则每天都要重读全部 silver /
+    # observations / current，代价随天数平方增长。
+    carry = ReplayCarry.load(store, before=replay[0])
     for snapshot in replay:
-        day = derive_day(store, snapshot, enrich=True)
+        day = derive_day(store, snapshot, enrich=True, carry=carry)
         bronze_rows += day.bronze_rows
         silver_rows += day.silver_rows
 
