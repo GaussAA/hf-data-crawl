@@ -92,7 +92,8 @@ SIDE_FILES: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "exports/",
-        "宽表导出：`gold.datasets` 视图的单文件 parquet，供分析工具直接打开",
+        "宽表导出：`gold.datasets` 视图的单文件 parquet，供分析工具直接打开；"
+        "每日 04:50 自动重导出（物化投影不会跟着派生自己更新）",
         "**可重建**：不参与派生，删掉后重跑 `export-wide`",
     ),
 )

@@ -60,6 +60,20 @@ def put_ids(store: DatasetStore, name: str, day: date, ids: list[str]) -> None:
     pl.DataFrame({"id": ids}).write_parquet(target)
 
 
+def put_export(store: DatasetStore, ids: list[str]) -> None:
+    """造一份宽表导出；体检只读它的 id 列做差集。"""
+    target = store.root / "exports" / "datasets.parquet"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"id": ids}).write_parquet(target)
+
+
+def put_artifact(store: DatasetStore, name: str, ids: list[str], day: date) -> None:
+    """造一张富化表（单文件，按 id 覆盖）；体检只读 id 与 snapshot_date。"""
+    target = store.path(name)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({"id": ids, "snapshot_date": [day] * len(ids)}).write_parquet(target)
+
+
 def healthy(store: DatasetStore) -> None:
     """近 7 天是热区 Raw；更早的日期已由 compact 压进冷区基线并登记。
 
@@ -81,6 +95,7 @@ def healthy(store: DatasetStore) -> None:
         put_ids(store, "observations", day, ids)
         put_ids(store, "silver", day, ids)
         lineage.stamp(store, day, bronze_rows=0, silver_rows=0, observations=len(ids))
+    put_export(store, ids)
     manifest = manifest_path(store)
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
@@ -454,3 +469,45 @@ def test_层间勾稽发现当前态落后于Raw(tmp_path: Path) -> None:
     found = [text for text in problems(store) if "层间勾稽" in text]
 
     assert found and "当前态最新只到" in found[0]
+
+
+def test_宽表导出落后于底库要报(tmp_path: Path) -> None:
+    """导出物只在跑 export-wide 时刷新。
+
+    2026-11-08 实测：对账 04:11 把底库刷到 1,123,235 行，导出仍是前夜 02:33 的
+    1,123,090 行，差 145 行且没有任何提示——拿它做分析会得出错结论。
+    """
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    put_export(store, ["acme/ds-0", "acme/ds-1"])
+
+    found = [text for text in problems(store) if "产物新鲜度" in text]
+
+    assert found and "缺 1 行" in found[0] and "export-wide" in found[0]
+
+
+def test_宽表导出缺失要报(tmp_path: Path) -> None:
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    (store.root / "exports" / "datasets.parquet").unlink()
+
+    assert any("导出不存在" in text for text in problems(store))
+
+
+def test_富化表停更超过七天要报(tmp_path: Path) -> None:
+    """覆盖不全属设计（按下载量取头部），整张表停更才是链路断了。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    put_artifact(store, "carddata", ["acme/ds-0"], NOW.date() - timedelta(days=30))
+
+    found = [text for text in problems(store) if "产物新鲜度" in text]
+
+    assert found and "30 天没更新" in found[0]
+
+
+def test_富化表覆盖不全不算问题(tmp_path: Path) -> None:
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    put_artifact(store, "carddata", ["acme/ds-0"], NOW.date() - timedelta(days=1))
+
+    assert not any("产物新鲜度" in text for text in problems(store))

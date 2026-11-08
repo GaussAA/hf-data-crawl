@@ -5,11 +5,13 @@
 .DESCRIPTION
     hf-collect    每日 03:10 日增量，另在登录后 2 分钟补跑（collect 带 --skip-if-done，
                   当天已采过会直接跳过）。
-    hf-reconcile  每周日 04:00 全量对账；错过则开机后补跑一次。
+    hf-reconcile  每日 04:00 全量对账；错过则开机后补跑一次。
+    hf-export     每日 04:50 导出宽表（gold.datasets → 单文件 parquet）；物化投影不会
+                  跟着派生自动更新，故排在对账之后每日刷新一次。
     hf-doctor     每日 09:00 体检，另在登录后 10 分钟再查一次；有问题写 data\ALERT.txt。
     hf-sizes      每周日 06:00 补数据集规模（行数/列数），最慢的一步，增量可续。
     hf-archive    每周一 05:00 归档满 30 天的 Raw（去重小分块、冻结写入序），原文件移入 backup。
-    hf-compact    每周一 06:00 压缩满 7 天的冷区 Raw（跨天去重成基线），原分块移入 backup 不删。
+    hf-compact    每日 00:30 压缩满 7 天的冷区 Raw（跨天去重成基线），原分块移入 backup 不删。
 
     与旧版的差别（旧版是笔记本上三天漏采的原因）：
       - StartWhenAvailable：关机错过的任务，开机后补跑；
@@ -30,6 +32,7 @@
 param(
     [string]$CollectTime = "03:10",
     [string]$ReconcileTime = "04:00",
+    [string]$ExportTime = "04:50",
     [string]$DoctorTime = "09:00",
     [string]$SizesTime = "06:00",
     [string]$ArchiveTime = "05:00",
@@ -45,7 +48,9 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
-$taskNames = @("hf-collect", "hf-reconcile", "hf-doctor", "hf-sizes", "hf-archive", "hf-compact")
+$taskNames = @(
+    "hf-collect", "hf-reconcile", "hf-export", "hf-doctor", "hf-sizes", "hf-archive", "hf-compact"
+)
 
 if ($Uninstall) {
     foreach ($name in $taskNames) {
@@ -72,6 +77,9 @@ $jobs = @(
     # 在开机后补跑，不再依赖「周日那天正好开着机」。
     @{ Name = "hf-reconcile"; Script = "reconcile.ps1"; Hours = 8
        Triggers = @((New-ScheduledTaskTrigger -Daily -At $ReconcileTime))
+       LogonDelay = $null },
+    @{ Name = "hf-export"; Script = "export.ps1"; Hours = 1
+       Triggers = @((New-ScheduledTaskTrigger -Daily -At $ExportTime))
        LogonDelay = $null },
     @{ Name = "hf-doctor"; Script = "doctor.ps1"; Hours = 1
        Triggers = @(
@@ -140,6 +148,7 @@ foreach ($job in $jobs) {
 Write-Host "已注册："
 Write-Host "  hf-collect    每日 $CollectTime + 登录后补跑（当天已采过则跳过）"
 Write-Host "  hf-reconcile  每日 $ReconcileTime 全站对账（1114 页），错过则开机后补跑"
+Write-Host "  hf-export     每日 $ExportTime 导出宽表（约 340 MB，删掉可重跑）"
 Write-Host "  hf-doctor     每日 $DoctorTime + 登录后体检，问题写 data\ALERT.txt"
 Write-Host "  hf-sizes      每周日 $SizesTime 补规模数据，增量合并、中断可续"
 Write-Host "  hf-archive    每周一 $ArchiveTime 归档满 30 天的 Raw，原文件移入 backup"

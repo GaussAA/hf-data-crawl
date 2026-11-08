@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import polars as pl
 
@@ -49,6 +50,10 @@ FAILURE_WINDOW = timedelta(days=7)
 #: 底库行龄的告警线（按 P95）。全量对账已改为每日，理想值 0-1 天；
 #: 留到 7 天是兜底——超过它说明每日对账已连续多天没跑成，底库在拿旧值充数。
 STALENESS_ALERT_DAYS = 7
+
+#: 富化表允许的最长不更新天数。规模表按周补、卡片按 enrich 节奏，超过这个天数
+#: 说明那条链路已经停了，而不是「它本来就慢」。
+ARTIFACT_MAX_AGE_DAYS = 7
 
 #: 有界试跑（max_pages）与 dry_run 不是完成；collect 的完成态与 cli 共用一份枚举。
 _RECONCILE_DONE = frozenset({"end"})
@@ -259,6 +264,89 @@ def _layer_reconcile(store: DatasetStore) -> Finding:
     return Finding(False, f"层间勾稽：current {len(current_ids)} 个 id 与各层一致（{detail}）")
 
 
+def _scan_frame(pattern: Path | str, columns: list[str]) -> pl.DataFrame | None:
+    """只取需要的列（parquet 列裁剪），读失败返回 None。
+
+    富化表里 `carddata` 76 万行、`size` 112 万行，读全列会让体检多花十几秒；
+    而这里只需要 id 与日期。读失败不抛：体检不能因为一份产物坏掉而整体失败。
+    """
+    try:
+        return pl.scan_parquet(pattern).select(columns).collect()
+    except (OSError, pl.exceptions.PolarsError):
+        return None
+
+
+def _artifact_freshness(store: DatasetStore, today: date) -> Finding:
+    """富化表与导出物有没有跟上底库。
+
+    为什么单独查：这些文件**都不跟着派生自动更新**。导出物只在跑 `export-wide`
+    时刷新——2026-11-08 实测：对账在 04:11 把底库刷到 1,123,235 行，而导出仍是
+    前夜 02:33 的 1,123,090 行，差 145 行且没有任何提示；`carddata` 只在 `enrich`
+    或 `build` 时重算；`size` / `files` 来自外部接口，重建时刻意保留。它们旧了
+    不报错，查询照常返回，只是拿的是旧快照。
+
+    判据分两档，因为两类东西的「应该全」不同：
+
+    - **导出物必须与底库逐 id 一致**。它是给人做分析的宽表，缺一行就可能得出
+      相反的结论，所以差集非空即告警。
+    - **富化表只报覆盖与最新日期，不因覆盖不全告警**。长尾本来就没补过（按下载量
+      取头部是设计），但「整张表超过 `ARTIFACT_MAX_AGE_DAYS` 没动过」是真停了。
+    """
+    current = store.read_current()
+    if current.height == 0:
+        return Finding(True, "产物新鲜度：current 为空，无法比对")
+    current_ids = set(current["id"].to_list())
+    problems: list[str] = []
+    notes: list[str] = []
+
+    export = store.root / "exports" / "datasets.parquet"
+    if not export.exists():
+        problems.append("宽表导出不存在，跑 export-wide")
+    else:
+        exported_frame = _scan_frame(export, ["id"])
+        if exported_frame is None:
+            problems.append("宽表导出读取失败，跑 export-wide 重建")
+        else:
+            exported = set(exported_frame["id"].to_list())
+            missing = len(current_ids - exported)
+            surplus = len(exported - current_ids)
+            if missing or surplus:
+                problems.append(f"宽表导出落后：缺 {missing} 行、多 {surplus} 行（跑 export-wide）")
+            else:
+                notes.append(f"导出与底库一致（{len(exported)} 行）")
+
+    for name, label in (("carddata", "卡片"), ("size", "规模"), ("files", "文件清单")):
+        spec = table(name)
+        if not any(store.root.glob(spec.glob())):
+            notes.append(f"{label}未生成")
+            continue
+        frame = _scan_frame(f"{store.root.as_posix()}/{spec.glob()}", ["id", "snapshot_date"])
+        if frame is None or frame.height == 0:
+            notes.append(f"{label}读取失败")
+            continue
+        covered = len(set(frame["id"].to_list()) & current_ids)
+        share = covered / len(current_ids) * 100
+        # 覆盖率保留一位小数直到 10%：`files` 试点只有 1000 行，四舍五入成「0%」
+        # 会读成「一行都没有」，而它确实有 1000 行、只是不足千分之一。
+        share_text = f"{share:.1f}%" if share < 10 else f"{share:.0f}%"
+        newest = frame["snapshot_date"].max()
+        # `Series.max()` 的类型标注是宽联合（date / bytes / …），先收窄再用。
+        if not isinstance(newest, date):
+            notes.append(f"{label}覆盖 {share_text}（日期缺失）")
+            continue
+        notes.append(f"{label}覆盖 {share_text}（最新 {newest}）")
+        age_days = (today - newest).days
+        if age_days > ARTIFACT_MAX_AGE_DAYS:
+            problems.append(
+                f"{label}表已 {age_days} 天没更新（最新 {newest}），"
+                f"检查 enrich / fetch-sizes / fetch-files 是否还在跑"
+            )
+
+    if problems:
+        return Finding(True, "产物新鲜度：" + "；".join(problems))
+    return Finding(False, "产物新鲜度：" + "；".join(notes))
+
+
 def _raw_growth(store: DatasetStore) -> Finding:
     """盯住 Raw 规模：compact 压跨天重复，热区仍会逐日增长，靠阈值兜底。"""
     files = (
@@ -415,6 +503,7 @@ def diagnose(store: DatasetStore, now: datetime | None = None) -> list[Finding]:
         _layer_reconcile(store),
         _raw_gaps(store, now.date()),
         _derive_state(store),
+        _artifact_freshness(store, now.date()),
         _raw_growth(store),
         _cold_backlog(store, now.date()),
         _archive_backlog(store, now.date()),

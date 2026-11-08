@@ -32,7 +32,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `build` | 重建派生层：默认只重放近 7 天热区，`--stale` 只修派生滞后的日子及其后，`--full` 全量重放 | 否 |
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
 | `report` | 生成单文件榜单页（离线可看） | 否 |
-| `doctor` | 体检：调度新鲜度、底库行龄、层间勾稽、派生凭证、断日与残留文件；异常写 `ALERT.txt` 并追加体检流水 | 否 |
+| `doctor` | 体检：调度新鲜度、底库行龄、层间勾稽、派生凭证、产物新鲜度、断日与残留文件；异常写 `ALERT.txt` 并追加体检流水 | 否 |
 | `archive` | 归档早于 N 天的 Raw 分区：合并小分块并去重，先验证 Bronze 逐行相等，原文件移入 `backup/raw/` | 否 |
 | `compact` | 压缩冷区 Raw：跨天去重成一份基线，原分块移入 `backup/raw/` 不删除 | 否 |
 | `docs` | 生成 `docs/DATA.md`：data 目录结构、各文件作用、全部字段含义 | 否 |
@@ -251,13 +251,15 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 ## 定时
 
 ```powershell
-pwsh -File scripts\setup-schedule.ps1              # 注册：每日 03:10 增量、每日 04:00 全量对账、每日 09:00 体检、每日 00:30 压缩
+pwsh -File scripts\setup-schedule.ps1              # 注册：03:10 增量 · 04:00 对账 · 04:50 导出 · 09:00 体检 · 00:30 压缩（+ 周日 06:00 规模、周一 05:00 归档）
 pwsh -File scripts\setup-schedule.ps1 -Uninstall   # 卸载
 Get-ScheduledTask -TaskName hf-* | Get-ScheduledTaskInfo   # 核对
 uv run hf-data-crawl doctor                        # 手动体检；有问题退出码 1，并写 data\ALERT.txt
 ```
 
-计划任务调 `scripts\*.ps1` 四个包装脚本（collect / reconcile / doctor / sizes），全部是 PowerShell 7 脚本，由 `pwsh -File` 执行。公共部分（定位 `uv`、代理默认值、日志、退出码）抽在 `scripts\_common.ps1`，各脚本只声明跑哪个子命令。
+计划任务调 `scripts\*.ps1` **七个**包装脚本（collect / reconcile / export / doctor / sizes / archive / compact），全部是 PowerShell 7 脚本，由 `pwsh -File` 执行。公共部分（定位 `uv`、代理默认值、日志、退出码）抽在 `scripts\_common.ps1`，各脚本只声明跑哪个子命令。
+
+七项任务的时刻是按「写命令互斥」排的，不是随手定的：00:30 压缩 → 03:10 增量 → 04:00 对账 → **04:50 导出** → 05:00 归档（仅周一）→ 06:00 规模（仅周日）→ 09:00 体检。导出必须在对账之后：它是物化投影，不会跟着派生自动更新，排在前面就等于每天导出一份旧的。
 
 要点：
 
