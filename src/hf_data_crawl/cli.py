@@ -16,7 +16,9 @@ from pathlib import Path
 
 import polars as pl
 
+from . import compare, specdiff
 from .api import MAX_LIMIT, HfDatasetApi, Transport
+from .backfill import FillError, header_change, header_of
 from .collect import Collector, CollectSummary
 from .delivery import DeliveryBlocked, DeliveryResult, Preview, deliver, preview, run_due
 from .deriving import check_and_recover
@@ -36,6 +38,7 @@ from .reconcile import Reconciler, ReconcileSummary
 from .report import Reporter
 from .requirement import (
     DELIVERIES_DIR,
+    HISTORY_DIR,
     INPUT_DIR,
     MANIFEST_NAME,
     SPEC_NAME,
@@ -218,6 +221,31 @@ def build_parser() -> argparse.ArgumentParser:
         "--check",
         action="store_true",
         help="只判不写：列出不合规之处，有问题则退出码非零（CI / 交付前自检用）",
+    )
+    request_input = request_sub.add_parser(
+        "input", help="收一版新输入表：按 input/v<n>/ 归档，并报出与当前表头的字段差异"
+    )
+    request_input.add_argument("id", help="需求号")
+    request_input.add_argument("--add", required=True, metavar="文件", help="对方这一轮给的原始表")
+    request_input.add_argument("--sheet", default=None, help="表名，不写沿用 spec 或取第一个")
+    request_input.add_argument(
+        "--header-row", type=int, default=None, help="列名所在行，默认沿用 spec"
+    )
+    request_diff = request_sub.add_parser("diff", help="比对两版口径的差异：默认最近两版")
+    request_diff.add_argument("id", help="需求号")
+    request_diff.add_argument(
+        "old", nargs="?", default=None, metavar="旧版", help="如 v1 或 1；默认倒数第二版"
+    )
+    request_diff.add_argument(
+        "new", nargs="?", default=None, metavar="新版", help="如 v2 或 2；默认最新一版"
+    )
+    request_compare = request_sub.add_parser("compare", help="逐列比对两次交付：默认最近两次")
+    request_compare.add_argument("id", help="需求号")
+    request_compare.add_argument(
+        "left", nargs="?", default=None, metavar="旧时刻", help="交付目录名，默认倒数第二次"
+    )
+    request_compare.add_argument(
+        "right", nargs="?", default=None, metavar="新时刻", help="交付目录名，默认最新一次"
     )
 
     reconcile = subparsers.add_parser("reconcile", help="全量对账（按 createdAt 稳定序）")
@@ -1150,7 +1178,244 @@ def _request(args: argparse.Namespace) -> int:
         return _request_list(root)
     if args.request_action == "method":
         return _request_method(root, args.id, check=args.check)
+    if args.request_action == "input":
+        return _request_input(root, args)
+    if args.request_action == "diff":
+        return _request_diff(root, args)
+    if args.request_action == "compare":
+        return _request_compare(root, args)
     return _request_show(root, args.id)
+
+
+def _brief(text: str, limit: int = 42) -> str:
+    flat = text.replace("\r", " ").replace("\n", " ").strip()
+    if not flat:
+        return "（空）"
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
+def _request_compare(root: Path, args: argparse.Namespace) -> int:
+    """逐列比对两次交付。默认最近两次——「刚改完这版动了什么」最常问的就是这一对。"""
+    try:
+        request_dir = resolve_dir(root, args.id)
+    except SpecError as error:
+        print(f"失败：{error}")
+        return 1
+
+    done = deliveries_of(request_dir)
+    if args.left and args.right:
+        left, right = args.left, args.right
+    elif len(done) < 2:
+        print(f"{args.id} 只有 {len(done)} 次交付，没有可比对象。")
+        return 1
+    else:
+        left, right = done[-2].name, done[-1].name
+
+    base = request_dir / DELIVERIES_DIR
+    for name in (left, right):
+        if not (base / name).is_dir():
+            existing = "、".join(path.name for path in done) or "无"
+            print(f"失败：没有交付 {name}（现有：{existing}）")
+            return 1
+
+    try:
+        result = compare.compare_deliveries(base / left, base / right)
+    except compare.CompareError as error:
+        print(f"失败：{error}")
+        return 1
+
+    print(f"{args.id} 交付对比（{result.kind}）：{result.left} → {result.right}")
+    print(
+        f"  行数：{result.left_rows:,} → {result.right_rows:,}"
+        f"（共同 {result.common_rows:,} · 新增 {len(result.added)} · 消失 {len(result.removed)}）"
+    )
+    for label, items in (("新增", result.added), ("消失", result.removed)):
+        if items:
+            head = "、".join(items[:6])
+            tail = f" 等 {len(items)} 条" if len(items) > 6 else ""
+            print(f"  {label}：{head}{tail}")
+    if result.left_only_columns:
+        print(f"  仅旧版有的列：{'、'.join(result.left_only_columns)}")
+    if result.right_only_columns:
+        print(f"  仅新版有的列：{'、'.join(result.right_only_columns)}")
+
+    changed = [item for item in result.columns if item.changed]
+    if not changed:
+        print(f"  共同列逐格相同（共 {len(result.columns)} 列）。")
+        return 0
+    print(f"  改值 {result.changed_cells:,} 格，涉及 {len(changed)} 列：")
+    for item in changed:
+        print(f"    {item.name}  {item.changed:,} 格")
+        for key, before, after in item.samples:
+            print(f"      {key}：{_brief(before)} → {_brief(after)}")
+    return 0
+
+
+def _version_of(text: str) -> int:
+    """`v2` 与 `2` 都认。认不出来就报错——猜一个版本号会让人看错两版。"""
+    value = text.strip().lower().removeprefix("v")
+    if not value.isdigit():
+        raise ValueError(f"版本号应形如 v2 或 2，实得 {text!r}")
+    return int(value)
+
+
+def _request_diff(root: Path, args: argparse.Namespace) -> int:
+    """比对两版口径。默认最近两版——那是「刚改了什么」最常被问的一对。"""
+    try:
+        request_dir = resolve_dir(root, args.id)
+    except SpecError as error:
+        print(f"失败：{error}")
+        return 1
+    versions = history_versions(request_dir / SPEC_NAME)
+    try:
+        if args.old and args.new:
+            left, right = _version_of(args.old), _version_of(args.new)
+        elif len(versions) < 2:
+            print(f"{args.id} 只有 {len(versions)} 版快照，没有可比对象。")
+            print("  改过口径并交付一次之后，才会留下下一版快照。")
+            return 1
+        else:
+            left, right = versions[-2], versions[-1]
+    except ValueError as error:
+        print(f"失败：{error}")
+        return 1
+
+    for version in (left, right):
+        if version not in versions:
+            existing = "、".join(f"v{item}" for item in versions) or "无"
+            print(f"失败：没有 v{version} 的快照（现有：{existing}）")
+            return 1
+
+    try:
+        # 历史快照躺在 history/ 下，相对路径必须按需求目录解析。
+        old = load_spec(request_dir / HISTORY_DIR / f"v{left}.yaml", base_dir=request_dir)
+        new = load_spec(request_dir / HISTORY_DIR / f"v{right}.yaml", base_dir=request_dir)
+    except SpecError as error:
+        print(f"失败：{error}")
+        return 1
+
+    changes = specdiff.compare(old, new)
+    print(f"{args.id} 口径 v{left} → v{right}")
+    print()
+    if changes:
+        for line in specdiff.table(changes):
+            print(f"  {line}")
+        print()
+        print(f"共 {len(changes)} 处差异（只比决定产物的部分）。")
+    else:
+        print("  口径未变：条件、排序、投影、护栏、回填规则逐项相同。")
+    notes = specdiff.side_notes(old, new)
+    if notes:
+        print()
+        print("  另（不影响产物，也不进口径指纹）：")
+        for line in notes:
+            print(f"  {line}")
+    return 0
+
+
+def _next_input_version(request_dir: Path) -> int:
+    """下一版输入表的序号。顶层还有快照时，那一版就算 v1。"""
+    base = request_dir / INPUT_DIR
+    if not base.is_dir():
+        return 1
+    versions = [
+        int(path.name[1:])
+        for path in base.iterdir()
+        if path.is_dir() and path.name.startswith("v") and path.name[1:].isdigit()
+    ]
+    if versions:
+        return max(versions) + 1
+    return 2 if any(path.is_file() for path in base.iterdir()) else 1
+
+
+def _print_header_change(old: tuple[str, ...], new: tuple[str, ...]) -> None:
+    """报字段差异。人看的是「哪几列不一样」，不是「怎么挪最省」。"""
+    if not old:
+        print(f"  新表共 {len(new)} 列（读不到当前表头，无从比对）")
+        return
+    change = header_change(old, new)
+    if not (change["added"] or change["removed"] or change["reordered"]):
+        print(f"  表头与当前完全一致（{len(new)} 列）")
+        return
+    if change["added"]:
+        print(f"  新增 {len(change['added'])} 列：{'、'.join(change['added'])}")
+    if change["removed"]:
+        print(f"  少了 {len(change['removed'])} 列：{'、'.join(change['removed'])}")
+    if change["reordered"]:
+        print("  共同列的次序变了（按列名定位不受影响，但人眼看会串行）")
+
+
+def _request_input(root: Path, args: argparse.Namespace) -> int:
+    """把新一版输入收进需求目录，并报出字段差异。
+
+    只搬文件、只报告，**不改 spec**：改 `fill.source.path` 等于换口径，得升版本、
+    得在 METHOD.md 里记一句为什么换。这个判断不能交给命令替人做——它是人的活，
+    命令只负责把「新表和旧表差在哪」摆到明面上。
+    """
+    try:
+        request_dir = resolve_dir(root, args.id)
+        spec = load_spec(request_dir / SPEC_NAME)
+    except SpecError as error:
+        print(f"失败：{error}")
+        return 1
+    fill = spec.fill
+    if fill is None:
+        print(f"失败：{spec.id} 是 {spec.kind.value} 型需求，没有输入表可换。")
+        return 1
+
+    given = Path(args.add).expanduser()
+    if not given.is_file():
+        print(f"失败：新输入不存在或不是文件：{given}")
+        return 1
+
+    sheet = args.sheet or fill.source.sheet
+    header_row = args.header_row or fill.source.header_row
+    try:
+        new_header = header_of(given, sheet=sheet, header_row=header_row)
+    except (FillError, OSError) as error:
+        print(f"失败：读不出新表表头——{error}")
+        return 1
+    if fill.source.key_column not in new_header:
+        print(
+            f"失败：新表第 {header_row} 行没有标识列 {fill.source.key_column!r}，接进来也没法用。"
+        )
+        print(f"  现有列：{'、'.join(new_header[:10])}{'…' if len(new_header) > 10 else ''}")
+        return 1
+
+    target = request_dir / INPUT_DIR / f"v{_next_input_version(request_dir)}" / given.name
+    if target.exists():
+        print(f"失败：{target} 已存在，不覆盖。")
+        return 1
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(given, target)
+
+    try:
+        old_header = header_of(
+            fill.source.path, sheet=fill.source.sheet, header_row=fill.source.header_row
+        )
+    except (FillError, OSError):
+        old_header = ()
+        print("  [!] 当前输入表读不出表头（文件或 sheet 有问题），只报新表结构")
+
+    relative = target.relative_to(request_dir).as_posix()
+    print(f"已收进 {relative}（{given.stat().st_size:,} 字节，原件未改动）")
+    _print_header_change(old_header, new_header)
+
+    missing = [item.name for item in fill.columns if item.name not in new_header]
+    if missing:
+        print(
+            f"  [!] spec 声明了 {len(missing)} 列、新表里没有：{'、'.join(missing[:8])}"
+            f"{'…' if len(missing) > 8 else ''}"
+        )
+        print("      直接交付会失败；要么补回这些列，要么把对应规则改成 manual 或删掉")
+
+    print()
+    print("下一步（换输入等于换口径，这几步不代劳）：")
+    print(f"  1. spec.yaml：fill.source.path 改成 {relative}")
+    print(f"  2. spec.yaml：version 改成 {spec.version + 1}")
+    print("  3. method/METHOD.md：记一句换了哪版表、字段怎么变、为什么换")
+    print(f"  4. 先 `request run {spec.id} --dry-run` 看逐列覆盖，再正式交付")
+    return 0
 
 
 def _request_method(root: Path, request_id: str, *, check: bool) -> int:

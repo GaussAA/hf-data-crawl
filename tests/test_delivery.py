@@ -724,3 +724,33 @@ def test_改了口径不升版本不许交付(store: DatasetStore, tmp_path: Pat
 
     # 拦在建目录之前：一次被拒的交付不该在台账里留下空壳。
     assert len(deliveries_of(root / "REQ-0001")) == 1
+
+
+def test_档案记下输入表头_换表后标出来但照常交付(store: DatasetStore, tmp_path: Path) -> None:
+    """换了一份字段不同的表：行数可能一模一样，但「表变了」必须留在纸面上。"""
+    root = tmp_path / "req"
+    book = make_book(tmp_path / "in.xlsx", ["acme/ds-1"])
+    spec_path = make_backfill_request(root, book)
+    first = deliver(store, root, "REQ-0002", now=NOW)
+    body = json.loads((first.directory / MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert body["fill"]["input"]["header"]["columns"] == ["URL", "下载量", "训练阶段"]
+
+    # 换一张表：多一列「数据模态」。这里刻意**原地替换**输入快照，模拟「对方重发
+    # 了一份表、人直接覆盖」这种最常见的走法——正是要靠表头指纹把它标出来。
+    changed = openpyxl.Workbook()
+    sheet = changed.active
+    assert sheet is not None
+    sheet.cell(row=1, column=1, value="基础信息")
+    for column, name in enumerate(["URL", "下载量", "训练阶段", "数据模态"], start=1):
+        sheet.cell(row=2, column=column, value=name)
+    sheet.cell(row=3, column=1, value="acme/ds-1")
+    changed.save(root / "REQ-0002" / "input" / "in.xlsx")
+    spec_text = spec_path.read_text(encoding="utf-8").replace("version: 1", "version: 2")
+    spec_path.write_text(spec_text, encoding="utf-8")
+
+    second = deliver(store, root, "REQ-0002", now=NOW)
+    later = json.loads((second.directory / MANIFEST_NAME).read_text(encoding="utf-8"))
+
+    assert later["health"]["header_note"].startswith("输入表头与上一份交付不同")
+    assert "数据模态" in later["health"]["header_note"]
+    assert "注意：" in (second.directory / "README.md").read_text(encoding="utf-8")

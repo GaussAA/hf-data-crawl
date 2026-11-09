@@ -116,6 +116,8 @@ class Payload:
     definition: dict[str, Any] = field(default_factory=dict)
     #: 写进 README「口径」段的若干行（markdown）。
     detail_lines: list[str] = field(default_factory=list)
+    #: 输入表的列名（回填形态有；查询形态没有）。档案据此比对「这次的表和上次一样吗」。
+    header: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -133,6 +135,9 @@ class Health:
     #: 上一次交付的口径版本；与本版不同时不比较行数（改了口径必然大变）。
     supersedes: int | None = None
     note: str = ""
+    #: 输入表头与上一份交付的差异。变了不是错，但必须留在纸面上——字段悄悄换了
+    #: 是这类需求最容易踩的坑，而它不会让任何数字变红。
+    header_note: str = ""
 
 
 @dataclass(frozen=True)
@@ -254,7 +259,7 @@ def deliver(
             )
         )
         _check_guard(spec, payload.rows)
-        health = _health(request_dir, spec, payload.rows)
+        health = _health(request_dir, spec, payload.rows, payload.header)
         manifest = _manifest(
             spec=spec,
             moment=moment,
@@ -499,6 +504,7 @@ def _backfill_payload(ctx: RunContext) -> Payload:
         files=report.files,
         definition=definition,
         detail_lines=lines,
+        header=report.header,
     )
 
 
@@ -509,7 +515,16 @@ def _fill_definition(
     return {
         "fill": {
             # 输入快照的相对路径与指纹：目录搬走后仍能回答「基于哪一版清单」。
-            "input": {"path": fill.source.relative, **input_stamp},
+            # 表头单独记一份：只记 sha256 的话，换了一列确实对不上，可对不上在
+            # 哪一列没人知道；列名与顺序记下来，「字段不一样了」才可核对。
+            "input": {
+                "path": fill.source.relative,
+                **input_stamp,
+                "header": {
+                    "sha256": backfill.header_digest(report.header),
+                    "columns": list(report.header),
+                },
+            },
             "source": {
                 "path": fill.source.relative,
                 "sheet": fill.source.sheet,
@@ -663,11 +678,14 @@ def _read_manifest(directory: Path) -> dict[str, Any] | None:
     return body if isinstance(body, dict) else None
 
 
-def _health(request_dir: Path, spec: Spec, rows: int) -> Health:
-    """与上一次交付比：同一口径版本内才比行数。
+def _health(request_dir: Path, spec: Spec, rows: int, header: tuple[str, ...] = ()) -> Health:
+    """与上一次交付比：同一口径版本内才比行数；表头则只在有基线时比。
 
     改了口径（版本变了）必然行数大变，那时比较只会天天发假警报——这类误报最能
     训练人忽略告警，所以宁可显式跳过并记下 `supersedes`。
+
+    表头单独比，**跨版本也比**：换一份字段不同的表，恰恰是改口径的常见原因。行数
+    可以不比，但「这次的表和上次不一样」必须留在纸面上。
     """
     last = _last_delivery(request_dir)
     if last is None:
@@ -679,9 +697,15 @@ def _health(request_dir: Path, spec: Spec, rows: int) -> Health:
             status="unknown", note=f"上一次交付（{last.name}）的 manifest 读不出来，本次未比较"
         )
 
+    header_note = _header_note(body, header)
+
     baseline = (body.get("result") or {}).get("rows")
     if not isinstance(baseline, int):
-        return Health(status="unknown", note=f"上一次交付（{last.name}）没有记行数，本次未比较")
+        return Health(
+            status="unknown",
+            note=f"上一次交付（{last.name}）没有记行数，本次未比较",
+            header_note=header_note,
+        )
 
     previous_version = body.get("spec_version")
     if previous_version != spec.version:
@@ -690,6 +714,7 @@ def _health(request_dir: Path, spec: Spec, rows: int) -> Health:
             baseline_rows=baseline,
             supersedes=previous_version if isinstance(previous_version, int) else None,
             note=f"口径已从 v{previous_version} 改到 v{spec.version}，行数变化不计入标疑",
+            header_note=header_note,
         )
 
     delta_abs = rows - baseline
@@ -703,7 +728,30 @@ def _health(request_dir: Path, spec: Spec, rows: int) -> Health:
         baseline_rows=baseline,
         delta_pct=round(delta_pct, 2),
         delta_abs=delta_abs,
+        header_note=header_note,
     )
+
+
+def _header_note(body: dict[str, Any], header: tuple[str, ...]) -> str:
+    """把表头差异说成人话。任一侧没有记录就明说「没比」，不假装一致。"""
+    if not header:
+        return ""
+    recorded = ((body.get("fill") or {}).get("input") or {}).get("header") or {}
+    columns = recorded.get("columns")
+    if not isinstance(columns, list) or not columns:
+        return "上一份档案没记输入表头，本次未比较（早期档案没有这一项）"
+    old = tuple(str(name) for name in columns)
+    if old == header:
+        return ""
+    change = backfill.header_change(old, header)
+    parts: list[str] = []
+    if change["added"]:
+        parts.append("新增 " + "、".join(change["added"]))
+    if change["removed"]:
+        parts.append("少了 " + "、".join(change["removed"]))
+    if change["reordered"]:
+        parts.append("共同列次序变了")
+    return "输入表头与上一份交付不同：" + "；".join(parts)
 
 
 # ---------------------------------------------------------------- 落盘
@@ -816,6 +864,7 @@ def _manifest(
             "delta_abs": health.delta_abs,
             "supersedes": health.supersedes,
             "note": health.note,
+            "header_note": health.header_note,
         },
         "previous": previous,
         # 过程自包含：这份结果由哪版方法、哪版脚本、哪版代码产出。缺了它，
@@ -855,6 +904,8 @@ def _readme(
         ]
     elif health.status == "unknown":
         lines += [f"> 上一次交付的档案读不出来，本次未做行数比较（{health.note}）。", ""]
+    if health.header_note:
+        lines += [f"> 注意：{health.header_note}。行数没变不等于结果没变，请先核对这一批。", ""]
 
     lines += [f"- 提出人：{spec.requester}"]
     if spec.purpose:

@@ -40,5 +40,8 @@ runs/
 .ruff_cache/
 .mypy_cache/
 
-# 本机 agent 记忆（本地状态，不入库）
-.workbuddy/
+# 本机 agent 记忆（本地状态，不入库）。注意是 `.workbuddy/*` 而非 `.workbuddy/`：
+# 整目录排除后，git 不会进入该目录，下面的白名单也就不可能生效。
+.workbuddy/*
+# 项目级 skill 要跟仓库走：它是团队共用的规程，不是本机状态。
+!.workbuddy/skills/

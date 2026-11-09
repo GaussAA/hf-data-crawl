@@ -755,7 +755,7 @@ def _plain(value: Any) -> Any:
     return value
 
 
-def _spec_body(spec: Spec) -> dict[str, Any]:
+def spec_body(spec: Spec) -> dict[str, Any]:
     """把 Spec 摊成「决定产物长什么样」的那部分。
 
     只收口径，不收展示：标题、提出人、用途、节奏改来改去都不该算一版变更——
@@ -823,9 +823,9 @@ def spec_digest(spec_path: Path, *, base_dir: Path | None = None) -> str:
     而拦下——那是冤枉。反过来，把 `下载量 > 1000` 改成 `> 800`，语义一定变。
 
     也不只按原始 YAML 映射算：那样「补一个默认值」与「真的换了默认值」分不开。
-    故先 `load()` 成 `Spec`（默认值全部补齐、枚举归一），再摊成 `_spec_body` 比。
+    故先 `load()` 成 `Spec`（默认值全部补齐、枚举归一），再摊成 `spec_body` 比。
     """
-    return spec_body_digest(_spec_body(load(spec_path, base_dir=base_dir)))
+    return spec_body_digest(spec_body(load(spec_path, base_dir=base_dir)))
 
 
 def spec_body_digest(body: dict[str, Any]) -> str:

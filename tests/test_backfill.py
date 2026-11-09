@@ -18,6 +18,9 @@ import pytest
 from hf_data_crawl.backfill import (
     FillError,
     FillSpec,
+    header_change,
+    header_digest,
+    header_of,
     parse_reference,
     render,
     run,
@@ -548,3 +551,34 @@ def test_表里没有声明的列要报错而不是静默跳过(tmp_path: Path) 
 
     with pytest.raises(FillError, match="表里没有"):
         run_it(spec, [ROW], tmp_path=tmp_path)
+
+
+# ---------------------------------------------------------------- 输入表头
+
+
+def test_表头指纹认列名也认顺序() -> None:
+    """只按列名集合算，挪个次序就看不出来了——而次序变了，人看表会串行。"""
+    assert header_digest(("URL", "名称")) == header_digest(("URL", "名称"))
+    assert header_digest(("URL", "名称")) != header_digest(("名称", "URL"))
+    assert header_digest(("URL", "名称")) != header_digest(("URL", "名称", "下载量"))
+
+
+def test_表头差异分加列减列与挪位() -> None:
+    change = header_change(("URL", "名称", "下载量"), ("URL", "下载量", "名称", "新增"))
+    assert change["added"] == ["新增"]
+    assert change["removed"] == []
+    assert change["reordered"] is True
+
+    assert header_change(("a", "b"), ("a", "b")) == {
+        "added": [],
+        "removed": [],
+        "reordered": False,
+    }
+
+
+def test_读表头按列名顺序且跳过空列(tmp_path: Path) -> None:
+    book = build_book(tmp_path / "in.xlsx", ["acme/ds-1"])
+
+    assert header_of(book, header_row=2) == tuple(HEADERS)
+    with pytest.raises(FillError, match="没有 sheet"):
+        header_of(book, sheet="不存在的表", header_row=2)

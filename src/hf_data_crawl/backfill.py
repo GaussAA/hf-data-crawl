@@ -188,6 +188,9 @@ class FillReport:
     manual: list[tuple[str, str]]
     stamp: SourceStamp | None = None
     files: list[dict[str, Any]] = field(default_factory=list)
+    #: 输入表的列名，按表头顺序。档案要用它回答「当时那张表长什么样」——
+    #: 只记 sha256 的话，换了一列确实对不上，可对不上在哪一列没人知道。
+    header: tuple[str, ...] = ()
 
     def written(self) -> int:
         return sum(item.written for item in self.tallies.values())
@@ -538,6 +541,41 @@ def _column_index(sheet: Any, header_row: int) -> dict[str, int]:
     return index
 
 
+def header_of(path: Path, *, sheet: str | None = None, header_row: int = 1) -> tuple[str, ...]:
+    """读一张表的列名，按表头顺序。
+
+    受理新输入时用它比对字段：那一刻还没有 spec，`from_mapping` 那套校验用不上，
+    手上只有一份文件。空列名的占位列照旧跳过——与执行体定位列的口径保持一致，
+    否则「比对时说有这一列、交付时说没有」。
+    """
+    workbook = openpyxl.load_workbook(path)
+    name = sheet or workbook.sheetnames[0]
+    if name not in workbook.sheetnames:
+        raise FillError(f"{path}: 没有 sheet {name!r}（现有 {workbook.sheetnames}）")
+    return tuple(_column_index(workbook[name], header_row))
+
+
+def header_digest(columns: tuple[str, ...]) -> str:
+    """表头指纹：列名与顺序。加一列、删一列、换个次序，指纹都会变。"""
+    return hashlib.sha256("\n".join(columns).encode("utf-8")).hexdigest()
+
+
+def header_change(old: tuple[str, ...], new: tuple[str, ...]) -> dict[str, Any]:
+    """两份表头的差异：加列、减列、共同列是否挪了位。
+
+    不试图给出「最小移动序列」：人要的是「哪几列不一样」，不是「怎么挪最省」，
+    后者算得再准也没人按它搬。
+    """
+    old_set, new_set = set(old), set(new)
+    common_old = [name for name in old if name in new_set]
+    common_new = [name for name in new if name in old_set]
+    return {
+        "added": [name for name in new if name not in old_set],
+        "removed": [name for name in old if name not in new_set],
+        "reordered": common_old != common_new,
+    }
+
+
 def _data_rows(sheet: Any, key_column: int, header_row: int) -> list[int]:
     """标识列非空的行，即数据区。表尺寸常报到几百行，空行不能算进去。"""
     rows: list[int] = []
@@ -654,6 +692,7 @@ def run(
         manual=manual_columns,
         stamp=stamp_value,
         files=files,
+        header=tuple(index),
     )
 
 

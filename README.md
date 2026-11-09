@@ -31,7 +31,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `reconcile` | 全量对账：按 `createdAt` 稳定序扫全站，产出新增/删除/转私有/改名/sha 变更 | 是 |
 | `build` | 重建派生层：默认只重放近 7 天热区，`--stale` 只修派生滞后的日子及其后，`--full` 全量重放 | 否 |
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
-| `request` | 需求与交付管理：`new` 建需求、`list` 看全部、`show` 看口径与台账、`method` 校验过程记录并重算脚本索引、`run` 交付一次（`--dry-run` 预演）、`run-due` 跑到期的 | 否 |
+| `request` | 需求与交付管理：`new` 建需求、`list` 看全部、`show` 看口径与台账、`method` 校验过程记录并重算脚本索引、`input` 收新版输入表、`diff` 比两版口径、`compare` 比两次交付、`run` 交付一次（`--dry-run` 预演）、`run-due` 跑到期的 | 否 |
 | `report` | 生成单文件榜单页（离线可看） | 否 |
 | `doctor` | 体检：调度新鲜度、底库行龄、层间勾稽、派生凭证、产物新鲜度、断日与残留文件；异常写 `ALERT.txt` 并追加体检流水 | 否 |
 | `archive` | 归档早于 N 天的 Raw 分区：合并小分块并去重，先验证 Bronze 逐行相等，原文件移入 `backup/raw/` | 否 |
@@ -60,6 +60,9 @@ hf-data-crawl request      new REQ-0001 --title 标题 --requester 姓名 [--pur
 hf-data-crawl request      list
 hf-data-crawl request      show REQ-0001
 hf-data-crawl request      method REQ-0001 [--check]   # 校验 method/ 并按目录实际内容重算脚本索引
+hf-data-crawl request      input REQ-0001 --add 新表.xlsx   # 收进 input/v<n>/，报字段差异，不改 spec
+hf-data-crawl request      diff REQ-0001 [v1 v2]     # 比两版口径；默认最近两版
+hf-data-crawl request      compare REQ-0001 [A B]    # 比两次交付的逐列差异；默认最近两次
 hf-data-crawl request      run REQ-0001 [--force] [--dry-run]   # once 重交须 --force；--dry-run 只算不写
 hf-data-crawl request      run-due                  # 只跑到期的（计划任务用）
 ```
@@ -369,9 +372,22 @@ sha256，于是「基于哪一版清单」和「基于哪一版底库」一样�
 那条规矩就自相矛盾了。`manifest.spec_sha256` 记下每份交付对应的口径指纹，
 `request show` 并列显示，体检对「已交付但版本号与内容对不上」的需求判红。
 
-尚有三处未做，配了方案但没上（见 GLOSSARY #70）：输入表版本化（`input/v2/` 与表头
-指纹，现在换文件只能覆盖快照或另开需求号）、`request diff` 逐字段比对两版口径、
-`request compare` 逐列比对两份产物以回答「这次变更影响了哪些格」。
+变更这件事本身有三件配套工具：
+
+- **换输入表**：`request input REQ-0002 --add 新表.xlsx` 把新表收进 `input/v<n>/`，
+  逐项报出与当前表头的差异（新增 / 少了 / 共同列挪位），并点出 spec 声明了、新表里
+  却没有的列。旧快照原地保留——覆盖会毁掉旧档案的自证链。命令**不代劳改 spec**：
+  改 `fill.source.path` 等于换口径，得升版本、得写清为什么换。
+- **看口径差**：`request diff REQ-0002 [v1 v2]` 默认比最近两版，按 `metric` 与列名
+  对齐（插一条条件不会让后面每条都显示「变了」），只比决定产物的部分——改标题会
+  单独列一句「不影响产物」。
+- **看交付差**：`request compare REQ-0002 [A B]` 逐列比对两份产物：行数、增删行、
+  共同列的改值格数并抽样。查询型按 `id` 对齐，回填型按标识列对齐且先把链接归一成
+  `作者/名称`——不归一，同一个库会被当成两个。
+
+**表头指纹**同时进了档案：`manifest.fill.input.header` 记列名与顺序的 sha256 及
+全量列名。交付时与上一份比，变了就在 README 顶部写一行「输入表头与上一份交付不同：
+新增 X；少了 Y」——不阻断，但「字段悄悄换了」再也不会无声无息。
 
 **query 形态的口径只写词条，不写字段名**：`下载量` 是近 30 天，`累计下载量` 才是
 历史累计——同一句话两种理解差两个数量级。词表见 `metrics.py` 与
@@ -413,6 +429,12 @@ spec 若显式投了 LIST 列，写 CSV 前也会先拍平——否则 Polars �
 
 一个需求失败不挡别的（坏 spec、0 行、查询出错都只记一条继续）；但底库本身不成立
 （`current` 缺失）时整体失败，因为那不是某一条需求的问题。
+
+**这套东西最终是给 Agent 用的**：人只说「要什么」，判定形态、写口径、写方法、预演、
+交付、变更与比对都由 Agent 走。规程写在 `.workbuddy/skills/hf-request/SKILL.md`——
+接收怎么判定、响应要落下哪几件、被拦下时按什么改、哪些做法一见就停。命令负责把关，
+skill 负责别把工夫用错地方；两者分开，是因为「规则」要能被机器执行，「做法」要能被
+下一个接手的 Agent 读懂。
 
 ## 回填形态：`kind: backfill`
 

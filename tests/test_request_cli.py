@@ -276,3 +276,148 @@ def test_show打印过程记录状态(tmp_path: Path, capsys: pytest.CaptureFixt
     assert "过程记录：" in out
     assert "不合规" in out
     assert "口径指纹：" in out
+
+
+def make_header_book(path: Path, headers: list[str], *, sheet_name: str = "Sheet1") -> Path:
+    """造一张「第 1 行分组、第 2 行列名」的表，与回填骨架的 header_row: 2 对齐。"""
+    book = openpyxl.Workbook()
+    sheet = book.active
+    assert sheet is not None
+    sheet.title = sheet_name
+    sheet.cell(row=1, column=1, value="基础信息")
+    for index, name in enumerate(headers, start=1):
+        sheet.cell(row=2, column=index, value=name)
+    sheet.cell(row=3, column=headers.index("URL") + 1, value="https://huggingface.co/datasets/a/b")
+    book.save(path)
+    return path
+
+
+def test_收新输入按版本归档并报字段差异(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """换表不是覆盖：旧快照要留着，否则上一份档案里的 sha256 就对不上磁盘了。"""
+    old = make_header_book(tmp_path / "旧表.xlsx", ["URL", "数据集名称", "下载量", "备注"])
+    assert (
+        run(
+            tmp_path,
+            "request",
+            "new",
+            "REQ-0002",
+            "--title",
+            "清单补全",
+            "--requester",
+            "大帅",
+            "--kind",
+            "backfill",
+            "--source",
+            str(old),
+        )
+        == 0
+    )
+    folder = resolve_dir(tmp_path / "req", "REQ-0002")
+    before = (folder / SPEC_NAME).read_text(encoding="utf-8")
+
+    new = make_header_book(tmp_path / "新表.xlsx", ["URL", "数据集名称", "下载量", "新增列"])
+    assert run(tmp_path, "request", "input", "REQ-0002", "--add", str(new)) == 0
+
+    out = capsys.readouterr().out
+    assert (folder / "input" / "v2" / "新表.xlsx").is_file()
+    assert (folder / "input" / "旧表.xlsx").is_file()  # 旧快照不动
+    assert "新增 1 列" in out and "新增列" in out
+    assert "少了 1 列" in out and "备注" in out
+    # 换输入等于换口径：命令只搬文件报差异，不替人改 spec。
+    assert (folder / SPEC_NAME).read_text(encoding="utf-8") == before
+
+
+def test_新输入缺标识列时拒收且不留目录(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    old = make_header_book(tmp_path / "旧表.xlsx", ["URL", "数据集名称"])
+    assert (
+        run(
+            tmp_path,
+            "request",
+            "new",
+            "REQ-0002",
+            "--title",
+            "清单补全",
+            "--requester",
+            "大帅",
+            "--kind",
+            "backfill",
+            "--source",
+            str(old),
+        )
+        == 0
+    )
+    folder = resolve_dir(tmp_path / "req", "REQ-0002")
+
+    broken = tmp_path / "缺列.xlsx"
+    book = openpyxl.Workbook()
+    sheet = book.active
+    assert sheet is not None
+    sheet.cell(row=2, column=1, value="链接")
+    book.save(broken)
+
+    assert run(tmp_path, "request", "input", "REQ-0002", "--add", str(broken)) == 1
+    assert "标识列" in capsys.readouterr().out
+    assert not (folder / "input" / "v2").exists()
+
+
+def write_versions(tmp_path: Path, *bodies: dict[str, object]) -> None:
+    """造一份带 n 版快照的需求；最后一版同时作为当前 spec。"""
+    folder = tmp_path / "req" / "REQ-0001-query-高热度"
+    (folder / "history").mkdir(parents=True, exist_ok=True)
+    for index, body in enumerate(bodies, start=1):
+        text = yaml.safe_dump(body, allow_unicode=True)
+        (folder / "history" / f"v{index}.yaml").write_text(text, encoding="utf-8")
+        (folder / "spec.yaml").write_text(text, encoding="utf-8")
+
+
+def version_body(version: int, **overrides: object) -> dict[str, object]:
+    body: dict[str, object] = {
+        "id": "REQ-0001",
+        "title": "高热度",
+        "requester": "大帅",
+        "version": version,
+        "cadence": "once",
+        "criteria": [{"metric": "下载量", "op": ">", "value": 1000}],
+    }
+    body.update(overrides)
+    return body
+
+
+def test_diff默认比最近两版(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    write_versions(
+        tmp_path,
+        version_body(1),
+        version_body(2, criteria=[{"metric": "下载量", "op": ">", "value": 800}]),
+    )
+
+    assert run(tmp_path, "request", "diff", "REQ-0001") == 0
+
+    out = capsys.readouterr().out
+    assert "口径 v1 → v2" in out
+    assert "criteria[下载量].value" in out
+    assert "1000" in out and "800" in out
+
+
+def test_diff可以点名两版(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    write_versions(tmp_path, version_body(1), version_body(2), version_body(3))
+
+    assert run(tmp_path, "request", "diff", "REQ-0001", "v1", "v3") == 0
+
+    assert "口径 v1 → v3" in capsys.readouterr().out
+
+
+def test_diff只有一版时说清没有可比对象(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    write_versions(tmp_path, version_body(1))
+
+    assert run(tmp_path, "request", "diff", "REQ-0001") == 1
+    assert "没有可比对象" in capsys.readouterr().out
+
+
+def test_diff只改标题时明说口径未变(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    write_versions(tmp_path, version_body(1), version_body(2, title="高热度（改名）"))
+
+    assert run(tmp_path, "request", "diff", "REQ-0001") == 0
+
+    out = capsys.readouterr().out
+    assert "口径未变" in out
+    assert "标题" in out and "改名" in out
