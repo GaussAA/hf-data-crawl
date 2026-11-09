@@ -1,44 +1,56 @@
+#Requires -Version 7.0
 <#
 .SYNOPSIS
     注册 / 卸载 hf-data-crawl 的 Windows 计划任务。
 
 .DESCRIPTION
-    hf-collect    每日 03:10 日增量，另在登录后 2 分钟补跑（collect 带 --skip-if-done，
-                  当天已采过会直接跳过）。
-    hf-reconcile  每日 04:00 全量对账；错过则开机后补跑一次。
-    hf-export     每日 04:50 导出宽表（gold.datasets → 单文件 parquet）；物化投影不会
-                  跟着派生自动更新，故排在对账之后每日刷新一次。
-    hf-doctor     每日 09:00 体检，另在登录后 10 分钟再查一次；有问题写 data\ALERT.txt。
-    hf-sizes      每周日 06:00 补数据集规模（行数/列数），最慢的一步，增量可续。
-    hf-archive    每周一 05:00 归档满 30 天的 Raw（去重小分块、冻结写入序），原文件移入 backup。
-    hf-compact    每日 00:30 压缩满 7 天的冷区 Raw（跨天去重成基线），原分块移入 backup 不删。
-    hf-deliver    每日 07:00 把到期需求的当前口径各跑一次，写带底库指纹的交付档案。
+    hf-daily    每日 03:10 一条链跑完当日全部例行，登录后 3 分钟再补一次：
+                采集 → 派生重放 → 全站对账 → 导出宽表 → 到期交付 → 体检。
+                顺序由 scripts\daily.ps1 保证，不由钟点猜（见下）。
+    hf-compact  每日 00:30 压缩满 7 天的冷区 Raw（跨天去重成基线），原分块移入 backup。
+    hf-sizes    每周日 06:00 补数据集规模（行数/列数），最慢的一步，增量可续。
+    hf-archive  每周一 05:00 归档满 30 天的 Raw（去重小分块、冻结写入序），移入 backup。
 
-    与旧版的差别（旧版是笔记本上三天漏采的原因）：
-      - StartWhenAvailable：关机错过的任务，开机后补跑；
+    为什么把五个任务收成一条链（2026-11-09 实测）
+    ----------------------------------------------
+    原先是采集 03:10 / 对账 04:00 / 导出 04:50 / 交付 07:00 / 体检 09:00 各一条，
+    靠时刻先后表达依赖。机器一直开着时看不出问题；一旦关机错过，
+    `-StartWhenAvailable` 会在开机后**把错过的实例在同一分钟全部补跑**：
+
+        11-09 00:30 之后关机，19:03:26 开机
+        19:06  采集（登录 +2 分钟）
+        19:07  导出先完成（1,126,351 行），对账才开始、8 分钟后才收工
+        ⇒ 导出一出来就落后，体检随之报「宽表导出落后：缺 2,466 行」
+        19:14  体检第二次触发，撞上对账持锁 → 降级非快照 → 退出码 1
+
+    补跑本身要留着（不补就断更），要改的是**依赖的表达方式**：把五步写进一条
+    脚本按序执行，补跑时整条链重跑一遍。故本次只给 hf-daily 保留
+    `-StartWhenAvailable`；compact / sizes / archive 是互不相干的纯周期维护，
+    错过一轮就等下一轮（compact 次日、sizes 与 archive 下周），不必开机补跑——
+    它们补跑也只会跟链抢写锁。
+
+    其余与旧版一致：
       - 允许在电池供电时启动（旧版 DisallowStartIfOnBatteries 会让任务被拒绝，
         结果码 0x800710E0），且切到电池不中断；
       - 设执行时限：写命令持有数据目录的锁，挂死的进程会一直占着它。
 
-    幂等：同名任务会被覆盖，可反复执行。用 PowerShell 7 运行（脚本为 UTF-8 无 BOM）：
+    幂等：同名任务会被覆盖，可反复执行；升级时旧的五个任务会被一并清掉。
+    用 PowerShell 7 运行（脚本为 UTF-8 无 BOM）：
         pwsh -File scripts\setup-schedule.ps1
         pwsh -File scripts\setup-schedule.ps1 -Uninstall
 
 .NOTES
     采集日志落 data\logs\（按轮命名 `时间戳-任务名.log`，自动保留最近 200 个），
     运行摘要落 data\runs\（同样是时间戳-命令，但为结构化 JSON），任务本身不弹窗。
-    两者同键不同扩展名：查某一轮的现场过程与结论，取同前缀即可。
+    两者同键不同扩展名：查某一轮的现场过程与结论，取同前缀即可。链条另写一份
+    `时间戳-daily.log`，逐步行首尾与跳过原因，一眼看出断在哪。
 #>
 [CmdletBinding()]
 param(
-    [string]$CollectTime = "03:10",
-    [string]$ReconcileTime = "04:00",
-    [string]$ExportTime = "04:50",
-    [string]$DoctorTime = "09:00",
+    [string]$DailyTime = "03:10",
     [string]$SizesTime = "06:00",
     [string]$ArchiveTime = "05:00",
     [string]$CompactTime = "00:30",
-    [string]$DeliverTime = "07:00",
     [switch]$Uninstall
 )
 
@@ -50,13 +62,16 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
-$taskNames = @(
-    "hf-collect", "hf-reconcile", "hf-export", "hf-deliver", "hf-doctor", "hf-sizes",
-    "hf-archive", "hf-compact"
-)
+
+#: 现行任务。
+$taskNames = @("hf-daily", "hf-sizes", "hf-archive", "hf-compact")
+
+#: 2026-11-09 之前按钟点拆分的五个任务。升级时一并清掉：留着它们就会与链抢写锁，
+#: 且补跑依旧抢在彼此前面——正是这次要治的病。
+$legacyNames = @("hf-collect", "hf-reconcile", "hf-export", "hf-deliver", "hf-doctor")
 
 if ($Uninstall) {
-    foreach ($name in $taskNames) {
+    foreach ($name in ($taskNames + $legacyNames)) {
         if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
             Unregister-ScheduledTask -TaskName $name -Confirm:$false
             Write-Host "已删除任务 $name"
@@ -69,49 +84,25 @@ if ($Uninstall) {
 }
 
 $jobs = @(
-    @{ Name = "hf-collect"; Script = "collect.ps1"; Hours = 4
+    # 一条链跑完全部例行。`CatchUp = $true`：错过（关机 / 休眠）则开机补跑，
+    # 补的是整条链，顺序仍在脚本里，不会像旧版那样各抢各的。
+    @{ Name = "hf-daily"; Script = "daily.ps1"; Hours = 8; CatchUp = $true
        Triggers = @(
-           (New-ScheduledTaskTrigger -Daily -At $CollectTime),
+           (New-ScheduledTaskTrigger -Daily -At $DailyTime),
            (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME)
-       ); LogonDelay = "PT2M" },
-    # 全量对账每日跑：日增量按 lastModified 走，实测一天只覆盖约 6%，一个两年没更新的
-    # 库永远不会进入增量范围，而它的指标每天都在变——长尾全靠这一轮刷新。成本实测
-    # 1114 页 / 37 分钟，摊下来约 30 请求/分钟，远低于配额；错过由 -StartWhenAvailable
-    # 在开机后补跑，不再依赖「周日那天正好开着机」。
-    @{ Name = "hf-reconcile"; Script = "reconcile.ps1"; Hours = 8
-       Triggers = @((New-ScheduledTaskTrigger -Daily -At $ReconcileTime))
-       LogonDelay = $null },
-    @{ Name = "hf-export"; Script = "export.ps1"; Hours = 1
-       Triggers = @((New-ScheduledTaskTrigger -Daily -At $ExportTime))
-       LogonDelay = $null },
-    @{ Name = "hf-doctor"; Script = "doctor.ps1"; Hours = 1
-       Triggers = @(
-           (New-ScheduledTaskTrigger -Daily -At $DoctorTime),
-           (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME)
-       ); LogonDelay = "PT10M" },
-    # 规模补齐：全流程最慢的一步（每条单独请求，约 26 req/s），故一周一次，
-    # 放在对账之后两小时。给足 4 小时；中途被打断也不要紧——已抓到的都已落库，
-    # 下周从缺口接着补，不会重抓。
-    @{ Name = "hf-sizes"; Script = "sizes.ps1"; Hours = 4
-       Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At $SizesTime))
-       LogonDelay = $null },
-    # 归档放周一，避开周日的对账与规模补齐（写命令互斥锁）。
-    @{ Name = "hf-archive"; Script = "archive.ps1"; Hours = 2
-       Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At $ArchiveTime))
-       LogonDelay = $null },
-    # 压缩改为每日 00:30：门槛仍是 7 天，实际每天最多压掉一个刚满期的分区，把
-    # 「周一才清一次、平日热区一路上涨」摊平。放 00:30 是避开 03:10 采集、04:00
-    # 对账、06:00 规模补齐（都是写命令，靠互斥锁串行，撞上只会有一个失败）。
-    # 它每日先移走冷区，archive 的 30 天门槛通常空转，保留作单日手动去重工具。
-    @{ Name = "hf-compact"; Script = "compact.ps1"; Hours = 2
-       Triggers = @((New-ScheduledTaskTrigger -Daily -At $CompactTime))
-       LogonDelay = $null }
-    # 交付排在对账与导出之后：拿到的必然是当天的底库。一次任务跑全部到期需求，
-    # 新增需求只加一个目录、不动系统计划任务——一需求一任务会让一年后堆几十个
-    # hf-req-00xx，谁也不敢删。它很轻（一条 SQL + 几个文件），所以给 1 小时上限。
-    @{ Name = "hf-deliver"; Script = "deliver.ps1"; Hours = 1
-       Triggers = @((New-ScheduledTaskTrigger -Daily -At $DeliverTime))
-       LogonDelay = $null }
+       ); LogonDelay = "PT3M" },
+    @{ Name = "hf-sizes"; Script = "sizes.ps1"; Hours = 4; CatchUp = $false
+       LogonDelay = $null
+       Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At $SizesTime)) },
+    # 归档放周一，与周日那条错开一天，省得争锁。
+    @{ Name = "hf-archive"; Script = "archive.ps1"; Hours = 2; CatchUp = $false
+       LogonDelay = $null
+       Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At $ArchiveTime)) },
+    # 压缩每日 00:30：门槛仍是 7 天，实际每天最多压掉一个刚满期的分区，把
+    # 「周一才清一次、平日热区一路上涨」摊平。错过一轮次日接着压，不必补跑。
+    @{ Name = "hf-compact"; Script = "compact.ps1"; Hours = 2; CatchUp = $false
+       LogonDelay = $null
+       Triggers = @((New-ScheduledTaskTrigger -Daily -At $CompactTime)) }
 )
 
 foreach ($job in $jobs) {
@@ -142,27 +133,35 @@ foreach ($job in $jobs) {
             $trigger.Delay = $job.LogonDelay
         }
     }
-    $settings = New-ScheduledTaskSettingsSet `
-        -StartWhenAvailable `
-        -AllowStartIfOnBatteries `
-        -DontStopIfGoingOnBatteries `
-        -MultipleInstances IgnoreNew `
-        -ExecutionTimeLimit (New-TimeSpan -Hours $job.Hours)
+    # StartWhenAvailable 按任务给：只有链需要补跑，纯周期维护不必（理由见 .DESCRIPTION）。
+    $settingArgs = @{
+        AllowStartIfOnBatteries     = $true
+        DontStopIfGoingOnBatteries  = $true
+        MultipleInstances           = "IgnoreNew"
+        ExecutionTimeLimit          = (New-TimeSpan -Hours $job.Hours)
+    }
+    if ($job.CatchUp) { $settingArgs["StartWhenAvailable"] = $true }
+    $settings = New-ScheduledTaskSettingsSet @settingArgs
     $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$cmd`""
     $action = New-ScheduledTaskAction -Execute $pwsh -Argument $arguments -WorkingDirectory $root
     Register-ScheduledTask -TaskName $job.Name -Action $action -Trigger $job.Triggers `
         -Settings $settings -Principal $principal -Force | Out-Null
 }
 
+# 清掉旧的按钟点拆分的任务：留着就与链争锁，且补跑仍会各自抢跑。
+foreach ($name in $legacyNames) {
+    if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName $name -Confirm:$false
+        Write-Host "已移除旧任务 $name（已并入 hf-daily）"
+    }
+}
+
 Write-Host "已注册："
-Write-Host "  hf-collect    每日 $CollectTime + 登录后补跑（当天已采过则跳过）"
-Write-Host "  hf-reconcile  每日 $ReconcileTime 全站对账（1114 页），错过则开机后补跑"
-Write-Host "  hf-export     每日 $ExportTime 导出宽表（约 340 MB，删掉可重跑）"
-Write-Host "  hf-doctor     每日 $DoctorTime + 登录后体检，问题写 data\ALERT.txt"
-Write-Host "  hf-sizes      每周日 $SizesTime 补规模数据，增量合并、中断可续"
-Write-Host "  hf-archive    每周一 $ArchiveTime 归档满 30 天的 Raw，原文件移入 backup"
-Write-Host "  hf-compact    每日 $CompactTime 压缩满 7 天的冷区 Raw，原分块移入 backup 不删"
-Write-Host "  hf-deliver    每日 $DeliverTime 交付到期需求，写 data 与档案三件套"
-Write-Host "日志目录：$(Join-Path $root 'data\logs')"
+Write-Host "  hf-daily      每日 $DailyTime + 登录后 3 分钟补跑：采集 → 派生 → 对账 → 导出 → 交付 → 体检"
+Write-Host "                （顺序由 scripts\daily.ps1 保证；错过则开机补跑整条链）"
+Write-Host "  hf-compact    每日 $CompactTime 压缩满 7 天的冷区 Raw（不补跑，次日接着压）"
+Write-Host "  hf-sizes      每周日 $SizesTime 补规模数据，增量合并、中断可续（不补跑）"
+Write-Host "  hf-archive    每周一 $ArchiveTime 归档满 30 天的 Raw，原文件移入 backup（不补跑）"
+Write-Host "日志目录：$(Join-Path $root 'data\logs')　链条摘要：同上，文件名以 -daily.log 结尾"
 Write-Host "运行摘要：$(Join-Path $root 'data\runs')"
 Write-Host "核对：Get-ScheduledTask -TaskName hf-* | Get-ScheduledTaskInfo"

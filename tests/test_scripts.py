@@ -25,6 +25,17 @@ def text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def job_block(source: str, name: str) -> str:
+    """截出 `@{ Name = "hf-<name>" ... }` 这一段。
+
+    按 `},` 收尾而不是按下一个任务名切：任务之间的字段顺序并不统一
+    （compact 把 `LogonDelay` 写在 `Triggers` 之前），按固定字段切会切错段。
+    """
+    blocks = source.split('Name = "hf-')
+    block = next(item for item in blocks if item.startswith(name))
+    return block.split("},")[0]
+
+
 def test_日志文件名含时间戳而不是按任务名覆盖() -> None:
     source = text(COMMON)
     assert 'Get-Date -Format "yyyyMMddTHHmmss"' in source
@@ -83,11 +94,55 @@ def test_数据说明写明日志按轮命名() -> None:
 
 def test_全量对账与压缩按日跑() -> None:
     """日增量按 lastModified 走只覆盖约 6%，长尾靠全量对账刷新；退回按周就会让
-    底库在两次对账之间拿旧值充数。这里把频率钉死，改回 Weekly 必须有人来解释。"""
+    底库在两次对账之间拿旧值充数。这里把频率钉死，改回 Weekly 必须有人来解释。
+
+    对账已并入 `hf-daily` 链（2026-11-09），故要同时盯两头：链本身按日跑，
+    且链里确实有对账这一步——只在其中一个上做文章，都能悄悄把频率改回去。
+    """
     source = text(SCRIPTS / "setup-schedule.ps1")
-    blocks = source.split('Name = "hf-')
-    for name in ("reconcile", "compact"):
-        block = next(item for item in blocks if item.startswith(name))
-        head = block.split("LogonDelay")[0]
-        assert "-Daily" in head, f"hf-{name} 应每日触发"
-        assert "Weekly" not in head, f"hf-{name} 不应再按周触发"
+    for name in ("daily", "compact"):
+        block = job_block(source, name)
+        assert "-Daily" in block, f"hf-{name} 应每日触发"
+        assert "Weekly" not in block, f"hf-{name} 不应再按周触发"
+
+    chain = text(SCRIPTS / "daily.ps1")
+    assert 'Name = "reconcile"' in chain, "链条里必须还有全量对账这一步"
+
+
+def test_链条按序且前置失败会跳过() -> None:
+    """顺序是这条链存在的理由：补跑时若各步并起，导出会抢在对账前完成。"""
+    chain = text(SCRIPTS / "daily.ps1")
+    order = [
+        chain.index(f'Name = "{name}"')
+        for name in ("collect", "build", "reconcile", "export", "deliver", "doctor")
+    ]
+    assert order == sorted(order), "链条步骤顺序被打乱"
+    # 前置失败要跳过并写明原因，而不是带着半截状态硬跑。
+    assert "Requires" in chain
+    assert "[跳过]" in chain
+
+
+def test_体检在链条里只算告警不算失败() -> None:
+    """体检把「导出落后」「Raw 断日」这类待办也计入非零；若让它拖垮链条，
+    整条链会天天报红，铃声很快就没人听。"""
+    chain = text(SCRIPTS / "daily.ps1")
+    assert "Report = $true" in chain
+    assert "$step.Report" in chain
+    assert "if ($failure -eq 0) { $failure = $code }" in chain
+
+
+def test_补跑只留给链条() -> None:
+    """错过时补跑整条链是对的；其余纯周期维护补跑只会跟链抢写锁。"""
+    source = text(SCRIPTS / "setup-schedule.ps1")
+    for block in source.split('Name = "hf-')[1:]:
+        name = block.split('"')[0]
+        catch_up = "CatchUp = $true" in job_block(source, name)
+        assert catch_up == (name == "daily"), f"hf-{name} 的补跑设置不对"
+
+
+def test_升级时清除旧的钟点任务() -> None:
+    """留着旧的五个任务，它们仍会各自补跑——正是这次要治的病。"""
+    source = text(SCRIPTS / "setup-schedule.ps1")
+    for legacy in ("hf-collect", "hf-reconcile", "hf-export", "hf-deliver", "hf-doctor"):
+        assert f'"{legacy}"' in source, f"缺少旧任务 {legacy} 的清理"
+    assert "Unregister-ScheduledTask" in source

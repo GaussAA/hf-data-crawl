@@ -267,15 +267,17 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 ## 定时
 
 ```powershell
-pwsh -File scripts\setup-schedule.ps1              # 注册：03:10 增量 · 04:00 对账 · 04:50 导出 · 07:00 交付 · 09:00 体检 · 00:30 压缩（+ 周日 06:00 规模、周一 05:00 归档）
+pwsh -File scripts\setup-schedule.ps1              # 注册：hf-daily（每日 03:10 + 登录后 3 分钟，一条链跑完采集→派生→对账→导出→交付→体检）· 00:30 压缩 · 周日 06:00 规模 · 周一 05:00 归档
 pwsh -File scripts\setup-schedule.ps1 -Uninstall   # 卸载
 Get-ScheduledTask -TaskName hf-* | Get-ScheduledTaskInfo   # 核对
 uv run hf-data-crawl doctor                        # 手动体检；有问题退出码 1，并写 data\ALERT.txt
 ```
 
-计划任务调 `scripts\*.ps1` **八个**包装脚本（collect / reconcile / export / deliver / doctor / sizes / archive / compact），全部是 PowerShell 7 脚本，由 `pwsh -File` 执行。公共部分（定位 `uv`、代理默认值、日志、退出码）抽在 `scripts\_common.ps1`，各脚本只声明跑哪个子命令。
+**例行是一条链，不是一个钟点表**。`scripts\daily.ps1` 按序跑六步，每步调一个包装脚本的等价命令；`scripts\*.ps1` 仍是可单独手动跑的入口（collect / reconcile / export / deliver / doctor / sizes / archive / compact）。公共部分（定位 `uv`、代理默认值、日志、退出码）抽在 `scripts\_common.ps1`。
 
-八项任务的时刻是按「写命令互斥」排的，不是随手定的：00:30 压缩 → 03:10 增量 → 04:00 对账 → **04:50 导出** → 05:00 归档（仅周一）→ 06:00 规模（仅周日）→ **07:00 交付** → 09:00 体检。导出必须在对账之后：它是物化投影，不会跟着派生自动更新，排在前面就等于每天导出一份旧的。交付必须排在导出之后、体检之前：前者让它拿到当天的底库，后者让「某条需求 0 行被阻断」当天就能在告警里看见。
+时钟只负责「什么时候开始」，**先后由脚本里的顺序保证**：采集 → `build --stale` → 对账 → 导出 → 交付 → 体检。导出与交付**依赖 `build` 成功**（派生层没跟上就发布，等于把旧值当新值交出去），前置失败即跳过并在 `-daily.log` 里写明原因；对账是独立的全站扫描，采集失败也照样跑；体检永远跑，且它的非零只记「告警」不算链条失败——告警与故障挤进同一个码，铃声很快就没人听。
+
+这条设计来自 2026-11-09 的一次实测：机器 00:30 之后关机、19:03 开机，`-StartWhenAvailable` 把错过的五个任务**在同一分钟全部补跑**，导出抢在对账前完成，一出来就落后 2,466 行，体检随即误报并以退出码 1 收场。故补跑只留给 `hf-daily`（补的是整条链），compact / sizes / archive 是互不相干的纯周期维护，错过就等下一轮——它们补跑只会跟链抢写锁。
 
 要点：
 

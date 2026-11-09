@@ -51,6 +51,60 @@ function Remove-StaleLogs {
     }
 }
 
+function New-RunLogPath {
+    <#
+    .SYNOPSIS
+        生成一份按轮命名的日志路径：data\logs\<时间戳>-<Name>[-序号].log。
+    .DESCRIPTION
+        命名与去重规则只写在这里：时间戳前缀让字典序即时间序；同一秒连跑两条
+        加序号，不覆盖上一轮现场（与 `runs.write_run` 同一套约定）。
+        新建目录与修剪留在调用方——本函数只回答「该写哪个文件」。
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Name)
+
+    $root = Split-Path -Parent $PSScriptRoot
+    $logDir = Join-Path $root "data\logs"
+    $null = New-Item -ItemType Directory -Force -Path $logDir
+
+    $stamp = Get-Date -Format "yyyyMMddTHHmmss"
+    $log = Join-Path $logDir "$stamp-$Name.log"
+    $suffix = 1
+    while (Test-Path -LiteralPath $log) {
+        $suffix++
+        $log = Join-Path $logDir "$stamp-$Name-$suffix.log"
+    }
+    return $log
+}
+
+#: 链条摘要日志：一个进程一份，逐步日志各一份，同一目录、同一命名模板。
+$script:ChainLogPath = $null
+
+function Write-HfChain {
+    <#
+    .SYNOPSIS
+        往「链条摘要」日志追加一行，同时打到控制台。
+    .DESCRIPTION
+        为什么归在这里而不是写在链条脚本里：日志路径与命名是公共约定，
+        允许某个脚本自己拼路径，早晚会有人拼回「单文件永久追加」那一版，
+        而且从外部看不出异常。故只有本文件可以决定写到哪个文件。
+    .OUTPUTS
+        摘要日志的路径（首次调用时创建）。
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Text,
+        [string]$Name = "daily"
+    )
+
+    if (-not $script:ChainLogPath) {
+        $script:ChainLogPath = New-RunLogPath -Name $Name
+    }
+    $Text | Out-File -FilePath $script:ChainLogPath -Append -Encoding utf8
+    Write-Host $Text
+    return $script:ChainLogPath
+}
+
 function Invoke-HfTask {
     <#
     .SYNOPSIS
@@ -81,17 +135,10 @@ function Invoke-HfTask {
     [Console]::OutputEncoding = $utf8
     $OutputEncoding = $utf8
 
-    $logDir = Join-Path $root "data\logs"
-    $null = New-Item -ItemType Directory -Force -Path $logDir
-    # 按轮命名，键与 runs/ 一致（时间戳-任务名）；同一秒连跑两条撞名就加序号，
-    # 直接覆盖会让上一轮的现场记录静默消失——runs.write_run 用的是同一套约定。
-    $stamp = Get-Date -Format "yyyyMMddTHHmmss"
-    $log = Join-Path $logDir "$stamp-$Name.log"
-    $suffix = 1
-    while (Test-Path -LiteralPath $log) {
-        $suffix++
-        $log = Join-Path $logDir "$stamp-$Name-$suffix.log"
-    }
+    # 命名与去重规则见 New-RunLogPath：键与 runs/ 一致（时间戳-任务名），
+    # 同一秒连跑两条加序号，不覆盖上一轮现场。
+    $log = New-RunLogPath -Name $Name
+    $logDir = Split-Path -Parent $log
 
     $uvCommand = Get-Command uv -ErrorAction SilentlyContinue
     $uv = if ($uvCommand) { $uvCommand.Source } else { Join-Path $env:USERPROFILE ".local\bin\uv.exe" }
