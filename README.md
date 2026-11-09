@@ -36,6 +36,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `doctor` | 体检：调度新鲜度、底库行龄、层间勾稽、派生凭证、产物新鲜度、断日与残留文件；异常写 `ALERT.txt` 并追加体检流水 | 否 |
 | `archive` | 归档早于 N 天的 Raw 分区：合并小分块并去重，先验证 Bronze 逐行相等，原文件移入 `backup/raw/` | 否 |
 | `compact` | 压缩冷区 Raw：跨天去重成一份基线，原分块移入 `backup/raw/` 不删除 | 否 |
+| `prune` | 清理备份：把 `backup/` 里超过 7 天的分片真正删掉，释放磁盘（只动 `backup/`） | 是 |
 | `docs` | 生成 `docs/DATA.md`：data 目录结构、各文件作用、全部字段含义 | 否 |
 | `export-wide` | 把 `datasets` 宽视图导出成单文件 parquet（可重建，不参与状态更新） | 否 |
 
@@ -49,6 +50,7 @@ hf-data-crawl fetch-files  [--date YYYY-MM-DD] [--top 1000] [--workers 8] [--ret
 hf-data-crawl reconcile    [--date YYYY-MM-DD] [--limit 1000] [--max-pages N]
 hf-data-crawl build        [--stale | --full]                            # 默认只重放近 7 天
 hf-data-crawl compact      [--older-than-days 7] [--date YYYY-MM-DD]  # 冷区跨天压缩
+hf-data-crawl prune        [--dry-run]                              # 清理备份（只动 backup/）
 hf-data-crawl query        [--board NAME] [--limit 50] [--sql "..."]   # NAME 见「内置榜单」；省略则 growth
 hf-data-crawl report       [--out PATH] [--top 20]
 hf-data-crawl archive      [--older-than-days 30] [--date YYYY-MM-DD]
@@ -66,7 +68,7 @@ hf-data-crawl request      run-due                  # 只跑到期的（计划�
 
 全局参数 `--data-dir` 需放在子命令之前，默认取 `HF_DATA_DIR`，否则 `./data`。
 
-写命令（`collect` / `reconcile` / `build` / `enrich` / `fetch-sizes` / `fetch-files` / `archive` / `compact` / `export-wide`）执行期间持有 `data/.lock` 的独占锁，同一时刻只能跑一个；拿不到锁会失败并在 `runs/` 留记录。进程被杀后系统自动释放，不会留下死锁。`report` 与 `query` 不加锁。
+写命令（`collect` / `reconcile` / `build` / `enrich` / `fetch-sizes` / `fetch-files` / `archive` / `compact` / `prune` / `export-wide`）执行期间持有 `data/.lock` 的独占锁，同一时刻只能跑一个；拿不到锁会失败并在 `runs/` 留记录。进程被杀后系统自动释放，不会留下死锁。`report` 与 `query` 不加锁。
 
 **默认交付底库**：`current` 只保留 19 列状态标量，语义字段分散在 `silver` / `carddata` / `size`。`export-wide` 按 `fields.py` 的**默认交付字段契约**把 `gold.datasets` 视图裁成 31 列，写成 `data/exports/datasets.parquet`——只留与数据集有关、有用且必要的画像字段（标识、描述、热度、许可、语言、模态、任务、数据类型、标签、补充画像、学术关联、规模、大小），把水印、抓取状态、卡片凭证与九成空的补抓列排除在外。v2 补回详情页 `Tags`；**v3 曾把 13 个多值列压成 `;` 字符串**以绕开预览器读不了 LIST 的缺陷，该缺陷已在上游 `vscode-office` 修好（PR #27），**v5 遂撤销压平、恢复 LIST 原值**，导出物与视图从此同构、可直接 `list_contains` 精确筛；**v4 克制新增 5 列**：`pretty_name` / `multilinguality` / `arxiv_ids` / `source_datasets` / `task_ids`。
 
@@ -138,8 +140,15 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 `build --full` 保留旧的全量重放；冷区权威层若已损坏（观测流水或当前态为空），
 默认 `build` 会自动回退全量。`doctor` 把 `cold/raw/manifest.json` 里已压缩的
 日期算作「有观测」，避免压缩后误报断日；并在冷区未压缩、规模超阈值、备份
-超过 7 天未清理时写 `ALERT.txt`。**清理 backup 前须确认权威层已备份**：一旦
-原分块被删且权威层损坏，就只能恢复近 7 天。
+超过 7 天未清理时写 `ALERT.txt`。
+
+**销毁单独成一步（`prune`，2026-11-09 起）**：搬运与销毁分开——`compact` /
+`archive` 只移不删，`prune` 才删，且只动 `data/backup/`。理由很直白：
+「永不删除」等于把磁盘交给时间，每天约 330 MB 原始分块进 backup，一年上百 GB，
+而它们早已被冷区基线（按 id 去重、体量恒定）取代。阈值与 `compact` 共用
+`retention.BACKUP_PRUNE_AFTER_DAYS`（7 天），按**目录名**判龄而不是 mtime
+（同步盘会整体改掉 mtime）。`prune --dry-run` 只算不删；`doctor` 的「存储」一项
+把 data 总量摊成 raw / cold / backup / reports / 其余，谁在长一眼可见。
 
 
 每张表的身份（路径、schema、来源）统一登记在 `tables.py`，读写、视图、重建清理都从它取，不在各处各自硬编码。
@@ -273,7 +282,7 @@ Get-ScheduledTask -TaskName hf-* | Get-ScheduledTaskInfo   # 核对
 uv run hf-data-crawl doctor                        # 手动体检；有问题退出码 1，并写 data\ALERT.txt
 ```
 
-**例行是一条链，不是一个钟点表**。`scripts\daily.ps1` 按序跑六步，每步调一个包装脚本的等价命令；`scripts\*.ps1` 仍是可单独手动跑的入口（collect / reconcile / export / deliver / doctor / sizes / archive / compact）。公共部分（定位 `uv`、代理默认值、日志、退出码）抽在 `scripts\_common.ps1`。
+**例行是一条链，不是一个钟点表**。`scripts\daily.ps1` 按序跑七步（采集 → 派生 → 对账 → 导出 → 交付 → 清理备份 → 体检），每步调一个包装脚本的等价命令；`scripts\*.ps1` 仍是可单独手动跑的入口（collect / reconcile / export / deliver / doctor / sizes / archive / compact / prune）。公共部分（定位 `uv`、代理默认值、日志、退出码）抽在 `scripts\_common.ps1`。
 
 时钟只负责「什么时候开始」，**先后由脚本里的顺序保证**：采集 → `build --stale` → 对账 → 导出 → 交付 → 体检。导出与交付**依赖 `build` 成功**（派生层没跟上就发布，等于把旧值当新值交出去），前置失败即跳过并在 `-daily.log` 里写明原因；对账是独立的全站扫描，采集失败也照样跑；体检永远跑，且它的非零只记「告警」不算链条失败——告警与故障挤进同一个码，铃声很快就没人听。
 

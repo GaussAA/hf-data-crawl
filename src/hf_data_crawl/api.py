@@ -287,6 +287,31 @@ class HfDatasetApi:
 
             params["cursor"] = next_cursor
 
+    def record(self, dataset_id: str) -> dict[str, Any] | None:
+        """取单个数据集的完整记录（含 `cardData` 与 `sha`）。
+
+        存在的理由是「按需补卡片」：全量扫一遍要 1100 多页 / 十几个小时，而实际
+        被交付、被查询命中的常常只有几十个库。对这批库逐条问一次，代价几十 KB，
+        换到的却是默认面里那两列（`license_name` / `pretty_name`）不再空着。
+
+        取不到就返回 None——补卡片是锦上添花，不能因为它让交付失败。
+        """
+        try:
+            response = self._transport.get(
+                f"{self._base_url}/{dataset_id}",
+                {"blobs": "false"},
+                {"Accept": "application/json"},
+            )
+        except TransportError:
+            return None
+        if response.status != 200:
+            return None
+        try:
+            payload = json.loads(response.body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
     def probe(self, dataset_id: str) -> Probe:
         """单库探测，用于复核下架判定。
 

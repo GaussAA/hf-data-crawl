@@ -49,7 +49,7 @@ from .requirement import (
     skeleton,
 )
 from .requirement import load as load_spec
-from .retention import REPLAY_WINDOW_DAYS
+from .retention import BACKUP_PRUNE_AFTER_DAYS, REPLAY_WINDOW_DAYS
 from .runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs, write_run
 from .sizes import (
     HfSizeApi,
@@ -76,6 +76,7 @@ WRITE_COMMANDS = frozenset(
         "fetch-files",
         "archive",
         "compact",
+        "prune",
         "export-wide",
     }
 )
@@ -236,6 +237,11 @@ def build_parser() -> argparse.ArgumentParser:
     enrich = subparsers.add_parser("enrich", help="按下载量取头部，补抓 cardData")
     enrich.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
     enrich.add_argument("--top", type=int, default=20_000, help="补抓前多少名")
+    enrich.add_argument(
+        "--ids",
+        default=None,
+        help="按需补：只补这些 id（逗号分隔，上限 200）；给了它就不做批量扫描",
+    )
     enrich.add_argument("--limit", type=int, default=MAX_LIMIT, help="每页条数，上限 1000")
 
     sizes = subparsers.add_parser("fetch-sizes", help="经 datasets-server 补规模与列数")
@@ -326,6 +332,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     compact.add_argument("--date", default=None, help="只压缩指定日期 YYYY-MM-DD（忽略天数门槛）")
 
+    pruning = subparsers.add_parser(
+        "prune",
+        help="清理备份：把 backup/ 里超过保留期的分片真正删掉（只动 backup/）",
+    )
+    pruning.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=f"只算不删：列出会清理哪些、能释放多少（阈值 {BACKUP_PRUNE_AFTER_DAYS} 天）",
+    )
+
     report = subparsers.add_parser("report", help="生成静态榜单页（不联网）")
     report.add_argument("--out", default=None, help="输出路径，默认 data/reports/dashboard.html")
     report.add_argument("--top", type=int, default=20, help="每张榜单条数")
@@ -377,6 +393,8 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
         return _execute(store, "archive", lambda: _archive(args, store), lock_wait)
     if args.command == "compact":
         return _execute(store, "compact", lambda: _compact(args, store), lock_wait)
+    if args.command == "prune":
+        return _execute(store, "prune", lambda: _prune(args, store), lock_wait)
     if args.command == "enrich":
         return _execute(store, "enrich", lambda: _enrich(args, store, transport), lock_wait)
     if args.command == "fetch-sizes":
@@ -601,10 +619,37 @@ def _archive(args: argparse.Namespace, store: DatasetStore) -> Outcome:
 
 def _enrich(args: argparse.Namespace, store: DatasetStore, transport: Transport | None) -> Outcome:
     snapshot = _snapshot(args)
-    enricher = Enricher(api=HfDatasetApi(transport=_open_transport(transport)), store=store)
-    summary = enricher.run(snapshot, top=args.top, limit=args.limit)
-    _print_enrich(summary)
-    return Outcome(summary)
+    api = HfDatasetApi(transport=_open_transport(transport))
+
+    if args.ids:
+        # 按需补：只问点名的这几个库。全量扫一遍要十几小时，而实际被交付命中的
+        # 常常只有几十个；逐条问一次，换到的是默认面那两列不再空着。
+        from .card import backfill
+
+        ids = [item.strip() for item in args.ids.split(",") if item.strip()]
+        if not ids:
+            print("--ids 里没有有效的数据集 id。")
+            return Outcome({"requested": 0, "rows": 0}, code=1, reason="空 id 列表")
+        summary = backfill(store, ids, snapshot, fetch=api.record)
+        print(
+            f"按需补卡片：点名 {summary.requested} 个 · 取到 {summary.fetched} 个 · "
+            f"有卡片 {summary.with_card} 个 · 写入 {summary.rows} 行"
+        )
+        if summary.with_card == 0:
+            print("  这些库的卡片本身为空（多数长尾上传即如此），不是抓取失败。")
+        return Outcome(
+            {
+                "requested": summary.requested,
+                "fetched": summary.fetched,
+                "with_card": summary.with_card,
+                "rows": summary.rows,
+            }
+        )
+
+    enricher = Enricher(api=api, store=store)
+    summary_run = enricher.run(snapshot, top=args.top, limit=args.limit)
+    _print_enrich(summary_run)
+    return Outcome(summary_run)
 
 
 def _fetch_sizes(
@@ -953,6 +998,50 @@ def _compact(args: argparse.Namespace, store: DatasetStore) -> Outcome:
             "records": f"{result.records_before}→{result.records_after}",
             "bytes": f"{result.bytes_before}→{result.bytes_after}",
             "backup_files": result.backup_files,
+        }
+    )
+
+
+def _prune(args: argparse.Namespace, store: DatasetStore) -> Outcome:
+    """清理备份。搬运与销毁分开：这里只销毁，且只碰 `backup/`。"""
+    from .prune import apply, plan, total_size
+
+    targets = plan(store)
+    before = total_size(store)
+    if not targets:
+        print(f"备份没有需要清理的分区（阈值 {BACKUP_PRUNE_AFTER_DAYS} 天）：{before / 1e6:.1f} MB")
+        return Outcome({"removed": [], "freed": 0, "backup_mb": round(before / 1e6, 1)})
+
+    reclaimable = sum(item.bytes for item in targets)
+    if args.dry_run:
+        for item in targets:
+            print(f"  将清理 {item.kind}/{item.path.name}  {item.bytes / 1e6:.1f} MB")
+        print(
+            f"预演：{len(targets)} 处可清理 · 释放 {reclaimable / 1e6:.1f} MB"
+            f"（当前 backup {before / 1e6:.1f} MB，未动磁盘）"
+        )
+        return Outcome(
+            {
+                "removed": [],
+                "freed": 0,
+                "reclaimable": reclaimable,
+                "dry_run": True,
+            }
+        )
+
+    report = apply(store, targets)
+    after = total_size(store)
+    for item in report.removed:
+        print(f"  已清理 {item.kind}/{item.path.name}  {item.bytes / 1e6:.1f} MB")
+    print(
+        f"清理完成：{report.count} 处 · 释放 {report.bytes_freed / 1e6:.1f} MB"
+        f"（backup {before / 1e6:.1f} → {after / 1e6:.1f} MB）"
+    )
+    return Outcome(
+        {
+            "removed": [item.path.name for item in report.removed],
+            "freed": report.bytes_freed,
+            "backup_mb": round(after / 1e6, 1),
         }
     )
 

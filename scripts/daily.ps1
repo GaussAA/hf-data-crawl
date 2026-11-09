@@ -1,7 +1,7 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-    一条链跑完当日全部例行：采集 → 派生 → 对账 → 导出 → 交付 → 体检。
+    一条链跑完当日全部例行：采集 → 派生 → 对账 → 导出 → 交付 → 清理备份 → 体检。
 .DESCRIPTION
     为什么要有这条链（2026-11-09 实测的教训）
     ----------------------------------------
@@ -60,6 +60,10 @@ $steps = @(
         Arguments = @("--lock-wait", "900", "export-wide") },
     @{ Name = "deliver"; Label = "到期需求交付"; Requires = @("build", "reconcile"); Report = $false
         Arguments = @("--lock-wait", "900", "request", "run-due") },
+    # 清理紧跟导出：本地产物刚定稿，正是把上一批备份释放掉的时候。
+    # 只动 backup/，与搬运分开，删错也不可能伤到权威层。
+    @{ Name = "prune"; Label = "清理备份"; Requires = @(); Report = $false
+        Arguments = @("--lock-wait", "900", "prune") },
     # 体检放最后：前面任一步出事，它才看得见。不计入链条成败，理由见 .NOTES。
     @{ Name = "doctor"; Label = "体检"; Requires = @(); Report = $true
         Arguments = @("doctor") }

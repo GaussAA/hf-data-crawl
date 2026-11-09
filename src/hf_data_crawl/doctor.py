@@ -490,25 +490,55 @@ def _archive_backlog(store: DatasetStore, today: date) -> Finding:
     return Finding(False, f"Raw 归档：{ARCHIVE_AFTER_DAYS} 天前的分区均已归档")
 
 
+def _storage(store: DatasetStore) -> Finding:
+    """存储总账：谁在长，一眼看见。
+
+    只报数、不判断——阈值判断交给各自那一项（备份积压、冷区积压、归档积压）。
+    把四层摊开列出来，是为了让「哪天发现磁盘吃紧」时不必再逐个 du：
+    raw 是热区（7 天窗口）、cold 是去重后的基线（体量恒定）、backup 是待销毁的
+    副本（应当有界）、reports 是诊断产物。
+    """
+    from .prune import total_size
+
+    def tree(path: Path) -> int:
+        if not path.exists():
+            return 0
+        return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+
+    raw_bytes = tree(store.root / "raw")
+    cold_bytes = tree(store.root / "cold")
+    backup_bytes = total_size(store)
+    report_bytes = tree(store.root / "reports")
+    whole = tree(store.root)
+    other = max(0, whole - raw_bytes - cold_bytes - backup_bytes - report_bytes)
+    return Finding(
+        False,
+        f"存储：data {whole / 1e9:.2f} GB（raw {raw_bytes / 1e6:.0f} MB · "
+        f"cold {cold_bytes / 1e6:.0f} MB · backup {backup_bytes / 1e6:.0f} MB · "
+        f"reports {report_bytes / 1e6:.0f} MB · 其余 {other / 1e6:.0f} MB）",
+    )
+
+
 def _backup_backlog(store: DatasetStore, now: datetime) -> Finding:
-    """archive 只移不删；backup 长期不清理，磁盘就没有真正释放。"""
-    backup_root = store.root / "backup" / "raw"
-    if not backup_root.exists():
-        return Finding(False, "Raw 备份：无待清理分区")
-    limit = timedelta(days=BACKUP_PRUNE_AFTER_DAYS)
-    stale = [
-        path
-        for path in backup_root.glob("dt=*")
-        if path.is_dir() and now - datetime.fromtimestamp(path.stat().st_mtime) > limit
-    ]
-    if stale:
-        shown = "、".join(path.name.removeprefix("dt=") for path in stale[:5])
-        return Finding(
-            True,
-            f"backup/raw 有 {len(stale)} 个分区超过 {BACKUP_PRUNE_AFTER_DAYS} 天未清理（{shown}）；"
-            "归档不删原文件，确认派生无误后按 RECOVERY.md 人工清理",
-        )
-    return Finding(False, f"Raw 备份：无超过 {BACKUP_PRUNE_AFTER_DAYS} 天的待清理分区")
+    """archive / compact 只移不删；销毁归 `prune`，这里只盯它有没有跟上。
+
+    判龄与清理共用 `prune.plan()`：若这里按 mtime、那边按目录名，两边会各说各话
+    ——体检报「已清理」而实际没删，或反之。同一条规则只能有一处实现。
+    """
+    from .prune import plan as plan_prune
+
+    targets = plan_prune(store, now=now)
+    if not targets:
+        return Finding(False, f"备份清理：无超过 {BACKUP_PRUNE_AFTER_DAYS} 天的待清理对象")
+
+    shown = "、".join(item.path.name.removeprefix("dt=") for item in targets[:5])
+    reclaimable = sum(item.bytes for item in targets) / 1e6
+    kinds = "、".join(sorted({item.kind for item in targets}))
+    return Finding(
+        True,
+        f"{kinds} 有 {len(targets)} 处超过 {BACKUP_PRUNE_AFTER_DAYS} 天未清理（{shown}），"
+        f"可释放约 {reclaimable:.1f} MB；跑 hf-data-crawl prune",
+    )
 
 
 def _stale_temp_files(store: DatasetStore, now: datetime) -> Finding:
@@ -608,6 +638,7 @@ def diagnose(
         _raw_growth(store),
         _cold_backlog(store, now.date()),
         _archive_backlog(store, now.date()),
+        _storage(store),
         _backup_backlog(store, now),
         _recent_failures(runs, now),
         _stale_temp_files(store, now),

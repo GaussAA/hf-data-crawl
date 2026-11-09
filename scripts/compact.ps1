@@ -7,7 +7,8 @@
     data\backup\raw\dt=<日期>\，不删除。已压缩日期登记在
     data\cold\raw\manifest.json，doctor 据此避免误报断日。
 
-    清理 backup 须人工确认（见 docs\operations\RECOVERY.md），本脚本不删任何数据。
+    清理 backup 由 scripts\prune.ps1 单独负责（每日链内跑，只动 backup\），
+    本脚本不删任何数据——搬运与销毁分开，谁出事都能定位。
 
 .EXAMPLE
     pwsh -File scripts\compact.ps1

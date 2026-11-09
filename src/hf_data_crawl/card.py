@@ -15,9 +15,10 @@ HF 卡片结构不统一：license 可能是字符串或列表，arxiv 同理，
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -390,3 +391,66 @@ def _add(total: int | None, value: int | None) -> int | None:
     if value is None:
         return total
     return value if total is None else total + value
+
+
+#: 一次按需补抓的上限。为什么要有：交付时若命中几千个缺卡片的库，逐条问接口会
+#: 把一次交付拖成几十分钟，而收益只落在少数列上。宁可少补，也不让交付不可预期。
+ON_DEMAND_LIMIT = 200
+
+
+@dataclass(frozen=True)
+class BackfillSummary:
+    requested: int
+    fetched: int
+    with_card: int
+    rows: int
+
+
+def backfill(
+    store: DatasetStore,
+    ids: Sequence[str],
+    snapshot_date: date,
+    *,
+    fetch: Callable[[str], dict[str, Any] | None],
+    limit: int = ON_DEMAND_LIMIT,
+) -> BackfillSummary:
+    """按需补卡片：只问给定的那几十个库，取不到就放过。
+
+    与 `build()` 的关系：`build()` 从当日 `card-*` 批次重算整张表，适合「一次扫
+    一大批」；本函数直接从接口取单条记录，**不改 raw**，只把抽出的行并入现有表。
+    两条路的抽取规则共用 `extract_card_row` / `extract_config_rows`，不会分叉。
+
+    `source_sha` 仍取记录里的 `sha`：日后判断「这张卡片对应哪个仓库版本」靠它，
+    与批量扫描写入的行完全同构，读的时候不必区分来源。
+    """
+    picked = list(dict.fromkeys(ids))[:limit]
+    if not picked:
+        return BackfillSummary(requested=0, fetched=0, with_card=0, rows=0)
+
+    rows: list[dict[str, Any]] = []
+    configs: list[dict[str, Any]] = []
+    fetched = 0
+    for dataset_id in picked:
+        record = fetch(dataset_id)
+        if record is None:
+            continue
+        fetched += 1
+        row = extract_card_row(record, snapshot_date)
+        if row is not None:
+            rows.append(row)
+        configs.extend(extract_config_rows(record, snapshot_date))
+
+    if rows:
+        store.upsert("carddata", pl.DataFrame(rows, schema=ENRICH_SCHEMA))
+    if configs:
+        store.upsert(
+            "card_configs",
+            pl.DataFrame(configs, schema=CARD_CONFIGS_SCHEMA),
+            dedupe=["id", "config_name", "split"],
+        )
+    return BackfillSummary(
+        requested=len(picked),
+        fetched=fetched,
+        with_card=len(rows),
+        rows=len(rows),
+    )
