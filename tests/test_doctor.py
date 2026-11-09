@@ -678,3 +678,29 @@ def test_已交付需求缺过程记录要在体检里报出来(tmp_path: Path) 
     assert len(hits) == 1
     assert "REQ-0001-query-高热度" in hits[0]
     assert "REQ-0002" not in hits[0]
+
+
+def test_口径改了没升版本要在体检里报出来(tmp_path: Path) -> None:
+    """档案指着 v1、说的却不是 v1 当初那件事——这种错不报错，只能靠体检盯。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    root = tmp_path / "req"
+    folder = root / "REQ-0001-query-高热度"
+    (folder / "deliveries" / "20260101T000000").mkdir(parents=True)
+    (folder / "history").mkdir()
+    old = """\
+id: REQ-0001
+title: 高热度
+requester: 大帅
+version: 1
+criteria:
+  - {metric: 下载量, op: '>', value: 1000}
+"""
+    (folder / "history" / "v1.yaml").write_text(old, encoding="utf-8")
+    (folder / "spec.yaml").write_text(old.replace("1000", "800"), encoding="utf-8")
+
+    texts = [item.text for item in diagnose(store, NOW, requests_root=root) if item.problem]
+
+    hits = [text for text in texts if "口径版本" in text]
+    assert len(hits) == 1
+    assert "版本号没跟着升" in hits[0]

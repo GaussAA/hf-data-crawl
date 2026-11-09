@@ -35,6 +35,7 @@ from hf_data_crawl.requirement import (
     SPEC_NAME,
     Kind,
     directory_name,
+    spec_digest,
 )
 from hf_data_crawl.store import DatasetStore
 
@@ -705,3 +706,21 @@ def test_manifest钉住方法与逐脚本指纹(store: DatasetStore, tmp_path: P
     # 这份测试需求没写脚本，清单就该是空的——不是缺字段，是「确实没有」。
     assert body["method"]["scripts"] == []
     assert body["method"]["env"]["contract_version"] == CONTRACT_VERSION
+    assert body["spec_sha256"] == spec_digest(path)
+
+
+def test_改了口径不升版本不许交付(store: DatasetStore, tmp_path: Path) -> None:
+    """版本号复用是最隐蔽的错：档案指着 v1，说的却不是 v1 当初那件事。"""
+    root = tmp_path / "req"
+    path = make_request(root)
+    deliver(store, root, "REQ-0001", now=NOW)  # 首次交付顺手写下 history/v1
+
+    body = yaml.safe_load(path.read_text(encoding="utf-8"))
+    body["criteria"] = [{"metric": "下载量", "op": ">", "value": 999}]
+    path.write_text(yaml.safe_dump(body, allow_unicode=True), encoding="utf-8")
+
+    with pytest.raises(DeliveryBlocked, match="版本号不能复用"):
+        deliver(store, root, "REQ-0001", now=NOW)
+
+    # 拦在建目录之前：一次被拒的交付不该在台账里留下空壳。
+    assert len(deliveries_of(root / "REQ-0001")) == 1

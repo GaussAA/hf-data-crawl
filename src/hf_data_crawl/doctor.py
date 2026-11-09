@@ -23,7 +23,8 @@ from . import lineage, method, raw
 from .fields import DEFAULT_COLUMNS, contract_errors
 from .lock import LOCK_NAME, LockBusy, describe_holder, exclusive
 from .rebuild import discover_raw_dates
-from .requirement import DELIVERIES_DIR, SPEC_NAME
+from .requirement import DELIVERIES_DIR, SPEC_NAME, SpecError, version_conflict
+from .requirement import load as load_spec
 from .retention import (
     ARCHIVE_AFTER_DAYS,
     BACKUP_PRUNE_AFTER_DAYS,
@@ -650,6 +651,43 @@ def _request_self_contained(requests_root: Path | None) -> Finding:
     return Finding(False, f"需求自包含：{checked} 份已交付需求的方法与脚本索引一致")
 
 
+def _spec_version_consistency(requests_root: Path | None) -> Finding:
+    """口径改了却没升版本：档案会指着一份「当时说过、现在已经不是」的定义。
+
+    这类错不会报错，只会让人拿着错的前提核对三个月，所以单列一项盯着。
+    只判已交付的：没交过的需求，`history/` 里还没有「用过的那一版」，无所谓复用。
+    """
+    if requests_root is None:
+        return Finding(False, "口径版本：未指定需求目录，本次未检查")
+    if not requests_root.is_dir():
+        return Finding(False, f"口径版本：{requests_root} 不存在，本次未检查")
+
+    checked = 0
+    bad: list[str] = []
+    for spec_path in sorted(requests_root.glob(f"*/{SPEC_NAME}")):
+        base = spec_path.parent / DELIVERIES_DIR
+        if not base.is_dir():
+            continue
+        if not any(path.is_dir() and not path.name.startswith(".") for path in base.iterdir()):
+            continue
+        checked += 1
+        try:
+            spec = load_spec(spec_path)
+        except SpecError as error:
+            bad.append(f"{spec_path.parent.name}：{error}")
+            continue
+        # 报短句：这一行会进 `ALERT.txt`，长解释留给 `request show` 与交付时的报错。
+        if version_conflict(spec_path, spec.version):
+            bad.append(f"{spec_path.parent.name}：v{spec.version} 的口径已被改动，版本号没跟着升")
+
+    if bad:
+        return Finding(
+            True,
+            f"口径版本：{len(bad)}/{checked} 份已交付需求的版本号与内容对不上 —— " + "；".join(bad),
+        )
+    return Finding(False, f"口径版本：{checked} 份已交付需求的版本号未被复用")
+
+
 def diagnose(
     store: DatasetStore,
     now: datetime | None = None,
@@ -685,6 +723,7 @@ def diagnose(
         _recent_failures(runs, now),
         _stale_temp_files(store, now),
         _request_self_contained(requests_root),
+        _spec_version_consistency(requests_root),
     ]
     if snapshot:
         return findings

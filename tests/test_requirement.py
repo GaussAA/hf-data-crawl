@@ -27,6 +27,8 @@ from hf_data_crawl.requirement import (
     resolve_dir,
     skeleton,
     snapshot_history,
+    spec_digest,
+    version_conflict,
 )
 
 
@@ -357,3 +359,74 @@ def test_同号多目录要报歧义而不是猜一个(tmp_path: Path) -> None:
 def test_找不到需求时报得清位置(tmp_path: Path) -> None:
     with pytest.raises(SpecError, match="找不到需求"):
         resolve_dir(tmp_path / "req", "REQ-9999")
+
+
+# ---------------------------------------------------------------- 口径变更
+
+
+def test_指纹只认口径不认注释与展示字段(tmp_path: Path) -> None:
+    """改注释、补一个默认值、改标题都不算一版变更——否则「改标题不搬目录」自相矛盾。"""
+    path = write_spec(tmp_path)
+    before = spec_digest(path)
+
+    text = path.read_text(encoding="utf-8")
+    text = "# 补一行注释\n" + text.replace("cadence: once", "kind: query\ncadence: once")
+    text = text.replace("高热度数据集", "高热度数据集（改名）")
+    path.write_text(text, encoding="utf-8")
+
+    assert spec_digest(path) == before
+
+
+def test_改条件即改指纹(tmp_path: Path) -> None:
+    path = write_spec(tmp_path)
+    before = spec_digest(path)
+
+    write_spec(tmp_path, criteria=[{"metric": "下载量", "op": ">", "value": 800}])
+
+    assert spec_digest(path) != before
+
+
+def test_版本号被别的口径占用时要拦住(tmp_path: Path) -> None:
+    path = write_spec(tmp_path)
+    snapshot_history(path, 1)  # v1 记的是「下载量 > 1000」
+    assert version_conflict(path, 1) is None
+
+    write_spec(tmp_path, criteria=[{"metric": "下载量", "op": ">", "value": 800}])
+    conflict = version_conflict(path, 1)
+    assert conflict is not None
+    assert "版本号不能复用" in conflict
+
+    # 升版即解：同一个内容换个号，不再与历史冲突。
+    write_spec(tmp_path, version=2, criteria=[{"metric": "下载量", "op": ">", "value": 800}])
+    assert version_conflict(path, 2) is None
+
+
+def test_历史快照按需求目录解析相对路径(tmp_path: Path) -> None:
+    """回填快照躺在 history/ 下；按它自己的父目录解析，`input/…` 就成了 `history/input/…`。"""
+    folder = tmp_path / "REQ-0002"
+    (folder / "input").mkdir(parents=True)
+    openpyxl.Workbook().save(folder / "input" / "清单.xlsx")
+    path = folder / "spec.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "id": "REQ-0002",
+                "title": "清单补全",
+                "requester": "大帅",
+                "version": 1,
+                "kind": "backfill",
+                "fill": {
+                    "source": {"path": "input/清单.xlsx", "header_row": 1, "key_column": "URL"},
+                    "output": {"name": "已补全.xlsx"},
+                    "columns": {"下载量": {"field": "downloads"}},
+                },
+            },
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    snapshot = snapshot_history(path, 1)
+
+    assert load(snapshot, base_dir=folder).fill is not None
+    with pytest.raises(SpecError, match="输入表不存在|不是文件"):
+        load(snapshot)

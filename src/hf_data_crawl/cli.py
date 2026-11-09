@@ -49,6 +49,8 @@ from .requirement import (
     history_versions,
     resolve_dir,
     skeleton,
+    spec_digest,
+    version_conflict,
 )
 from .requirement import load as load_spec
 from .retention import BACKUP_PRUNE_AFTER_DAYS, REPLAY_WINDOW_DAYS
@@ -1365,6 +1367,12 @@ def _request_show(root: Path, request_id: str) -> int:
         print(f"历史版本：{'、'.join(f'v{version}' for version in versions)}")
     else:
         print("历史版本：（尚未快照，首次交付时自动留存）")
+
+    print(f"口径指纹：{spec_digest(path)[:16]}…（只算口径内容，改注释与标题不算）")
+    conflict = version_conflict(path, spec.version)
+    if conflict:
+        print(f"  [!] {conflict}")
+        print("      在改好并升版之前，下一次交付会被拦下。")
 
     print(f"过程记录：{METHOD_DIR}/{METHOD_DOC}")
     found = problems(path.parent)

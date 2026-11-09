@@ -83,6 +83,8 @@ from .requirement import (
     compile_sql,
     resolve_dir,
     snapshot_history,
+    spec_digest,
+    version_conflict,
 )
 from .requirement import (
     load as load_spec,
@@ -223,7 +225,14 @@ def deliver(
 ) -> DeliveryResult:
     """跑一次交付。任何护栏不通过都抛 `DeliveryBlocked`，且不留任何目录。"""
     request_dir = resolve_dir(requests_root, request_id)
-    spec = load_spec(request_dir / SPEC_NAME)
+    spec_path = request_dir / SPEC_NAME
+    spec = load_spec(spec_path)
+    # 版本号不可复用：口径变了却还用 v1，档案会指着一份「当时说过、现在已经不是」
+    # 的定义。这比缺方法更隐蔽——缺方法至少会报错，这一种只会让人拿着错前提核对。
+    conflict = version_conflict(spec_path, spec.version)
+    if conflict:
+        raise DeliveryBlocked(f"{spec.id}: {conflict}")
+    spec_sha = spec_digest(spec_path)
     # 先验方法再算数：方法是「这份交付凭什么成立」的一部分，缺它连预留目录都不该做。
     method_stamp = _method_stamp(request_dir, spec)
     moment = now or datetime.now().astimezone()
@@ -254,12 +263,13 @@ def deliver(
             health=health,
             previous=_last_delivery_name(request_dir, exclude=directory.name),
             method_stamp=method_stamp,
+            spec_sha=spec_sha,
         )
         (staging / MANIFEST_NAME).write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
         (staging / README_NAME).write_text(
-            _readme(spec, moment, stamp_value, payload, health), encoding="utf-8"
+            _readme(spec, moment, stamp_value, payload, health, spec_sha), encoding="utf-8"
         )
         # 三件齐了才换名：中途失败最多留下一个 .tmp-* 目录，不会出现「有数据没说明」。
         replace(staging, directory)
@@ -773,6 +783,7 @@ def _manifest(
     health: Health,
     previous: str | None,
     method_stamp: dict[str, Any],
+    spec_sha: str,
 ) -> dict[str, Any]:
     manifest: dict[str, Any] = {
         "request_id": spec.id,
@@ -780,6 +791,9 @@ def _manifest(
         "requester": spec.requester,
         "kind": spec.kind.value,
         "spec_version": spec.version,
+        # 口径的语义指纹。只记版本号不够：版本号只是人写的一个数字，改了口径
+        # 忘了加一，读档的人无从分辨。有了指纹，「这份档案对应哪一版口径」才可核对。
+        "spec_sha256": spec_sha,
         "delivered_at": moment.isoformat(timespec="seconds"),
         "source": {
             "current_md5": stamp_value.current_md5,
@@ -829,6 +843,7 @@ def _readme(
     stamp_value: SourceStamp,
     payload: Payload,
     health: Health,
+    spec_sha: str,
 ) -> str:
     lines: list[str] = [f"# {spec.id} {spec.title}", ""]
     if health.status == "suspect":
@@ -847,7 +862,7 @@ def _readme(
     lines += [
         f"- 交付时刻：{moment.strftime('%Y-%m-%d %H:%M:%S')}",
         f"- 需求形态：`{spec.kind.value}`",
-        f"- 需求版本：v{spec.version}",
+        f"- 需求版本：v{spec.version}（口径指纹 `{spec_sha[:16]}…`）",
         f"- 交付节奏：{spec.cadence.value}",
         "",
         "## 口径",

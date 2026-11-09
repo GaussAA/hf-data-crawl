@@ -19,6 +19,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import shutil
 from collections.abc import Sequence
@@ -254,8 +256,14 @@ class Spec:
         return directory_name(self.id, self.title, self.kind)
 
 
-def load(path: Path) -> Spec:
-    """读一个 spec.yaml。任何不合法的字段都在这里一次性报出来。"""
+def load(path: Path, *, base_dir: Path | None = None) -> Spec:
+    """读一个 spec.yaml。任何不合法的字段都在这里一次性报出来。
+
+    `base_dir` 指定 `fill.source.path` 等相对路径的基准目录，默认取 spec 所在目录。
+    历史快照（`history/v1.yaml`）必须显式传**需求目录**：它自己躺在 `history/` 下，
+    按默认基准去解析 `input/清单.xlsx`，会指向 `history/input/` 这个不存在的地方——
+    于是「那一版真的用过」的档案，恰恰打不开了。
+    """
     try:
         body = yaml.load(path.read_text(encoding="utf-8"), Loader=_StrictLoader)
     except FileNotFoundError:
@@ -266,17 +274,17 @@ def load(path: Path) -> Spec:
         raise SpecError(f"{path} 不是合法 YAML：{error}") from None
     if not isinstance(body, dict):
         raise SpecError(f"{path} 顶层应是一个映射（key: value），实得 {type(body).__name__}")
-    return _from_mapping(body, path)
+    return _from_mapping(body, path, base_dir)
 
 
-def _from_mapping(body: dict[str, Any], path: Path) -> Spec:
+def _from_mapping(body: dict[str, Any], path: Path, base_dir: Path | None = None) -> Spec:
     def need(key: str) -> Any:
         if key not in body or body[key] in (None, "", ()):
             raise SpecError(f"{path}: 缺少必填项 {key!r}")
         return body[key]
 
     kind = _enum(Kind, body.get("kind", Kind.QUERY), "kind", path)
-    fill = _fill_body(body, path) if kind is Kind.BACKFILL else None
+    fill = _fill_body(body, path, base_dir) if kind is Kind.BACKFILL else None
     criteria = tuple(_criterion(item, path) for item in _as_list(body.get("criteria")))
     mode = _enum(Mode, body.get("mode", Mode.CRITERIA), "mode", path)
 
@@ -302,13 +310,13 @@ def _from_mapping(body: dict[str, Any], path: Path) -> Spec:
     return spec
 
 
-def _fill_body(body: dict[str, Any], path: Path) -> FillSpec:
+def _fill_body(body: dict[str, Any], path: Path, base_dir: Path | None = None) -> FillSpec:
     """解析回填口径体。运行期才导入 `backfill`——它要算指纹、又要被本模块的类型引用。"""
     from .backfill import FillError
     from .backfill import from_mapping as fill_from_mapping
 
     try:
-        return fill_from_mapping(body.get("fill"), path.parent, origin=str(path))
+        return fill_from_mapping(body.get("fill"), base_dir or path.parent, origin=str(path))
     except FillError as error:
         raise SpecError(str(error)) from None
 
@@ -730,6 +738,123 @@ def snapshot_history(spec_path: Path, version: int) -> Path:
     if not target.exists():
         shutil.copyfile(spec_path, target)
     return target
+
+
+def _plain(value: Any) -> Any:
+    """把 YAML 解析出的值摊平成可稳定序列化的形状。
+
+    `date` / `datetime` 要转字符串（`json.dumps` 不认它们），键一律转 str，
+    免得 `1:` 与 `"1":` 被当成两种东西。
+    """
+    if isinstance(value, date | datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _plain(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_plain(item) for item in value]
+    return value
+
+
+def _spec_body(spec: Spec) -> dict[str, Any]:
+    """把 Spec 摊成「决定产物长什么样」的那部分。
+
+    只收口径，不收展示：标题、提出人、用途、节奏改来改去都不该算一版变更——
+    改标题本来就不搬目录，若还逼人升版本，那条规矩就自相矛盾了。`version`
+    也不收：它标识「第几版」，不标识「这一版说了什么」。
+    """
+    body: dict[str, Any] = {
+        "kind": spec.kind.value,
+        "mode": spec.mode.value,
+        "sql": spec.sql,
+        "criteria": [
+            {"metric": item.metric, "op": item.op, "value": _plain(item.value)}
+            for item in spec.criteria
+        ],
+        "order_by": [{"metric": key.metric, "descending": key.descending} for key in spec.order_by],
+        "output": {"format": spec.output.format.value, "columns": list(spec.output.columns)},
+        "guard": {"min_rows": spec.guard.min_rows, "max_rows": spec.guard.max_rows},
+        "alert": {
+            "row_delta_pct": spec.alert.row_delta_pct,
+            "row_delta_abs": spec.alert.row_delta_abs,
+        },
+    }
+    fill = spec.fill
+    if fill is not None:
+        body["fill"] = {
+            # 输入只认 spec 里写的相对路径：`source.path` 是解析后的绝对路径，
+            # 进了指纹就成了「这台机器专属」的哈希，目录一搬全对不上。
+            "source": {
+                "path": fill.source.relative,
+                "sheet": fill.source.sheet,
+                "header_row": fill.source.header_row,
+                "key_column": fill.source.key_column,
+            },
+            "output": fill.output_name,
+            "overrides": fill.overrides.name if fill.overrides else None,
+            "overwrite": fill.overwrite,
+            "lexicon": dict(fill.lexicon),
+            "notes": [list(item) for item in fill.notes],
+            "stamp_note": fill.stamp_note,
+            "columns": [
+                {
+                    "name": item.name,
+                    "kind": item.kind,
+                    "field": item.field,
+                    "template": item.template,
+                    "const": _plain(item.const),
+                    "reason": item.reason,
+                    "format": item.fmt,
+                    "join": item.join,
+                    "translate": item.translate,
+                    "width": item.width,
+                    "wrap": item.wrap,
+                }
+                for item in fill.columns
+            ],
+        }
+    return body
+
+
+def spec_digest(spec_path: Path, *, base_dir: Path | None = None) -> str:
+    """口径的**语义**指纹：只认内容，不认注释、空行、键序与展示字段。
+
+    为什么不是文件字节的哈希：REQ-0001 的 spec 后来补了一行 `kind: query`（默认值
+    本就是 query），字节变了、口径一分没变。按字节算，它立刻会被判成「版本号复用」
+    而拦下——那是冤枉。反过来，把 `下载量 > 1000` 改成 `> 800`，语义一定变。
+
+    也不只按原始 YAML 映射算：那样「补一个默认值」与「真的换了默认值」分不开。
+    故先 `load()` 成 `Spec`（默认值全部补齐、枚举归一），再摊成 `_spec_body` 比。
+    """
+    return spec_body_digest(_spec_body(load(spec_path, base_dir=base_dir)))
+
+
+def spec_body_digest(body: dict[str, Any]) -> str:
+    """给已经摊平的 Spec 口径算指纹。拆出来只为让测试能直接喂结构。"""
+    canonical = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def version_conflict(spec_path: Path, version: int) -> str | None:
+    """当前内容是否占用了**别的**口径的版本号。有冲突返回人读说明，否则 None。
+
+    `history/vN.yaml` 是「那一版真的用过」的忠实记录。若它已存在、语义却与当前
+    spec 不同，说明有人就地改了口径没升版本：档案会记 `spec_version: N`，读档的人
+    以为这就是当时那一版，而它已经不是了。这种错不会报错，只会让人拿着错的前提
+    核对三个月——所以必须拦。
+    """
+    target = spec_path.parent / HISTORY_DIR / f"v{version}.yaml"
+    if not target.is_file():
+        return None
+    # 两边都按需求目录解析相对路径：历史快照自己躺在 history/ 下，用它的父目录
+    # 当基准，`input/清单.xlsx` 就会被读成 `history/input/清单.xlsx`。
+    request_dir = spec_path.parent
+    if spec_digest(target, base_dir=request_dir) == spec_digest(spec_path, base_dir=request_dir):
+        return None
+    return (
+        f"v{version} 已被 {HISTORY_DIR}/{target.name} 占用，当前 spec 的口径却与它不同 —— "
+        f"版本号不能复用。请把 version 改成 {version + 1}，"
+        "并在 spec 顶部记一句「改了什么、为什么改」。"
+    )
 
 
 def history_versions(spec_path: Path) -> list[int]:

@@ -275,3 +275,4 @@ def test_show打印过程记录状态(tmp_path: Path, capsys: pytest.CaptureFixt
     out = capsys.readouterr().out
     assert "过程记录：" in out
     assert "不合规" in out
+    assert "口径指纹：" in out
