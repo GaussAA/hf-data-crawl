@@ -243,3 +243,35 @@ def test_取材后外部文件改动不影响本需求(tmp_path: Path) -> None:
 
     assert snapshot.read_bytes() == before
     assert load(folder / SPEC_NAME).fill is not None
+
+
+def test_新建即带过程记录骨架且标明未填(tmp_path: Path) -> None:
+    """新建就把 method/ 的坑位占好：想不起来记「怎么做的」，是这类记录最常见的死法。"""
+    path = make(tmp_path)
+
+    doc = path.parent / "method" / "METHOD.md"
+    index = path.parent / "method" / "method.json"
+    assert doc.is_file() and index.is_file()
+    assert "<!-- 待填：" in doc.read_text(encoding="utf-8")
+
+
+def test_method命令只判不写且以退出码表达(tmp_path: Path) -> None:
+    path = make(tmp_path)
+    assert run(tmp_path, "request", "method", "REQ-0001", "--check") == 1
+
+    doc = path.parent / "method" / "METHOD.md"
+    doc.write_text(
+        doc.read_text(encoding="utf-8").replace("<!-- 待填：", "<!-- 已填："), encoding="utf-8"
+    )
+
+    assert run(tmp_path, "request", "method", "REQ-0001", "--check") == 0
+
+
+def test_show打印过程记录状态(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    make(tmp_path)
+
+    assert run(tmp_path, "request", "show", "REQ-0001") == 0
+
+    out = capsys.readouterr().out
+    assert "过程记录：" in out
+    assert "不合规" in out

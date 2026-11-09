@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "updated_at": "2026-11-09T21:14:36+08:00",
+  "scripts": [
+    {
+      "name": "verify_overrides.py",
+      "purpose": "交付前自检判读表：URL 是否在输入清单里、列名是否声明过、人判列有没有空值、哪些机械列被人工改判。不是当初判读过程的原件（那次未留脚本），验的是结论表有没有错位。",
+      "run": "在仓库根目录：.venv/Scripts/python.exe requests/REQ-0002-backfill-具身感知数据集信息补充/method/scripts/verify_overrides.py；只读，有问题退出码 1",
+      "inputs": [
+        "spec.yaml",
+        "input/具身感知数据集信息补充1106.xlsx",
+        "overrides.json"
+      ],
+      "outputs": [],
+      "sha256": "7985a89ba590f01c02b3fd187f98a880121cd2561c52f222f0d042947f766076"
+    }
+  ]
+}

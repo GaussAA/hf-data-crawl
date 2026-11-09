@@ -19,10 +19,11 @@ from pathlib import Path
 
 import polars as pl
 
-from . import lineage, raw
+from . import lineage, method, raw
 from .fields import DEFAULT_COLUMNS, contract_errors
 from .lock import LOCK_NAME, LockBusy, describe_holder, exclusive
 from .rebuild import discover_raw_dates
+from .requirement import DELIVERIES_DIR, SPEC_NAME
 from .retention import (
     ARCHIVE_AFTER_DAYS,
     BACKUP_PRUNE_AFTER_DAYS,
@@ -609,11 +610,52 @@ def _snapshot_dependent(finding: Finding) -> Finding:
     return Finding(finding.problem, finding.text, snapshot_dependent=True)
 
 
+def _request_self_contained(requests_root: Path | None) -> Finding:
+    """已交付的需求，方法是否也留在了目录里。
+
+    只判**交付过**的需求：还没交过的，方法正在写，天天报红只会训练人忽略告警；
+    已交付却说不清做法，才是真问题——那份数据永远补不回来历。
+
+    需求目录不在数据目录里，所以这项由调用方显式传进来；没传就如实说没查，
+    不能一声不响地跳过（沉默会被当成「查过且通过」）。
+    """
+    if requests_root is None:
+        return Finding(False, "需求自包含：未指定需求目录，本次未检查")
+    if not requests_root.is_dir():
+        return Finding(False, f"需求自包含：{requests_root} 不存在，本次未检查")
+
+    checked = 0
+    bad: list[str] = []
+    for spec_path in sorted(requests_root.glob(f"*/{SPEC_NAME}")):
+        request_dir = spec_path.parent
+        base = request_dir / DELIVERIES_DIR
+        if not base.is_dir():
+            continue
+        delivered = [
+            path for path in base.iterdir() if path.is_dir() and not path.name.startswith(".")
+        ]
+        if not delivered:
+            continue
+        checked += 1
+        found = method.problems(request_dir)
+        if found:
+            extra = f" 等 {len(found)} 处" if len(found) > 1 else ""
+            bad.append(f"{request_dir.name}：{found[0]}{extra}")
+
+    if bad:
+        return Finding(
+            True,
+            f"需求自包含：{len(bad)}/{checked} 份已交付需求的过程记录不合规 —— " + "；".join(bad),
+        )
+    return Finding(False, f"需求自包含：{checked} 份已交付需求的方法与脚本索引一致")
+
+
 def diagnose(
     store: DatasetStore,
     now: datetime | None = None,
     *,
     snapshot: bool = True,
+    requests_root: Path | None = None,
 ) -> list[Finding]:
     """跑全部体检项。
 
@@ -642,6 +684,7 @@ def diagnose(
         _backup_backlog(store, now),
         _recent_failures(runs, now),
         _stale_temp_files(store, now),
+        _request_self_contained(requests_root),
     ]
     if snapshot:
         return findings

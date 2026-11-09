@@ -657,3 +657,24 @@ def test_doctor拿不到锁时降级为非快照(tmp_path: Path, monkeypatch: An
     assert code == 0
     assert not (root / ALERT_NAME).exists()
     assert read_health(DatasetStore(root))[-1].snapshot is False
+
+
+def test_已交付需求缺过程记录要在体检里报出来(tmp_path: Path) -> None:
+    """方法没留在目录里，那份数据就永远说不清来历；体检只判已交付的，不催未交付的。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    root = tmp_path / "req"
+    delivered = root / "REQ-0001-query-高热度"
+    (delivered / "deliveries" / "20260101T000000").mkdir(parents=True)
+    (delivered / "spec.yaml").write_text("id: REQ-0001\n", encoding="utf-8")
+    # 还没交过的需求不报：方法正在写，天天红只会训练人忽略告警。
+    pending = root / "REQ-0002-query-待办"
+    pending.mkdir(parents=True)
+    (pending / "spec.yaml").write_text("id: REQ-0002\n", encoding="utf-8")
+
+    texts = [item.text for item in diagnose(store, NOW, requests_root=root) if item.problem]
+
+    hits = [text for text in texts if "需求自包含" in text]
+    assert len(hits) == 1
+    assert "REQ-0001-query-高热度" in hits[0]
+    assert "REQ-0002" not in hits[0]

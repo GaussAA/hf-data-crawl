@@ -15,7 +15,9 @@ import openpyxl
 import polars as pl
 import pytest
 import yaml
+from support import write_method
 
+from hf_data_crawl import method
 from hf_data_crawl.cli import deliveries_of, main
 from hf_data_crawl.delivery import (
     EXECUTORS,
@@ -88,6 +90,7 @@ def make_request(root: Path, **overrides: Any) -> Path:
     path = root / str(body["id"]) / SPEC_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(body, allow_unicode=True), encoding="utf-8")
+    write_method(path.parent, request_id=str(body["id"]), title=str(body["title"]))
     return path
 
 
@@ -542,6 +545,7 @@ def make_backfill_request(root: Path, book: Path, **overrides: Any) -> Path:
     path = root / str(body["id"]) / SPEC_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(body, allow_unicode=True), encoding="utf-8")
+    write_method(path.parent, request_id=str(body["id"]), title=str(body["title"]), kind="backfill")
     return path
 
 
@@ -680,8 +684,24 @@ def test_语义化目录仍按编号交付(store: DatasetStore, tmp_path: Path) 
         ),
         encoding="utf-8",
     )
+    write_method(folder, request_id="REQ-0001", title="高下载数据集")
 
     result = deliver(store, root, "REQ-0001", now=NOW)
 
     assert result.directory.parent == folder / DELIVERIES_DIR
     assert (result.directory / MANIFEST_NAME).exists()
+
+
+def test_manifest钉住方法与逐脚本指纹(store: DatasetStore, tmp_path: Path) -> None:
+    """档案要能回答「这份结果由哪版方法产出」，否则只钉住了原材料、钉不住做法。"""
+    root = tmp_path / "req"
+    path = make_request(root)
+
+    result = deliver(store, root, "REQ-0001", now=NOW)
+    body = json.loads((result.directory / MANIFEST_NAME).read_text(encoding="utf-8"))
+
+    doc = path.parent / "method" / "METHOD.md"
+    assert body["method"]["doc"]["sha256"] == method.digest(doc)
+    # 这份测试需求没写脚本，清单就该是空的——不是缺字段，是「确实没有」。
+    assert body["method"]["scripts"] == []
+    assert body["method"]["env"]["contract_version"] == CONTRACT_VERSION

@@ -28,6 +28,8 @@ from .gold import BOARDS, GoldCatalog, GoldNotReady, UnsafeQuery
 from .health import record as record_health
 from .lineage import restamp
 from .lock import LockBusy, exclusive
+from .method import METHOD_DIR, METHOD_DOC, METHOD_INDEX, problems
+from .method import sync as sync_method
 from .metrics import lookup
 from .rebuild import RebuildSummary, divergent_since, rebuild_from_raw, replay_suffix
 from .reconcile import Reconciler, ReconcileSummary
@@ -206,6 +208,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="只算不写：报行数与逐列覆盖，不建交付档案、不受护栏阻断",
     )
     request_sub.add_parser("run-due", help="跑所有到期的需求（计划任务用）")
+    request_method = request_sub.add_parser(
+        "method", help="校验过程记录 method/，并按目录实际内容重算脚本索引"
+    )
+    request_method.add_argument("id", help="需求号")
+    request_method.add_argument(
+        "--check",
+        action="store_true",
+        help="只判不写：列出不合规之处，有问题则退出码非零（CI / 交付前自检用）",
+    )
 
     reconcile = subparsers.add_parser("reconcile", help="全量对账（按 createdAt 稳定序）")
     reconcile.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
@@ -429,7 +440,7 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
                 return 1
         return _request(args)
     if args.command == "doctor":
-        return _doctor_locked(store, lock_wait)
+        return _doctor_locked(store, lock_wait, requests_root=Path(args.requests_dir))
     if args.command == "docs":
         # docs 不写 runs/，但同样要在一致快照上生成；拿不到锁就明确失败。
         try:
@@ -841,7 +852,7 @@ def _write_docs(args: argparse.Namespace, store: DatasetStore) -> int:
     return 0
 
 
-def _doctor_locked(store: DatasetStore, wait: float) -> int:
+def _doctor_locked(store: DatasetStore, wait: float, *, requests_root: Path | None = None) -> int:
     """体检优先在一致快照上跑；等不到写锁就降级，不阻塞人工排障。
 
     与 report/docs 不同：那两个命令拿不到锁直接失败，因为产出的文件必须基于
@@ -850,12 +861,12 @@ def _doctor_locked(store: DatasetStore, wait: float) -> int:
     """
     try:
         with exclusive(store.root, "doctor", wait):
-            return _doctor(store, snapshot=True)
+            return _doctor(store, snapshot=True, requests_root=requests_root)
     except LockBusy:
-        return _doctor(store, snapshot=False)
+        return _doctor(store, snapshot=False, requests_root=requests_root)
 
 
-def _doctor(store: DatasetStore, *, snapshot: bool) -> int:
+def _doctor(store: DatasetStore, *, snapshot: bool, requests_root: Path | None = None) -> int:
     """体检：有问题退出码为 1，写 ALERT.txt，并把结论追加进体检流水。
 
     流水（`state/health-history.jsonl`）与 `runs/` 分工不同：`runs/` 记「命令成没
@@ -870,7 +881,7 @@ def _doctor(store: DatasetStore, *, snapshot: bool) -> int:
         print("快照：一致（已持有写锁）")
     else:
         print("快照：不可用（写锁被占用，未取得锁）；跨表读数可能跨时点，跨表检查已降级")
-    findings = diagnose(store, now, snapshot=snapshot)
+    findings = diagnose(store, now, snapshot=snapshot, requests_root=requests_root)
     sync_alert(store, findings, now, snapshot=snapshot)
     try:
         record_health(store, findings, now, snapshot=snapshot)
@@ -1129,13 +1140,56 @@ def manifest_summary(directory: Path) -> str:
 
 
 def _request(args: argparse.Namespace) -> int:
-    """需求管理的三个动作。都不写数据，因此不持数据目录的锁。"""
+    """需求管理里不写数据的几个动作，都不持数据目录的锁。"""
     root = Path(args.requests_dir)
     if args.request_action == "new":
         return _request_new(args, root)
     if args.request_action == "list":
         return _request_list(root)
+    if args.request_action == "method":
+        return _request_method(root, args.id, check=args.check)
     return _request_show(root, args.id)
+
+
+def _request_method(root: Path, request_id: str, *, check: bool) -> int:
+    """过程记录的入口：缺骨架就补，脚本有增删改就重算指纹。
+
+    索引只钉「哪个脚本、指纹多少」，不替人编用途——所以新增脚本后第一次重算会
+    报「待补」，那是有意的：机器猜得出 sha256，猜不出这个脚本为什么存在。
+    """
+    try:
+        request_dir = resolve_dir(root, request_id)
+        spec = load_spec(request_dir / SPEC_NAME)
+    except SpecError as error:
+        print(f"失败：{error}")
+        return 1
+
+    if not check:
+        report = sync_method(
+            request_dir, request_id=spec.id, title=spec.title, kind=spec.kind.value
+        )
+        if report.doc_created:
+            print(f"已补过程记录骨架：{request_dir / METHOD_DIR / METHOD_DOC}")
+            print("  填完删掉 `<!-- 待填：` 那一行，否则交付会被拦下")
+        for name in report.added:
+            print(f"  新登记：{name}（用途待补，请回 METHOD.md 与索引里写清楚）")
+        for name in report.refreshed:
+            print(f"  指纹更新：{name}")
+        for name in report.dropped:
+            print(f"  已移除：{name}（文件不在 method/scripts/ 了）")
+        if report.written and not (report.added or report.refreshed or report.dropped):
+            print(f"  已生成脚本索引：{METHOD_DIR}/{METHOD_INDEX}")
+        if not report.changed and not report.written:
+            print(f"{spec.id} 方法索引已是最新，无需改动")
+
+    found = problems(request_dir)
+    if found:
+        print(f"\n{spec.id} 过程记录不合规（{len(found)} 处）：")
+        for text in found:
+            print(f"  - {text}")
+        return 1
+    print(f"{spec.id} 过程记录合规：{METHOD_DIR}/{METHOD_DOC} + 脚本索引一致")
+    return 0
 
 
 def _request_new(args: argparse.Namespace, root: Path) -> int:
@@ -1193,6 +1247,9 @@ def _request_new(args: argparse.Namespace, root: Path) -> int:
         )
         # 建完立刻按真规矩读一遍：不合法就整目录收走，好过等下次 run 才发现。
         load_spec(target)
+        # 过程记录一并建好骨架：新需求从第一天起就有 method/ 这个坑位，
+        # 不必等人想起来该记「怎么做的」——想不起来，是这类记录最常见的死法。
+        sync_method(folder, request_id=args.id, title=args.title, kind=kind.value)
     except (SpecError, OSError) as error:
         shutil.rmtree(folder, ignore_errors=True)
         print(f"失败：{error}")
@@ -1207,6 +1264,10 @@ def _request_new(args: argparse.Namespace, root: Path) -> int:
         )
     else:
         print("  下一步：编辑 criteria 与 output（metric 只写词表词条），再跑 `request run`")
+    print(
+        f"  过程记录：{METHOD_DIR}/{METHOD_DOC} 已建骨架（含 `<!-- 待填：` 标记）。"
+        "按步骤写清做法、删掉那行标记，交付才会放行"
+    )
     return 0
 
 
@@ -1304,6 +1365,15 @@ def _request_show(root: Path, request_id: str) -> int:
         print(f"历史版本：{'、'.join(f'v{version}' for version in versions)}")
     else:
         print("历史版本：（尚未快照，首次交付时自动留存）")
+
+    print(f"过程记录：{METHOD_DIR}/{METHOD_DOC}")
+    found = problems(path.parent)
+    if found:
+        print(f"  不合规 {len(found)} 处，交付会被拦下（`request method {spec.id}` 可看详情）：")
+        for text in found:
+            print(f"    - {text}")
+    else:
+        print("  合规：步骤齐备，脚本索引与文件指纹一致")
     runs = deliveries_of(path.parent)
     print(f"交付台账：{len(runs)} 次")
     for run in runs:

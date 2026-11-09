@@ -31,7 +31,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `reconcile` | 全量对账：按 `createdAt` 稳定序扫全站，产出新增/删除/转私有/改名/sha 变更 | 是 |
 | `build` | 重建派生层：默认只重放近 7 天热区，`--stale` 只修派生滞后的日子及其后，`--full` 全量重放 | 否 |
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
-| `request` | 需求与交付管理：`new` 建需求、`list` 看全部、`show` 看口径与台账、`run` 交付一次（`--dry-run` 预演）、`run-due` 跑到期的 | 否 |
+| `request` | 需求与交付管理：`new` 建需求、`list` 看全部、`show` 看口径与台账、`method` 校验过程记录并重算脚本索引、`run` 交付一次（`--dry-run` 预演）、`run-due` 跑到期的 | 否 |
 | `report` | 生成单文件榜单页（离线可看） | 否 |
 | `doctor` | 体检：调度新鲜度、底库行龄、层间勾稽、派生凭证、产物新鲜度、断日与残留文件；异常写 `ALERT.txt` 并追加体检流水 | 否 |
 | `archive` | 归档早于 N 天的 Raw 分区：合并小分块并去重，先验证 Bronze 逐行相等，原文件移入 `backup/raw/` | 否 |
@@ -59,6 +59,7 @@ hf-data-crawl export-wide  [--out PATH]           # 默认 data/exports/datasets
 hf-data-crawl request      new REQ-0001 --title 标题 --requester 姓名 [--purpose ...] [--cadence once|daily|weekly|monthly|manual] [--kind query|backfill] [--source 输入表.xlsx]
 hf-data-crawl request      list
 hf-data-crawl request      show REQ-0001
+hf-data-crawl request      method REQ-0001 [--check]   # 校验 method/ 并按目录实际内容重算脚本索引
 hf-data-crawl request      run REQ-0001 [--force] [--dry-run]   # once 重交须 --force；--dry-run 只算不写
 hf-data-crawl request      run-due                  # 只跑到期的（计划任务用）
 ```
@@ -313,11 +314,14 @@ uv run hf-data-crawl doctor                        # 手动体检；有问题退
 requests/REQ-0001-query-高热度数据集清单/
   spec.yaml                  # 公共头 + kind + 该形态的口径体
   history/v1.yaml            # 交付时自动快照，只留「真的用过」的口径
+  method/METHOD.md           # 过程记录：步骤、判据、哪步机器哪步人判
+  method/method.json         # 过程记录的机器读版本：逐脚本 用途/怎么跑/sha256
+  method/scripts/            # 实际跑过的脚本原件（指纹不匹配就不许交付）
   input/清单.xlsx             # 回填型：受理时复制进来的输入快照（query 型没有）
   overrides.json             # 回填型：逐库人工判读结果
   deliveries/20261108T145000/
     data.parquet / 已补全.xlsx    # 产物字节，不进 git（白名单只放行两份说明）
-    manifest.json            # 机器读：kind、底库指纹、输入指纹、口径、行数、sha256、健康
+    manifest.json            # 机器读：kind、底库指纹、输入指纹、方法指纹、行数、sha256、健康
     README.md                # 人读：要什么、怎么算的、基于哪天的底库、几行
 ```
 
@@ -330,6 +334,22 @@ requests/REQ-0001-query-高热度数据集清单/
 `copy_to` 外写一律在读入时拒绝。整个目录拷走或 clone 下来仍读得懂、跑得动，外部原件
 之后被删被改都影响不到它。每次交付的 `manifest.json` 还会记下输入快照的相对路径与
 sha256，于是「基于哪一版清单」和「基于哪一版底库」一样能自证。
+
+**过程也要自包含**：输入、口径、产物三件齐了，仍回答不了「怎么算出来的」——
+`spec.yaml` 能写「取 `downloads` 列」，写不了「这 24 个库的训练阶段是逐个读 README
+判的，判据是明写 pretrain / fine-tune / post-training 才算」。所以每份需求还有
+`method/`：`METHOD.md` 记步骤与判据，`method/scripts/` 存实际跑过的脚本原件，
+`method.json` 逐份钉 sha256。**方法不合规就不交付**——交付档案里会钉住方法指纹，
+但钉不住已经忘了的判据；数据交出去就永久补不回来历，宁可不交。
+
+分工是明确的：机器算得出 sha256，算不出这个脚本为什么存在。所以 `request method`
+只负责重算指纹与增删条目，脚本的用途、怎么跑、读写了什么，一律留给人写；新冒出来的
+脚本给一条「待补」占位，而不是替它编一句。方法文档里那行 `<!-- 待填：` 没删，
+就视同「还没有方法」，照样拦。
+
+环境这一层**不复制、只钉住**：脚本 import 的底库代码在 `src/`，往每个需求目录塞一份
+只会得到 N 份迟早各不相同的副本。`manifest.method.env` 记下包版本、契约版本与提交号，
+变了就对不上账——与用 `current_md5` 钉底库是同一手法。
 
 `spec.yaml` 里 `kind: query` 带 `criteria` / `order_by` / `output`，`kind: backfill`
 带 `fill:`（输入表、逐列取值方式）。`requirement.py` 负责读与校验，`delivery.py`
@@ -393,6 +413,8 @@ hf-data-crawl request run REQ-0002             # 出正式交付档案
 ```
 requests/REQ-0002-backfill-具身感知数据集信息补充/
   spec.yaml                       # 公共头 + kind + fill: 口径体
+  method/METHOD.md                # 判读规程：哪 8 列人判、每列判据、哪步机器哪步人
+  method/scripts/verify_overrides.py  # 判读表自检（URL 在不在清单、列名声明过没有）
   input/清单.xlsx                  # --source 指定的表，受理时复制进来；原件不动
   overrides.json                  # 逐库人工判读结果（引擎只合并、不生成）
   history/v1.yaml                 # 首次交付时留存的口径快照
@@ -427,7 +449,10 @@ md5 却每次不同，「这次和上次一样吗」只能靠人肉比对。
 
 判读层（README 里「训练阶段是微调还是后训练」「构造方式是仿真还是真机」）写进
 `overrides.json`，与机械层分开：引擎自己不读 README、不替人下结论，但会把「哪些格子是
-人工判读来的」记进 `manifest.json` 的 `fill.tallies` 与 README 的逐列规则表。
+人工判读来的」记进 `manifest.json` 的 `fill.tallies` 与 README 的逐列规则表。**判读规程**
+（哪几列必须人判、每列的判据是什么、README 与 splits 怎么核）写在 `method/METHOD.md`，
+判读表本身则由 `method/scripts/` 里的自检脚本复验——结论和得出它的规则放在同一个目录里，
+下次换人或换模型接手，照着做就行。
 
 输入快照连同 spec、overrides、history 与历次交付一起构成封闭单元；`manifest.json` 的
 `fill.input` 记着它的相对路径、字节数与 sha256。要换一张新表，把文件放进 `input/`、

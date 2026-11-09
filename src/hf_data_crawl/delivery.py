@@ -34,8 +34,10 @@
 
 原子性：先写 `.tmp-*` 目录，三件齐了再整体改名。中途失败绝不留半份交付。
 
-**自包含**：输入快照、口径、判读、历次交付全在需求目录内。产物绝不外写——一经
-外写，「哪一份才是正式的」就说不清，而外部那份还会被随手改动。
+**自包含**：输入快照、口径、判读、历次交付**以及做法本身**（`method/`：步骤、
+脚本原件、逐份指纹）全在需求目录内。产物绝不外写——一经外写，「哪一份才是正式的」
+就说不清，而外部那份还会被随手改动。方法缺失时**不交付**：数据说不清来历，交出去
+就永久补不回来了（见 `method.py`）。
 """
 
 from __future__ import annotations
@@ -52,7 +54,7 @@ from typing import Any
 import duckdb
 import polars as pl
 
-from . import backfill
+from . import backfill, method
 from .atomic import replace
 from .fields import (
     COLUMN_NOTES,
@@ -191,6 +193,25 @@ def _catalog(store: DatasetStore, catalog: GoldCatalog | None) -> GoldCatalog:
         raise DeliveryBlocked(str(error)) from error
 
 
+def _method_stamp(request_dir: Path, spec: Spec) -> dict[str, Any]:
+    """交付前闸门：过程记录不合规就不出货。
+
+    与 `min_rows` 同级，拦的理由却不同——0 行是「这份数据不可信」，缺方法是
+    「这份数据说不清来历」。后者当下不影响收数，可一旦交出去就永久补不回来：
+    三个月后再想补写，当时的判据早已忘了，剩下的只是复述结论。
+
+    翻译成 `DeliveryBlocked` 而非原样抛 `MethodError`：`run-due` 只认前者，
+    一份缺方法的需求该记一条失败，不该让整批交付一起崩。
+    """
+    try:
+        record = method.read(request_dir)
+    except method.MethodError as error:
+        raise DeliveryBlocked(
+            f"{error}\n\n补齐后重跑；骨架用 `hf-data-crawl request method sync {spec.id}` 生成。"
+        ) from None
+    return method.stamp(request_dir, record)
+
+
 def deliver(
     store: DatasetStore,
     requests_root: Path,
@@ -203,6 +224,8 @@ def deliver(
     """跑一次交付。任何护栏不通过都抛 `DeliveryBlocked`，且不留任何目录。"""
     request_dir = resolve_dir(requests_root, request_id)
     spec = load_spec(request_dir / SPEC_NAME)
+    # 先验方法再算数：方法是「这份交付凭什么成立」的一部分，缺它连预留目录都不该做。
+    method_stamp = _method_stamp(request_dir, spec)
     moment = now or datetime.now().astimezone()
     stamp_value = source or _stamp(store)
     runner = _catalog(store, catalog)
@@ -230,6 +253,7 @@ def deliver(
             payload=payload,
             health=health,
             previous=_last_delivery_name(request_dir, exclude=directory.name),
+            method_stamp=method_stamp,
         )
         (staging / MANIFEST_NAME).write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -286,8 +310,25 @@ def preview(
         kind=spec.kind,
         rows=payload.rows,
         columns=payload.columns,
-        lines=payload.detail_lines,
+        lines=_preview_lines(request_dir, payload.detail_lines),
     )
+
+
+def _preview_lines(request_dir: Path, detail: list[str]) -> list[str]:
+    """预演不拦，但要把「正式交付会被拦」写在最上面。
+
+    预演的唯一用途就是「看看会不会 0 行」，此时也被方法闸门挡住等于自相矛盾；
+    可若一声不吭地跑通，人就会以为可以交付了，然后在正式那一刻才撞墙。
+    """
+    found = method.problems(request_dir)
+    if not found:
+        return detail
+    return [
+        "> ⚠ 过程记录不合规，正式交付会被拦下：",
+        *[f"> - {text}" for text in found],
+        "",
+        *detail,
+    ]
 
 
 def _execute(ctx: RunContext) -> Payload:
@@ -731,6 +772,7 @@ def _manifest(
     payload: Payload,
     health: Health,
     previous: str | None,
+    method_stamp: dict[str, Any],
 ) -> dict[str, Any]:
     manifest: dict[str, Any] = {
         "request_id": spec.id,
@@ -762,6 +804,9 @@ def _manifest(
             "note": health.note,
         },
         "previous": previous,
+        # 过程自包含：这份结果由哪版方法、哪版脚本、哪版代码产出。缺了它，
+        # 「基于哪一版底库」只钉住了原材料，钉不住做法。
+        "method": method_stamp,
     }
     # 形态特有的口径进顶层，便于「读 manifest 就知道这次怎么算的」；公共键不许被
     # 覆盖——一旦覆盖，「这份交付基于哪版底库」就可能被某个执行体悄悄改写。
@@ -830,6 +875,10 @@ def _readme(
     lines += [
         "",
         "## 复现",
+        "",
+        f"- 做法：`{method.METHOD_DIR}/{method.METHOD_DOC}`（步骤、判据、哪步机器哪步人判）",
+        f"- 脚本：`{method.METHOD_DIR}/{method.SCRIPTS_DIR}/`，逐份 sha256 与所依赖的代码版本",
+        "  见 `manifest.json` 的 `method` 段",
         "",
         "```bash",
         f"hf-data-crawl request run {spec.id} --force",
