@@ -68,7 +68,7 @@ hf-data-crawl request      run-due                  # 只跑到期的（计划�
 
 写命令（`collect` / `reconcile` / `build` / `enrich` / `fetch-sizes` / `fetch-files` / `archive` / `compact` / `export-wide`）执行期间持有 `data/.lock` 的独占锁，同一时刻只能跑一个；拿不到锁会失败并在 `runs/` 留记录。进程被杀后系统自动释放，不会留下死锁。`report` 与 `query` 不加锁。
 
-**默认交付底库**：`current` 只保留 19 列状态标量，语义字段分散在 `silver` / `carddata` / `size`。`export-wide` 按 `fields.py` 的**默认交付字段契约**把 `gold.datasets` 视图裁成 31 列，写成 `data/exports/datasets.parquet`——只留与数据集有关、有用且必要的画像字段（标识、描述、热度、许可、语言、模态、任务、数据类型、标签、补充画像、学术关联、规模、大小），把水印、抓取状态、卡片凭证与九成空的补抓列排除在外。v2 补回详情页 `Tags`；**v3 把 13 个多值列压成 `;` 字符串**，任何预览器 / Excel / BI 打开就能看见值（Parquet 的 LIST 嵌套会让预览器整列显示 NULL），视图仍留 LIST 原值供精确筛；**v4 克制新增 5 列**：`pretty_name` / `multilinguality` / `arxiv_ids` / `source_datasets` / `task_ids`。
+**默认交付底库**：`current` 只保留 19 列状态标量，语义字段分散在 `silver` / `carddata` / `size`。`export-wide` 按 `fields.py` 的**默认交付字段契约**把 `gold.datasets` 视图裁成 31 列，写成 `data/exports/datasets.parquet`——只留与数据集有关、有用且必要的画像字段（标识、描述、热度、许可、语言、模态、任务、数据类型、标签、补充画像、学术关联、规模、大小），把水印、抓取状态、卡片凭证与九成空的补抓列排除在外。v2 补回详情页 `Tags`；**v3 曾把 13 个多值列压成 `;` 字符串**以绕开预览器读不了 LIST 的缺陷，该缺陷已在上游 `vscode-office` 修好（PR #27），**v5 遂撤销压平、恢复 LIST 原值**，导出物与视图从此同构、可直接 `list_contains` 精确筛；**v4 克制新增 5 列**：`pretty_name` / `multilinguality` / `arxiv_ids` / `source_datasets` / `task_ids`。
 
 `regions` 实测 100% 有值但 **99.94% 是 HF 自动推断的 `us`**，故不进默认面；它与 DOI、引用、项目主页等共 19 个字段登记在 `EXTENDED_FIELDS`，需要时写 `output.columns: [id, regions, ...]` 点名即可投列——**默认面管「不指定时给什么」，不是「总共有什么」**。完整清单见 [docs/DATA.md](docs/DATA.md) 第八节。这份文件也是**数据集筛选需求未指定 `output.columns` 时的默认投影**；不登记为表、不参与状态更新，视图本身仍保留全部 72 列。四处共用一份定义，详见 [GLOSSARY](GLOSSARY.md) #62–#65。
 
@@ -334,8 +334,9 @@ sha256，于是「基于哪一版清单」和「基于哪一版底库」一样�
 是这份契约的物化，列序完全一致；`manifest.json` 记 `projection.source = default` 与契约版本，
 README 附逐列定义表、「详情页标签 ↔ 库列」对照表及扩展字段清单——页面叫 `Tasks` /
 `Size` / `Tags`，库里叫 `task_categories` / `size_categories` / `plain_tags`，值也多为机器码，
-不对照就会以为「库里没内容」。13 个多值列一律是 `;` 连接的字符串（空列表为空串、未声明
-为 NULL），要按单个标签精确筛请查 `gold.datasets` 视图里的 LIST 原值。需要默认面之外的
+不对照就会以为「库里没内容」。多值列在导出物里就是 LIST 原值（与视图同构，可直接
+`list_contains` 精确筛）；只有 CSV 交付这一层才展平成 `;` 连接的文本，并把语言 / 任务 /
+规模的机器码换成页面形式。需要默认面之外的
 字段时在 spec 写 `output.columns: [id, regions, arxiv_ids]`，`_column()` 认原始视图列名。
 `doctor` 会勾稽导出文件列集与契约，不一致即报「跑 `export-wide` 重建」。
 

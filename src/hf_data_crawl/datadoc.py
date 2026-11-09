@@ -27,7 +27,6 @@ from .fields import (
     DEFAULT_COLUMNS,
     EXTENDED_FIELDS,
     EXTENDED_NOTE,
-    FLATTEN_NOTE,
 )
 from .raw import BRONZE_LABELS, CARD_LABEL
 from .tables import TABLES, Origin, TableSpec
@@ -386,10 +385,9 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "库列名 ↔ 值的显示形式」对照表，CSV 把语言 / 任务 / 规模的机器码展平成页面",
         "形式，parquet 与 SQL 结果保留机器码以便筛算。",
         "",
-        "v3 起标签列在导出物里是 `;` 字符串而非 LIST：parquet 的 LIST 三层嵌套会让",
-        "多数预览器把内部节点 `list` / `element` 当列名、整列显示 NULL。列集与别名",
-        "一字未改，doctor 的列集勾稽照旧。",
-        FLATTEN_NOTE,
+        "v5 起标签列回到 LIST 原值，与 `gold.datasets` 视图完全同构：要按单个标签",
+        "精确筛选，导出物本身就能 `list_contains`。v3 曾把这类列压成 `;` 字符串，",
+        "只是为了绕开自家预览器取列名的缺陷（已随上游 PR 修好），折衷手段随之撤销。",
         "",
         f"契约 v{CONTRACT_VERSION} 起默认面扩充到 {len(DEFAULT_COLUMNS)} 列：新增展示名、",
         "多语言性、arXiv 论文号、上游数据集与细分任务。**地区 `regions` 刻意不进默认面**",

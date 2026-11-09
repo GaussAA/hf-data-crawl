@@ -677,6 +677,9 @@
     Parquet Viewer 里预览 `datasets.parquet`，看到 `LICENSES.LIST.ELEMENT`、
     `LANGUAGES.LIST.ELEMENT` 等列**整列 NULL**，问「为什么看不见值」。
 
+    - **状态：已撤销，见 #66**。这一条记的是当时的诊断与折衷，不是现行口径；
+      上游预览器修好后压平已撤，默认底库回到 LIST 原值。
+
     - **两层原因**：① 前 16 行多是 `Physi-Wiki/wiki-*`，HF 源头就没声明语言 / 任务 /
       许可证，NULL 是真的；② 有值的行也被显示成 NULL——第 11 行
       `danielwp22/record-combined-v3` 实读 `licenses=['apache-2.0']`、
@@ -721,3 +724,22 @@
     列名 + 中文定义 + 覆盖档）与 `EXTENDED_NOTE`，交付 README 与 `docs/DATA.md`
     第八节都从它生成表格，不手抄第二份。覆盖档写区间不写精确百分比——百分比会随
     每日采集漂移。`regions` 明确列入清单但不进默认面。
+
+66. **撤销扁平化：为绕开外部缺陷而加的变换，缺陷修好就该撤**（2026-11-09）：上一轮
+    为让预览器看见标签值，把 13 个多值列压成 `;` 字符串。根因查实后定位到预览器
+    自身：列清单取自 hyparquet 的 `getPhysicalColumns`（物理叶子路径
+    `tags.list.element`），行对象却按顶层字段名组键，两套键对不上 → 整列 NULL。
+    该缺陷已在上游 `GaussAA/vscode-office` 修好（PR #27，合入 `3848ad8`：列清单改
+    遍历 `schemaTree.children`，嵌套列显示为一格 JSON），**压平随之撤销**。
+
+    - **做法**：`projection_sql()` 回到只做卡片兜底，不再 `array_to_string`；
+      删除 `FLATTEN_COLUMNS` / `FLATTEN_NOTE` / `display_text_expr`。导出物列类型
+      与 `gold.datasets` 视图**完全同构**——按单标签精确筛不必再换到视图去查，
+      `doctor` 的列集勾稽仍只比列名，不受影响。
+    - **`CONTRACT_VERSION` 升 5 而非退回 2**：版本号只增不减。历史交付档案钉的是
+      当时那一版，倒退会让 `v3` / `v4` 两份档案都说不清自己是什么口径。
+    - **什么留下来了**：CSV 交付仍要展平（`write_csv` 不接受嵌套类型），也仍把
+      语言 / 任务 / 规模换成页面形式——那是**交付给人读**的一层，与导出物形态无关。
+    - **判据**：「绕开工具缺陷」与「表达业务口径」两件事必须分开。前者是有期限的
+      补丁，工具修好即撤；后者才配进契约。混在一起，日后谁想按标签筛都得先问一句
+      「这里为什么是字符串」，而答案早已随修好缺陷的人一起消失。

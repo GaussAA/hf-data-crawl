@@ -23,7 +23,7 @@ import pytest
 from hf_data_crawl import wide as wide_module
 from hf_data_crawl.cli import WRITE_COMMANDS, main
 from hf_data_crawl.derive import derive_day
-from hf_data_crawl.fields import DEFAULT_COLUMNS, FLATTEN_COLUMNS
+from hf_data_crawl.fields import DEFAULT_COLUMNS
 from hf_data_crawl.gold import GoldCatalog, wide_column_names
 from hf_data_crawl.runs import read_runs
 from hf_data_crawl.store import DatasetStore
@@ -84,9 +84,10 @@ def test_导出列集合与默认交付契约一致(store: DatasetStore) -> None
     assert frame.columns == list(DEFAULT_COLUMNS)
     assert summary.columns == len(DEFAULT_COLUMNS)
     assert summary.rows == store.read_current().height
-    # v3：标签列必须压成 VARCHAR，否则预览器会把 LIST 内部节点当列名、整列显示 NULL。
-    for column in FLATTEN_COLUMNS:
-        assert frame.schema[column] == pl.String
+    # v5：标签列回到 LIST，与视图同构（v3 为绕预览器缺陷做的扁平化已撤销）。
+    for column in ("languages", "task_categories", "tags", "plain_tags", "arxiv_ids"):
+        assert frame.schema[column] == pl.List(pl.String)
+    assert frame.schema["id"] == pl.String
 
     catalog = GoldCatalog(store)
     try:

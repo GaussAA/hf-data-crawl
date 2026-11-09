@@ -17,14 +17,11 @@ from hf_data_crawl.fields import (
     EXTENDED_FIELDS,
     EXTENDED_NOTE,
     FALLBACKS,
-    FLATTEN_COLUMNS,
-    FLATTEN_NOTE,
     GROUPS,
     PAGE_FIELDS,
     contract_errors,
     default_columns,
     display_expr,
-    display_text_expr,
     display_value,
     projection_sql,
     quoted_columns,
@@ -191,39 +188,39 @@ def test_契约自检盯住新增的两张表() -> None:
     assert not set(DISPLAY_COLUMNS) - set(DEFAULT_COLUMNS)
 
 
-# ---------------------------------------------------------------- v3：默认底库扁平化
+# ---------------------------------------------------------------- v5：撤销扁平化
 
 
-def test_扁平化只动类型不动列集() -> None:
-    """预览器读不了 LIST，但列集必须与契约逐列一致，doctor 才能照旧勾稽。"""
-    assert len(FLATTEN_COLUMNS) == 13
-    assert FLATTEN_COLUMNS <= set(DEFAULT_COLUMNS)
-    assert set(FALLBACKS) <= FLATTEN_COLUMNS
+def test_默认投影不再压平列表() -> None:
+    """v3 为绕开预览器缺陷把标签列压成字符串；缺陷修好后必须撤掉，否则成了隐性契约。"""
     sql = projection_sql()
-    assert sql.count("array_to_string(") == len(FLATTEN_COLUMNS)
-    for column in FLATTEN_COLUMNS:
-        assert f'AS "{column}"' in sql
-    assert "LIST" not in sql.upper()  # 兜底用的是 array_length，不是把 LIST 类型带出去
+
+    assert "array_to_string" not in sql
+    for column in ("languages", "task_categories", "tags", "plain_tags", "arxiv_ids"):
+        assert f'"{column}"' in sql
+    assert CONTRACT_VERSION >= 5
 
 
-def test_扁平化说明写进口径() -> None:
-    assert ";" in FLATTEN_NOTE
-    assert "gold.datasets" in FLATTEN_NOTE
-    assert CONTRACT_VERSION >= 3
+def test_卡片兜底仍保留且不改变列类型() -> None:
+    """兜底只是取另一列的同义值，两边都是 LIST，不引入类型转换。"""
+    sql = projection_sql()
+
+    for column, source in FALLBACKS.items():
+        assert f'ELSE "{source}" END AS "{column}"' in sql
 
 
-def test_字符串列也能展平成页面形式() -> None:
-    """v3 默认投影已是 `;` 字符串，CSV 不能再假定输入一定是 LIST。"""
+def test_列表列仍能展平成页面形式交给CSV() -> None:
+    """压平撤的是导出物，不是展示层：CSV 里仍要人读。"""
     frame = pl.DataFrame(
         {
-            "languages": ["ko;en", None, ""],
-            "task_categories": ["text-generation;question-answering", None, ""],
-            "size_categories": ["100K<n<1M;n<1K", None, ""],
-            "tags": ["keyword;reranking", None, ""],
+            "languages": [["ko", "en"], None, []],
+            "task_categories": [["text-generation", "question-answering"], None, []],
+            "size_categories": [["100K<n<1M", "n<1K"], None, []],
+            "tags": [["keyword", "reranking"], None, []],
         }
     )
     exprs = [
-        display_text_expr(name) if name in DISPLAY_COLUMNS else pl.col(name)
+        display_expr(name) if name in DISPLAY_COLUMNS else pl.col(name).list.join(";").alias(name)
         for name in frame.columns
     ]
     out = frame.select(exprs)
@@ -236,11 +233,9 @@ def test_字符串列也能展平成页面形式() -> None:
 # ---------------------------------------------------------------- v4：克制扩充 + 扩展清单
 
 
-def test_v4新增五列都在默认面且多值列已扁平化() -> None:
+def test_v4新增五列都在默认面() -> None:
     added = {"pretty_name", "multilinguality", "arxiv_ids", "source_datasets", "task_ids"}
     assert added <= set(DEFAULT_COLUMNS)
-    assert {"multilinguality", "arxiv_ids", "source_datasets", "task_ids"} <= FLATTEN_COLUMNS
-    assert "pretty_name" not in FLATTEN_COLUMNS  # 标量列不必压
     assert len(DEFAULT_COLUMNS) == 31
     assert CONTRACT_VERSION >= 4
 
