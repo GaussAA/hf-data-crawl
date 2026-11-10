@@ -704,3 +704,53 @@ criteria:
     hits = [text for text in texts if "口径版本" in text]
     assert len(hits) == 1
     assert "版本号没跟着升" in hits[0]
+
+
+def test_探测成片失败要报出来(tmp_path: Path) -> None:
+    """探测失败落成 unknown，处置是「先别动」——状态原地不动，界面上看不出异常。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    make_run(
+        store,
+        "reconcile",
+        NOW,
+        probe_probed=1000,
+        probe_failed=400,
+        probe_deferred=0,
+    )
+
+    texts = [item.text for item in diagnose(store, NOW) if item.problem]
+
+    hits = [text for text in texts if "探测复核" in text]
+    assert len(hits) == 1
+    assert "失败 400" in hits[0] and "40%" in hits[0]
+
+
+def test_探测少量失败只记不报_顺延要露出来(tmp_path: Path) -> None:
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    make_run(
+        store,
+        "reconcile",
+        NOW,
+        probe_probed=2000,
+        probe_failed=10,
+        probe_deferred=4248,
+    )
+
+    finding = next(item for item in diagnose(store, NOW) if "探测复核" in item.text)
+
+    assert finding.problem is False
+    assert "失败 10" in finding.text
+    assert "顺延 4,248" in finding.text
+
+
+def test_旧记录没有探测计数时不据此下结论(tmp_path: Path) -> None:
+    """升级前的对账记录没有 probe_probed；拿它当「探测 0 个、失败 0 个」会误判成健康。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+
+    finding = next(item for item in diagnose(store, NOW) if "探测复核" in item.text)
+
+    assert finding.problem is False
+    assert "尚无带计数" in finding.text

@@ -351,6 +351,43 @@ def test_详情返回新id判为renamed() -> None:
     [(404, "deleted"), (401, "restricted"), (403, "restricted"), (500, "unknown")],
 )
 def test_探测状态码翻译成业务结论(status: int, verdict: str) -> None:
-    api = HfDatasetApi(transport=DetailTransport(status))
+    # `sleeper` 显式换成 no-op：500 是可重试状态，真等退避会让这条用例跑半分钟。
+    api = HfDatasetApi(transport=DetailTransport(status), sleeper=lambda _: None, max_retries=2)
 
     assert api.probe("acme/b").verdict == verdict
+
+
+class FlakyProbeTransport:
+    """先按预设状态码连败几次，之后才给正常详情。"""
+
+    def __init__(self, statuses: list[int], body: Any) -> None:
+        self._statuses = list(statuses)
+        self._body = body
+        self.calls = 0
+
+    def get(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> HfResponse:
+        self.calls += 1
+        status = self._statuses.pop(0) if self._statuses else 200
+        body = json.dumps(self._body).encode() if status == 200 else b"{}"
+        return HfResponse(status=status, headers={}, body=body)
+
+
+def test_探测遇限流会重试而不是直接判无结论() -> None:
+    """限流下的「先别动」会退化成「永远不动」：状态停在旧值，没有任何机制回头查。"""
+    transport = FlakyProbeTransport([429, 429], {"id": "acme/b"})
+    api = HfDatasetApi(transport=transport, sleeper=lambda _: None)
+
+    probe = api.probe("acme/b")
+
+    assert probe.verdict == "present"
+    assert transport.calls == 3
+
+
+def test_探测重试耗尽才算无结论() -> None:
+    transport = FlakyProbeTransport([429] * 20, None)
+    api = HfDatasetApi(transport=transport, sleeper=lambda _: None, max_retries=2)
+
+    probe = api.probe("acme/b")
+
+    assert probe.verdict == "unknown"
+    assert transport.calls == 3  # 首次 + 两次重试，之后不再徒劳地打接口

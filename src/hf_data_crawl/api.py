@@ -323,15 +323,17 @@ class HfDatasetApi:
         成本约 1.8 KB/次，只在每轮判定下架后对那几十上百条做，不用于批量。
         """
         try:
-            response = self._transport.get(
+            response = self._fetch(
                 f"{self._base_url}/{dataset_id}",
                 {"blobs": "false"},
                 {"Accept": "application/json"},
             )
         except TransportError:
-            # 探测失败不等于数据集消失，留待下轮再判。
+            # 连不上不等于库没了。落成 unknown，调用方留待下轮，绝不写库。
             return Probe(status=0)
-
+        if response is None:
+            # 重试耗尽是「不知道」，不是「没了」。
+            return Probe(status=0)
         if response.status != 200:
             return Probe(status=response.status)
         try:
@@ -345,28 +347,41 @@ class HfDatasetApi:
         return Probe(status=200, resolved_id=renamed_to or None)
 
     def _request(self, params: dict[str, Any]) -> HfResponse:
+        response = self._fetch(self._base_url, dict(params), {"Accept": "application/json"})
+        if response is None:
+            raise RuntimeError("HF 接口持续限流或不可用，重试已耗尽")
+        if response.status == 200:
+            return response
+        raise RuntimeError(f"HF 接口返回 {response.status}: {response.body[:200]!r}")
+
+    def _fetch(
+        self, url: str, params: dict[str, Any], headers: dict[str, str]
+    ) -> HfResponse | None:
+        """单次 GET，带退避重试；可重试状态耗尽仍不成功时返回 None。
+
+        扫描与探测共用这一条，是刻意的：`probe` 原先直接调 transport，429 会原样
+        落成 `unknown`，而 `unknown` 在判定表里是「先别动」——配额紧的时候，一个
+        已经在 HF 上删掉的库会永远停在 `active`，既不报错也不再被复核。探测比扫描
+        更经不起这种沉默：扫描漏一页下轮还能补，状态判错了却没有任何机制回头查。
+        """
         attempt = 0
         while True:
             try:
-                response = self._transport.get(
-                    self._base_url,
-                    dict(params),
-                    {"Accept": "application/json"},
-                )
+                response = self._transport.get(url, params, headers)
             except TransportError:
+                # 连接中断是「没收到答复」，重试耗尽后原样抛出，让调用方知道不是限流。
                 if attempt >= self._max_retries:
                     raise
                 self._sleeper(self._backoff(attempt))
                 attempt += 1
                 continue
 
-            if response.status == 200:
+            if response.status not in RETRYABLE_STATUS:
                 return response
-            if response.status in RETRYABLE_STATUS and attempt < self._max_retries:
-                self._sleeper(self._retry_delay(response, attempt))
-                attempt += 1
-                continue
-            raise RuntimeError(f"HF 接口返回 {response.status}: {response.body[:200]!r}")
+            if attempt >= self._max_retries:
+                return None
+            self._sleeper(self._retry_delay(response, attempt))
+            attempt += 1
 
     def _backoff(self, attempt: int) -> float:
         return min(self._retry_base_delay * (2**attempt), 60.0)

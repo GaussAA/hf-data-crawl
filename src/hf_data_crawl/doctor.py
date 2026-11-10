@@ -48,6 +48,9 @@ TMP_STALE_AFTER = timedelta(hours=1)
 #: 跨天全量快照仍会累积；超过阈值说明归档没跟上或 backup 没清。
 RAW_MAX_BYTES = 5 * 1024**3
 RAW_MAX_FILES = 20_000
+#: 单轮对账的探测失败占比超过此值即告警。取 20%：偶发限流不该天天喊，
+#: 成片失败必须说话——那些库的状态会静默停在旧值。
+PROBE_FAIL_SHARE = 0.2
 #: 回看多久内的失败运行。
 FAILURE_WINDOW = timedelta(days=7)
 #: 底库行龄的告警线（按 P95）。全量对账已改为每日，理想值 0-1 天；
@@ -543,6 +546,40 @@ def _backup_backlog(store: DatasetStore, now: datetime) -> Finding:
     )
 
 
+def _probe_quality(runs: list[dict]) -> Finding:
+    """最近一轮对账的探测质量。
+
+    探测失败落成 `unknown`，处置是「先别动」——不报错，只是状态原地不动。配额紧
+    的时候，一批早已下架的库会长期挂着 `active`，而界面上看不出任何异常。这条把
+    它变成可数的结论：探了多少、失败多少、还有多少顺延。
+    """
+    latest: dict | None = None
+    for item in runs:
+        if item.get("command") != "reconcile":
+            continue
+        payload = item.get("payload")
+        if isinstance(payload, dict) and "probe_probed" in payload:
+            latest = payload
+    if latest is None:
+        return Finding(False, "探测复核：尚无带计数的对账记录（升级后首轮才有）")
+
+    probed = int(latest.get("probe_probed") or 0)
+    failed = int(latest.get("probe_failed") or 0)
+    deferred = int(latest.get("probe_deferred") or 0)
+    if probed == 0 and deferred == 0:
+        return Finding(False, "探测复核：本轮没有待复核的库")
+
+    tail = f"，顺延 {deferred:,} 个待下轮" if deferred else ""
+    share = failed / probed if probed else 0.0
+    if share > PROBE_FAIL_SHARE:
+        return Finding(
+            True,
+            f"探测复核：本轮探 {probed:,} 个、失败 {failed:,}（{share:.0%}）{tail}；"
+            "失败即「先别动」，这些库的状态会停在旧值——检查配额与重试退避",
+        )
+    return Finding(False, f"探测复核：本轮探 {probed:,} 个、失败 {failed:,}{tail}")
+
+
 def _stale_temp_files(store: DatasetStore, now: datetime) -> Finding:
     stale = [
         path
@@ -720,6 +757,7 @@ def diagnose(
         _archive_backlog(store, now.date()),
         _storage(store),
         _backup_backlog(store, now),
+        _probe_quality(runs),
         _recent_failures(runs, now),
         _stale_temp_files(store, now),
         _request_self_contained(requests_root),

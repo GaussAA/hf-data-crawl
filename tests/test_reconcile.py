@@ -33,6 +33,8 @@ class FakeCursorTransport:
         self.calls: list[dict[str, Any]] = []
         #: 详情探测的预设回应：id → 状态码 或 {"id": 新id}。缺省一律 404（真删了）。
         self.detail = detail or {}
+        #: 实际探过哪些 id，按调用顺序。
+        self.probed: list[str] = []
         base = "https://huggingface.co/api/datasets"
         self._links = [f"{base}?cursor=c{index + 2}" for index in range(len(pages) - 1)] + [None]
         self._map = {
@@ -47,6 +49,7 @@ class FakeCursorTransport:
         # 带 blobs 的是单库详情探测，与列表分页走不同分支。
         if "blobs" in params:
             dataset_id = url.split("/api/datasets/", 1)[-1]
+            self.probed.append(dataset_id)
             value = self.detail.get(dataset_id, 404)
             if isinstance(value, int):
                 return HfResponse(status=value, headers={}, body=b"{}")
@@ -98,8 +101,11 @@ def store(tmp_path: Path) -> DatasetStore:
     return instance
 
 
-def reconciler(transport: FakeCursorTransport, store: DatasetStore) -> Reconciler:
-    return Reconciler(api=HfDatasetApi(transport=transport), store=store)
+def reconciler(transport: FakeCursorTransport, store: DatasetStore, **kwargs: Any) -> Reconciler:
+    # `sleeper` 固定成 no-op：探测重试要验次数，不能让用例真的等退避。
+    return Reconciler(
+        api=HfDatasetApi(transport=transport, sleeper=lambda _: None), store=store, **kwargs
+    )
 
 
 def status_of(store: DatasetStore, dataset_id: str) -> str:
@@ -325,19 +331,6 @@ def test_差异清单的note列不再被schema丢弃(store: DatasetStore) -> Non
 # ---------------------------------------------------------------- 续跑一致性
 
 
-class ProbeRecordingTransport(FakeCursorTransport):
-    """记下哪些 id 被送去单库探测。"""
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self.probed: list[str] = []
-
-    def get(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> HfResponse:
-        if "blobs" in params:
-            self.probed.append(url.split("/api/datasets/", 1)[-1])
-        return super().get(url, params, headers)
-
-
 def _pages() -> list[list[dict[str, Any]]]:
     return [
         [record("a", "sha-a2"), record("c", "sha-c1")],
@@ -373,10 +366,10 @@ def test_分段跑的差异与单次跑完全一致(store: DatasetStore, tmp_pat
 def test_隔天续跑不把上半段送去探测(store: DatasetStore) -> None:
     """已见集合若按日期命名，隔天续跑时它是空的，上半段全被当成「没扫到」。"""
     pages = [[record("a", "sha-a1")], [record("c", "sha-c1")]]
-    first = ProbeRecordingTransport(pages)
+    first = FakeCursorTransport(pages)
     reconciler(first, store).run(DAY2, limit=100, max_pages=1)
 
-    second = ProbeRecordingTransport(pages)
+    second = FakeCursorTransport(pages)
     summary = reconciler(second, store).run(DAY3, limit=100)
 
     assert second.probed == ["acme/b"]
@@ -399,3 +392,66 @@ def test_旧会话被丢弃并在摘要中标明(store: DatasetStore) -> None:
 
     assert summary.discarded_stale_session is True
     assert summary.resumed is False
+
+
+# ---------------------------------------------------------------- 探测限额与轮转
+
+
+def seed_many(store: DatasetStore, count: int) -> list[str]:
+    """在 current 里铺 count 个库，作为「本轮没扫到」的候选。"""
+    names = [chr(ord("a") + index) for index in range(count)]
+    seed(store, DAY1, [record(name, f"sha-{name}1") for name in names])
+    return [f"acme/{name}" for name in names]
+
+
+def test_探测按限额分批_其余顺延(store: DatasetStore) -> None:
+    """全站扫描已花掉上千次请求，配额总共 1000/5 分钟；一次探完几千个必然大批限流。"""
+    ids = seed_many(store, 5)
+    transport = FakeCursorTransport([[]], detail={item: {"id": item} for item in ids})
+
+    summary = reconciler(transport, store, probe_limit=2).run(DAY2, limit=100)
+
+    assert summary.probe_probed == 2
+    assert summary.probe_deferred == 3
+    assert len(transport.probed) == 2
+
+
+def test_探测轮转_下一轮换一批而不是重复前几个(store: DatasetStore) -> None:
+    """按 id 排序取前 N 而不记游标，后 4248 个永远轮不到。"""
+    ids = seed_many(store, 5)
+    detail = {item: {"id": item} for item in ids}
+
+    first = FakeCursorTransport([[]], detail=detail)
+    reconciler(first, store, probe_limit=2).run(DAY2, limit=100)
+    second = FakeCursorTransport([[]], detail=detail)
+    reconciler(second, store, probe_limit=2).run(DAY2, limit=100)
+
+    assert len(first.probed) == 2
+    assert len(second.probed) == 2
+    assert set(first.probed).isdisjoint(second.probed)
+
+
+def test_探测失败要计数而不是被当成已判定(store: DatasetStore) -> None:
+    """429 落成 unknown，状态按住不动——但这件事必须留下数字，否则永远没人知道。"""
+    ids = seed_many(store, 3)
+    transport = FakeCursorTransport([[]], detail={item: 429 for item in ids})
+
+    summary = reconciler(transport, store, probe_limit=10).run(DAY2, limit=100)
+
+    assert summary.probe_probed == 3
+    assert summary.probe_failed == 3
+    assert summary.disappeared == 0
+    assert status_of(store, "acme/a") == "active"
+
+
+def test_探测统计进差异清单(store: DatasetStore) -> None:
+    ids = seed_many(store, 5)
+    transport = FakeCursorTransport([[]], detail={item: {"id": item} for item in ids})
+
+    summary = reconciler(transport, store, probe_limit=2).run(DAY2, limit=100)
+
+    rows = pl.read_csv(summary.report_path)
+    probe_rows = rows.filter(pl.col("kind") == "probe")
+    assert probe_rows.height == 1
+    assert "probed=2" in probe_rows["detail"][0]
+    assert "deferred=3" in probe_rows["detail"][0]

@@ -34,7 +34,7 @@ from .method import METHOD_DIR, METHOD_DOC, METHOD_INDEX, problems
 from .method import sync as sync_method
 from .metrics import lookup
 from .rebuild import RebuildSummary, divergent_since, rebuild_from_raw, replay_suffix
-from .reconcile import Reconciler, ReconcileSummary
+from .reconcile import PROBE_DAILY_LIMIT, Reconciler, ReconcileSummary
 from .report import Reporter
 from .requirement import (
     DELIVERIES_DIR,
@@ -253,6 +253,12 @@ def build_parser() -> argparse.ArgumentParser:
     reconcile.add_argument("--limit", type=int, default=MAX_LIMIT, help="每页条数，上限 1000")
     reconcile.add_argument(
         "--max-pages", type=int, default=None, help="本轮最多抓几页（未扫完不判下架）"
+    )
+    reconcile.add_argument(
+        "--probe-limit",
+        type=int,
+        default=PROBE_DAILY_LIMIT,
+        help=f"本轮最多探测多少个「没扫到」的库，其余顺延（默认 {PROBE_DAILY_LIMIT}）",
     )
 
     query = subparsers.add_parser("query", help="查询 Gold 视图或执行任意 SQL")
@@ -582,7 +588,11 @@ def _reconcile(
     args: argparse.Namespace, store: DatasetStore, transport: Transport | None
 ) -> Outcome:
     snapshot = _snapshot(args)
-    reconciler = Reconciler(api=HfDatasetApi(transport=_open_transport(transport)), store=store)
+    reconciler = Reconciler(
+        api=HfDatasetApi(transport=_open_transport(transport)),
+        store=store,
+        probe_limit=args.probe_limit,
+    )
     summary = reconciler.run(snapshot, limit=args.limit, max_pages=args.max_pages)
     _print_reconcile(summary)
     return Outcome(summary)
@@ -860,7 +870,27 @@ def _query(args: argparse.Namespace, store: DatasetStore) -> int:
         return 0
 
     print(frame)
+    _warn_frozen_rows(frame)
     return 0
+
+
+def _warn_frozen_rows(frame: pl.DataFrame) -> None:
+    """结果带 status 且有非在架行时，明说这些行的值已冻结。
+
+    不改数据、不过滤——用不用这些行是判断，该由人来做。但不说一声，那个「下载量
+    28 万」会被当成今天的读数，而它可能停在四天前；改名后的旧 id 更是永远不再更新。
+    """
+    from .status import INACTIVE
+
+    if "status" not in frame.columns:
+        return
+    frozen = frame.filter(pl.col("status").is_in([status.value for status in INACTIVE]))
+    if frozen.height == 0:
+        return
+    print(
+        f"注意：其中 {frozen.height} 行状态不是 active（改名 / 下架 / 转私有），"
+        "这些行的指标停在最后一次看到时的值，不是现势值。"
+    )
 
 
 def _write_docs(args: argparse.Namespace, store: DatasetStore) -> int:
@@ -998,6 +1028,10 @@ def _print_reconcile(summary: ReconcileSummary) -> None:
         f"sha 变更 {summary.sha_changed} · 恢复 {summary.reactivated}"
     )
     print(f"  差异清单 {summary.report_path} · 停止原因 {summary.stopped_reason}")
+    if summary.probe_probed or summary.probe_deferred:
+        tail = f" · 顺延 {summary.probe_deferred}（下一轮继续）" if summary.probe_deferred else ""
+        failed = f"，失败 {summary.probe_failed}" if summary.probe_failed else ""
+        print(f"  探测复核 {summary.probe_probed} 个{failed}{tail}")
 
 
 def _compact(args: argparse.Namespace, store: DatasetStore) -> Outcome:

@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -19,7 +20,7 @@ from typing import Any
 import polars as pl
 
 from .api import MAX_LIMIT, HfDatasetApi, Page
-from .atomic import write_csv
+from .atomic import write_csv, write_text
 from .collect import LEAN_EXPAND
 from .derive import derive_day
 from .scan import ScanRun, ScanSpec
@@ -39,6 +40,22 @@ REPORT_SCHEMA: dict[str, PolarsType] = {
     "detail": pl.Utf8,
     "note": pl.Utf8,
 }
+
+
+#: 每轮最多探测多少个「没扫到」的库。
+#:
+#: 全站扫描已用掉约 1123 次请求，而配额是 1000 请求 / 5 分钟。missing 常年数千，
+#: 若一次全探，剩余配额必然不够，大批库落到 `unknown`（先别动）——状态就此冻住。
+#: 故按日限额、轮转推进：宁可三天轮完一轮，也不要每天探一批、天天探不完。
+PROBE_DAILY_LIMIT = 2000
+
+#: 轮转游标：记「下一轮从排序后的第几个开始」，让每天都探到不同的库。
+PROBE_CURSOR_NAME = "probe-cursor.json"
+
+
+def probe_cursor_path(store: DatasetStore) -> Path:
+    """放在 `meta/` 而非 `state/`：它不属于任何登记表，重建清不到它。"""
+    return store.root / "meta" / PROBE_CURSOR_NAME
 
 
 @dataclass(frozen=True)
@@ -67,6 +84,12 @@ class ReconcileSummary:
     discarded_stale_session: bool = False
     #: 无法检测变更的库数量（sha 为 null）
     undetectable_change: int = 0
+    #: 本轮实际探测的库数（`missing` 里取出的那批）。
+    probe_probed: int = 0
+    #: 探测没拿到结论的库数（重试耗尽、仍被限流）。这些不落状态，留待下轮。
+    probe_failed: int = 0
+    #: 本轮未探测、顺延到下一轮的库数。积压量长期不降，说明限额或配额要调。
+    probe_deferred: int = 0
 
 
 class Reconciler:
@@ -80,12 +103,14 @@ class Reconciler:
         report_dir: Path | None = None,
         checkpoint_filename: str = RECONCILE_CHECKPOINT,
         probe_workers: int = 8,
+        probe_limit: int = PROBE_DAILY_LIMIT,
     ) -> None:
         self._api = api
         self._store = store
         self._report_dir = report_dir or (store.root / "reports")
         self._checkpoint_filename = checkpoint_filename
         self._probe_workers = max(1, probe_workers)
+        self._probe_limit = max(1, probe_limit)
 
     def run(
         self,
@@ -131,8 +156,9 @@ class Reconciler:
         restricted: list[str] = []
         renamed: list[str] = []
         probe_reactivated: list[str] = []
+        probed = failed = deferred = 0
         if stopped_reason == "end":
-            verdicts = self._classify_missing(diff.missing)
+            verdicts, probed, failed, deferred = self._classify_missing(diff.missing)
             disappeared = [i for i, s in verdicts.items() if s is Status.DISAPPEARED]
             restricted = [i for i, s in verdicts.items() if s is Status.RESTRICTED]
             renamed = [i for i, s in verdicts.items() if s is Status.RENAMED]
@@ -156,6 +182,7 @@ class Reconciler:
             renamed=renamed,
             probe_reactivated=probe_reactivated,
             undetectable=undetectable,
+            probe=(probed, failed, deferred),
         )
 
         return ReconcileSummary(
@@ -174,27 +201,69 @@ class Reconciler:
             renamed=len(renamed),
             discarded_stale_session=session.discarded,
             undetectable_change=len(undetectable),
+            probe_probed=probed,
+            probe_failed=failed,
+            probe_deferred=deferred,
         )
 
-    def _classify_missing(self, missing: list[str]) -> dict[str, Status]:
-        """复核「没扫到」的真实原因，返回 id → 状态。
+    def _classify_missing(self, missing: list[str]) -> tuple[dict[str, Status], int, int, int]:
+        """复核「没扫到」的真实原因，返回 (判定, 已探, 失败, 顺延)。
 
         列表扫描看不见一个库，可能是删除、转私有或改名。直接问一次详情接口即可
         分辨：404 是删除，401 是转私有，307 跟随到 200 则是改名。
-        463 条并发探测约 20 秒，比把三种情况混成一个数字便宜得多。
 
-        探测失败（网络异常）不标记，留待下轮——把网络抖动写成「下架」是不可逆的脏数据。
+        每轮只探 `probe_limit` 个：全站扫描已花掉上千次请求，总量才 1000 请求 /
+        5 分钟，一次探完几千个必然大批限流。顺延不是偷懒——探测失败本就不落状态，
+        本来要留待下轮；明确排队至少让「下一轮探谁」可预期，也让积压量被体检看见。
+
+        按 id 稳定排序后从游标处取，探完把游标推到末尾。轮转保证每天都换一批，
+        而不是日复一日重复探前两千个。
         """
         if not missing:
-            return {}
+            return {}, 0, 0, 0
 
+        batch, next_offset = self._probe_batch(missing)
         verdicts: dict[str, Status] = {}
+        failed = 0
         with ThreadPoolExecutor(max_workers=self._probe_workers) as pool:
-            for dataset_id, probe in zip(missing, pool.map(self._api.probe, missing), strict=True):
+            for dataset_id, probe in zip(batch, pool.map(self._api.probe, batch), strict=True):
                 status = STATUS_BY_VERDICT.get(probe.verdict)
-                if status is not None:
-                    verdicts[dataset_id] = status
-        return verdicts
+                if status is None:
+                    failed += 1
+                    continue
+                verdicts[dataset_id] = status
+        self._write_probe_cursor(next_offset)
+        return verdicts, len(batch), failed, len(missing) - len(batch)
+
+    def _probe_batch(self, missing: list[str]) -> tuple[list[str], int]:
+        """按轮转游标取本轮要探的一批，返回 (这批 id, 下一轮的游标)。"""
+        ordered = sorted(missing)
+        total = len(ordered)
+        if self._probe_limit >= total:
+            return ordered, 0
+        start = self._read_probe_cursor() % total
+        return (
+            (ordered + ordered)[start : start + self._probe_limit],
+            (start + self._probe_limit) % total,
+        )
+
+    def _read_probe_cursor(self) -> int:
+        """读轮转游标；档案缺失或损坏一律当 0，不因此中断对账。"""
+        try:
+            body = json.loads(probe_cursor_path(self._store).read_text(encoding="utf-8"))
+            value = body.get("offset") if isinstance(body, dict) else None
+        except (OSError, ValueError):
+            return 0
+        return value if isinstance(value, int) and value >= 0 else 0
+
+    def _write_probe_cursor(self, offset: int) -> None:
+        """写轮转游标。写不进去最多让下轮从同一处开始，不该让整轮判定作废。"""
+        path = probe_cursor_path(self._store)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            write_text(path, json.dumps({"offset": offset}, ensure_ascii=False) + "\n")
+        except OSError:
+            return
 
     def _write_report(
         self,
@@ -209,10 +278,22 @@ class Reconciler:
         renamed: list[str] | None = None,
         probe_reactivated: list[str] | None = None,
         undetectable: list[str] | None = None,
+        probe: tuple[int, int, int] | None = None,
     ) -> Path:
         rows: list[dict[str, Any]] = [
             {"kind": "run", "id": "", "detail": f"stopped_reason={stopped_reason}", "note": ""}
         ]
+        if probe is not None:
+            probed, failed, deferred = probe
+            if probed or deferred:
+                rows.append(
+                    {
+                        "kind": "probe",
+                        "id": "",
+                        "detail": f"probed={probed} failed={failed} deferred={deferred}",
+                        "note": "探测限额；顺延的库下一轮继续" if deferred else "",
+                    }
+                )
         rows += [{"kind": "new", "id": item, "detail": "", "note": ""} for item in new_ids]
         rows += [
             {"kind": "disappeared", "id": item, "detail": "404", "note": ""} for item in disappeared
