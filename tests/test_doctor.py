@@ -754,3 +754,45 @@ def test_旧记录没有探测计数时不据此下结论(tmp_path: Path) -> Non
 
     assert finding.problem is False
     assert "尚无带计数" in finding.text
+
+
+def drop_raw_day(store: DatasetStore, day: date) -> None:
+    """删掉某天的 Raw 分区，制造断日。"""
+    folder = store.raw_dir / f"dt={day.isoformat()}"
+    (folder / "part-1.json.gz").unlink()
+    folder.rmdir()
+
+
+def test_已知断日只印不判_不再天天红(tmp_path: Path) -> None:
+    """不补的缺口若天天判红，ALERT.txt 会长期挂同一条，告警就废了。"""
+    from hf_data_crawl.doctor import KNOWN_RAW_GAPS
+
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    known = next(day for day in KNOWN_RAW_GAPS if day < NOW.date())
+    drop_raw_day(store, known)
+
+    finding = next(item for item in diagnose(store, NOW) if "断日" in item.text)
+
+    assert finding.problem is False
+    assert "已知缺口" in finding.text
+    assert known.isoformat() in finding.text
+
+
+def test_已知缺口之外的新断日照常判红(tmp_path: Path) -> None:
+    """白名单只赦免登记过的日子，新掉的必须照报——否则它就是一张免罪符。"""
+    from hf_data_crawl.doctor import KNOWN_RAW_GAPS
+
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    known = next(day for day in KNOWN_RAW_GAPS if day < NOW.date())
+    fresh = known - timedelta(days=1)
+    drop_raw_day(store, known)
+    drop_raw_day(store, fresh)
+
+    texts = [item.text for item in diagnose(store, NOW) if item.problem]
+
+    hits = [text for text in texts if "断日" in text]
+    assert len(hits) == 1
+    assert fresh.isoformat() in hits[0]
+    assert known.isoformat() not in hits[0]

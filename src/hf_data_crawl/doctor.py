@@ -155,6 +155,16 @@ def _catalog_staleness(store: DatasetStore, today: date) -> Finding:
     return Finding(False, text)
 
 
+#: 已确认且决定不补的 Raw 断日 → 理由。
+#:
+#: 写进这张表等于「承认这个洞，别再天天喊」：体检仍会把它印出来，但不判红、不进
+#: ALERT.txt。加日期前先想清楚——这张表一旦变成「所有告警的坟墓」，告警就废了。
+#: 判据是「补不回来」或「补的成本与失真不可接受」，不是「不想修」。
+KNOWN_RAW_GAPS: dict[date, str] = {
+    date(2026, 11, 6): "当天未开机、未采集；补造观测点等于伪造数据，故不补"
+}
+
+
 def _raw_gaps(store: DatasetStore, today: date) -> Finding:
     # 冷区分区已被 compact 移出 data/raw，但那天确实采过：
     # 部分压缩后残留的早分区会把窗口拉长，已压缩的日子不登记就被误判成断日。
@@ -167,10 +177,17 @@ def _raw_gaps(store: DatasetStore, today: date) -> Finding:
         for offset in range((today - start).days)
         if start + timedelta(days=offset) not in dates
     ]
-    if missing:
-        shown = "、".join(day.isoformat() for day in missing[:5])
-        more = f" 等 {len(missing)} 天" if len(missing) > 5 else ""
+    known = [day for day in missing if day in KNOWN_RAW_GAPS]
+    unknown = [day for day in missing if day not in KNOWN_RAW_GAPS]
+    if unknown:
+        shown = "、".join(day.isoformat() for day in unknown[:5])
+        more = f" 等 {len(unknown)} 天" if len(unknown) > 5 else ""
         return Finding(True, f"Raw 断日：{shown}{more}没有采集（那天的观测点已丢失）")
+    if known:
+        # 已知缺口只印不判：天天红只会训练人忽略告警，而这条已经补不回来了。
+        shown = "、".join(day.isoformat() for day in known)
+        reason = KNOWN_RAW_GAPS[known[0]]
+        return Finding(False, f"Raw 断日：{shown} 为已知缺口，{reason}")
     return Finding(False, f"Raw：近 {GAP_WINDOW_DAYS} 天没有断日")
 
 
