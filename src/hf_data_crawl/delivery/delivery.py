@@ -54,6 +54,9 @@ from typing import Any
 import duckdb
 import polars as pl
 
+from ..platform.atomic import replace
+from ..platform.store import DatasetStore
+from ..query.gold import GoldCatalog, GoldNotReady
 from . import backfill, method
 from .fields import (
     COLUMN_NOTES,
@@ -67,9 +70,6 @@ from .fields import (
     display_expr,
 )
 from .metrics import lookup
-from .platform.atomic import replace
-from .platform.store import DatasetStore
-from .query.gold import GoldCatalog, GoldNotReady
 from .requirement import (
     DELIVERIES_DIR,
     MANIFEST_NAME,

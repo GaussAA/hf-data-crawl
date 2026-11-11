@@ -14,8 +14,8 @@ import openpyxl
 import pytest
 import yaml
 
-from hf_data_crawl.fields import DEFAULT_COLUMNS, projection_sql
-from hf_data_crawl.requirement import (
+from hf_data_crawl.delivery.fields import DEFAULT_COLUMNS, projection_sql
+from hf_data_crawl.delivery.requirement import (
     Cadence,
     Kind,
     Mode,

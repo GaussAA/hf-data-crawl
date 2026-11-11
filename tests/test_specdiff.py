@@ -12,8 +12,8 @@ from typing import Any
 import openpyxl
 import yaml
 
-from hf_data_crawl import specdiff
-from hf_data_crawl.requirement import Spec, load
+from hf_data_crawl.delivery import specdiff
+from hf_data_crawl.delivery.requirement import Spec, load
 
 
 def make(tmp_path: Path, name: str, **overrides: Any) -> Spec:

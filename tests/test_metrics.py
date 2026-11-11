@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from hf_data_crawl.metrics import (
+from hf_data_crawl.delivery.metrics import (
     METRICS,
     Metric,
     MetricKind,

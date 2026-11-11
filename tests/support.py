@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hf_data_crawl import method
+from hf_data_crawl.delivery import method
 
 
 def write_method(

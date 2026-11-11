@@ -21,13 +21,13 @@ from typing import Any
 
 import polars as pl
 
-from .fielddocs import describe
-from .fields import (
+from .delivery.fields import (
     CONTRACT_VERSION,
     DEFAULT_COLUMNS,
     EXTENDED_FIELDS,
     EXTENDED_NOTE,
 )
+from .fielddocs import describe
 from .pipeline.raw import BRONZE_LABELS, CARD_LABEL
 from .platform.tables import TABLES, Origin, TableSpec
 

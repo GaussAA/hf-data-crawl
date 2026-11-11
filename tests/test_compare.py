@@ -14,7 +14,7 @@ import openpyxl
 import polars as pl
 import pytest
 
-from hf_data_crawl.compare import CompareError, compare_deliveries
+from hf_data_crawl.delivery.compare import CompareError, compare_deliveries
 
 
 def make_delivery(root: Path, name: str, kind: str, files: list[str], **extra: Any) -> Path:

@@ -17,9 +17,9 @@ import pytest
 import yaml
 from support import write_method
 
-from hf_data_crawl import method
 from hf_data_crawl.cli import deliveries_of, main
-from hf_data_crawl.delivery import (
+from hf_data_crawl.delivery import method
+from hf_data_crawl.delivery.delivery import (
     EXECUTORS,
     DeliveryBlocked,
     deliver,
@@ -27,11 +27,8 @@ from hf_data_crawl.delivery import (
     preview,
     run_due,
 )
-from hf_data_crawl.fields import CONTRACT_VERSION, DEFAULT_COLUMNS
-from hf_data_crawl.pipeline import raw
-from hf_data_crawl.pipeline.derive import derive_day
-from hf_data_crawl.platform.store import DatasetStore
-from hf_data_crawl.requirement import (
+from hf_data_crawl.delivery.fields import CONTRACT_VERSION, DEFAULT_COLUMNS
+from hf_data_crawl.delivery.requirement import (
     DELIVERIES_DIR,
     MANIFEST_NAME,
     SPEC_NAME,
@@ -39,6 +36,9 @@ from hf_data_crawl.requirement import (
     directory_name,
     spec_digest,
 )
+from hf_data_crawl.pipeline import raw
+from hf_data_crawl.pipeline.derive import derive_day
+from hf_data_crawl.platform.store import DatasetStore
 
 DAY = date(2026, 11, 1)
 NOW = datetime(2026, 11, 8, 15, 20, 0, tzinfo=UTC)
@@ -246,7 +246,7 @@ def test_上次档案读不出来时如实说明而非假装正常(store: Datase
 
 def test_CSV列表列按页面形式展平() -> None:
     """CSV 给人读，语言/任务/规模换成人话；parquet 仍留机器码。"""
-    from hf_data_crawl.delivery import _flat_for_csv
+    from hf_data_crawl.delivery.delivery import _flat_for_csv
 
     frame = pl.DataFrame(
         {
@@ -267,7 +267,7 @@ def test_CSV列表列按页面形式展平() -> None:
 
 def test_CSV展平区分空列表与未声明() -> None:
     """空列表是「声明了但没有值」，未声明是 NULL；CSV 里分别落成空串与空。"""
-    from hf_data_crawl.delivery import _flat_for_csv
+    from hf_data_crawl.delivery.delivery import _flat_for_csv
 
     frame = pl.DataFrame({"tags": [["a", "b"], [], None]})
 
@@ -377,7 +377,7 @@ def seed_delivery(root: Path, *, delivered_at: str, rows: int = 2, version: int 
 
 def spec_of(root: Path, **overrides: Any) -> Any:
     make_request(root, **overrides)
-    from hf_data_crawl.requirement import load
+    from hf_data_crawl.delivery.requirement import load
 
     return load(root / "REQ-0001" / SPEC_NAME)
 

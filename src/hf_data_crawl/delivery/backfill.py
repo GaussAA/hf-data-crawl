@@ -72,9 +72,9 @@ from typing import Any, Literal
 import openpyxl
 from openpyxl.styles import Alignment, Font
 
-from .platform.atomic import replace
-from .platform.store import DatasetStore
-from .query.gold import GoldCatalog
+from ..platform.atomic import replace
+from ..platform.store import DatasetStore
+from ..query.gold import GoldCatalog
 from .source import SourceStamp, stamp
 
 #: HF 的标签是英文枚举，回填进中文表要归一；词表外的新枚举原样保留，不硬猜。

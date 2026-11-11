@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from hf_data_crawl.fields import (
+from hf_data_crawl.delivery.fields import (
     COLUMN_NOTES,
     CONTRACT_VERSION,
     DEFAULT_COLUMNS,

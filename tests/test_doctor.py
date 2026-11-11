@@ -83,7 +83,7 @@ def put_ids(store: DatasetStore, name: str, day: date, ids: list[str]) -> None:
 
 def put_export(store: DatasetStore, ids: list[str]) -> None:
     """造一份符合默认交付契约的宽表导出；体检比对 id 差集与列集。"""
-    from hf_data_crawl.fields import DEFAULT_COLUMNS
+    from hf_data_crawl.delivery.fields import DEFAULT_COLUMNS
 
     target = store.root / "exports" / "datasets.parquet"
     target.parent.mkdir(parents=True, exist_ok=True)

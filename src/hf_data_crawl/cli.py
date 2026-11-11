@@ -16,7 +16,6 @@ from pathlib import Path
 
 import polars as pl
 
-from . import compare, specdiff
 from .acquire.collect import Collector, CollectSummary
 from .acquire.enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
 from .acquire.files import FileFetcher, FileSummary, HfFilesApi
@@ -30,27 +29,13 @@ from .acquire.sizes import (
     read_staged,
     tail,
 )
-from .backfill import FillError, header_change, header_of
-from .delivery import DeliveryBlocked, DeliveryResult, Preview, deliver, preview, run_due
-from .doctor import diagnose, sync_alert
-from .health import record as record_health
-from .hf.api import MAX_LIMIT, HfDatasetApi, Transport
-from .hf.transport import HttpxTransport
-from .method import METHOD_DIR, METHOD_DOC, METHOD_INDEX, problems
-from .method import sync as sync_method
-from .metrics import lookup
-from .pipeline import state
-from .pipeline.deriving import check_and_recover
-from .pipeline.lineage import restamp
-from .pipeline.rebuild import RebuildSummary, divergent_since, rebuild_from_raw, replay_suffix
-from .platform.env import load_env_file
-from .platform.lock import LockBusy, exclusive
-from .platform.retention import BACKUP_PRUNE_AFTER_DAYS, REPLAY_WINDOW_DAYS
-from .platform.runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs, write_run
-from .platform.store import DatasetStore
-from .query.gold import BOARDS, GoldCatalog, GoldNotReady, UnsafeQuery
-from .query.report import Reporter
-from .requirement import (
+from .delivery import compare, specdiff
+from .delivery.backfill import FillError, header_change, header_of
+from .delivery.delivery import DeliveryBlocked, DeliveryResult, Preview, deliver, preview, run_due
+from .delivery.method import METHOD_DIR, METHOD_DOC, METHOD_INDEX, problems
+from .delivery.method import sync as sync_method
+from .delivery.metrics import lookup
+from .delivery.requirement import (
     DELIVERIES_DIR,
     HISTORY_DIR,
     INPUT_DIR,
@@ -69,7 +54,22 @@ from .requirement import (
     spec_digest,
     version_conflict,
 )
-from .requirement import load as load_spec
+from .delivery.requirement import load as load_spec
+from .doctor import diagnose, sync_alert
+from .health import record as record_health
+from .hf.api import MAX_LIMIT, HfDatasetApi, Transport
+from .hf.transport import HttpxTransport
+from .pipeline import state
+from .pipeline.deriving import check_and_recover
+from .pipeline.lineage import restamp
+from .pipeline.rebuild import RebuildSummary, divergent_since, rebuild_from_raw, replay_suffix
+from .platform.env import load_env_file
+from .platform.lock import LockBusy, exclusive
+from .platform.retention import BACKUP_PRUNE_AFTER_DAYS, REPLAY_WINDOW_DAYS
+from .platform.runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs, write_run
+from .platform.store import DatasetStore
+from .query.gold import BOARDS, GoldCatalog, GoldNotReady, UnsafeQuery
+from .query.report import Reporter
 
 #: 会改写数据目录的命令，执行期间持有独占锁。query 只读且单次查询很短，
 #: 不在此列；report/docs 不改数据，但要同时读多张表，与写命令并发会读到
@@ -956,7 +956,7 @@ def _doctor(store: DatasetStore, *, snapshot: bool, requests_root: Path | None =
 
 def _export_wide(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     """导出宽表。失败由 `_execute` 统一记进 runs/，不留半截文件。"""
-    from .wide import export_wide
+    from .delivery.wide import export_wide
 
     target = Path(args.out) if args.out else None
     summary = export_wide(store, target)

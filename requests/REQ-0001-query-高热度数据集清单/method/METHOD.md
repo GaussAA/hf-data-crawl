@@ -43,7 +43,7 @@
 - 底库：`data/exports/datasets.parquet`；本次交付基于哪一版，见
   `deliveries/20261108T152943/manifest.json` 的 `source.current_md5`
 - 代码：`hf-data-crawl` 版本与提交号，见交付档案 `method.env`
-- 词表：`src/hf_data_crawl/metrics.py`（词条 → 字段 → 定义），词条定义随包版本变动
+- 词表：`src/hf_data_crawl/delivery/metrics.py`（词条 → 字段 → 定义），词条定义随包版本变动
 
 ## 已知边界
 

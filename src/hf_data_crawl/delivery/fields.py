@@ -82,7 +82,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from .query.gold import wide_column_names
+from ..query.gold import wide_column_names
 
 #: 契约版本。增删字段、改列序、改列类型都要加一；只改说明文字不必。
 #:

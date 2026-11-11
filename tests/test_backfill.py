@@ -15,7 +15,7 @@ import openpyxl
 import polars as pl
 import pytest
 
-from hf_data_crawl.backfill import (
+from hf_data_crawl.delivery.backfill import (
     FillError,
     FillSpec,
     header_change,
@@ -25,11 +25,11 @@ from hf_data_crawl.backfill import (
     render,
     run,
 )
-from hf_data_crawl.delivery import SourceStamp
+from hf_data_crawl.delivery.delivery import SourceStamp
+from hf_data_crawl.delivery.requirement import SpecError
+from hf_data_crawl.delivery.requirement import load as load_request
 from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.query.gold import GoldCatalog
-from hf_data_crawl.requirement import SpecError
-from hf_data_crawl.requirement import load as load_request
 
 HEADERS = ["URL", "数据集名称", "下载量", "数据模态", "论文URL", "训练阶段", "备注"]
 
