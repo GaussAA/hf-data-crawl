@@ -26,8 +26,8 @@ from hf_data_crawl.backfill import (
     run,
 )
 from hf_data_crawl.delivery import SourceStamp
-from hf_data_crawl.gold import GoldCatalog
 from hf_data_crawl.platform.store import DatasetStore
+from hf_data_crawl.query.gold import GoldCatalog
 from hf_data_crawl.requirement import SpecError
 from hf_data_crawl.requirement import load as load_request
 

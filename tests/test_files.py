@@ -27,13 +27,13 @@ from hf_data_crawl.acquire.files import (
     next_cursor,
 )
 from hf_data_crawl.cli import WRITE_COMMANDS, main
-from hf_data_crawl.gold import GoldCatalog, wide_column_names
 from hf_data_crawl.hf.api import HfResponse, TransportError
 from hf_data_crawl.pipeline import raw, state
 from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.runs import read_runs
 from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.platform.tables import FILES_SCHEMA, Origin, table
+from hf_data_crawl.query.gold import GoldCatalog, wide_column_names
 
 DAY = date(2026, 11, 7)
 

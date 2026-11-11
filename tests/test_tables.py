@@ -13,11 +13,11 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from hf_data_crawl import gold
 from hf_data_crawl.pipeline import bronze, raw
 from hf_data_crawl.pipeline.rebuild import _clear, clear_derived
 from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.platform.tables import TABLES, Origin, TableSpec, table
+from hf_data_crawl.query import gold
 
 # ---------------------------------------------------------------- 登记完整性
 

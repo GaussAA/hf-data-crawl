@@ -9,11 +9,11 @@ from typing import Any
 
 import pytest
 
-from hf_data_crawl.gold import GoldCatalog
 from hf_data_crawl.pipeline import card, raw
 from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.store import DatasetStore
-from hf_data_crawl.report import Reporter, _num
+from hf_data_crawl.query.gold import GoldCatalog
+from hf_data_crawl.query.report import Reporter, _num
 
 DAY1 = date(2026, 11, 3)
 DAY2 = date(2026, 11, 4)

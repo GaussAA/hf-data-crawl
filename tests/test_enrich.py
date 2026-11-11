@@ -138,7 +138,7 @@ def test_按下载量取头部并请求cardData(store: DatasetStore) -> None:
 
 
 def test_未补齐时datasets视图无卡片列值但可用(store: DatasetStore) -> None:
-    from hf_data_crawl.gold import GoldCatalog
+    from hf_data_crawl.query.gold import GoldCatalog
 
     raw.write(store, snapshot_date=DAY, page_index=1, records=[record(1, with_card=False)], meta={})
     derive_day(store, DAY)
@@ -151,7 +151,7 @@ def test_未补齐时datasets视图无卡片列值但可用(store: DatasetStore)
 
 
 def test_补齐后datasets视图可直接查到卡片字段(store: DatasetStore) -> None:
-    from hf_data_crawl.gold import GoldCatalog
+    from hf_data_crawl.query.gold import GoldCatalog
 
     raw.write(store, snapshot_date=DAY, page_index=1, records=[record(1, with_card=False)], meta={})
     derive_day(store, DAY)

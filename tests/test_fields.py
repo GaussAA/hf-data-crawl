@@ -26,7 +26,7 @@ from hf_data_crawl.fields import (
     projection_sql,
     quoted_columns,
 )
-from hf_data_crawl.gold import wide_column_names
+from hf_data_crawl.query.gold import wide_column_names
 
 
 def test_契约自检通过() -> None:

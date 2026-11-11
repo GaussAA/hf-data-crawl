@@ -20,8 +20,8 @@ from typing import Any
 
 import polars as pl
 
+from ..platform.atomic import write_text
 from .gold import DATASET_URL, GoldCatalog
-from .platform.atomic import write_text
 
 _ASSETS = Path(__file__).parent / "assets"
 

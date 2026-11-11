@@ -66,10 +66,10 @@ from .fields import (
     PAGE_FIELDS,
     display_expr,
 )
-from .gold import GoldCatalog, GoldNotReady
 from .metrics import lookup
 from .platform.atomic import replace
 from .platform.store import DatasetStore
+from .query.gold import GoldCatalog, GoldNotReady
 from .requirement import (
     DELIVERIES_DIR,
     MANIFEST_NAME,

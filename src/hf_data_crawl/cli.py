@@ -33,7 +33,6 @@ from .acquire.sizes import (
 from .backfill import FillError, header_change, header_of
 from .delivery import DeliveryBlocked, DeliveryResult, Preview, deliver, preview, run_due
 from .doctor import diagnose, sync_alert
-from .gold import BOARDS, GoldCatalog, GoldNotReady, UnsafeQuery
 from .health import record as record_health
 from .hf.api import MAX_LIMIT, HfDatasetApi, Transport
 from .hf.transport import HttpxTransport
@@ -49,7 +48,8 @@ from .platform.lock import LockBusy, exclusive
 from .platform.retention import BACKUP_PRUNE_AFTER_DAYS, REPLAY_WINDOW_DAYS
 from .platform.runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs, write_run
 from .platform.store import DatasetStore
-from .report import Reporter
+from .query.gold import BOARDS, GoldCatalog, GoldNotReady, UnsafeQuery
+from .query.report import Reporter
 from .requirement import (
     DELIVERIES_DIR,
     HISTORY_DIR,

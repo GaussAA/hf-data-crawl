@@ -12,10 +12,10 @@ from typing import Any
 
 import pytest
 
-from hf_data_crawl.gold import BOARDS, GoldCatalog
 from hf_data_crawl.pipeline import raw
 from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.store import DatasetStore
+from hf_data_crawl.query.gold import BOARDS, GoldCatalog
 
 DAY1 = date(2026, 11, 1)
 DAY4 = date(2026, 11, 4)
@@ -162,7 +162,7 @@ def test_并列时按唯一键稳定排序(tmp_path: Path) -> None:
 
 
 def test_无数据时给出可读错误(tmp_path: Path) -> None:
-    from hf_data_crawl.gold import GoldNotReady
+    from hf_data_crawl.query.gold import GoldNotReady
 
     with pytest.raises(GoldNotReady, match="collect"):
         GoldCatalog(DatasetStore(tmp_path / "empty"))
@@ -181,8 +181,8 @@ def test_宽视图不含原始JSON与分区列(catalog: GoldCatalog) -> None:
 
 def test_宽视图包含附表的全部有效列(catalog: GoldCatalog) -> None:
     """手抄列清单的代价是漂移：附表加了列，宽视图安静地少一列。"""
-    from hf_data_crawl.gold import _VIEW_RENAMES
     from hf_data_crawl.platform.tables import table
+    from hf_data_crawl.query.gold import _VIEW_RENAMES
 
     columns = set(catalog.run("SELECT * FROM datasets LIMIT 0").columns)
     for name, excluded in (
@@ -402,7 +402,7 @@ def test_copy_wide_rejects_target_outside_store(catalog: GoldCatalog, tmp_path: 
 
 def test_任意SQL只接受单条SELECT(catalog: GoldCatalog) -> None:
     """非 SELECT 与分号夹带都在进 DuckDB 之前被拒，报错要点明是安全限制。"""
-    from hf_data_crawl.gold import UnsafeQuery
+    from hf_data_crawl.query.gold import UnsafeQuery
 
     with pytest.raises(UnsafeQuery, match="安全限制"):
         catalog.run("CREATE TABLE stolen AS SELECT 1")
@@ -414,7 +414,7 @@ def test_不能读取数据目录以外的文件(catalog: GoldCatalog, tmp_path:
     outside = tmp_path / "secret.csv"
     outside.write_text("value\n42\n", encoding="utf-8")
 
-    from hf_data_crawl.gold import UnsafeQuery
+    from hf_data_crawl.query.gold import UnsafeQuery
 
     with pytest.raises(UnsafeQuery, match="安全限制"):
         catalog.run(f"SELECT * FROM read_csv('{outside.as_posix()}')")

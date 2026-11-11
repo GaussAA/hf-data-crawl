@@ -75,8 +75,8 @@ def test_拼错的列名会被当场指出来() -> None:
 
 
 def test_全部词条都能在完整视图列里找到() -> None:
-    from hf_data_crawl.gold import GoldCatalog
     from hf_data_crawl.platform.store import DatasetStore
+    from hf_data_crawl.query.gold import GoldCatalog
 
     store = DatasetStore(Path("data"))
     if not store.has("current"):

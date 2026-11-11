@@ -41,8 +41,8 @@ from pathlib import Path
 import polars as pl
 
 from .fields import DEFAULT_COLUMNS, FALLBACKS, contract_errors, projection_sql
-from .gold import GoldCatalog, wide_column_names
 from .platform.store import DatasetStore
+from .query.gold import GoldCatalog, wide_column_names
 
 #: 默认产物路径，相对 `store.root`。放在 `exports/` 而非登记表管理的目录，
 #: 是为了让「它不是一张表」在目录结构上一眼可见。
