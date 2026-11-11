@@ -128,7 +128,8 @@ class ScanRun:
                 rate_remaining = page.rate_remaining
 
             if spec.write:
-                self.store.write_raw(
+                raw.write(
+                    self.store,
                     snapshot_date=snapshot_date,
                     page_index=pages,
                     records=page.records,

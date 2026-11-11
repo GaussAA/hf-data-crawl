@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from hf_data_crawl import bronze
+from hf_data_crawl import bronze, raw
 from hf_data_crawl.store import DatasetStore
 
 DAY = date(2026, 11, 3)
@@ -36,7 +36,8 @@ def record(index: int, downloads: int) -> dict[str, Any]:
 def seed(store: DatasetStore) -> None:
     # 多页、跨页同 id：后写入的页必须胜出。
     for page in range(1, 6):
-        store.write_raw(
+        raw.write(
+            store,
             snapshot_date=DAY,
             page_index=page,
             records=[record(index, downloads=page * 10) for index in range(1, 4)],
@@ -55,11 +56,11 @@ def test_并行与串行结果逐行相同(store: DatasetStore, monkeypatch: pyt
 
     monkeypatch.setattr(bronze, "PARALLEL_MIN_FILES", 10_000)
     bronze.build(store, DAY)
-    serial = store.read_bronze(DAY).sort("id")
+    serial = store.read("bronze", DAY).sort("id")
 
     monkeypatch.setattr(bronze, "PARALLEL_MIN_FILES", 1)
     bronze.build(store, DAY)
-    parallel = store.read_bronze(DAY).sort("id")
+    parallel = store.read("bronze", DAY).sort("id")
 
     assert parallel.height == 3
     assert parallel.equals(serial)
@@ -71,7 +72,7 @@ def test_并行时同id仍以最后写入者为准(store: DatasetStore, monkeypa
 
     bronze.build(store, DAY)
 
-    assert set(store.read_bronze(DAY)["downloads"].to_list()) == {50}
+    assert set(store.read("bronze", DAY)["downloads"].to_list()) == {50}
 
 
 def test_进程池崩溃时退回串行且结果相同(
@@ -96,13 +97,13 @@ def test_进程池崩溃时退回串行且结果相同(
     seed(store)
     monkeypatch.setattr(bronze, "PARALLEL_MIN_FILES", 10_000)
     bronze.build(store, DAY)
-    serial = store.read_bronze(DAY).sort("id")
+    serial = store.read("bronze", DAY).sort("id")
 
     monkeypatch.setattr(bronze, "PARALLEL_MIN_FILES", 1)
     monkeypatch.setattr(bronze, "ProcessPoolExecutor", Broken)
     bronze.build(store, DAY)
 
-    assert store.read_bronze(DAY).sort("id").equals(serial)
+    assert store.read("bronze", DAY).sort("id").equals(serial)
 
 
 def test_进程池崩溃时降级为串行且结果不变(
@@ -114,7 +115,7 @@ def test_进程池崩溃时降级为串行且结果不变(
     seed(store)
     monkeypatch.setattr(bronze, "PARALLEL_MIN_FILES", 10_000)
     bronze.build(store, DAY)
-    expected = store.read_bronze(DAY).sort("id")
+    expected = store.read("bronze", DAY).sort("id")
 
     class BrokenPool:
         def __init__(self, *args: object, **kwargs: object) -> None:
@@ -133,4 +134,4 @@ def test_进程池崩溃时降级为串行且结果不变(
     monkeypatch.setattr(bronze, "ProcessPoolExecutor", BrokenPool)
     bronze.build(store, DAY)
 
-    assert store.read_bronze(DAY).sort("id").equals(expected)
+    assert store.read("bronze", DAY).sort("id").equals(expected)

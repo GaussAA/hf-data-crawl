@@ -10,16 +10,16 @@ from typing import Any
 import polars as pl
 import pytest
 
+from hf_data_crawl import raw, state
 from hf_data_crawl.derive import derive_day
 from hf_data_crawl.status import (
-    INACTIVE,
     STATUS_BY_VERDICT,
-    Status,
     restore,
     retain,
     snapshot_path,
 )
 from hf_data_crawl.store import DatasetStore
+from hf_data_crawl.vocab import INACTIVE, Status
 
 DAY = date(2026, 11, 1)
 
@@ -44,13 +44,13 @@ def record(index: int) -> dict[str, Any]:
 @pytest.fixture()
 def store(tmp_path: Path) -> DatasetStore:
     instance = DatasetStore(tmp_path / "data")
-    instance.write_raw(snapshot_date=DAY, page_index=1, records=[record(1), record(2)], meta={})
+    raw.write(instance, snapshot_date=DAY, page_index=1, records=[record(1), record(2)], meta={})
     derive_day(instance, DAY)
     return instance
 
 
 def status_of(store: DatasetStore, dataset_id: str) -> str:
-    frame = store.read_current().filter(pl.col("id") == dataset_id)
+    frame = state.read_current(store).filter(pl.col("id") == dataset_id)
     return frame.row(0, named=True)["status"]
 
 
@@ -86,7 +86,7 @@ def test_unknown结论不在映射内表示先别动() -> None:
 
 def test_mark_status拒绝词表外的值(store: DatasetStore) -> None:
     with pytest.raises(ValueError, match="gone"):
-        store.mark_status({"acme/ds-1": "gone"})
+        state.mark_status(store, {"acme/ds-1": "gone"})
 
     assert status_of(store, "acme/ds-1") == "active"
 
@@ -100,7 +100,7 @@ def test_无失效项时不写快照(store: DatasetStore) -> None:
 
 
 def test_留存只含非在架的行并写下快照(store: DatasetStore) -> None:
-    store.mark_status({"acme/ds-2": "restricted"})
+    state.mark_status(store, {"acme/ds-2": "restricted"})
 
     retained = retain(store)
 
@@ -117,7 +117,7 @@ def test_快照存在时以快照为准而非current(store: DatasetStore) -> Non
 
 
 def test_损坏的快照回退读current(store: DatasetStore) -> None:
-    store.mark_status({"acme/ds-2": "restricted"})
+    state.mark_status(store, {"acme/ds-2": "restricted"})
     snapshot_path(store).parent.mkdir(parents=True, exist_ok=True)
     snapshot_path(store).write_text("{半截", encoding="utf-8")
 
@@ -134,9 +134,9 @@ def test_快照里词表之外的值被丢弃而不是打断重建(store: Datase
 
 
 def test_写回后状态生效且快照被删除(store: DatasetStore) -> None:
-    store.mark_status({"acme/ds-2": "restricted"})
+    state.mark_status(store, {"acme/ds-2": "restricted"})
     retained = retain(store)
-    store.mark_status({"acme/ds-2": "active"})  # 模拟 state 被重算后全部在架
+    state.mark_status(store, {"acme/ds-2": "active"})  # 模拟 state 被重算后全部在架
 
     restore(store, retained)
 

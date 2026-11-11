@@ -12,6 +12,7 @@ import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+from hf_data_crawl import raw
 from hf_data_crawl.deriving import (
     STALE_THRESHOLD_SECONDS,
     DerivingFlag,
@@ -322,7 +323,8 @@ def test_只有卡片批次时按可重放处理(tmp_path: Path, monkeypatch) ->
     """仅 card 批次的日子也算可重放：补位会进 current 与 observations，跳过反而制造不一致。"""
     store = DatasetStore(tmp_path)
     snapshot_date = date(2026, 11, 7)
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=snapshot_date,
         page_index=1,
         records=[{"id": "acme/ds-1"}],

@@ -37,7 +37,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import date
 
-from . import deriving, lineage, raw
+from . import deriving, lineage, raw, state
 from .derive import ReplayCarry, derive_day
 from .retention import REPLAY_WINDOW_DAYS
 from .status import restore, retain
@@ -66,7 +66,7 @@ def discover_raw_dates(store: DatasetStore) -> list[date]:
 
 def _authority_intact(store: DatasetStore) -> bool:
     """冷区权威层是否还在。两者任一为空，局部重放都会丢历史。"""
-    return store.read_observations().height > 0 and store.read_current().height > 0
+    return store.read_all("observations").height > 0 and state.read_current(store).height > 0
 
 
 def replay_suffix(store: DatasetStore, since: date) -> list[date]:
@@ -164,11 +164,11 @@ def rebuild_from_raw(
         dates=list(replay),
         bronze_rows=bronze_rows,
         silver_rows=silver_rows,
-        observations=store.read_observations().height,
-        current_rows=store.read_current().height,
+        observations=store.read_all("observations").height,
+        current_rows=state.read_current(store).height,
         mode=mode,
-        card_rows=store.read_enrich().height,
-        config_rows=store.read_card_configs().height,
+        card_rows=store.read("carddata").height,
+        config_rows=store.read("card_configs").height,
     )
 
 

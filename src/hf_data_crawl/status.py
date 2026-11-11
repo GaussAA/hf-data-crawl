@@ -1,18 +1,6 @@
-"""Dataset 的状态：词表、探测结论的映射，以及重建时的留存协议。
+"""Dataset 状态的探测结论映射与重建时的留存协议。
 
-为什么需要它
-------------
-`active / disappeared / restricted / renamed` 四值原本是散在五个文件里的字符串，
-`mark_status` 接受任意值；探测结论（deleted）与落库状态（disappeared）靠
-reconcile 里一张私有映射对上；rebuild 为了不丢失败状态，自己读 current、
-写快照、再回灌——「状态怎么留」的知识被摊在调用方。
-
-这里把三件事收到一处：
-
-1. **词表**：`Status`。写入时校验，未知值立刻报错，而不是静默落库。
-2. **映射**：探测结论 → 状态。`present`（库还在、id 没变）映射到 `active`，
-   所以历史上被误标成 restricted / renamed 的库，下一次对账探测时能自愈。
-3. **留存协议**：`retain` / `restore`。
+Status 枚举与 INACTIVE 集合已迁到 vocab.py（被多处引用，放这里会让 platform 依赖 pipeline）。
 
 留存协议
 --------
@@ -33,29 +21,16 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import polars as pl
 
 from .atomic import write_text
+from .vocab import Status
 
 if TYPE_CHECKING:
     from .store import DatasetStore
-
-
-class Status(StrEnum):
-    """current.status 的取值。"""
-
-    ACTIVE = "active"
-    DISAPPEARED = "disappeared"
-    RESTRICTED = "restricted"
-    RENAMED = "renamed"
-
-
-#: 所有「非在架」状态。StrEnum 与同值字符串相等且同哈希，故可直接与读出的字符串比较。
-INACTIVE: frozenset[Status] = frozenset(status for status in Status if status is not Status.ACTIVE)
 
 #: 探测结论 → 落库状态。`unknown`（网络异常等）不在表内，表示「先别动」。
 STATUS_BY_VERDICT: dict[str, Status] = {
@@ -77,7 +52,7 @@ def retain(store: DatasetStore) -> dict[str, str]:
     if snapshot is not None:
         return snapshot
 
-    current = store.read_current()
+    current = store.read("current")
     if current.height == 0:
         return {}
     stale = current.filter(pl.col("status") != Status.ACTIVE.value)
@@ -93,7 +68,9 @@ def retain(store: DatasetStore) -> dict[str, str]:
 def restore(store: DatasetStore, retained: dict[str, str]) -> None:
     """把留存的状态写回，然后删除快照。"""
     if retained:
-        store.mark_status(retained)
+        from . import state
+
+        state.mark_status(store, retained)
     snapshot_path(store).unlink(missing_ok=True)
 
 

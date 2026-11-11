@@ -14,9 +14,9 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
-from . import bronze
-from .status import Status
+from . import bronze, state
 from .tables import BRONZE_SCHEMA, CURRENT_SCHEMA
+from .vocab import Status
 
 if TYPE_CHECKING:
     from .store import DatasetStore
@@ -37,6 +37,14 @@ CARRIED_COLUMNS: tuple[str, ...] = tuple(
 COMPUTED_COLUMNS: frozenset[str] = frozenset({"first_seen_at", "last_seen_at", "status"})
 
 METRIC_COLUMNS: tuple[str, ...] = ("downloads", "downloads_all_time", "likes")
+
+
+def read_current(store: DatasetStore) -> pl.DataFrame:
+    """读 current 表，旧表的 status 缺失时补 active（沿用历史语义）。"""
+    frame = store.read("current")
+    if frame.height > 0 and frame["status"].null_count():
+        frame = frame.with_columns(pl.col("status").fill_null(Status.ACTIVE.value))
+    return frame
 
 
 def _previous_metrics(history: pl.DataFrame) -> pl.DataFrame:
@@ -65,10 +73,10 @@ class Carry:
 
     @classmethod
     def load(cls, store: DatasetStore, *, before: date) -> Carry:
-        history = store.read_observations()
+        history = store.read_all("observations")
         return cls(
             previous=_previous_metrics(history.filter(pl.col("snapshot_date") < before)),
-            current=store.read_current(),
+            current=state.read_current(store),
         )
 
     def advance(self, observations: pl.DataFrame) -> None:
@@ -108,7 +116,7 @@ def mark_status(store: DatasetStore, updates: Mapping[str, str]) -> int:
     unknown = sorted({value for value in updates.values() if value not in known})
     if unknown:
         raise ValueError(f"未知的状态值: {unknown}，可选：{sorted(known)}")
-    current = store.read_current()
+    current = state.read_current(store)
     if current.height == 0:
         return 0
 
@@ -148,7 +156,9 @@ def update(
     """
     today_frame = frame if frame is not None else bronze.day_frame(store, snapshot_date)
     if today_frame.height == 0:
-        current_rows = carry.current.height if carry is not None else store.read_current().height
+        current_rows = (
+            carry.current.height if carry is not None else state.read_current(store).height
+        )
         return StateUpdate(appended=0, current_rows=current_rows)
 
     if carry is not None:
@@ -156,7 +166,7 @@ def update(
         previous = carry.previous
         prior_current = carry.current
     else:
-        existing = store.read_observations()
+        existing = store.read_all("observations")
         before = existing.filter(pl.col("snapshot_date") == snapshot_date).height
         previous = _previous_metrics(existing.filter(pl.col("snapshot_date") < snapshot_date))
         prior_current = None
@@ -207,7 +217,7 @@ def _rebuild_current(
     只有当日新出现的 id 才需要补当日日期。`prior` 由重放循环传入时省掉读盘。
     """
     carried_columns = [*CARRIED_COLUMNS, "last_seen_at", "status"]
-    previous = prior if prior is not None else store.read_current()
+    previous = prior if prior is not None else state.read_current(store)
     today_ids = bronze["id"].to_list()
     carried = previous.filter(~pl.col("id").is_in(today_ids)).select(carried_columns)
 

@@ -142,7 +142,7 @@ def day_frame(store: DatasetStore, snapshot_date: date) -> pl.DataFrame:
     此前只有 `state` 补位，于是 203 个库进了 current 却没进 silver，`datasets` 宽视图
     里它们的 tags / description 全是 null——不报错，只是查不出来。
     """
-    today = store.read_bronze(snapshot_date)
+    today = store.read("bronze", snapshot_date)
     files = raw.supplement_files(store, snapshot_date)
     if not files:
         return today

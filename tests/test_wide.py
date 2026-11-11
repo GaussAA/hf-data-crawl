@@ -20,6 +20,7 @@ from typing import Any
 import polars as pl
 import pytest
 
+from hf_data_crawl import raw, state
 from hf_data_crawl import wide as wide_module
 from hf_data_crawl.cli import WRITE_COMMANDS, main
 from hf_data_crawl.derive import derive_day
@@ -52,7 +53,8 @@ def record(index: int) -> dict[str, Any]:
 @pytest.fixture()
 def store(tmp_path: Path) -> DatasetStore:
     store = DatasetStore(tmp_path / "data")
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=DAY,
         page_index=1,
         records=[record(index) for index in range(1, 4)],
@@ -83,7 +85,7 @@ def test_导出列集合与默认交付契约一致(store: DatasetStore) -> None
 
     assert frame.columns == list(DEFAULT_COLUMNS)
     assert summary.columns == len(DEFAULT_COLUMNS)
-    assert summary.rows == store.read_current().height
+    assert summary.rows == state.read_current(store).height
     # v5：标签列回到 LIST，与视图同构（v3 为绕预览器缺陷做的扁平化已撤销）。
     for column in ("languages", "task_categories", "tags", "plain_tags", "arxiv_ids"):
         assert frame.schema[column] == pl.List(pl.String)

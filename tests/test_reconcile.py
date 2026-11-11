@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlparse
 import polars as pl
 import pytest
 
+from hf_data_crawl import raw, state
 from hf_data_crawl.api import HfDatasetApi, HfResponse
 from hf_data_crawl.derive import derive_day
 from hf_data_crawl.reconcile import Reconciler
@@ -90,7 +91,7 @@ def record(name: str, sha: str, downloads: int = 100) -> dict[str, Any]:
 
 
 def seed(store: DatasetStore, snapshot: date, records: list[dict[str, Any]]) -> None:
-    store.write_raw(snapshot_date=snapshot, page_index=1, records=records, meta={})
+    raw.write(store, snapshot_date=snapshot, page_index=1, records=records, meta={})
     derive_day(store, snapshot)
 
 
@@ -109,7 +110,7 @@ def reconciler(transport: FakeCursorTransport, store: DatasetStore, **kwargs: An
 
 
 def status_of(store: DatasetStore, dataset_id: str) -> str:
-    frame = store.read_current().filter(pl.col("id") == dataset_id)
+    frame = state.read_current(store).filter(pl.col("id") == dataset_id)
     return frame.row(0, named=True)["status"]
 
 
@@ -123,7 +124,7 @@ def test_下架集被标记但观测史保留(store: DatasetStore) -> None:
     assert summary.new_ids == 1
     assert summary.sha_changed == 1
     assert status_of(store, "acme/b") == "disappeared"
-    assert store.read_observations().filter(pl.col("id") == "acme/b").height == 1
+    assert store.read_all("observations").filter(pl.col("id") == "acme/b").height == 1
 
 
 def test_有界扫描不得判定下架(store: DatasetStore) -> None:
@@ -292,7 +293,7 @@ def test_恢复判定覆盖私有与改名(store: DatasetStore) -> None:
 
 def test_探测证明还在的误标库恢复在架并计入reactivated(store: DatasetStore) -> None:
     """历史上被误标成 renamed 的存活库，下一次对账探测到 present 时自愈。"""
-    store.mark_status({"acme/b": "renamed"})
+    state.mark_status(store, {"acme/b": "renamed"})
     transport = FakeCursorTransport([[record("a", "sha-a1")]], detail={"acme/b": {"id": "acme/b"}})
 
     summary = reconciler(transport, store).run(DAY2, limit=100)
@@ -459,10 +460,10 @@ def test_探测统计进差异清单(store: DatasetStore) -> None:
 
 def test_探测优先在架的_已判过的排后面(store: DatasetStore) -> None:
     """已判为非在架的库每轮都被重探，等于拿一半配额去确认旧结论。"""
-    from hf_data_crawl.status import Status
+    from hf_data_crawl.vocab import Status
 
     ids = seed_many(store, 5)
-    store.mark_status({"acme/a": Status.DISAPPEARED, "acme/b": Status.DISAPPEARED})
+    state.mark_status(store, {"acme/a": Status.DISAPPEARED, "acme/b": Status.DISAPPEARED})
     transport = FakeCursorTransport([[]], detail={item: {"id": item} for item in ids})
 
     summary = reconciler(transport, store, probe_limit=2).run(DAY2, limit=100)
@@ -474,10 +475,10 @@ def test_探测优先在架的_已判过的排后面(store: DatasetStore) -> Non
 
 def test_在架的不够限额时才复核已判过的(store: DatasetStore) -> None:
     """非在架的不能被饿死：命中概率低，但真被恢复时要能翻回来。"""
-    from hf_data_crawl.status import Status
+    from hf_data_crawl.vocab import Status
 
     ids = seed_many(store, 4)
-    store.mark_status({"acme/a": Status.DISAPPEARED, "acme/b": Status.DISAPPEARED})
+    state.mark_status(store, {"acme/a": Status.DISAPPEARED, "acme/b": Status.DISAPPEARED})
     transport = FakeCursorTransport([[]], detail={item: {"id": item} for item in ids})
 
     reconciler(transport, store, probe_limit=4).run(DAY2, limit=100)
@@ -486,10 +487,10 @@ def test_在架的不够限额时才复核已判过的(store: DatasetStore) -> N
 
 
 def test_在架优先后排到前面_轮转仍不重复(store: DatasetStore) -> None:
-    from hf_data_crawl.status import Status
+    from hf_data_crawl.vocab import Status
 
     ids = seed_many(store, 6)
-    store.mark_status({"acme/a": Status.DISAPPEARED})
+    state.mark_status(store, {"acme/a": Status.DISAPPEARED})
     detail = {item: {"id": item} for item in ids}
 
     first = FakeCursorTransport([[]], detail=detail)

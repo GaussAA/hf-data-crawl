@@ -15,7 +15,7 @@ from typing import Any
 import polars as pl
 import pytest
 
-from hf_data_crawl import bronze, silver, state
+from hf_data_crawl import bronze, raw, silver, state
 from hf_data_crawl.store import DatasetStore
 
 DAY1 = date(2026, 11, 1)
@@ -61,19 +61,19 @@ def store(tmp_path: Path) -> DatasetStore:
 
 
 def seed(store: DatasetStore, snapshot: date, records: list[dict[str, Any]]) -> None:
-    store.write_raw(snapshot_date=snapshot, page_index=1, records=records, meta={})
+    raw.write(store, snapshot_date=snapshot, page_index=1, records=records, meta={})
     bronze.build(store, snapshot)
     silver.build(store, snapshot)
 
 
 def observations(store: DatasetStore) -> pl.DataFrame:
-    return store.read_observations()
+    return store.read_all("observations")
 
 
 def test_silver把标签拆成可join的维度(store: DatasetStore) -> None:
     seed(store, DAY1, [record(1)])
 
-    row = store.read_silver(DAY1).row(0, named=True)
+    row = store.read("silver", DAY1).row(0, named=True)
 
     assert row["task_categories"] == ["text-classification"]
     assert row["languages"] == ["en", "zh"]
@@ -87,7 +87,7 @@ def test_silver不存指标也不存原始json(store: DatasetStore) -> None:
     """指标归 observations，整行 JSON 只在 Bronze；Silver 只记属性。"""
     seed(store, DAY1, [record(1, downloads=42)])
 
-    frame = store.read_silver(DAY1)
+    frame = store.read("silver", DAY1)
 
     assert frame.height == 1
     for column in ("downloads", "downloads_all_time", "likes", "raw"):
@@ -98,7 +98,7 @@ def test_属性没变的数据集不再追加silver行(store: DatasetStore) -> N
     seed(store, DAY1, [record(1), record(2)])
     seed(store, DAY2, [record(1, downloads=999), record(2)])
 
-    assert store.read_silver(DAY2).height == 0
+    assert store.read("silver", DAY2).height == 0
     assert store.read_all("silver").height == 2
 
 
@@ -106,7 +106,7 @@ def test_属性变了只追加变化的那一行(store: DatasetStore) -> None:
     seed(store, DAY1, [record(1), record(2)])
     seed(store, DAY2, [record(1), record(2, tags=["license:apache-2.0"])])
 
-    day2 = store.read_silver(DAY2)
+    day2 = store.read("silver", DAY2)
 
     assert day2["id"].to_list() == ["acme/ds-2"]
     assert day2.row(0, named=True)["licenses"] == ["apache-2.0"]
@@ -117,7 +117,7 @@ def test_新增数据集追加首行属性(store: DatasetStore) -> None:
     seed(store, DAY1, [record(1)])
     seed(store, DAY2, [record(1), record(2)])
 
-    assert store.read_silver(DAY2)["id"].to_list() == ["acme/ds-2"]
+    assert store.read("silver", DAY2)["id"].to_list() == ["acme/ds-2"]
 
 
 def test_同日重跑silver不重复(store: DatasetStore) -> None:
@@ -192,7 +192,7 @@ def test_current每个数据集仅一行(store: DatasetStore) -> None:
     seed(store, DAY2, [record(1), record(2), record(3)])
     state.update(store, DAY2)
 
-    current = store.read_current()
+    current = state.read_current(store)
 
     assert current.height == 3
     assert current["id"].n_unique() == 3
@@ -204,7 +204,7 @@ def test_first_seen不随轮次改变且last_seen更新(store: DatasetStore) -> 
     seed(store, DAY2, [record(1)])
     state.update(store, DAY2)
 
-    row = store.read_current().row(0, named=True)
+    row = state.read_current(store).row(0, named=True)
 
     assert row["first_seen_at"] == DAY1
     assert row["last_seen_at"] == DAY2
@@ -217,7 +217,7 @@ def test_本轮未出现的数据集在current中保持原状(store: DatasetStor
     seed(store, DAY2, [record(1)])
     state.update(store, DAY2)
 
-    current = store.read_current()
+    current = state.read_current(store)
 
     assert current.height == 2
     kept = current.filter(pl.col("id") == "acme/ds-2").row(0, named=True)
@@ -246,7 +246,7 @@ def test_高频维度modality与format不再丢在原始tags里(store: DatasetSt
         ],
     )
 
-    row = store.read_silver(DAY1).row(0, named=True)
+    row = store.read("silver", DAY1).row(0, named=True)
 
     assert row["modalities"] == ["text", "image"]
     assert row["formats"] == ["parquet"]
@@ -261,7 +261,7 @@ def test_无前缀标签单独成列(store: DatasetStore) -> None:
     """旧式模态标记（text/image/audio/tabular）没有前缀，占全部标签 13.7%。"""
     seed(store, DAY1, [record(1, tags=["text", "image", "language:en"])])
 
-    row = store.read_silver(DAY1).row(0, named=True)
+    row = store.read("silver", DAY1).row(0, named=True)
 
     assert row["plain_tags"] == ["text", "image"]
     assert row["languages"] == ["en"]
@@ -270,7 +270,7 @@ def test_无前缀标签单独成列(store: DatasetStore) -> None:
 def test_未知前缀只留在原始tags不进任何维度(store: DatasetStore) -> None:
     seed(store, DAY1, [record(1, tags=["某个自定义前缀:值", "language:en"])])
 
-    row = store.read_silver(DAY1).row(0, named=True)
+    row = store.read("silver", DAY1).row(0, named=True)
 
     assert "某个自定义前缀:值" in row["tags"]
     assert row["languages"] == ["en"]
@@ -280,4 +280,4 @@ def test_未知前缀只留在原始tags不进任何维度(store: DatasetStore) 
 def test_同一维度内重复标签只保留一次(store: DatasetStore) -> None:
     seed(store, DAY1, [record(1, tags=["modality:text", "modality:text", "modality:image"])])
 
-    assert store.read_silver(DAY1).row(0, named=True)["modalities"] == ["text", "image"]
+    assert store.read("silver", DAY1).row(0, named=True)["modalities"] == ["text", "image"]

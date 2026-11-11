@@ -20,15 +20,17 @@ from typing import Any
 
 import polars as pl
 
+from . import state
 from .api import MAX_LIMIT, HfDatasetApi, Page
 from .atomic import write_csv, write_text
 from .collect import LEAN_EXPAND
 from .derive import derive_day
 from .scan import ScanRun, ScanSpec
 from .session import ReconcileSession
-from .status import INACTIVE, STATUS_BY_VERDICT, Status
+from .status import STATUS_BY_VERDICT
 from .store import DatasetStore
 from .tables import PolarsType
+from .vocab import INACTIVE, Status
 
 RECONCILE_CHECKPOINT = "reconcile-checkpoint.json"
 
@@ -175,7 +177,7 @@ class Reconciler:
                 for i, s in verdicts.items()
                 if s is Status.ACTIVE and session.status_before(i) in INACTIVE
             ]
-            self._store.mark_status(verdicts)
+            state.mark_status(self._store, verdicts)
             session.close()
 
         report_path = self._write_report(

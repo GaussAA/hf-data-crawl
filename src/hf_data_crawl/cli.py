@@ -16,7 +16,7 @@ from pathlib import Path
 
 import polars as pl
 
-from . import compare, specdiff
+from . import compare, specdiff, state
 from .api import MAX_LIMIT, HfDatasetApi, Transport
 from .backfill import FillError, header_change, header_of
 from .collect import Collector, CollectSummary
@@ -718,13 +718,13 @@ def _fetch_sizes(
     中断后分片还在，下一轮据此续抓。
     """
     snapshot = _snapshot(args)
-    current = store.read_current()
+    current = state.read_current(store)
     if current.height == 0:
         print("尚无采集数据，请先运行 `hf-data-crawl collect`。")
         return Outcome({"error": "empty"}, code=1, reason="尚无采集数据，请先运行 collect")
 
     # 残留分片同样是「已处理」的 id：上一轮中断前抓到的结果不该再请求一遍。
-    existing = store.read_sizes()
+    existing = store.read("size")
     staged, _ = read_staged(store)
     if staged.height:
         existing = pl.concat([existing, staged], how="vertical_relaxed")
@@ -758,10 +758,10 @@ def _fetch_sizes(
     with exclusive(store.root, "fetch-sizes:merge", lock_wait):
         merged, paths = read_staged(store)
         if merged.height:
-            store.merge_sizes(merged)
+            store.upsert("size", merged)
         clear_staged(store, paths)
 
-    _print_sizes(summary, store.read_sizes().height)
+    _print_sizes(summary, store.read("size").height)
     return Outcome(summary)
 
 
@@ -775,7 +775,7 @@ def _fetch_files(
         print(f"失败：{message}")
         return Outcome({"error": "max-pages"}, code=1, reason=message)
 
-    current = store.read_current()
+    current = state.read_current(store)
     if current.height == 0:
         print("尚无采集数据，请先运行 `hf-data-crawl collect`。")
         return Outcome({"error": "empty"}, code=1, reason="尚无采集数据，请先运行 collect")
@@ -796,14 +796,14 @@ def _fetch_files(
         top=max(1, args.top),
         retry_unavailable=args.retry_unavailable,
         refresh_truncated=args.refresh_truncated,
-        existing=store.read_files(),
-        flush=store.merge_files,
+        existing=store.read("files"),
+        flush=lambda frame: store.upsert("files", frame),
         flush_every=args.flush_every,
     )
     print()
     if frame.height:
-        store.merge_files(frame)
-    _print_files(summary, store.read_files().height)
+        store.upsert("files", frame)
+    _print_files(summary, store.read("files").height)
     return Outcome(summary)
 
 
@@ -880,7 +880,7 @@ def _warn_frozen_rows(frame: pl.DataFrame) -> None:
     不改数据、不过滤——用不用这些行是判断，该由人来做。但不说一声，那个「下载量
     28 万」会被当成今天的读数，而它可能停在四天前；改名后的旧 id 更是永远不再更新。
     """
-    from .status import INACTIVE
+    from .vocab import INACTIVE
 
     if "status" not in frame.columns:
         return

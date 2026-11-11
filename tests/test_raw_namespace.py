@@ -84,7 +84,8 @@ def test_同一天不同来源同页各有独立文件(store: DatasetStore) -> N
     for index, source in enumerate(
         ("lean_lastModified", "reconcile_createdAt", "enrich_downloads"), 1
     ):
-        store.write_raw(
+        raw.write(
+            store,
             snapshot_date=DAY,
             page_index=1,
             records=[{"id": "acme/ds"}],
@@ -162,7 +163,8 @@ def test_比基座更窄的扫描在构造期被拒() -> None:
 def test_含分隔符的来源在写入前被拒(store: DatasetStore) -> None:
     """静默生成解析不出的文件名，比直接报错更难查。"""
     with pytest.raises(ValueError, match="source 只能含字母、数字与下划线"):
-        store.write_raw(
+        raw.write(
+            store,
             snapshot_date=DAY,
             page_index=1,
             records=[{"id": "acme/ds"}],
@@ -184,14 +186,16 @@ def test_合规档位一律放行() -> None:
 
 def test_命名空间不参与排序胜负仍由写入时刻决定(store: DatasetStore) -> None:
     """来源字母序与写入序相反：若有人把 source 编进排序键，此例会立刻红。"""
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=DAY,
         page_index=1,
         records=[{"id": "acme/ds", "downloads": 111}],
         source="zzz_last",
         written_at="2026-11-07T00:00:01.000000+00:00",
     )
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=DAY,
         page_index=1,
         records=[{"id": "acme/ds", "downloads": 222}],
@@ -201,12 +205,13 @@ def test_命名空间不参与排序胜负仍由写入时刻决定(store: Datase
 
     bronze.build(store, DAY)
 
-    assert store.read_bronze(DAY).row(0, named=True)["downloads"] == 222
+    assert store.read("bronze", DAY).row(0, named=True)["downloads"] == 222
 
 
 def test_归档分片按来源分流并保留来源(store: DatasetStore) -> None:
     for index, source in enumerate(("lean_lastModified", "top_refresh_downloads"), 1):
-        store.write_raw(
+        raw.write(
+            store,
             snapshot_date=DAY,
             page_index=1,
             records=[{"id": "acme/ds", "downloads": index * 10}],

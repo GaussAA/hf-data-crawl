@@ -1,33 +1,23 @@
-"""数据仓入口：持有根目录，并提供按登记表读写的表访问。
+"""数据仓入口：持有根目录，并提供按登记表读写的通用表访问。
 
-流程各有各的模块，这里不再放逻辑：
-
-- `raw`     原始响应落盘与按写入序读回
-- `bronze`  由 Raw 整体重建某天的标量表
-- `silver`  由 Bronze 派生某天的维度表
-- `card`    由卡片批次抽出宽表与明细表
-- `state`   观测流水、当前态、状态标记
-
-推导一天的各步由 `derive.derive_day` 调度，不再经过这里。`write_raw` 与
-`mark_status` 是仓库对外的写入口，保留为一行转发。
+领域方法已迁移：
+- read_bronze/read_silver/read_observations/read_enrich 等 → 调用方直接用 read(name, dt)
+- write_raw → raw.write
+- mark_status → state.mark_status
+- merge_sizes/merge_files → sizes.py/files.py
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
-from typing import Any
 
 import polars as pl
 
-from . import raw, state
 from .atomic import write_parquet
-from .state import StateUpdate
-from .status import Status
 from .tables import PolarsType, table
 
-__all__ = ["DatasetStore", "StateUpdate"]
+__all__ = ["DatasetStore"]
 
 
 class DatasetStore:
@@ -117,75 +107,6 @@ class DatasetStore:
         )
         self.write(name, merged.sort("id"))
         return merged.height
-
-    # ------------------------------------------------------------ 具名读法
-
-    def read_bronze(self, snapshot_date: date) -> pl.DataFrame:
-        return self.read("bronze", snapshot_date)
-
-    def read_silver(self, snapshot_date: date) -> pl.DataFrame:
-        return self.read("silver", snapshot_date)
-
-    def read_observations(self) -> pl.DataFrame:
-        return self.read_all("observations")
-
-    def read_enrich(self) -> pl.DataFrame:
-        return self.read("carddata")
-
-    def read_card_configs(self) -> pl.DataFrame:
-        return self.read("card_configs")
-
-    def read_sizes(self) -> pl.DataFrame:
-        return self.read("size")
-
-    def read_files(self) -> pl.DataFrame:
-        return self.read("files")
-
-    def read_current(self) -> pl.DataFrame:
-        # 旧表的列不全会让下游 select 直接抛错，`read` 已按当前 schema 对齐；
-        # status 缺失时视为全部在架，沿用历史语义。
-        frame = self.read("current")
-        if frame["status"].null_count():
-            frame = frame.with_columns(pl.col("status").fill_null(Status.ACTIVE.value))
-        return frame
-
-    def merge_sizes(self, frame: pl.DataFrame) -> int:
-        """把新一批规模数据并入总表，同 id 以新值为准。
-
-        不可用的记录也一并落库：不记下来，下一轮还得为它们重烧 30% 的请求预算。
-        """
-        return self.upsert("size", frame)
-
-    def merge_files(self, frame: pl.DataFrame) -> int:
-        """把新一批文件汇总并入总表，同 id 以新值为准；语义同 `merge_sizes`。"""
-        return self.upsert("files", frame)
-
-    # ------------------------------------------------------------ 流程转发
-
-    def write_raw(
-        self,
-        *,
-        snapshot_date: date,
-        page_index: int,
-        records: list[dict[str, Any]],
-        meta: dict[str, Any] | None = None,
-        label: str = "part",
-        source: str | None = None,
-        written_at: str | None = None,
-    ) -> Path:
-        return raw.write(
-            self,
-            snapshot_date=snapshot_date,
-            page_index=page_index,
-            records=records,
-            meta=meta,
-            label=label,
-            source=source,
-            written_at=written_at,
-        )
-
-    def mark_status(self, updates: Mapping[str, str]) -> int:
-        return state.mark_status(self, updates)
 
 
 def _align_frame(frame: pl.DataFrame, schema: dict[str, PolarsType]) -> pl.DataFrame:

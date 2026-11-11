@@ -19,7 +19,7 @@ from pathlib import Path
 
 import polars as pl
 
-from . import lineage, method, raw
+from . import lineage, method, raw, state
 from .fields import DEFAULT_COLUMNS, contract_errors
 from .lock import LOCK_NAME, LockBusy, describe_holder, exclusive
 from .rebuild import discover_raw_dates
@@ -127,7 +127,7 @@ def _catalog_staleness(store: DatasetStore, today: date) -> Finding:
     对账刷新；对账连着几天没成时，运行记录仍可能是「成功」，而底库已经在拿几天
     前的值充数。这里直接量行龄，不猜。
     """
-    frame = store.read_current()
+    frame = state.read_current(store)
     if frame.height == 0:
         return Finding(True, "底库新鲜度：current 为空")
 
@@ -257,7 +257,7 @@ def _layer_reconcile(store: DatasetStore) -> Finding:
     说明有 Raw 采进来了却没有任何一行进入当前态——典型成因是派生没跑，
     或跑的是别的日期。
     """
-    current = store.read_current()
+    current = state.read_current(store)
     if current.height == 0:
         return Finding(True, "层间勾稽：current 为空，无法比对")
 
@@ -325,7 +325,7 @@ def _artifact_freshness(store: DatasetStore, today: date) -> Finding:
     - **富化表只报覆盖与最新日期，不因覆盖不全告警**。长尾本来就没补过（按下载量
       取头部是设计），但「整张表超过 `ARTIFACT_MAX_AGE_DAYS` 没动过」是真停了。
     """
-    current = store.read_current()
+    current = state.read_current(store)
     if current.height == 0:
         return Finding(True, "产物新鲜度：current 为空，无法比对")
     current_ids = set(current["id"].to_list())

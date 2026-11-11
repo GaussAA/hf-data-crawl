@@ -33,11 +33,12 @@ from typing import Any
 
 import polars as pl
 
+from . import state
 from .atomic import write_parquet
 from .checkpoint import FileCheckpoint
-from .status import INACTIVE
 from .store import DatasetStore
 from .tables import PolarsType
+from .vocab import INACTIVE
 
 BASELINE_FILENAME = "reconcile-baseline.parquet"
 SEEN_FILENAME = "reconcile-seen.csv"
@@ -130,12 +131,12 @@ class ReconcileSession:
 
     @classmethod
     def open(cls, store: DatasetStore, *, checkpoint_filename: str) -> ReconcileSession:
-        state = store.state_dir
-        baseline_path = state / BASELINE_FILENAME
-        seen_path = state / SEEN_FILENAME
-        checkpoint = FileCheckpoint(state / checkpoint_filename)
+        state_dir = store.state_dir
+        baseline_path = state_dir / BASELINE_FILENAME
+        seen_path = state_dir / SEEN_FILENAME
+        checkpoint = FileCheckpoint(state_dir / checkpoint_filename)
 
-        for legacy in state.glob(LEGACY_SEEN_GLOB):
+        for legacy in state_dir.glob(LEGACY_SEEN_GLOB):
             legacy.unlink(missing_ok=True)
 
         resumed = checkpoint.cursor is not None
@@ -151,7 +152,7 @@ class ReconcileSession:
         else:
             # 先固定基线，再清已见集合：中途被打断，下次仍会重新开始，不会拿着
             # 新基线配旧的已见集合。
-            frame = store.read_current().select(list(BASELINE_SCHEMA))
+            frame = state.read_current(store).select(list(BASELINE_SCHEMA))
             write_parquet(frame, baseline_path)
             seen_path.unlink(missing_ok=True)
             baseline = _to_baseline(frame)

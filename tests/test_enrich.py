@@ -13,6 +13,7 @@ from typing import Any
 import polars as pl
 import pytest
 
+from hf_data_crawl import raw
 from hf_data_crawl.api import HfDatasetApi, HfResponse
 from hf_data_crawl.derive import derive_day
 from hf_data_crawl.enrich import Enricher, scan_changed_cards
@@ -83,7 +84,7 @@ def test_补齐卡片字段并落表(store: DatasetStore) -> None:
 
     summary = Enricher(api=HfDatasetApi(transport=transport), store=store).run(DAY, top=2)
 
-    table = store.read_enrich()
+    table = store.read("carddata")
     assert summary.with_card == 2
     assert table.height == 2
     row = table.filter(pl.col("id") == "acme/ds-1").row(0, named=True)
@@ -99,7 +100,7 @@ def test_无卡片的记录被计数但不入表(store: DatasetStore) -> None:
     summary = Enricher(api=HfDatasetApi(transport=transport), store=store).run(DAY, top=2)
 
     assert summary.with_card == 1
-    assert store.read_enrich().height == 1
+    assert store.read("carddata").height == 1
 
 
 def test_许可证为列表时拼成字符串(store: DatasetStore) -> None:
@@ -107,7 +108,7 @@ def test_许可证为列表时拼成字符串(store: DatasetStore) -> None:
 
     Enricher(api=HfDatasetApi(transport=transport), store=store).run(DAY, top=1)
 
-    assert store.read_enrich().row(0, named=True)["license_name"] == "mit,apache-2.0"
+    assert store.read("carddata").row(0, named=True)["license_name"] == "mit,apache-2.0"
 
 
 def test_重复补齐以最新一次为准(store: DatasetStore) -> None:
@@ -121,7 +122,7 @@ def test_重复补齐以最新一次为准(store: DatasetStore) -> None:
         store=store,
     ).run(DAY, top=1)
 
-    table = store.read_enrich()
+    table = store.read("carddata")
     assert table.height == 1
     assert table.row(0, named=True)["pretty_name"] == "新名"
 
@@ -139,7 +140,7 @@ def test_按下载量取头部并请求cardData(store: DatasetStore) -> None:
 def test_未补齐时datasets视图无卡片列值但可用(store: DatasetStore) -> None:
     from hf_data_crawl.gold import GoldCatalog
 
-    store.write_raw(snapshot_date=DAY, page_index=1, records=[record(1, with_card=False)], meta={})
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[record(1, with_card=False)], meta={})
     derive_day(store, DAY)
 
     catalog = GoldCatalog(store)
@@ -152,7 +153,7 @@ def test_未补齐时datasets视图无卡片列值但可用(store: DatasetStore)
 def test_补齐后datasets视图可直接查到卡片字段(store: DatasetStore) -> None:
     from hf_data_crawl.gold import GoldCatalog
 
-    store.write_raw(snapshot_date=DAY, page_index=1, records=[record(1, with_card=False)], meta={})
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[record(1, with_card=False)], meta={})
     derive_day(store, DAY)
     Enricher(
         api=HfDatasetApi(transport=SeqTransport([[record(1, pretty_name="正式名")]])),
@@ -172,7 +173,7 @@ def test_卡片行记下抓取时的仓库sha(store: DatasetStore) -> None:
 
     Enricher(api=HfDatasetApi(transport=transport), store=store).run(DAY, top=1)
 
-    assert store.read_enrich().row(0, named=True)["source_sha"] == "abc123"
+    assert store.read("carddata").row(0, named=True)["source_sha"] == "abc123"
 
 
 def test_变化集卡片扫到水位线即停(store: DatasetStore) -> None:

@@ -17,7 +17,7 @@ import pytest
 import yaml
 from support import write_method
 
-from hf_data_crawl import method
+from hf_data_crawl import method, raw
 from hf_data_crawl.cli import deliveries_of, main
 from hf_data_crawl.delivery import (
     EXECUTORS,
@@ -63,7 +63,8 @@ def record(index: int, *, downloads: int, likes: int = 2) -> dict[str, Any]:
 def store(tmp_path: Path) -> DatasetStore:
     """三个库：2000 下载 / 1500 下载 / 500 下载，点赞都是 2。"""
     made = DatasetStore(tmp_path / "data")
-    made.write_raw(
+    raw.write(
+        made,
         snapshot_date=DAY,
         page_index=1,
         records=[

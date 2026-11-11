@@ -16,7 +16,7 @@ from typing import Any
 import polars as pl
 import pytest
 
-from hf_data_crawl import raw
+from hf_data_crawl import raw, state
 from hf_data_crawl.cli import main
 from hf_data_crawl.derive import derive_day
 from hf_data_crawl.lineage import path_of as lineage_path
@@ -51,7 +51,7 @@ def record(index: int, downloads: int) -> dict[str, Any]:
 
 
 def seed(store: DatasetStore, snapshot: date, records: list[dict[str, Any]]) -> None:
-    store.write_raw(snapshot_date=snapshot, page_index=1, records=records, meta={})
+    raw.write(store, snapshot_date=snapshot, page_index=1, records=records, meta={})
     derive_day(store, snapshot)
 
 
@@ -80,26 +80,26 @@ def test_归档日参与重放且与全量结果一致(store: DatasetStore) -> N
     assert discover_raw_dates(store) == [DAY1, DAY2, archive_day]
 
     local = rebuild_from_raw(store, days=replay_suffix(store, archive_day))
-    local_current = store.read_current()
-    local_observations = store.read_observations()
+    local_current = state.read_current(store)
+    local_observations = store.read_all("observations")
 
     full = rebuild_from_raw(store, window_days=None)
 
     assert local.dates == [archive_day]
     assert full.dates == [DAY1, DAY2, archive_day]
-    assert store.read_current().equals(local_current)
-    assert store.read_observations().equals(local_observations)
+    assert state.read_current(store).equals(local_current)
+    assert store.read_all("observations").equals(local_observations)
 
 
 def test_重建后的current与原结果完全一致(store: DatasetStore) -> None:
-    expected_current = store.read_current()
-    expected_obs = store.read_observations()
+    expected_current = state.read_current(store)
+    expected_obs = store.read_all("observations")
 
     summary = rebuild_from_raw(store)
 
     assert summary.dates == [DAY1, DAY2]
-    assert store.read_current().equals(expected_current)
-    assert store.read_observations().equals(expected_obs)
+    assert state.read_current(store).equals(expected_current)
+    assert store.read_all("observations").equals(expected_obs)
 
 
 def test_派生层被删光也能重建(store: DatasetStore) -> None:
@@ -116,7 +116,7 @@ def test_派生层被删光也能重建(store: DatasetStore) -> None:
     # Silver 是属性变更流水：两天属性没变，只有首日的两行。
     assert store.read_all("silver").height == 2
     # 观测只有 ds-1 在 DAY2 变了，因此两条
-    assert store.read_observations().height == 3
+    assert store.read_all("observations").height == 3
 
 
 def test_无raw时返回空结果且不抛错(tmp_path: Path) -> None:
@@ -143,7 +143,8 @@ def test_重建不清除规模表(store: DatasetStore) -> None:
 
     from hf_data_crawl.sizes import SIZE_SCHEMA
 
-    store.merge_sizes(
+    store.upsert(
+        "size",
         pl.DataFrame(
             [
                 {
@@ -161,19 +162,20 @@ def test_重建不清除规模表(store: DatasetStore) -> None:
                 }
             ],
             schema=SIZE_SCHEMA,
-        )
+        ),
     )
 
     rebuild_from_raw(store)
 
-    kept = store.read_sizes()
+    kept = store.read("size")
     assert kept.height == 1
     assert kept.row(0, named=True)["num_rows"] == 42
 
 
 def test_重建会重算卡片表(store: DatasetStore) -> None:
     """卡片表可由 raw 重算，规则一改就该整体重来，旧的必须被清掉。"""
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=DAY2,
         page_index=1,
         records=[{"id": "acme/ds-1", "cardData": {"pretty_name": "正式名"}}],
@@ -183,8 +185,8 @@ def test_重建会重算卡片表(store: DatasetStore) -> None:
 
     rebuild_from_raw(store)
 
-    assert store.read_enrich().height == 1
-    assert store.read_enrich().row(0, named=True)["pretty_name"] == "正式名"
+    assert store.read("carddata").height == 1
+    assert store.read("carddata").row(0, named=True)["pretty_name"] == "正式名"
 
 
 def test_重建保留对账探测出的失效状态(store: DatasetStore) -> None:
@@ -193,7 +195,7 @@ def test_重建保留对账探测出的失效状态(store: DatasetStore) -> None
     2026-11-05 实测踩到：463 条 restricted / renamed 在一次 build 后全部变回
     active，页面上「已失效」直接归零，且不报任何错。
     """
-    store.mark_status({"acme/ds-2": "restricted"})
+    state.mark_status(store, {"acme/ds-2": "restricted"})
 
     rebuild_from_raw(store)
 
@@ -203,16 +205,16 @@ def test_重建保留对账探测出的失效状态(store: DatasetStore) -> None
 
 def test_重建后新增数据仍为在架(store: DatasetStore) -> None:
     """留存失效状态不等于把所有库钉死在旧状态。"""
-    store.mark_status({"acme/ds-1": "renamed"})
+    state.mark_status(store, {"acme/ds-1": "renamed"})
 
     rebuild_from_raw(store)
 
     assert status_of(store, "acme/ds-1") == "renamed"
-    assert store.read_current().filter(pl.col("status") == "active").height == 1
+    assert state.read_current(store).filter(pl.col("status") == "active").height == 1
 
 
 def status_of(store: DatasetStore, dataset_id: str) -> str:
-    frame = store.read_current().filter(pl.col("id") == dataset_id)
+    frame = state.read_current(store).filter(pl.col("id") == dataset_id)
     return frame.row(0, named=True)["status"]
 
 
@@ -226,7 +228,7 @@ def test_上次重建中断时仍能从快照恢复状态(store: DatasetStore) -
 
     from hf_data_crawl.status import retain
 
-    store.mark_status({"acme/ds-2": "restricted"})
+    state.mark_status(store, {"acme/ds-2": "restricted"})
     retain(store)  # 重建的第一步：快照落盘
     # 模拟中断现场：快照已落盘，state 已被清空，状态还没写回
     shutil.rmtree(store.state_dir)
@@ -238,7 +240,7 @@ def test_上次重建中断时仍能从快照恢复状态(store: DatasetStore) -
 
 def test_重建成功后快照被删除(store: DatasetStore) -> None:
     """快照只表示「重建进行中」；留着会被下一次重建当成「上次被打断」。"""
-    store.mark_status({"acme/ds-1": "renamed"})
+    state.mark_status(store, {"acme/ds-1": "renamed"})
 
     rebuild_from_raw(store)
 
@@ -247,9 +249,9 @@ def test_重建成功后快照被删除(store: DatasetStore) -> None:
 
 
 def test_重建后已恢复的库不会被旧快照改回去(store: DatasetStore) -> None:
-    store.mark_status({"acme/ds-2": "restricted"})
+    state.mark_status(store, {"acme/ds-2": "restricted"})
     rebuild_from_raw(store)
-    store.mark_status({"acme/ds-2": "active"})  # 之后对账把它恢复了
+    state.mark_status(store, {"acme/ds-2": "active"})  # 之后对账把它恢复了
 
     rebuild_from_raw(store)
 
@@ -263,9 +265,9 @@ def fingerprint(store: DatasetStore) -> dict[str, str]:
     """三张权威层表的逐行指纹；List 列不能写 CSV，故用规范化 repr。"""
     out: dict[str, str] = {}
     for name, frame in (
-        ("observations", store.read_observations()),
+        ("observations", store.read_all("observations")),
         ("silver", store.read_all("silver")),
-        ("current", store.read_current()),
+        ("current", state.read_current(store)),
     ):
         columns = sorted(frame.columns)
         keys = [column for column in ("id", "snapshot_date") if column in frame.columns]
@@ -283,7 +285,8 @@ def seed_long(store: DatasetStore) -> None:
         records = [first, record(2, 50)]
         if number >= REPLAY_WINDOW_DAYS:
             records.append(record(3, 7))
-        store.write_raw(
+        raw.write(
+            store,
             snapshot_date=day,
             page_index=1,
             records=records,
@@ -344,15 +347,15 @@ def test_重放范围必须后缀闭合(store: DatasetStore) -> None:
 
 def test_只重放最新一天不改动结果(store: DatasetStore) -> None:
     """最新日收尾时，重放结果与逐日推进逐字节一致——这是定点重放合法的最小形。"""
-    expected_current = store.read_current()
-    expected_obs = store.read_observations()
+    expected_current = state.read_current(store)
+    expected_obs = store.read_all("observations")
 
     summary = rebuild_from_raw(store, days=[DAY2])
 
     assert summary.mode == "target"
     assert summary.dates == [DAY2]
-    assert store.read_current().equals(expected_current)
-    assert store.read_observations().equals(expected_obs)
+    assert state.read_current(store).equals(expected_current)
+    assert store.read_all("observations").equals(expected_obs)
 
 
 def test_定点重放只清自己的分区(tmp_path: Path) -> None:
@@ -367,19 +370,19 @@ def test_定点重放只清自己的分区(tmp_path: Path) -> None:
 
 
 def test_给空日期集合时什么都不做(store: DatasetStore) -> None:
-    expected = store.read_current()
+    expected = state.read_current(store)
 
     summary = rebuild_from_raw(store, days=[])
 
     assert summary.dates == []
-    assert store.read_current().equals(expected)
+    assert state.read_current(store).equals(expected)
 
 
 def test_无戳记时定格到最早一天(tmp_path: Path) -> None:
     """机制上线首轮没有凭证，必须从头建立基线——只补最新一天会留下无凭证的旧日。"""
     store = DatasetStore(tmp_path / "data")
-    store.write_raw(snapshot_date=DAY1, page_index=1, records=[record(1, 100)], meta={})
-    store.write_raw(snapshot_date=DAY2, page_index=1, records=[record(1, 180)], meta={})
+    raw.write(store, snapshot_date=DAY1, page_index=1, records=[record(1, 100)], meta={})
+    raw.write(store, snapshot_date=DAY2, page_index=1, records=[record(1, 180)], meta={})
     lineage_path(store).unlink(missing_ok=True)
 
     assert divergent_since(store) == DAY1
@@ -394,14 +397,14 @@ def test_cli定点重放修好被重写的Raw(tmp_path: Path) -> None:
     seed(store, DAY1, [record(1, 100), record(2, 50)])
     seed(store, DAY2, [record(1, 180), record(2, 50)])
     # 补一块新分块，但没有触发派生：Raw 新、派生旧。
-    store.write_raw(snapshot_date=DAY2, page_index=2, records=[record(3, 10)], meta={})
+    raw.write(store, snapshot_date=DAY2, page_index=2, records=[record(3, 10)], meta={})
     assert divergent_since(store) == DAY2
 
     code = main(["--data-dir", str(store.root), "build", "--stale"])
 
     assert code == 0
     assert divergent_since(store) is None
-    assert "acme/ds-3" in set(store.read_current()["id"].to_list())
+    assert "acme/ds-3" in set(state.read_current(store)["id"].to_list())
 
 
 def test_cli全量与定点互斥(tmp_path: Path) -> None:

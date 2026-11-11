@@ -60,8 +60,8 @@ def store(tmp_path: Path) -> DatasetStore:
 
 def test_normal_part_day_is_replayable(store: DatasetStore) -> None:
     """普通 part/top 分块：可重放、采过、未归档、未压缩。"""
-    store.write_raw(snapshot_date=DAY, page_index=1, records=[record(1)], meta={})
-    store.write_raw(snapshot_date=DAY, page_index=1, records=[record(2)], meta={}, label="top")
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[record(1)], meta={})
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[record(2)], meta={}, label="top")
 
     day = raw.describe_day(store, DAY)
 
@@ -86,7 +86,8 @@ def test_archive_only_day_is_replayable(store: DatasetStore) -> None:
 
 def test_card_only_day_is_replayable(store: DatasetStore) -> None:
     """仅 card 补抓批次：语义变化的唯一来源，从此算可重放。"""
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=DAY,
         page_index=1,
         records=[record(1)],
@@ -127,7 +128,7 @@ def test_empty_partition_is_neither_observed_nor_replayable(store: DatasetStore)
 def test_observed_days_unions_main_directory_and_cold_manifest(store: DatasetStore) -> None:
     """采过的日期 = 主目录有分块的日子 ∪ 冷区清单，按日期升序。"""
     earlier = date(2026, 11, 5)
-    store.write_raw(snapshot_date=DAY, page_index=1, records=[record(1)], meta={})
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[record(1)], meta={})
     write_manifest(store, [earlier])
 
     days = raw.observed_days(store)
@@ -139,7 +140,7 @@ def test_observed_days_unions_main_directory_and_cold_manifest(store: DatasetSto
 def test_replayable_days_excludes_compacted(store: DatasetStore) -> None:
     """可重放集合不包含只能从冷区发现的日子。"""
     earlier = date(2026, 11, 5)
-    store.write_raw(snapshot_date=DAY, page_index=1, records=[record(1)], meta={})
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[record(1)], meta={})
     write_manifest(store, [earlier])
 
     assert [day.snapshot_date for day in raw.replayable_days(store)] == [DAY]
@@ -150,7 +151,8 @@ def test_replayable_matches_lineage_fingerprint(store: DatasetStore) -> None:
     archive_day = date(2026, 11, 4)
     card_day = date(2026, 11, 6)
     write_archive(store, archive_day, "part")
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=card_day,
         page_index=1,
         records=[record(1)],

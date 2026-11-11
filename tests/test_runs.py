@@ -10,6 +10,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from hf_data_crawl import raw
 from hf_data_crawl.cli import main
 from hf_data_crawl.derive import derive_day
 from hf_data_crawl.runs import read_runs
@@ -36,7 +37,7 @@ def record(index: int) -> dict[str, Any]:
 
 
 def seed(store: DatasetStore) -> None:
-    store.write_raw(snapshot_date=DAY1, page_index=1, records=[record(1)], meta={})
+    raw.write(store, snapshot_date=DAY1, page_index=1, records=[record(1)], meta={})
     derive_day(store, DAY1)
 
 

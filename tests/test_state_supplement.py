@@ -51,7 +51,7 @@ def store(tmp_path: Path) -> DatasetStore:
 
 
 def write(store: DatasetStore, *records: dict[str, Any], label: str = "part") -> None:
-    store.write_raw(snapshot_date=DAY, page_index=1, records=list(records), meta={}, label=label)
+    raw.write(store, snapshot_date=DAY, page_index=1, records=list(records), meta={}, label=label)
 
 
 def test_只在补抓批次出现的库补进current(store: DatasetStore) -> None:
@@ -62,8 +62,8 @@ def test_只在补抓批次出现的库补进current(store: DatasetStore) -> Non
 
     state.update(store, DAY)
 
-    assert set(store.read_current()["id"].to_list()) == {"acme/in-part", "acme/only-card"}
-    assert store.read_current().height == 2
+    assert set(state.read_current(store)["id"].to_list()) == {"acme/in-part", "acme/only-card"}
+    assert state.read_current(store).height == 2
 
 
 def test_bronze仍只收扫描批次(store: DatasetStore) -> None:
@@ -72,7 +72,7 @@ def test_bronze仍只收扫描批次(store: DatasetStore) -> None:
     write(store, record("acme/only-card"), label=CARD_LABEL)
 
     assert bronze.build(store, DAY) == 1
-    assert store.read_bronze(DAY)["id"].to_list() == ["acme/in-part"]
+    assert store.read("bronze", DAY)["id"].to_list() == ["acme/in-part"]
 
 
 def test_重复id仍以扫描批次为准(store: DatasetStore) -> None:
@@ -83,7 +83,7 @@ def test_重复id仍以扫描批次为准(store: DatasetStore) -> None:
 
     state.update(store, DAY)
 
-    row = store.read_current().row(0, named=True)
+    row = state.read_current(store).row(0, named=True)
     assert row["downloads"] == 100
     assert row["downloads_all_time"] == 1000, "补抓批次的 9990 不许盖掉扫描值"
 
@@ -94,7 +94,7 @@ def test_只有补抓批次时也能建出current(store: DatasetStore) -> None:
 
     state.update(store, DAY)
 
-    assert store.read_current()["id"].to_list() == ["acme/only-card"]
+    assert state.read_current(store)["id"].to_list() == ["acme/only-card"]
 
 
 def test_补进来的库也落一条观测(store: DatasetStore) -> None:
@@ -103,7 +103,7 @@ def test_补进来的库也落一条观测(store: DatasetStore) -> None:
 
     state.update(store, DAY)
 
-    observations = store.read_observations()
+    observations = store.read_all("observations")
     assert observations["id"].to_list() == ["acme/only-card"]
     assert observations["downloads"].to_list() == [7]
 
@@ -114,7 +114,7 @@ def test_没有补抓批次时行为不变(store: DatasetStore) -> None:
 
     state.update(store, DAY)
 
-    assert store.read_current().height == 2
+    assert state.read_current(store).height == 2
 
 
 def test_补充分块与主批次分开取(store: DatasetStore) -> None:
@@ -133,7 +133,7 @@ def test_补进来的库也有属性行(store: DatasetStore) -> None:
 
     silver.build(store, DAY)
 
-    assert set(store.read_silver(DAY)["id"].to_list()) == {"acme/in-part", "acme/only-card"}
+    assert set(store.read("silver", DAY)["id"].to_list()) == {"acme/in-part", "acme/only-card"}
 
 
 def test_补进来的库属性取自补抓批次(store: DatasetStore) -> None:
@@ -142,7 +142,7 @@ def test_补进来的库属性取自补抓批次(store: DatasetStore) -> None:
 
     silver.build(store, DAY)
 
-    row = store.read_silver(DAY).row(0, named=True)
+    row = store.read("silver", DAY).row(0, named=True)
     assert row["id"] == "acme/only-card"
     assert row["description"] == "from-card"
 

@@ -15,7 +15,7 @@ from typing import Any
 import polars as pl
 import pytest
 
-from hf_data_crawl import bronze
+from hf_data_crawl import bronze, raw
 from hf_data_crawl.store import DatasetStore
 
 SNAPSHOT = date(2026, 11, 3)
@@ -44,13 +44,15 @@ def store(tmp_path: Path) -> DatasetStore:
 
 
 def test_同页写两次只留一个文件且内容不变(store: DatasetStore) -> None:
-    first = store.write_raw(
+    first = raw.write(
+        store,
         snapshot_date=SNAPSHOT,
         page_index=1,
         records=[record(1), record(2)],
         meta={"cursor": None, "sort": "createdAt"},
     )
-    second = store.write_raw(
+    second = raw.write(
+        store,
         snapshot_date=SNAPSHOT,
         page_index=1,
         records=[record(1), record(2)],
@@ -62,7 +64,8 @@ def test_同页写两次只留一个文件且内容不变(store: DatasetStore) -
 
 
 def test_raw文件可独立解压并保留元信息(store: DatasetStore) -> None:
-    path = store.write_raw(
+    path = raw.write(
+        store,
         snapshot_date=SNAPSHOT,
         page_index=3,
         records=[record(9)],
@@ -78,18 +81,18 @@ def test_raw文件可独立解压并保留元信息(store: DatasetStore) -> None
 
 def test_同页内容变化时不覆盖旧文件(store: DatasetStore) -> None:
     """同一页码两次内容不同，说明不是同一批数据，覆盖会静默丢数据。"""
-    store.write_raw(snapshot_date=SNAPSHOT, page_index=1, records=[record(1)], meta={})
-    store.write_raw(snapshot_date=SNAPSHOT, page_index=1, records=[record(2)], meta={})
+    raw.write(store, snapshot_date=SNAPSHOT, page_index=1, records=[record(1)], meta={})
+    raw.write(store, snapshot_date=SNAPSHOT, page_index=1, records=[record(2)], meta={})
 
     assert len(list(store.raw_dir.rglob("*.json.gz"))) == 2
 
 
 def test_从raw重建bronze行数与记录数一致(store: DatasetStore) -> None:
-    store.write_raw(snapshot_date=SNAPSHOT, page_index=1, records=[record(1), record(2)], meta={})
-    store.write_raw(snapshot_date=SNAPSHOT, page_index=2, records=[record(3)], meta={})
+    raw.write(store, snapshot_date=SNAPSHOT, page_index=1, records=[record(1), record(2)], meta={})
+    raw.write(store, snapshot_date=SNAPSHOT, page_index=2, records=[record(3)], meta={})
 
     written = bronze.build(store, SNAPSHOT)
-    bronzes = store.read_bronze(SNAPSHOT)
+    bronzes = store.read("bronze", SNAPSHOT)
 
     assert written == 3
     assert bronzes.height == 3
@@ -97,13 +100,13 @@ def test_从raw重建bronze行数与记录数一致(store: DatasetStore) -> None
 
 
 def test_bronze同日重建不产生重复行(store: DatasetStore) -> None:
-    store.write_raw(snapshot_date=SNAPSHOT, page_index=1, records=[record(1), record(2)], meta={})
-    store.write_raw(snapshot_date=SNAPSHOT, page_index=1, records=[record(2), record(3)], meta={})
+    raw.write(store, snapshot_date=SNAPSHOT, page_index=1, records=[record(1), record(2)], meta={})
+    raw.write(store, snapshot_date=SNAPSHOT, page_index=1, records=[record(2), record(3)], meta={})
 
     bronze.build(store, SNAPSHOT)
     bronze.build(store, SNAPSHOT)
 
-    bronzes = store.read_bronze(SNAPSHOT)
+    bronzes = store.read("bronze", SNAPSHOT)
 
     assert bronzes.height == 3
     assert bronzes["id"].n_unique() == 3
@@ -111,10 +114,10 @@ def test_bronze同日重建不产生重复行(store: DatasetStore) -> None:
 
 def test_bronze保留原始JSON且不改写内容(store: DatasetStore) -> None:
     original = record(1, downloads=42)
-    store.write_raw(snapshot_date=SNAPSHOT, page_index=1, records=[original], meta={})
+    raw.write(store, snapshot_date=SNAPSHOT, page_index=1, records=[original], meta={})
 
     bronze.build(store, SNAPSHOT)
-    row = store.read_bronze(SNAPSHOT).row(0, named=True)
+    row = store.read("bronze", SNAPSHOT).row(0, named=True)
 
     restored = json.loads(row["raw"])
     assert restored == original
@@ -125,10 +128,10 @@ def test_bronze保留原始JSON且不改写内容(store: DatasetStore) -> None:
 
 def test_缺少可选字段的记录仍能入bronze(store: DatasetStore) -> None:
     minimal = {"id": "acme/bare", "lastModified": "2026-11-02T00:00:00.000Z"}
-    store.write_raw(snapshot_date=SNAPSHOT, page_index=1, records=[minimal], meta={})
+    raw.write(store, snapshot_date=SNAPSHOT, page_index=1, records=[minimal], meta={})
 
     bronze.build(store, SNAPSHOT)
-    row = store.read_bronze(SNAPSHOT).row(0, named=True)
+    row = store.read("bronze", SNAPSHOT).row(0, named=True)
 
     assert row["id"] == "acme/bare"
     assert row["downloads"] is None
@@ -141,7 +144,7 @@ def test_空目录重建返回零且不产出空分区(store: DatasetStore) -> N
 
 
 def test_bronze被polars直接可读(store: DatasetStore) -> None:
-    store.write_raw(snapshot_date=SNAPSHOT, page_index=1, records=[record(1)], meta={})
+    raw.write(store, snapshot_date=SNAPSHOT, page_index=1, records=[record(1)], meta={})
     bronze.build(store, SNAPSHOT)
 
     frame = pl.read_parquet(store.path("bronze", SNAPSHOT))
@@ -155,14 +158,16 @@ def test_同页多次写入以后写者为准(store: DatasetStore) -> None:
     「不依赖文件名字典序」「不依赖 mtime」这两条更强的保证由
     tests/test_raw_order.py 负责；此处只守住最基础的一条。
     """
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=SNAPSHOT,
         page_index=1,
         records=[record(1) | {"mainSize": 111}],
         meta={},
         written_at="2026-11-04T09:00:00.000000+00:00",
     )
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=SNAPSHOT,
         page_index=1,
         records=[record(1) | {"mainSize": 222}],
@@ -172,7 +177,7 @@ def test_同页多次写入以后写者为准(store: DatasetStore) -> None:
 
     bronze.build(store, SNAPSHOT)
 
-    assert store.read_bronze(SNAPSHOT).row(0, named=True)["main_size"] == 222
+    assert store.read("bronze", SNAPSHOT).row(0, named=True)["main_size"] == 222
 
 
 def test_后写入的新字段不会被先写入的空值覆盖(store: DatasetStore) -> None:
@@ -180,10 +185,11 @@ def test_后写入的新字段不会被先写入的空值覆盖(store: DatasetSt
     import os
     import time
 
-    store.write_raw(
-        snapshot_date=SNAPSHOT, page_index=1, records=[record(1)], meta={}, label="part"
+    raw.write(
+        store, snapshot_date=SNAPSHOT, page_index=1, records=[record(1)], meta={}, label="part"
     )
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=SNAPSHOT,
         page_index=1,
         records=[record(1) | {"mainSize": 999}],
@@ -200,4 +206,4 @@ def test_后写入的新字段不会被先写入的空值覆盖(store: DatasetSt
 
     bronze.build(store, SNAPSHOT)
 
-    assert store.read_bronze(SNAPSHOT).row(0, named=True)["main_size"] == 999
+    assert store.read("bronze", SNAPSHOT).row(0, named=True)["main_size"] == 999

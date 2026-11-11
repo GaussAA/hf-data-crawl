@@ -34,7 +34,8 @@ def record(index: int, downloads: int) -> dict[str, Any]:
 def seed(store: DatasetStore) -> None:
     """五页，同一批 id 反复出现：后写入的页必须胜出；另有 top 与 card 标签。"""
     for page in range(1, 6):
-        store.write_raw(
+        raw.write(
+            store,
             snapshot_date=DAY,
             page_index=page,
             records=[record(index, downloads=page * 10) for index in range(1, 4)]
@@ -42,7 +43,8 @@ def seed(store: DatasetStore) -> None:
             meta={},
             written_at=f"2026-11-03T00:00:0{page}.000000+00:00",
         )
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=DAY,
         page_index=1,
         records=[record(1, downloads=999)],
@@ -50,7 +52,8 @@ def seed(store: DatasetStore) -> None:
         label="top",
         written_at="2026-11-03T01:00:00.000000+00:00",
     )
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=DAY,
         page_index=1,
         records=[{**record(1, downloads=5), "cardData": {"pretty_name": "A"}}],
@@ -69,7 +72,7 @@ def store(tmp_path: Path) -> DatasetStore:
 
 def bronze_of(store: DatasetStore):
     bronze.build(store, DAY)
-    return store.read_bronze(DAY).sort("id").drop("page_file")
+    return store.read("bronze", DAY).sort("id").drop("page_file")
 
 
 def test_归档前后bronze逐行相等(store: DatasetStore) -> None:

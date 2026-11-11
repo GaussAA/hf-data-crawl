@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 
-from hf_data_crawl import bronze
+from hf_data_crawl import bronze, raw
 from hf_data_crawl.api import ALLOWED_PLACEHOLDERS, EXPAND_WHITELIST, LIST_UNRETURNED_FIELDS
 from hf_data_crawl.collect import LEAN_EXPAND
 from hf_data_crawl.enrich import ENRICH_EXPAND
@@ -194,10 +194,10 @@ def test_全字段记录落库后没有一列是空的(tmp_path: Path) -> None:
     任何一列变空，用户拿到的就是一张看起来正常、实际缺失的宽表。
     """
     store = DatasetStore(tmp_path / "data")
-    store.write_raw(snapshot_date=DAY, page_index=1, records=[_full_record()], meta={})
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[_full_record()], meta={})
 
     assert bronze.build(store, DAY) == 1
-    row = store.read_bronze(DAY).row(0, named=True)
+    row = store.read("bronze", DAY).row(0, named=True)
 
     empty = [name for name, value in row.items() if value is None and name != "raw"]
     assert not empty, f"下列列虽然声明了却没有值：{empty}"
@@ -212,10 +212,10 @@ def test_全字段记录落库后没有一列是空的(tmp_path: Path) -> None:
 def test_结构化的resource_group存成可再解析的json(tmp_path: Path) -> None:
     """直接 str() 会得到单引号的 Python 字面量，之后再 json.loads 必然失败。"""
     store = DatasetStore(tmp_path / "data")
-    store.write_raw(snapshot_date=DAY, page_index=1, records=[_full_record()], meta={})
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[_full_record()], meta={})
     bronze.build(store, DAY)
 
-    raw_value = store.read_bronze(DAY).row(0, named=True)["resource_group"]
+    raw_value = store.read("bronze", DAY).row(0, named=True)["resource_group"]
 
     assert json.loads(raw_value) == {"id": "rg-1", "name": "默认"}
 
@@ -224,10 +224,10 @@ def test_类型不符时留空而不是猜(tmp_path: Path) -> None:
     """字段类型异常（如 private 给成字符串）宁可留空，也不许静默转成 True。"""
     store = DatasetStore(tmp_path / "data")
     record = _full_record() | {"private": "true", "mainSize": "很大", "trendingScore": None}
-    store.write_raw(snapshot_date=DAY, page_index=1, records=[record], meta={})
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[record], meta={})
     bronze.build(store, DAY)
 
-    row = store.read_bronze(DAY).row(0, named=True)
+    row = store.read("bronze", DAY).row(0, named=True)
 
     assert row["private"] is None
     assert row["main_size"] is None
@@ -245,7 +245,7 @@ def test_旧分区缺列时读出来补空而不是报错(tmp_path: Path) -> Non
         target
     )
 
-    frame = store.read_bronze(DAY)
+    frame = store.read("bronze", DAY)
 
     assert set(frame.columns) == set(BRONZE_SCHEMA)
     assert frame.row(0, named=True)["main_size"] is None
@@ -255,10 +255,10 @@ def test_旧分区缺列时读出来补空而不是报错(tmp_path: Path) -> Non
 def test_事故列不再恒空(column: str, tmp_path: Path) -> None:
     """逐列点名：这四列是本次补齐的核心，任何一列回到全空都算回归。"""
     store = DatasetStore(tmp_path / "data")
-    store.write_raw(snapshot_date=DAY, page_index=1, records=[_full_record()], meta={})
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[_full_record()], meta={})
     bronze.build(store, DAY)
 
-    assert store.read_bronze(DAY)[column].null_count() == 0
+    assert store.read("bronze", DAY)[column].null_count() == 0
 
 
 # ---------------------------------------------------------------- 最新一行的两种实现

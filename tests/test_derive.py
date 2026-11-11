@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from hf_data_crawl import bronze, card, derive, silver, state
+from hf_data_crawl import bronze, card, derive, raw, silver, state
 from hf_data_crawl.derive import derive_day
 from hf_data_crawl.raw import CARD_LABEL
 from hf_data_crawl.store import DatasetStore
@@ -41,7 +41,7 @@ def store(tmp_path: Path) -> DatasetStore:
 
 
 def test_有raw时各层都有数据且结果对得上(store: DatasetStore) -> None:
-    store.write_raw(snapshot_date=DAY, page_index=1, records=[record(1), record(2)], meta={})
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[record(1), record(2)], meta={})
 
     result = derive_day(store, DAY)
 
@@ -49,14 +49,14 @@ def test_有raw时各层都有数据且结果对得上(store: DatasetStore) -> N
     assert result.silver_rows == 2
     assert result.state.current_rows == 2
     assert result.state.appended == 2
-    assert store.read_bronze(DAY).height == 2
-    assert store.read_silver(DAY).height == 2
-    assert store.read_observations().height == 2
-    assert store.read_current().height == 2
+    assert store.read("bronze", DAY).height == 2
+    assert store.read("silver", DAY).height == 2
+    assert store.read_all("observations").height == 2
+    assert state.read_current(store).height == 2
 
 
 def test_不跑卡片时卡片行数是None而不是0(store: DatasetStore) -> None:
-    store.write_raw(snapshot_date=DAY, page_index=1, records=[record(1)], meta={})
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[record(1)], meta={})
 
     result = derive_day(store, DAY)
 
@@ -66,7 +66,8 @@ def test_不跑卡片时卡片行数是None而不是0(store: DatasetStore) -> No
 
 
 def test_enrich时产出卡片表(store: DatasetStore) -> None:
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=DAY,
         page_index=1,
         records=[record(1, with_card=True)],
@@ -78,14 +79,15 @@ def test_enrich时产出卡片表(store: DatasetStore) -> None:
 
     assert result.card_rows == 1
     assert result.config_rows == 0
-    assert store.read_enrich().height == 1
+    assert store.read("carddata").height == 1
 
 
 def test_bronze只收part与top不收卡片批次(store: DatasetStore) -> None:
     """卡片批次属于卡片表，不该让 Bronze 的行数随补抓节奏膨胀。"""
-    store.write_raw(snapshot_date=DAY, page_index=1, records=[record(1)], meta={}, label="part")
-    store.write_raw(snapshot_date=DAY, page_index=2, records=[record(2)], meta={}, label="top")
-    store.write_raw(
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[record(1)], meta={}, label="part")
+    raw.write(store, snapshot_date=DAY, page_index=2, records=[record(2)], meta={}, label="top")
+    raw.write(
+        store,
         snapshot_date=DAY,
         page_index=3,
         records=[record(3, with_card=True)],
@@ -96,11 +98,11 @@ def test_bronze只收part与top不收卡片批次(store: DatasetStore) -> None:
     result = derive_day(store, DAY, enrich=True)
 
     assert result.bronze_rows == 2
-    assert sorted(store.read_bronze(DAY)["id"].to_list()) == ["acme/ds-1", "acme/ds-2"]
+    assert sorted(store.read("bronze", DAY)["id"].to_list()) == ["acme/ds-1", "acme/ds-2"]
     assert result.card_rows == 1
     # Bronze 仍然不含卡片批次（上面两条），但只在卡片批次出现的库由状态层补进
     # current——否则会出现「current 里有、raw 重放不出来」。见 test_state_supplement.py。
-    assert sorted(store.read_current()["id"].to_list()) == [
+    assert sorted(state.read_current(store)["id"].to_list()) == [
         "acme/ds-1",
         "acme/ds-2",
         "acme/ds-3",
@@ -135,7 +137,7 @@ def test_调用次序固定为bronze_silver_card_state(
 
 
 def test_空日不提前返回且保留现有当前态行数(store: DatasetStore) -> None:
-    store.write_raw(snapshot_date=DAY, page_index=1, records=[record(1), record(2)], meta={})
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[record(1), record(2)], meta={})
     derive_day(store, DAY)
 
     empty_day = date(2026, 11, 4)
@@ -157,8 +159,8 @@ def test_入口模块直接引用各步而非store转发() -> None:
 
 def test_只保留最新一天的bronze且旧分区可重建(store: DatasetStore) -> None:
     day1, day2 = DAY, date(2026, 11, 4)
-    store.write_raw(snapshot_date=day1, page_index=1, records=[record(1), record(2)], meta={})
-    store.write_raw(snapshot_date=day2, page_index=1, records=[record(1)], meta={})
+    raw.write(store, snapshot_date=day1, page_index=1, records=[record(1), record(2)], meta={})
+    raw.write(store, snapshot_date=day2, page_index=1, records=[record(1)], meta={})
 
     derive_day(store, day1)
     derive_day(store, day2)
@@ -172,10 +174,10 @@ def test_只保留最新一天的bronze且旧分区可重建(store: DatasetStore
 def test_日增量只覆盖部分行时current不丢其余行(store: DatasetStore) -> None:
     """Bronze 只留最新一天后，当天只含部分行；其余数据集必须靠 current 保住。"""
     day2 = date(2026, 11, 4)
-    store.write_raw(snapshot_date=DAY, page_index=1, records=[record(1), record(2)], meta={})
-    store.write_raw(snapshot_date=day2, page_index=1, records=[record(1)], meta={})
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[record(1), record(2)], meta={})
+    raw.write(store, snapshot_date=day2, page_index=1, records=[record(1)], meta={})
 
     derive_day(store, DAY)
     derive_day(store, day2)
 
-    assert sorted(store.read_current()["id"].to_list()) == ["acme/ds-1", "acme/ds-2"]
+    assert sorted(state.read_current(store)["id"].to_list()) == ["acme/ds-1", "acme/ds-2"]

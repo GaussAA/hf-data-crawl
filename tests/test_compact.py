@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 import hf_data_crawl.compact as compact_module
-from hf_data_crawl import raw
+from hf_data_crawl import raw, state
 from hf_data_crawl.compact import CompactMismatch, compact
 from hf_data_crawl.derive import derive_day
 from hf_data_crawl.rebuild import discover_raw_dates, rebuild_from_raw
@@ -52,7 +52,8 @@ def seed(store: DatasetStore) -> None:
         HOT: [record(1, 200, "s1c"), record(3, 10, "s3")],
     }
     for number, day in enumerate([*COLD, HOT], 1):
-        store.write_raw(
+        raw.write(
+            store,
             snapshot_date=day,
             page_index=1,
             records=plan[day],
@@ -65,9 +66,9 @@ def seed(store: DatasetStore) -> None:
 def state_fingerprint(store: DatasetStore) -> dict[str, str]:
     out: dict[str, str] = {}
     for name, frame in (
-        ("observations", store.read_observations()),
+        ("observations", store.read_all("observations")),
         ("silver", store.read_all("silver")),
-        ("current", store.read_current()),
+        ("current", state.read_current(store)),
     ):
         columns = sorted(frame.columns)
         keys = [column for column in ("id", "snapshot_date") if column in frame.columns]

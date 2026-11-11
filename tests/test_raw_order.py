@@ -26,7 +26,7 @@ from typing import Any
 
 import pytest
 
-from hf_data_crawl import bronze
+from hf_data_crawl import bronze, raw
 from hf_data_crawl.store import DatasetStore
 
 DAY = date(2026, 11, 4)
@@ -67,7 +67,7 @@ def store(tmp_path: Path) -> DatasetStore:
 
 def test_写入时刻落进raw的meta(store: DatasetStore) -> None:
     """序必须在数据里，才能在复制、迁移、归档之后依然成立。"""
-    store.write_raw(snapshot_date=DAY, page_index=1, records=[record(1)], meta={})
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[record(1)], meta={})
 
     meta = payloads(store)[0]["meta"]
 
@@ -77,7 +77,8 @@ def test_写入时刻落进raw的meta(store: DatasetStore) -> None:
 
 def test_写入时刻可注入以便确定性测试(store: DatasetStore) -> None:
     """不注入就只能靠真实时间，测试会随时钟抖动。"""
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=DAY,
         page_index=1,
         records=[record(1)],
@@ -93,14 +94,16 @@ def test_写入时刻可注入以便确定性测试(store: DatasetStore) -> None
 
 def test_胜出者由写入时刻决定而不是文件名(store: DatasetStore) -> None:
     """摘要值是随机哈希，字典序谁先谁后纯属偶然。"""
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=DAY,
         page_index=1,
         records=[record(1, main_size=111)],
         meta={},
         written_at="2026-11-04T12:00:00.000000+00:00",
     )
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=DAY,
         page_index=1,
         records=[record(1, main_size=222)],
@@ -111,7 +114,7 @@ def test_胜出者由写入时刻决定而不是文件名(store: DatasetStore) -
     bronze.build(store, DAY)
 
     # 09:00 那批虽是后写的，但时刻更早，故 12:00 的 111 胜出。
-    assert store.read_bronze(DAY).row(0, named=True)["main_size"] == 111
+    assert store.read("bronze", DAY).row(0, named=True)["main_size"] == 111
 
 
 def test_胜出者由写入时刻决定而不是文件修改时间(store: DatasetStore) -> None:
@@ -122,14 +125,16 @@ def test_胜出者由写入时刻决定而不是文件修改时间(store: Datase
     import os
     import time
 
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=DAY,
         page_index=1,
         records=[record(1, main_size=111)],
         meta={},
         written_at="2026-11-04T12:00:00.000000+00:00",
     )
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=DAY,
         page_index=1,
         records=[record(1, main_size=222)],
@@ -147,7 +152,7 @@ def test_胜出者由写入时刻决定而不是文件修改时间(store: Datase
 
     bronze.build(store, DAY)
 
-    assert store.read_bronze(DAY).row(0, named=True)["main_size"] == 111
+    assert store.read("bronze", DAY).row(0, named=True)["main_size"] == 111
 
 
 # ---------------------------------------------------------------- 可复现
@@ -171,14 +176,16 @@ def test_复制raw目录后重建结果完全一致(tmp_path: Path) -> None:
         ],
         1,
     ):
-        source.write_raw(
+        raw.write(
+            source,
             snapshot_date=DAY,
             page_index=index,
             records=[record(index, main_size=index * 100)],
             meta={},
             written_at=stamp,
         )
-        source.write_raw(
+        raw.write(
+            source,
             snapshot_date=DAY,
             page_index=index,
             records=[record(index, main_size=index * 999)],
@@ -187,7 +194,7 @@ def test_复制raw目录后重建结果完全一致(tmp_path: Path) -> None:
         )
 
     bronze.build(source, DAY)
-    expected = source.read_bronze(DAY)
+    expected = source.read("bronze", DAY)
 
     target = DatasetStore(tmp_path / "b")
     shutil.copytree(source.raw_dir, target.raw_dir)
@@ -198,7 +205,7 @@ def test_复制raw目录后重建结果完全一致(tmp_path: Path) -> None:
 
     bronze.build(target, DAY)
 
-    assert target.read_bronze(DAY).equals(expected)
+    assert target.read("bronze", DAY).equals(expected)
 
 
 # ---------------------------------------------------------------- 向后兼容
@@ -235,7 +242,7 @@ def test_旧raw没有写入时刻时按文件名确定性定序(tmp_path: Path) 
 
     bronze.build(store, DAY)
 
-    assert store.read_bronze(DAY).row(0, named=True)["main_size"] == 222
+    assert store.read("bronze", DAY).row(0, named=True)["main_size"] == 222
 
 
 def test_新分块永远压过没有时刻的旧分块(store: DatasetStore) -> None:
@@ -260,7 +267,8 @@ def test_新分块永远压过没有时刻的旧分块(store: DatasetStore) -> N
     future = time.time() + 10_000
     os.utime(legacy, (future, future))
 
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=DAY,
         page_index=1,
         records=[record(1, main_size=222)],
@@ -270,7 +278,7 @@ def test_新分块永远压过没有时刻的旧分块(store: DatasetStore) -> N
 
     bronze.build(store, DAY)
 
-    assert store.read_bronze(DAY).row(0, named=True)["main_size"] == 222
+    assert store.read("bronze", DAY).row(0, named=True)["main_size"] == 222
 
 
 # ---------------------------------------------------------------- 归档冻结
@@ -308,4 +316,4 @@ def test_归档分片自带排序键不受文件mtime影响(tmp_path: Path) -> N
 
     bronze.build(store, DAY)
 
-    assert store.read_bronze(DAY).row(0, named=True)["main_size"] == 222
+    assert store.read("bronze", DAY).row(0, named=True)["main_size"] == 222

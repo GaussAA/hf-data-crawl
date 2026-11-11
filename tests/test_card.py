@@ -15,7 +15,7 @@ from typing import Any
 import polars as pl
 import pytest
 
-from hf_data_crawl import card
+from hf_data_crawl import card, raw
 from hf_data_crawl.card import extract_card_row, extract_config_rows
 from hf_data_crawl.store import DatasetStore
 from hf_data_crawl.tables import CARD_CONFIGS_SCHEMA, ENRICH_SCHEMA
@@ -211,8 +211,8 @@ def store(tmp_path: Path) -> DatasetStore:
 
 
 def test_两张表都落盘且行数正确(store: DatasetStore) -> None:
-    store.write_raw(
-        snapshot_date=DAY, page_index=1, records=[wikitext_style()], meta={}, label="card"
+    raw.write(
+        store, snapshot_date=DAY, page_index=1, records=[wikitext_style()], meta={}, label="card"
     )
 
     card_rows, config_rows = card.build(store, DAY)
@@ -220,22 +220,22 @@ def test_两张表都落盘且行数正确(store: DatasetStore) -> None:
     assert card_rows == 1
     # 两个 split + metadata 骨架行
     assert config_rows == 3
-    assert store.read_enrich().height == 1
-    assert store.read_card_configs().height == 3
+    assert store.read("carddata").height == 1
+    assert store.read("card_configs").height == 3
 
 
 def test_重复补齐不产生重复明细行(store: DatasetStore) -> None:
-    store.write_raw(
-        snapshot_date=DAY, page_index=1, records=[wikitext_style()], meta={}, label="card"
+    raw.write(
+        store, snapshot_date=DAY, page_index=1, records=[wikitext_style()], meta={}, label="card"
     )
     card.build(store, DAY)
-    store.write_raw(
-        snapshot_date=DAY, page_index=2, records=[wikitext_style()], meta={}, label="card"
+    raw.write(
+        store, snapshot_date=DAY, page_index=2, records=[wikitext_style()], meta={}, label="card"
     )
 
     card.build(store, DAY)
 
-    table = store.read_card_configs()
+    table = store.read("card_configs")
     assert table.height == 3
     assert table.select(["id", "config_name", "split"]).is_duplicated().sum() == 0
 
@@ -248,12 +248,12 @@ def test_旧版卡片表缺列时能继续并入(store: DatasetStore) -> None:
         {"id": ["acme/old"], "pretty_name": ["旧集"], "license_name": ["mit"]}
     ).write_parquet(target)
 
-    store.write_raw(
-        snapshot_date=DAY, page_index=1, records=[wikitext_style()], meta={}, label="card"
+    raw.write(
+        store, snapshot_date=DAY, page_index=1, records=[wikitext_style()], meta={}, label="card"
     )
     card.build(store, DAY)
 
-    table = store.read_enrich()
+    table = store.read("carddata")
     assert table.height == 2
     assert set(table.columns) == set(ENRICH_SCHEMA)
     assert table.filter(pl.col("id") == "acme/old").row(0, named=True)["card_num_rows"] is None
@@ -267,7 +267,8 @@ def _seed_card_pages(store: DatasetStore) -> None:
     for page in range(1, 6):
         record = wikitext_style()
         record["cardData"]["pretty_name"] = f"WikiText-{page}"
-        store.write_raw(
+        raw.write(
+            store,
             snapshot_date=DAY,
             page_index=page,
             records=[record, {**wikitext_style(), "id": "acme/other", "downloads": page}],
@@ -296,7 +297,7 @@ def test_串行与并行产出逐字节等价(tmp_path: Path, monkeypatch: pytes
         assert serial_store.path(name).read_bytes() == parallel_store.path(name).read_bytes()
     # 顺带确认「同 id 以最后写入者为准」没有在归并时被改掉。
     assert (
-        parallel_store.read_enrich()
+        parallel_store.read("carddata")
         .filter(pl.col("id") == "acme/wikitext")
         .row(0, named=True)["pretty_name"]
         == "WikiText-5"

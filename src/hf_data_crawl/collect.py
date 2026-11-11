@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
+from . import state
 from .api import IDENTITY_EXPAND, MAX_LIMIT, HfDatasetApi, Page
 from .checkpoint import FileCheckpoint
 from .derive import derive_day
@@ -149,7 +150,7 @@ class Collector:
             base_checkpoint, self._store.state_dir / WATERMARK_FILENAME
         )
 
-        known: set[str] = set(self._store.read_current()["id"].to_list())
+        known: set[str] = set(state.read_current(self._store)["id"].to_list())
 
         # 整轮固定用开始时加载的水位线判断边界。若拿本轮已更新的值来比，
         # 跨日更新会被提前截断：第一页之后水位线跳到今天，旧边界反而显得“已越过”。
@@ -246,7 +247,7 @@ class Collector:
         day = derive_day(self._store, snapshot_date, enrich=cards)
         bronze_rows = day.bronze_rows
         silver_rows = day.silver_rows
-        state = day.state
+        day_state = day.state
 
         # 完成态才推进水位线：走到末页说明本轮到尾，时间戳/无新 id 说明已越过
         # 旧边界。有界停止（max_pages）要保住游标，水位线也不能前进，否则续跑会
@@ -263,8 +264,8 @@ class Collector:
             new_ids=new_ids,
             bronze_rows=bronze_rows,
             silver_rows=silver_rows,
-            appended_observations=state.appended,
-            current_rows=state.current_rows,
+            appended_observations=day_state.appended,
+            current_rows=day_state.current_rows,
             rate_remaining=scan.rate_remaining,
             stopped_reason=scan.stopped_reason,
             elapsed_seconds=time.monotonic() - started,

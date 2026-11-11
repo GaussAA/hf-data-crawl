@@ -47,7 +47,7 @@ def test_只写入真正有卡片的行(store: DatasetStore) -> None:
     assert summary.with_card == 1
     assert summary.rows == 1
 
-    frame = store.read_enrich()
+    frame = store.read("carddata")
     assert frame.height == 1
     assert frame["id"][0] == "acme/with-card"
     assert frame["pretty_name"][0] == "展示名"

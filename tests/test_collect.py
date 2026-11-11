@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+from hf_data_crawl import state
 from hf_data_crawl.api import HfDatasetApi, HfResponse, Transport
 from hf_data_crawl.checkpoint import FileCheckpoint
 from hf_data_crawl.collect import CHECKPOINT_FILENAME, WATERMARK_FILENAME, Collector
@@ -105,8 +106,8 @@ def test_空库首轮跑通并产出当前态(store: DatasetStore) -> None:
 
     assert summary.stopped_reason == "end"
     assert summary.records == 5
-    assert store.read_current().height == 5
-    assert store.read_observations().height == 5
+    assert state.read_current(store).height == 5
+    assert store.read_all("observations").height == 5
 
 
 def test_次轮无变更在连续N页后提前停止(store: DatasetStore) -> None:
@@ -119,7 +120,7 @@ def test_次轮无变更在连续N页后提前停止(store: DatasetStore) -> Non
     assert summary.stopped_reason in {"watermark_no_new", "watermark_timestamp"}
     assert summary.new_ids == 0
     assert len(again.calls) == 2
-    assert store.read_current().height == 5
+    assert state.read_current(store).height == 5
 
 
 def test_有界运行保留游标且续跑不重复(store: DatasetStore) -> None:
@@ -133,8 +134,8 @@ def test_有界运行保留游标且续跑不重复(store: DatasetStore) -> None
     second = runner.run(DAY1, limit=100, pages_without_new=9)
 
     assert second.records == 4  # 只抓剩余两页，不重抓已处理的第一页
-    assert store.read_current().height == 6
-    assert store.read_current()["id"].n_unique() == 6
+    assert state.read_current(store).height == 6
+    assert state.read_current(store)["id"].n_unique() == 6
 
 
 def test_正常结束后清除游标(store: DatasetStore) -> None:
@@ -219,7 +220,7 @@ def test_顶部刷新按条数换算页数并单独落盘(store: DatasetStore) -
     assert summary.top_pages == 3  # ceil(5 / 2)
     assert summary.refreshed == 3
     assert len(list(store.raw_dir.rglob("top-*.json.gz"))) == 3
-    assert store.read_current().height == 5
+    assert state.read_current(store).height == 5
 
 
 def test_未指定顶部刷新时只扫一趟(store: DatasetStore) -> None:
@@ -306,7 +307,7 @@ def test_有水位线时卡片随增量抓且不进bronze(store: DatasetStore) -
     assert summary.card_records == 2
     # 卡片批次不进 Bronze 去重池：两页同为 b/ds-0、b/ds-1，bronze 仍是 2 行。
     assert summary.bronze_rows == 2
-    assert store.read_enrich().height == 2
+    assert store.read("carddata").height == 2
     names = [p.name for p in (store.raw_dir / f"dt={DAY2.isoformat()}").glob("*.json.gz")]
     assert any(name.startswith("card-") for name in names)
 

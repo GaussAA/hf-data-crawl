@@ -13,7 +13,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from hf_data_crawl import bronze, gold
+from hf_data_crawl import bronze, gold, raw
 from hf_data_crawl.rebuild import _clear, clear_derived
 from hf_data_crawl.store import DatasetStore
 from hf_data_crawl.tables import TABLES, Origin, TableSpec, table
@@ -144,10 +144,10 @@ def test_登记表的schema与实际落盘列一致(tmp_path: Path) -> None:
         "tags": [],
         "description": "d",
     }
-    store.write_raw(snapshot_date=date(2026, 11, 4), page_index=1, records=[record], meta={})
+    raw.write(store, snapshot_date=date(2026, 11, 4), page_index=1, records=[record], meta={})
     bronze.build(store, date(2026, 11, 4))
 
-    frame = store.read_bronze(date(2026, 11, 4))
+    frame = store.read("bronze", date(2026, 11, 4))
 
     assert list(frame.columns) == list(table("bronze").schema)
 
@@ -182,7 +182,8 @@ def test_落盘后url与实际id对得上(tmp_path: Path) -> None:
     from hf_data_crawl.tables import DATASET_URL
 
     store = DatasetStore(tmp_path / "data")
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=date(2026, 11, 4),
         page_index=1,
         records=[{"id": "acme/x", "author": "acme", "sha": "s"}],
@@ -192,6 +193,6 @@ def test_落盘后url与实际id对得上(tmp_path: Path) -> None:
 
     build_bronze(store, date(2026, 11, 4))
 
-    row = store.read_bronze(date(2026, 11, 4)).row(0, named=True)
+    row = store.read("bronze", date(2026, 11, 4)).row(0, named=True)
 
     assert row["url"] == f"{DATASET_URL}acme/x"

@@ -15,6 +15,7 @@ from typing import Any
 import polars as pl
 import pytest
 
+from hf_data_crawl import raw, state
 from hf_data_crawl.api import HfResponse
 from hf_data_crawl.cli import main
 from hf_data_crawl.derive import derive_day
@@ -103,12 +104,12 @@ def test_collect走完整条路径并留下成功记录(root: Path) -> None:
     assert code == 0
     assert len(transport.calls) == 2
     assert [item["status"] for item in runs] == ["success"]
-    assert store.read_current().height == 3
+    assert state.read_current(store).height == 3
 
 
 def test_reconcile对同一批数据不报差异且记成功(root: Path) -> None:
     store = DatasetStore(root)
-    store.write_raw(snapshot_date=DAY, page_index=1, records=[record(1), record(2)], meta={})
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[record(1), record(2)], meta={})
     derive_day(store, DAY)
     transport = PagedTransport([[record(1), record(2)]])
 
@@ -117,7 +118,7 @@ def test_reconcile对同一批数据不报差异且记成功(root: Path) -> None
     runs = read_runs(store)
     assert code == 0
     assert [item["status"] for item in runs] == ["success"]
-    assert store.read_current()["status"].to_list() == ["active", "active"]
+    assert state.read_current(store)["status"].to_list() == ["active", "active"]
 
 
 def test_enrich补齐卡片并落表(root: Path) -> None:
@@ -128,14 +129,14 @@ def test_enrich补齐卡片并落表(root: Path) -> None:
     store = DatasetStore(root)
     assert code == 0
     assert [item["status"] for item in read_runs(store)] == ["success"]
-    assert store.read_enrich().height == 2
+    assert store.read("carddata").height == 2
 
 
 def test_fetch_sizes的尾批在flush_every不足时仍然落库(root: Path) -> None:
     """`flush` 只在攒满一批时触发；不足一批的尾巴全靠收尾那次合并。"""
     store = DatasetStore(root)
-    store.write_raw(
-        snapshot_date=DAY, page_index=1, records=[record(1), record(2), record(3)], meta={}
+    raw.write(
+        store, snapshot_date=DAY, page_index=1, records=[record(1), record(2), record(3)], meta={}
     )
     derive_day(store, DAY)
     transport = SizeTransport()
@@ -156,7 +157,7 @@ def test_fetch_sizes的尾批在flush_every不足时仍然落库(root: Path) -> 
 
     assert code == 0
     assert sorted(transport.calls) == ["acme/ds-1", "acme/ds-2", "acme/ds-3"]
-    assert store.read_sizes().height == 3
+    assert store.read("size").height == 3
     assert [item["status"] for item in read_runs(store)] == ["success"]
 
 
@@ -190,8 +191,8 @@ def _stage_sizes(root: Path, ids: list[str]) -> None:
 def test_fetch_sizes抓取期间不持锁(root: Path) -> None:
     """全量抓取跑三小时，整段持锁会让当天的 collect 拿不到锁而失败。"""
     store = DatasetStore(root)
-    store.write_raw(
-        snapshot_date=DAY, page_index=1, records=[record(1), record(2), record(3)], meta={}
+    raw.write(
+        store, snapshot_date=DAY, page_index=1, records=[record(1), record(2), record(3)], meta={}
     )
     derive_day(store, DAY)
 
@@ -215,15 +216,15 @@ def test_fetch_sizes抓取期间不持锁(root: Path) -> None:
     )
 
     assert code == 0
-    assert store.read_sizes().height == 3
+    assert store.read("size").height == 3
     assert staged_shards(store) == [], "成功合并后不应留下分片"
 
 
 def test_残留分片会被续抓并合入正式表(root: Path) -> None:
     """中断后已抓到的批次不该重烧请求；分片在下一轮收尾时并入正式表。"""
     store = DatasetStore(root)
-    store.write_raw(
-        snapshot_date=DAY, page_index=1, records=[record(1), record(2), record(3)], meta={}
+    raw.write(
+        store, snapshot_date=DAY, page_index=1, records=[record(1), record(2), record(3)], meta={}
     )
     derive_day(store, DAY)
     _stage_sizes(root, ["acme/ds-1", "acme/ds-2"])
@@ -243,14 +244,14 @@ def test_残留分片会被续抓并合入正式表(root: Path) -> None:
 
     assert code == 0
     assert transport.calls == ["acme/ds-3"], "残留分片里的 id 应跳过"
-    assert sorted(store.read_sizes()["id"].to_list()) == ["acme/ds-1", "acme/ds-2", "acme/ds-3"]
+    assert sorted(store.read("size")["id"].to_list()) == ["acme/ds-1", "acme/ds-2", "acme/ds-3"]
     assert staged_shards(store) == []
 
 
 def test_合并拿不到锁时保留分片供下轮继续(root: Path) -> None:
     """合并是短锁；抓不到就如实失败，但抓到的数据不能丢。"""
     store = DatasetStore(root)
-    store.write_raw(snapshot_date=DAY, page_index=1, records=[record(1)], meta={})
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[record(1)], meta={})
     derive_day(store, DAY)
 
     with exclusive(root, "collect"):
@@ -268,7 +269,7 @@ def test_合并拿不到锁时保留分片供下轮继续(root: Path) -> None:
 
     assert code == 1
     assert staged_shards(store), "拿不到锁时应把分片留着"
-    assert store.read_sizes().height == 0
+    assert store.read("size").height == 0
     runs = read_runs(store)
     assert [item["status"] for item in runs] == ["failed"]
     assert "LockBusy" in runs[0]["reason"]
@@ -289,7 +290,7 @@ def test_合并拿不到锁时保留分片供下轮继续(root: Path) -> None:
 
     assert code == 0
     assert transport.calls == []
-    assert store.read_sizes().height == 1
+    assert store.read("size").height == 1
     assert staged_shards(store) == []
 
 

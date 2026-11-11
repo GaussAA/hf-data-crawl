@@ -19,6 +19,7 @@ from typing import Any
 import polars as pl
 import pytest
 
+from hf_data_crawl import raw, state
 from hf_data_crawl.api import HfResponse, TransportError
 from hf_data_crawl.cli import WRITE_COMMANDS, main
 from hf_data_crawl.derive import derive_day
@@ -147,7 +148,7 @@ def seed(store: DatasetStore, count: int = 3) -> None:
         }
         for index in range(1, count + 1)
     ]
-    store.write_raw(snapshot_date=DAY, page_index=1, records=records, meta={})
+    raw.write(store, snapshot_date=DAY, page_index=1, records=records, meta={})
     derive_day(store, DAY)
 
 
@@ -541,7 +542,8 @@ def test_文件表登记为NETWORK且重建不清() -> None:
 
 def test_宽视图收进files的列且不放大行数(store_with_data: DatasetStore) -> None:
     store = store_with_data
-    store.merge_files(
+    store.upsert(
+        "files",
         pl.DataFrame(
             [
                 {
@@ -557,7 +559,7 @@ def test_宽视图收进files的列且不放大行数(store_with_data: DatasetSt
                 }
             ],
             schema=FILES_SCHEMA,
-        )
+        ),
     )
 
     catalog = GoldCatalog(store)
@@ -573,7 +575,7 @@ def test_宽视图收进files的列且不放大行数(store_with_data: DatasetSt
     # 让 files_status 连改名的机会都没有，而静态清单与视图会一起少列、双双不报错。
     assert {"files_status", "file_formats"} <= set(wide_column_names())
     assert "storage_bytes" not in columns
-    assert rows == store.read_current().height
+    assert rows == state.read_current(store).height
 
 
 def test_fetch_files属于写命令() -> None:
@@ -592,9 +594,9 @@ def test_命令行补采成功并留下运行摘要(tmp_path: Path) -> None:
     code = main(["--data-dir", str(root), "fetch-files", "--top", "3"], transport=transport)
 
     assert code == 0
-    assert store.read_files().height == 3
-    assert store.read_files()["file_count"].to_list() == [5, 5, 5]
-    assert store.read_files()["truncated"].to_list() == [False, False, False]
+    assert store.read("files").height == 3
+    assert store.read("files")["file_count"].to_list() == [5, 5, 5]
+    assert store.read("files")["truncated"].to_list() == [False, False, False]
     assert read_runs(store)[-1]["status"] == "success"
 
 
@@ -617,7 +619,7 @@ def test_命令行可显式加大页数(tmp_path: Path) -> None:
     )
 
     assert code == 0
-    assert store.read_files()["file_count"].to_list() == [2]
+    assert store.read("files")["file_count"].to_list() == [2]
 
 
 def test_命令行刷新截断需配合多页(tmp_path: Path) -> None:
@@ -643,7 +645,8 @@ def test_命令行刷新后截断消失(tmp_path: Path) -> None:
     root = tmp_path / "data"
     store = DatasetStore(root)
     seed(store, 1)
-    store.merge_files(
+    store.upsert(
+        "files",
         pl.DataFrame(
             [
                 {
@@ -659,7 +662,7 @@ def test_命令行刷新后截断消失(tmp_path: Path) -> None:
                 }
             ],
             schema=FILES_SCHEMA,
-        )
+        ),
     )
     transport = FakeFilesTransport(
         {
@@ -684,7 +687,7 @@ def test_命令行刷新后截断消失(tmp_path: Path) -> None:
         transport=transport,
     )
 
-    stored = store.read_files()
+    stored = store.read("files")
     assert code == 0
     assert stored["truncated"].to_list() == [False]
     assert stored["file_count"].to_list() == [2]

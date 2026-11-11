@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from hf_data_crawl import card
+from hf_data_crawl import card, raw
 from hf_data_crawl.derive import derive_day
 from hf_data_crawl.gold import GoldCatalog
 from hf_data_crawl.report import Reporter, _num
@@ -42,14 +42,16 @@ def record(dataset_id: str, downloads: int, pretty_name: str | None = None) -> d
 @pytest.fixture()
 def store(tmp_path: Path) -> DatasetStore:
     instance = DatasetStore(tmp_path / "data")
-    instance.write_raw(
+    raw.write(
+        instance,
         snapshot_date=DAY1,
         page_index=1,
         records=[record("acme/alpha", 500, "Alpha 数据集"), record("acme/beta", 100)],
         meta={},
     )
     derive_day(instance, DAY1)
-    instance.write_raw(
+    raw.write(
+        instance,
         snapshot_date=DAY1,
         page_index=1,
         records=[record("acme/alpha", 500, "Alpha 数据集")],
@@ -107,7 +109,8 @@ def _table_html(content: str, table_id: str) -> str:
 
 def test_增速榜有数据时列出起点当前与增量(store: DatasetStore, tmp_path: Path) -> None:
     """页面的增速榜与 `query --board growth` 是同一口径，数值必须对得上。"""
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=DAY2,
         page_index=2,
         records=[record("acme/alpha", 700)],
@@ -156,7 +159,8 @@ def test_不含已知反模式(store: DatasetStore, tmp_path: Path) -> None:
 
 
 def test_数据里的尖括号被转义(store: DatasetStore, tmp_path: Path) -> None:
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=DAY2,
         page_index=2,
         records=[record("acme/<script>", 900)],
@@ -207,7 +211,7 @@ def test_累计榜是独立集合而不是同一批行重排(store: DatasetStore
     """早先「累计」只是把 30 天榜那几行重排；成员不同时应拿到完全不同的表。"""
     payload = record("acme/gamma", 50)
     payload["downloadsAllTime"] = 999_999
-    store.write_raw(snapshot_date=DAY2, page_index=3, records=[payload], meta={})
+    raw.write(store, snapshot_date=DAY2, page_index=3, records=[payload], meta={})
     derive_day(store, DAY2)
     catalog = GoldCatalog(store)
 
@@ -223,7 +227,7 @@ def test_累计榜是独立集合而不是同一批行重排(store: DatasetStore
 def test_分布表的大数值带千分位(store: DatasetStore, tmp_path: Path) -> None:
     """sum(downloads) 经 DuckDB 常是 Decimal，早先会裸输出 119773807。"""
     payload = record("acme/big", 119_773_807)
-    store.write_raw(snapshot_date=DAY2, page_index=4, records=[payload], meta={})
+    raw.write(store, snapshot_date=DAY2, page_index=4, records=[payload], meta={})
     derive_day(store, DAY2)
     expected = GoldCatalog(store).board("categories", 10)["downloads"][0]
 
@@ -235,7 +239,8 @@ def test_分布表的大数值带千分位(store: DatasetStore, tmp_path: Path) 
 
 def test_增速榜给出具体观测区间(store: DatasetStore, tmp_path: Path) -> None:
     """只给 span_days=1 时，读者无从判断「最近两个观测点」是哪两天。"""
-    store.write_raw(
+    raw.write(
+        store,
         snapshot_date=DAY2,
         page_index=2,
         records=[record("acme/alpha", 700)],

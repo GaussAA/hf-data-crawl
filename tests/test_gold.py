@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from hf_data_crawl import raw
 from hf_data_crawl.derive import derive_day
 from hf_data_crawl.gold import BOARDS, GoldCatalog
 from hf_data_crawl.store import DatasetStore
@@ -49,7 +50,7 @@ def record(
 
 
 def seed(store: DatasetStore, snapshot: date, records: list[dict[str, Any]]) -> None:
-    store.write_raw(snapshot_date=snapshot, page_index=1, records=records, meta={})
+    raw.write(store, snapshot_date=snapshot, page_index=1, records=records, meta={})
     derive_day(store, snapshot)
 
 

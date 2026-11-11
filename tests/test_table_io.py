@@ -101,7 +101,7 @@ def test_旧分区缺列时观测表仍可读且补空(store: DatasetStore) -> N
     write_parquet(legacy, store.path("observations", DAY1))
     write_parquet(full, store.path("observations", DAY2))
 
-    merged = store.read_observations()
+    merged = store.read_all("observations")
 
     assert list(merged.columns) == list(OBSERVATIONS_SCHEMA)
     assert merged.height == 2
@@ -112,7 +112,7 @@ def test_旧分区缺列时观测表仍可读且补空(store: DatasetStore) -> N
 
 
 def test_read_all对非分区表等同于read(store: DatasetStore) -> None:
-    store.merge_sizes(sizes(size_row("acme/a", 1)))
+    store.upsert("size", sizes(size_row("acme/a", 1)))
 
     assert store.read_all("size").equals(store.read("size"))
 
@@ -125,48 +125,48 @@ def test_改登记表路径后读写一起跟着变(store: DatasetStore, monkeyp
     moved = replace(tables.table("size"), path="elsewhere/size.parquet")
     monkeypatch.setitem(tables.TABLES, "size", moved)
 
-    store.merge_sizes(sizes(size_row("acme/a", 7)))
+    store.upsert("size", sizes(size_row("acme/a", 7)))
 
     assert (store.root / "elsewhere" / "size.parquet").exists()
-    assert store.read_sizes().row(0, named=True)["num_rows"] == 7
+    assert store.read("size").row(0, named=True)["num_rows"] == 7
 
 
 # ---------------------------------------------------------------- upsert
 
 
 def test_upsert同id以新值为准其余保留(store: DatasetStore) -> None:
-    store.merge_sizes(sizes(size_row("acme/a", 1), size_row("acme/b", 2)))
+    store.upsert("size", sizes(size_row("acme/a", 1), size_row("acme/b", 2)))
 
-    total = store.merge_sizes(sizes(size_row("acme/b", 20), size_row("acme/c", 3)))
+    total = store.upsert("size", sizes(size_row("acme/b", 20), size_row("acme/c", 3)))
 
     assert total == 3
-    by_id = {row["id"]: row["num_rows"] for row in store.read_sizes().iter_rows(named=True)}
+    by_id = {row["id"]: row["num_rows"] for row in store.read("size").iter_rows(named=True)}
     assert by_id == {"acme/a": 1, "acme/b": 20, "acme/c": 3}
 
 
 def test_upsert新批内同id取最后一条(store: DatasetStore) -> None:
-    store.merge_sizes(sizes(size_row("acme/a", 1), size_row("acme/a", 2)))
+    store.upsert("size", sizes(size_row("acme/a", 1), size_row("acme/a", 2)))
 
-    assert store.read_sizes().row(0, named=True)["num_rows"] == 2
+    assert store.read("size").row(0, named=True)["num_rows"] == 2
 
 
 def test_upsert结果按id排序(store: DatasetStore) -> None:
-    store.merge_sizes(sizes(size_row("acme/c", 3), size_row("acme/a", 1)))
-    store.merge_sizes(sizes(size_row("acme/b", 2)))
+    store.upsert("size", sizes(size_row("acme/c", 3), size_row("acme/a", 1)))
+    store.upsert("size", sizes(size_row("acme/b", 2)))
 
-    assert store.read_sizes()["id"].to_list() == ["acme/a", "acme/b", "acme/c"]
+    assert store.read("size")["id"].to_list() == ["acme/a", "acme/b", "acme/c"]
 
 
 def test_upsert空批不写盘并返回现有行数(store: DatasetStore) -> None:
     empty = pl.DataFrame(schema=SIZE_SCHEMA)
 
-    assert store.merge_sizes(empty) == 0
+    assert store.upsert("size", empty) == 0
     assert not store.has("size")
 
-    store.merge_sizes(sizes(size_row("acme/a", 1)))
+    store.upsert("size", sizes(size_row("acme/a", 1)))
     before = store.path("size").stat().st_mtime_ns
 
-    assert store.merge_sizes(empty) == 1
+    assert store.upsert("size", empty) == 1
     assert store.path("size").stat().st_mtime_ns == before
 
 
@@ -177,10 +177,10 @@ def test_upsert读到旧表缺列时先对齐再合并(store: DatasetStore) -> N
     )
     write_parquet(legacy, store.path("size"))
 
-    total = store.merge_sizes(sizes(size_row("acme/b", 2)))
+    total = store.upsert("size", sizes(size_row("acme/b", 2)))
 
     assert total == 2
-    assert list(store.read_sizes().columns) == list(SIZE_SCHEMA)
+    assert list(store.read("size").columns) == list(SIZE_SCHEMA)
 
 
 def test_明细表复合去重且卡片删掉的config不残留(store: DatasetStore) -> None:
@@ -207,7 +207,7 @@ def test_明细表复合去重且卡片删掉的config不残留(store: DatasetSt
 
     rows = {
         (row["id"], row["config_name"], row["split"]): row["num_examples"]
-        for row in store.read_card_configs().iter_rows(named=True)
+        for row in store.read("card_configs").iter_rows(named=True)
     }
     assert total == 2
     assert rows == {("acme/a", "default", "train"): 12, ("acme/b", "default", "train"): 7}

@@ -63,7 +63,7 @@ def build(store: DatasetStore, snapshot_date: date) -> tuple[int, int]:
     """
     files = raw.batch_files(store, snapshot_date, label=raw.CARD_LABEL)
     if not files:
-        return store.read_enrich().height, store.read_card_configs().height
+        return store.read("carddata").height, store.read("card_configs").height
 
     cards, configs = extract_files(files, snapshot_date)
     return (
