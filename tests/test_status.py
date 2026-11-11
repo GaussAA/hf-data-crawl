@@ -10,16 +10,16 @@ from typing import Any
 import polars as pl
 import pytest
 
-from hf_data_crawl import raw, state
-from hf_data_crawl.derive import derive_day
-from hf_data_crawl.platform.store import DatasetStore
-from hf_data_crawl.platform.vocab import INACTIVE, Status
-from hf_data_crawl.status import (
+from hf_data_crawl.pipeline import raw, state
+from hf_data_crawl.pipeline.derive import derive_day
+from hf_data_crawl.pipeline.status import (
     STATUS_BY_VERDICT,
     restore,
     retain,
     snapshot_path,
 )
+from hf_data_crawl.platform.store import DatasetStore
+from hf_data_crawl.platform.vocab import INACTIVE, Status
 
 DAY = date(2026, 11, 1)
 

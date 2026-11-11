@@ -22,10 +22,10 @@ import time
 from dataclasses import dataclass
 from datetime import date
 
-from . import card
 from .api import IDENTITY_EXPAND, MAX_LIMIT, HfDatasetApi, Page
+from .pipeline import card
+from .pipeline.raw import CARD_LABEL
 from .platform.store import DatasetStore
-from .raw import CARD_LABEL
 from .scan import ScanRun, ScanSpec, ScanSummary
 from .watermark import Watermark, extract_last_modified
 

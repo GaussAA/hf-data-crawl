@@ -22,11 +22,11 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from .platform import retention
-from .platform.atomic import write_bytes
+from ..platform import retention
+from ..platform.atomic import write_bytes
 
 if TYPE_CHECKING:
-    from .platform.store import DatasetStore
+    from ..platform.store import DatasetStore
 
 #: 卡片批次的标签。`enrich` 写入、卡片表构建读取，靠这一个常量对齐。
 CARD_LABEL = "card"

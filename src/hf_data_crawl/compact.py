@@ -29,7 +29,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from . import raw
+from .pipeline import raw
 from .platform.atomic import write_bytes
 from .platform.retention import backup_raw_dir, cold_dir, manifest_path, read_compressed_dates
 

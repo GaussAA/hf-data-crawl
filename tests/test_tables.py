@@ -13,10 +13,11 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from hf_data_crawl import bronze, gold, raw
+from hf_data_crawl import gold
+from hf_data_crawl.pipeline import bronze, raw
+from hf_data_crawl.pipeline.rebuild import _clear, clear_derived
 from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.platform.tables import TABLES, Origin, TableSpec, table
-from hf_data_crawl.rebuild import _clear, clear_derived
 
 # ---------------------------------------------------------------- 登记完整性
 
@@ -189,7 +190,7 @@ def test_落盘后url与实际id对得上(tmp_path: Path) -> None:
         records=[{"id": "acme/x", "author": "acme", "sha": "s"}],
         meta={},
     )
-    from hf_data_crawl.bronze import build as build_bronze
+    from hf_data_crawl.pipeline.bronze import build as build_bronze
 
     build_bronze(store, date(2026, 11, 4))
 

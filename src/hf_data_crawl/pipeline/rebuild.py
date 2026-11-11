@@ -37,11 +37,11 @@ import shutil
 from dataclasses import dataclass
 from datetime import date
 
+from ..platform.retention import REPLAY_WINDOW_DAYS
+from ..platform.store import DatasetStore
+from ..platform.tables import TABLES, Origin, TableSpec
 from . import deriving, lineage, raw, state
 from .derive import ReplayCarry, derive_day
-from .platform.retention import REPLAY_WINDOW_DAYS
-from .platform.store import DatasetStore
-from .platform.tables import TABLES, Origin, TableSpec
 from .status import restore, retain
 
 

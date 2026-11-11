@@ -11,12 +11,12 @@ from typing import Any
 
 import polars as pl
 
-from hf_data_crawl import lineage
 from hf_data_crawl.api import HfResponse
 from hf_data_crawl.cli import main
 from hf_data_crawl.doctor import ALERT_NAME, Finding, diagnose, sync_alert
 from hf_data_crawl.health import read as read_health
-from hf_data_crawl.lineage import path_of as lineage_path
+from hf_data_crawl.pipeline import lineage
+from hf_data_crawl.pipeline.lineage import path_of as lineage_path
 from hf_data_crawl.platform.lock import LockBusy
 from hf_data_crawl.platform.retention import REPLAY_WINDOW_DAYS, manifest_path
 from hf_data_crawl.platform.runs import Outcome, write_run

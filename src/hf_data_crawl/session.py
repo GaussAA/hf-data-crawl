@@ -33,8 +33,8 @@ from typing import Any
 
 import polars as pl
 
-from . import state
 from .checkpoint import FileCheckpoint
+from .pipeline import state
 from .platform.atomic import write_parquet
 from .platform.store import DatasetStore
 from .platform.tables import PolarsType

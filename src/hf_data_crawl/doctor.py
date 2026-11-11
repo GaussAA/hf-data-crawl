@@ -19,8 +19,10 @@ from pathlib import Path
 
 import polars as pl
 
-from . import lineage, method, raw, state
+from . import method
 from .fields import DEFAULT_COLUMNS, contract_errors
+from .pipeline import lineage, raw, state
+from .pipeline.rebuild import discover_raw_dates
 from .platform.lock import LOCK_NAME, LockBusy, describe_holder, exclusive
 from .platform.retention import (
     ARCHIVE_AFTER_DAYS,
@@ -30,7 +32,6 @@ from .platform.retention import (
 from .platform.runs import COLLECT_COMPLETE_REASONS, read_runs
 from .platform.store import DatasetStore
 from .platform.tables import table
-from .rebuild import discover_raw_dates
 from .requirement import DELIVERIES_DIR, SPEC_NAME, SpecError, version_conflict
 from .requirement import load as load_spec
 

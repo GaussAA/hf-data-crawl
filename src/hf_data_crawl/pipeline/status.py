@@ -26,11 +26,11 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
-from .platform.atomic import write_text
-from .platform.vocab import Status
+from ..platform.atomic import write_text
+from ..platform.vocab import Status
 
 if TYPE_CHECKING:
-    from .platform.store import DatasetStore
+    from ..platform.store import DatasetStore
 
 #: 探测结论 → 落库状态。`unknown`（网络异常等）不在表内，表示「先别动」。
 STATUS_BY_VERDICT: dict[str, Status] = {

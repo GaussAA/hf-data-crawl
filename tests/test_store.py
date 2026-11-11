@@ -15,7 +15,7 @@ from typing import Any
 import polars as pl
 import pytest
 
-from hf_data_crawl import bronze, raw
+from hf_data_crawl.pipeline import bronze, raw
 from hf_data_crawl.platform.store import DatasetStore
 
 SNAPSHOT = date(2026, 11, 3)

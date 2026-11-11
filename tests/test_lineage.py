@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-from hf_data_crawl import lineage
-from hf_data_crawl.lineage import path_of
+from hf_data_crawl.pipeline import lineage
+from hf_data_crawl.pipeline.lineage import path_of
 from hf_data_crawl.platform.store import DatasetStore
 
 DAY = date(2026, 11, 7)

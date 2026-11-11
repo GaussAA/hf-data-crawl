@@ -14,9 +14,8 @@ from datetime import date
 import polars as pl
 import pytest
 
-from hf_data_crawl.langs import ISO3_TO_ISO1
-from hf_data_crawl.platform.tables import BRONZE_SCHEMA, SILVER_SCHEMA
-from hf_data_crawl.silver import (
+from hf_data_crawl.pipeline.langs import ISO3_TO_ISO1
+from hf_data_crawl.pipeline.silver import (
     LANGUAGE_COLUMN,
     MODALITY_COLUMN,
     PLAIN_MODALITY_ALIASES,
@@ -24,6 +23,7 @@ from hf_data_crawl.silver import (
     TAG_DIMENSIONS,
     derive,
 )
+from hf_data_crawl.platform.tables import BRONZE_SCHEMA, SILVER_SCHEMA
 
 DAY = date(2026, 11, 4)
 DIMENSION_COLUMNS = [*TAG_DIMENSIONS.values(), PLAIN_TAG_COLUMN]

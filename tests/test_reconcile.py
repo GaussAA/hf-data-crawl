@@ -13,9 +13,9 @@ from urllib.parse import parse_qs, urlparse
 import polars as pl
 import pytest
 
-from hf_data_crawl import raw, state
 from hf_data_crawl.api import HfDatasetApi, HfResponse
-from hf_data_crawl.derive import derive_day
+from hf_data_crawl.pipeline import raw, state
+from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.reconcile import Reconciler
 

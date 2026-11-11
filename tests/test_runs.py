@@ -10,9 +10,9 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from hf_data_crawl import raw
 from hf_data_crawl.cli import main
-from hf_data_crawl.derive import derive_day
+from hf_data_crawl.pipeline import raw
+from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.runs import read_runs
 from hf_data_crawl.platform.store import DatasetStore
 

@@ -9,9 +9,9 @@ from typing import Any
 
 import pytest
 
-from hf_data_crawl import card, raw
-from hf_data_crawl.derive import derive_day
 from hf_data_crawl.gold import GoldCatalog
+from hf_data_crawl.pipeline import card, raw
+from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.report import Reporter, _num
 

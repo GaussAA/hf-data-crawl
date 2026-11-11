@@ -22,9 +22,9 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Protocol
 
-from . import raw
 from .api import IDENTITY_EXPAND, MAX_LIMIT, Page
 from .checkpoint import Checkpoint
+from .pipeline import raw
 from .platform.store import DatasetStore
 
 #: 每页钩子。返回非 None 表示「到此为止」，返回值即停止原因。

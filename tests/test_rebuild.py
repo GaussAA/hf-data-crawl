@@ -16,18 +16,18 @@ from typing import Any
 import polars as pl
 import pytest
 
-from hf_data_crawl import raw, state
 from hf_data_crawl.cli import main
-from hf_data_crawl.derive import derive_day
-from hf_data_crawl.lineage import path_of as lineage_path
-from hf_data_crawl.platform.retention import REPLAY_WINDOW_DAYS
-from hf_data_crawl.platform.store import DatasetStore
-from hf_data_crawl.rebuild import (
+from hf_data_crawl.pipeline import raw, state
+from hf_data_crawl.pipeline.derive import derive_day
+from hf_data_crawl.pipeline.lineage import path_of as lineage_path
+from hf_data_crawl.pipeline.rebuild import (
     discover_raw_dates,
     divergent_since,
     rebuild_from_raw,
     replay_suffix,
 )
+from hf_data_crawl.platform.retention import REPLAY_WINDOW_DAYS
+from hf_data_crawl.platform.store import DatasetStore
 
 DAY1 = date(2026, 11, 1)
 DAY2 = date(2026, 11, 2)
@@ -226,7 +226,7 @@ def test_上次重建中断时仍能从快照恢复状态(store: DatasetStore) -
     """
     import shutil
 
-    from hf_data_crawl.status import retain
+    from hf_data_crawl.pipeline.status import retain
 
     state.mark_status(store, {"acme/ds-2": "restricted"})
     retain(store)  # 重建的第一步：快照落盘

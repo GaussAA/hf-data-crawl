@@ -12,9 +12,9 @@ from typing import Any
 
 import pytest
 
-from hf_data_crawl import raw
-from hf_data_crawl.derive import derive_day
 from hf_data_crawl.gold import BOARDS, GoldCatalog
+from hf_data_crawl.pipeline import raw
+from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.store import DatasetStore
 
 DAY1 = date(2026, 11, 1)
@@ -279,7 +279,7 @@ def test_tag_index在已知维度上与tag_values一致(catalog: GoldCatalog) ->
 
 def _legacy_tag_values_sql() -> str:
     """改写前的 16 路 UNION ALL，留作参考实现。"""
-    from hf_data_crawl.silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
+    from hf_data_crawl.pipeline.silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
 
     return " UNION ALL ".join(
         f"SELECT id, '{column}' AS dimension, unnest({column}) AS value FROM latest_silver"
@@ -296,7 +296,7 @@ def test_tag_values与旧的UNION写法结果相同(catalog: GoldCatalog) -> Non
 
 
 def test_tag_values覆盖全部维度列(catalog: GoldCatalog) -> None:
-    from hf_data_crawl.silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
+    from hf_data_crawl.pipeline.silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
 
     dimensions = set(
         catalog.run("SELECT DISTINCT dimension FROM tag_values")["dimension"].to_list()
@@ -308,7 +308,7 @@ def test_tag_values覆盖全部维度列(catalog: GoldCatalog) -> None:
 
 def test_tag_values每个维度都有数据时仍与旧写法一致(tmp_path: Path) -> None:
     """夹具只带三类标签时，少一个维度也看不出来；这里让每个维度都有取值。"""
-    from hf_data_crawl.silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
+    from hf_data_crawl.pipeline.silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
 
     store = DatasetStore(tmp_path / "data")
     tags = [f"{prefix}:v-{prefix}" for prefix in TAG_DIMENSIONS] + ["text", "image"]

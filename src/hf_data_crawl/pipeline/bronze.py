@@ -20,12 +20,12 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
+from ..platform.coerce import as_bool, as_datetime, as_float, as_int, as_json, as_text
+from ..platform.tables import BRONZE_SCHEMA, table, url_for
 from . import raw
-from .platform.coerce import as_bool, as_datetime, as_float, as_int, as_json, as_text
-from .platform.tables import BRONZE_SCHEMA, table, url_for
 
 if TYPE_CHECKING:
-    from .platform.store import DatasetStore
+    from ..platform.store import DatasetStore
 
 #: 分块数达到此值才起进程池；Windows 上起进程要秒级，小批量并行反而更慢。
 PARALLEL_MIN_FILES = 64

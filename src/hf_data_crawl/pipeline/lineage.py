@@ -38,11 +38,11 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..platform.atomic import write_text
 from . import raw
-from .platform.atomic import write_text
 
 if TYPE_CHECKING:
-    from .platform.store import DatasetStore
+    from ..platform.store import DatasetStore
 
 LINEAGE_NAME = "lineage.json"
 #: 档案版本。字段增减时递增，读到旧版本按「无凭证」处理，宁可重派一次。

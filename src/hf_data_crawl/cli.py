@@ -16,27 +16,28 @@ from pathlib import Path
 
 import polars as pl
 
-from . import compare, specdiff, state
+from . import compare, specdiff
 from .api import MAX_LIMIT, HfDatasetApi, Transport
 from .backfill import FillError, header_change, header_of
 from .collect import Collector, CollectSummary
 from .delivery import DeliveryBlocked, DeliveryResult, Preview, deliver, preview, run_due
-from .deriving import check_and_recover
 from .doctor import diagnose, sync_alert
 from .enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
 from .files import FileFetcher, FileSummary, HfFilesApi
 from .gold import BOARDS, GoldCatalog, GoldNotReady, UnsafeQuery
 from .health import record as record_health
-from .lineage import restamp
 from .method import METHOD_DIR, METHOD_DOC, METHOD_INDEX, problems
 from .method import sync as sync_method
 from .metrics import lookup
+from .pipeline import state
+from .pipeline.deriving import check_and_recover
+from .pipeline.lineage import restamp
+from .pipeline.rebuild import RebuildSummary, divergent_since, rebuild_from_raw, replay_suffix
 from .platform.env import load_env_file
 from .platform.lock import LockBusy, exclusive
 from .platform.retention import BACKUP_PRUNE_AFTER_DAYS, REPLAY_WINDOW_DAYS
 from .platform.runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs, write_run
 from .platform.store import DatasetStore
-from .rebuild import RebuildSummary, divergent_since, rebuild_from_raw, replay_suffix
 from .reconcile import PROBE_DAILY_LIMIT, Reconciler, ReconcileSummary
 from .report import Reporter
 from .requirement import (
@@ -623,7 +624,7 @@ def _archive(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     from datetime import timedelta
 
     from .archive import ArchiveMismatch, archive_day
-    from .rebuild import discover_raw_dates
+    from .pipeline.rebuild import discover_raw_dates
 
     if args.date:
         days = [date.fromisoformat(args.date)]
@@ -675,7 +676,7 @@ def _enrich(args: argparse.Namespace, store: DatasetStore, transport: Transport 
     if args.ids:
         # 按需补：只问点名的这几个库。全量扫一遍要十几小时，而实际被交付命中的
         # 常常只有几十个；逐条问一次，换到的是默认面那两列不再空着。
-        from .card import backfill
+        from .pipeline.card import backfill
 
         ids = [item.strip() for item in args.ids.split(",") if item.strip()]
         if not ids:
@@ -1039,7 +1040,7 @@ def _compact(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     from datetime import timedelta
 
     from .compact import CompactMismatch, compact
-    from .rebuild import discover_raw_dates
+    from .pipeline.rebuild import discover_raw_dates
 
     if args.date:
         days = [date.fromisoformat(args.date)]

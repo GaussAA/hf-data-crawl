@@ -20,12 +20,12 @@ from typing import Any
 import polars as pl
 import pytest
 
-from hf_data_crawl import raw, state
 from hf_data_crawl import wide as wide_module
 from hf_data_crawl.cli import WRITE_COMMANDS, main
-from hf_data_crawl.derive import derive_day
 from hf_data_crawl.fields import DEFAULT_COLUMNS
 from hf_data_crawl.gold import GoldCatalog, wide_column_names
+from hf_data_crawl.pipeline import raw, state
+from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.runs import read_runs
 from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.wide import WideExportMismatch, export_wide

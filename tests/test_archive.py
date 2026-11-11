@@ -8,9 +8,10 @@ from typing import Any
 
 import pytest
 
-from hf_data_crawl import archive, bronze, raw
+from hf_data_crawl import archive
 from hf_data_crawl.archive import ArchiveMismatch, archive_day
 from hf_data_crawl.cli import main
+from hf_data_crawl.pipeline import bronze, raw
 from hf_data_crawl.platform.store import DatasetStore
 
 DAY = date(2026, 11, 3)
@@ -125,7 +126,7 @@ def test_没有raw的日期返回None(store: DatasetStore) -> None:
 
 
 def test_card标签只合并不去重(store: DatasetStore) -> None:
-    from hf_data_crawl import card
+    from hf_data_crawl.pipeline import card
 
     before = [batch.records for batch in raw.read_batches(store, DAY, label=raw.CARD_LABEL)]
 

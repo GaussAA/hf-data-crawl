@@ -28,8 +28,8 @@ from .fields import (
     EXTENDED_FIELDS,
     EXTENDED_NOTE,
 )
+from .pipeline.raw import BRONZE_LABELS, CARD_LABEL
 from .platform.tables import TABLES, Origin, TableSpec
-from .raw import BRONZE_LABELS, CARD_LABEL
 
 #: 各类 Raw 分块的作用与派生去向。类别清单取自 `raw` 的常量，避免文档与
 #: 「谁进 Bronze、谁是卡片批次」这两条约定各写一份。

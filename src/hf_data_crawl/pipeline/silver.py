@@ -26,12 +26,12 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
+from ..platform.tables import SILVER_SCHEMA
 from .bronze import day_frame
 from .langs import ISO3_TO_ISO1
-from .platform.tables import SILVER_SCHEMA
 
 if TYPE_CHECKING:
-    from .platform.store import DatasetStore
+    from ..platform.store import DatasetStore
 
 #: 标签前缀 → Silver 维度列名。
 #:

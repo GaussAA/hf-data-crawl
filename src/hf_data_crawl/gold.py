@@ -13,9 +13,9 @@ from typing import Any
 import duckdb
 import polars as pl
 
+from .pipeline.silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
 from .platform.store import DatasetStore
 from .platform.tables import DATASET_URL, TIMESTAMP, PolarsType, table
-from .silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
 
 #: 宽视图里需要改名的列：来源表 → {原列名: 视图里的名字}。
 #:

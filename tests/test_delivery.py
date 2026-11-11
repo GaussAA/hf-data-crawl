@@ -17,7 +17,7 @@ import pytest
 import yaml
 from support import write_method
 
-from hf_data_crawl import method, raw
+from hf_data_crawl import method
 from hf_data_crawl.cli import deliveries_of, main
 from hf_data_crawl.delivery import (
     EXECUTORS,
@@ -27,8 +27,9 @@ from hf_data_crawl.delivery import (
     preview,
     run_due,
 )
-from hf_data_crawl.derive import derive_day
 from hf_data_crawl.fields import CONTRACT_VERSION, DEFAULT_COLUMNS
+from hf_data_crawl.pipeline import raw
+from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.requirement import (
     DELIVERIES_DIR,

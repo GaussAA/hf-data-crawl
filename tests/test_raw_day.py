@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from hf_data_crawl import lineage, raw
+from hf_data_crawl.pipeline import lineage, raw
 from hf_data_crawl.platform import retention
 from hf_data_crawl.platform.store import DatasetStore
 

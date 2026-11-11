@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from hf_data_crawl.card import ON_DEMAND_LIMIT, backfill
+from hf_data_crawl.pipeline.card import ON_DEMAND_LIMIT, backfill
 from hf_data_crawl.platform.store import DatasetStore
 
 SNAPSHOT = date(2026, 11, 9)

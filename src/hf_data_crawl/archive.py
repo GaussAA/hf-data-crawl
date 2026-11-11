@@ -44,7 +44,7 @@ from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from . import bronze, raw
+from .pipeline import bronze, raw
 from .platform.atomic import write_bytes
 
 if TYPE_CHECKING:

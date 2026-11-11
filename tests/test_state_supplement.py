@@ -21,9 +21,9 @@ from typing import Any
 
 import pytest
 
-from hf_data_crawl import bronze, raw, silver, state
+from hf_data_crawl.pipeline import bronze, raw, silver, state
+from hf_data_crawl.pipeline.raw import BRONZE_LABELS, CARD_LABEL
 from hf_data_crawl.platform.store import DatasetStore
-from hf_data_crawl.raw import BRONZE_LABELS, CARD_LABEL
 
 DAY = date(2026, 11, 7)
 

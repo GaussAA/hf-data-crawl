@@ -25,12 +25,12 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
+from ..platform.coerce import as_int, as_json, as_list, as_text
+from ..platform.tables import CARD_CONFIGS_SCHEMA, ENRICH_SCHEMA, url_for
 from . import raw
-from .platform.coerce import as_int, as_json, as_list, as_text
-from .platform.tables import CARD_CONFIGS_SCHEMA, ENRICH_SCHEMA, url_for
 
 if TYPE_CHECKING:
-    from .platform.store import DatasetStore
+    from ..platform.store import DatasetStore
 
 #: 每个进程任务处理多少卡片文件。11-07 的 1,350 个分块按 64 个一组 ≈ 21 个任务。
 CHUNK_FILES = 64

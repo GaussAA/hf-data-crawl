@@ -21,10 +21,11 @@ from typing import Any
 
 import pytest
 
-from hf_data_crawl import bronze, raw
 from hf_data_crawl.api import ALLOWED_PLACEHOLDERS, EXPAND_WHITELIST, LIST_UNRETURNED_FIELDS
 from hf_data_crawl.collect import LEAN_EXPAND
 from hf_data_crawl.enrich import ENRICH_EXPAND
+from hf_data_crawl.pipeline import bronze, raw
+from hf_data_crawl.pipeline.silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
 from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.platform.tables import (
     BRONZE_DERIVED_COLUMNS,
@@ -34,7 +35,6 @@ from hf_data_crawl.platform.tables import (
     SILVER_SCHEMA,
     UNCONDITIONAL_FIELDS,
 )
-from hf_data_crawl.silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
 
 DAY = date(2026, 11, 4)
 
@@ -126,7 +126,7 @@ def test_current每一列都能由bronze或本地计算得到() -> None:
 
 def test_silver不含指标列() -> None:
     """指标每天约一半的行在变，历史归 observations；放进 Silver 会重复存近乎全量快照。"""
-    from hf_data_crawl.state import METRIC_COLUMNS
+    from hf_data_crawl.pipeline.state import METRIC_COLUMNS
 
     assert set(METRIC_COLUMNS).isdisjoint(SILVER_SCHEMA)
 
@@ -266,7 +266,7 @@ def test_事故列不再恒空(column: str, tmp_path: Path) -> None:
 
 def test_current的带入列由schema求交而来() -> None:
     """手抄的子集一定会漏，而漏掉的表现是「视图有、物化表是 null」，不报错。"""
-    from hf_data_crawl.state import CARRIED_COLUMNS, COMPUTED_COLUMNS
+    from hf_data_crawl.pipeline.state import CARRIED_COLUMNS, COMPUTED_COLUMNS
 
     expected = set(CURRENT_SCHEMA) - COMPUTED_COLUMNS
 
@@ -279,6 +279,6 @@ def test_current的计算列不出现在silver里() -> None:
 
     若把它们混进 Silver，就会出现两个 status 各说各话的局面。
     """
-    from hf_data_crawl.state import COMPUTED_COLUMNS
+    from hf_data_crawl.pipeline.state import COMPUTED_COLUMNS
 
     assert COMPUTED_COLUMNS.isdisjoint(SILVER_SCHEMA)
