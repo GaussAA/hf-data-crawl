@@ -22,7 +22,7 @@ import yaml
 from hf_data_crawl import method
 from hf_data_crawl.delivery import DeliveryBlocked, _preview_lines, deliver
 from hf_data_crawl.fields import CONTRACT_VERSION
-from hf_data_crawl.store import DatasetStore
+from hf_data_crawl.platform.store import DatasetStore
 
 NOW = datetime(2026, 11, 9, 21, 0, 0, tzinfo=UTC)
 

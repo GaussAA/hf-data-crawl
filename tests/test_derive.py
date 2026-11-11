@@ -10,8 +10,8 @@ import pytest
 
 from hf_data_crawl import bronze, card, derive, raw, silver, state
 from hf_data_crawl.derive import derive_day
+from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.raw import CARD_LABEL
-from hf_data_crawl.store import DatasetStore
 
 DAY = date(2026, 11, 3)
 

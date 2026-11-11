@@ -12,8 +12,8 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from hf_data_crawl import atomic
-from hf_data_crawl.atomic import replace, write_bytes, write_csv, write_parquet, write_text
+from hf_data_crawl.platform import atomic
+from hf_data_crawl.platform.atomic import replace, write_bytes, write_csv, write_parquet, write_text
 
 
 def test_自动创建父目录(tmp_path: Path) -> None:

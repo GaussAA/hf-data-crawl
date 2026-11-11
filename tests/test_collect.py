@@ -16,7 +16,7 @@ from hf_data_crawl import state
 from hf_data_crawl.api import HfDatasetApi, HfResponse, Transport
 from hf_data_crawl.checkpoint import FileCheckpoint
 from hf_data_crawl.collect import CHECKPOINT_FILENAME, WATERMARK_FILENAME, Collector
-from hf_data_crawl.store import DatasetStore
+from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.watermark import WatermarkCheckpoint
 
 DAY1 = date(2026, 11, 1)

@@ -35,13 +35,13 @@ from uuid import uuid4
 import polars as pl
 
 from .api import Transport, TransportError
-from .atomic import write_parquet
 from .batch import collect_rows
-from .coerce import as_int
-from .tables import SIZE_SCHEMA, url_for
+from .platform.atomic import write_parquet
+from .platform.coerce import as_int
+from .platform.tables import SIZE_SCHEMA, url_for
 
 if TYPE_CHECKING:
-    from .store import DatasetStore
+    from .platform.store import DatasetStore
 
 DEFAULT_SIZE_URL = "https://datasets-server.huggingface.co/size"
 

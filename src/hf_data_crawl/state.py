@@ -15,11 +15,11 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from . import bronze, state
-from .tables import BRONZE_SCHEMA, CURRENT_SCHEMA
-from .vocab import Status
+from .platform.tables import BRONZE_SCHEMA, CURRENT_SCHEMA
+from .platform.vocab import Status
 
 if TYPE_CHECKING:
-    from .store import DatasetStore
+    from .platform.store import DatasetStore
 
 #: current 中由当天 Bronze 直接带过来、不需要额外计算的列。
 #:

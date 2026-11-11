@@ -21,18 +21,18 @@ import polars as pl
 
 from . import lineage, method, raw, state
 from .fields import DEFAULT_COLUMNS, contract_errors
-from .lock import LOCK_NAME, LockBusy, describe_holder, exclusive
-from .rebuild import discover_raw_dates
-from .requirement import DELIVERIES_DIR, SPEC_NAME, SpecError, version_conflict
-from .requirement import load as load_spec
-from .retention import (
+from .platform.lock import LOCK_NAME, LockBusy, describe_holder, exclusive
+from .platform.retention import (
     ARCHIVE_AFTER_DAYS,
     BACKUP_PRUNE_AFTER_DAYS,
     REPLAY_WINDOW_DAYS,
 )
-from .runs import COLLECT_COMPLETE_REASONS, read_runs
-from .store import DatasetStore
-from .tables import table
+from .platform.runs import COLLECT_COMPLETE_REASONS, read_runs
+from .platform.store import DatasetStore
+from .platform.tables import table
+from .rebuild import discover_raw_dates
+from .requirement import DELIVERIES_DIR, SPEC_NAME, SpecError, version_conflict
+from .requirement import load as load_spec
 
 ALERT_NAME = "ALERT.txt"
 

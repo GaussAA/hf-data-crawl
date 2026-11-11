@@ -43,10 +43,10 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .atomic import write_text
+from .platform.atomic import write_text
 
 if TYPE_CHECKING:
-    from .store import DatasetStore
+    from .platform.store import DatasetStore
 
 #: 超过这个时长的标记文件被视为"可能未完成"，单位：秒
 STALE_THRESHOLD_SECONDS = 600  # 10 分钟
@@ -136,7 +136,7 @@ def clear_day(store: DatasetStore, snapshot_date: date) -> None:
     重建，Raw 已不存在时 current 保持原状。层清单只在 `tables` 登记一处，
     新增派生层时不会漏掉这里。
     """
-    from .tables import DERIVED_DAY_TABLES
+    from .platform.tables import DERIVED_DAY_TABLES
 
     for name in DERIVED_DAY_TABLES:
         store.path(name, snapshot_date).unlink(missing_ok=True)

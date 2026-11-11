@@ -7,7 +7,7 @@ from pathlib import Path
 
 from hf_data_crawl import lineage
 from hf_data_crawl.lineage import path_of
-from hf_data_crawl.store import DatasetStore
+from hf_data_crawl.platform.store import DatasetStore
 
 DAY = date(2026, 11, 7)
 EARLIER = date(2026, 11, 6)

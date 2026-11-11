@@ -30,7 +30,7 @@ from . import bronze, card, lineage, silver, state
 from .deriving import clear_deriving, mark_deriving
 
 if TYPE_CHECKING:
-    from .store import DatasetStore
+    from .platform.store import DatasetStore
 
 
 @dataclass(frozen=True)

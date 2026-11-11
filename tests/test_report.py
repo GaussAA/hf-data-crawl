@@ -12,8 +12,8 @@ import pytest
 from hf_data_crawl import card, raw
 from hf_data_crawl.derive import derive_day
 from hf_data_crawl.gold import GoldCatalog
+from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.report import Reporter, _num
-from hf_data_crawl.store import DatasetStore
 
 DAY1 = date(2026, 11, 3)
 DAY2 = date(2026, 11, 4)

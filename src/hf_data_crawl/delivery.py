@@ -55,7 +55,6 @@ import duckdb
 import polars as pl
 
 from . import backfill, method
-from .atomic import replace
 from .fields import (
     COLUMN_NOTES,
     CONTRACT_VERSION,
@@ -69,6 +68,8 @@ from .fields import (
 )
 from .gold import GoldCatalog, GoldNotReady
 from .metrics import lookup
+from .platform.atomic import replace
+from .platform.store import DatasetStore
 from .requirement import (
     DELIVERIES_DIR,
     MANIFEST_NAME,
@@ -90,7 +91,6 @@ from .requirement import (
     load as load_spec,
 )
 from .source import SourceMissing, SourceStamp, file_stamp, stamp
-from .store import DatasetStore
 
 #: 交付目录名的时刻格式。到秒：同一分钟内跑两个需求是常态。
 _STAMP_FORMAT = "%Y%m%dT%H%M%S"

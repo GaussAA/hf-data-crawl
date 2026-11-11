@@ -17,8 +17,8 @@ import pytest
 
 from hf_data_crawl import card, raw
 from hf_data_crawl.card import extract_card_row, extract_config_rows
-from hf_data_crawl.store import DatasetStore
-from hf_data_crawl.tables import CARD_CONFIGS_SCHEMA, ENRICH_SCHEMA
+from hf_data_crawl.platform.store import DatasetStore
+from hf_data_crawl.platform.tables import CARD_CONFIGS_SCHEMA, ENRICH_SCHEMA
 
 DAY = date(2026, 11, 4)
 

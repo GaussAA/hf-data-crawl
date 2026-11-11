@@ -28,8 +28,8 @@ from .fields import (
     EXTENDED_FIELDS,
     EXTENDED_NOTE,
 )
+from .platform.tables import TABLES, Origin, TableSpec
 from .raw import BRONZE_LABELS, CARD_LABEL
-from .tables import TABLES, Origin, TableSpec
 
 #: 各类 Raw 分块的作用与派生去向。类别清单取自 `raw` 的常量，避免文档与
 #: 「谁进 Bronze、谁是卡片批次」这两条约定各写一份。
@@ -662,7 +662,7 @@ def _dir_summary(root: Path, name: str) -> str:
 
 def write(store_root: Path, target: Path) -> Path:
     """生成并落盘。返回写入路径。"""
-    from .atomic import write_text
+    from .platform.atomic import write_text
 
     write_text(target, render(store_root))
     return target

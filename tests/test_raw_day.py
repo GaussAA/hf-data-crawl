@@ -14,8 +14,9 @@ from typing import Any
 
 import pytest
 
-from hf_data_crawl import lineage, raw, retention
-from hf_data_crawl.store import DatasetStore
+from hf_data_crawl import lineage, raw
+from hf_data_crawl.platform import retention
+from hf_data_crawl.platform.store import DatasetStore
 
 DAY = date(2026, 11, 7)
 

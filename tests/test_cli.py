@@ -19,10 +19,10 @@ from hf_data_crawl import raw, state
 from hf_data_crawl.api import HfResponse
 from hf_data_crawl.cli import main
 from hf_data_crawl.derive import derive_day
-from hf_data_crawl.lock import exclusive
-from hf_data_crawl.runs import read_runs
+from hf_data_crawl.platform.lock import exclusive
+from hf_data_crawl.platform.runs import read_runs
+from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.sizes import SIZE_SCHEMA, StagingWriter, staged_shards
-from hf_data_crawl.store import DatasetStore
 
 DAY = date(2026, 11, 4)
 DAY_ARG = DAY.isoformat()

@@ -8,7 +8,7 @@ from pathlib import Path
 from hf_data_crawl import health
 from hf_data_crawl.doctor import Finding, diagnose
 from hf_data_crawl.health import HEALTH_NAME, HealthRecord
-from hf_data_crawl.store import DatasetStore
+from hf_data_crawl.platform.store import DatasetStore
 
 NOW = datetime(2026, 11, 10, 12, 0, 0)
 

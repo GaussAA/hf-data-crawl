@@ -72,10 +72,10 @@ from typing import Any, Literal
 import openpyxl
 from openpyxl.styles import Alignment, Font
 
-from .atomic import replace
 from .gold import GoldCatalog
+from .platform.atomic import replace
+from .platform.store import DatasetStore
 from .source import SourceStamp, stamp
-from .store import DatasetStore
 
 #: HF 的标签是英文枚举，回填进中文表要归一；词表外的新枚举原样保留，不硬猜。
 #: spec 里可用 `lexicon:` 追加，但追加项只对本份 spec 生效。

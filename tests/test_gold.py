@@ -15,7 +15,7 @@ import pytest
 from hf_data_crawl import raw
 from hf_data_crawl.derive import derive_day
 from hf_data_crawl.gold import BOARDS, GoldCatalog
-from hf_data_crawl.store import DatasetStore
+from hf_data_crawl.platform.store import DatasetStore
 
 DAY1 = date(2026, 11, 1)
 DAY4 = date(2026, 11, 4)
@@ -182,7 +182,7 @@ def test_宽视图不含原始JSON与分区列(catalog: GoldCatalog) -> None:
 def test_宽视图包含附表的全部有效列(catalog: GoldCatalog) -> None:
     """手抄列清单的代价是漂移：附表加了列，宽视图安静地少一列。"""
     from hf_data_crawl.gold import _VIEW_RENAMES
-    from hf_data_crawl.tables import table
+    from hf_data_crawl.platform.tables import table
 
     columns = set(catalog.run("SELECT * FROM datasets LIMIT 0").columns)
     for name, excluded in (

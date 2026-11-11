@@ -39,10 +39,10 @@ from datetime import date
 
 from . import deriving, lineage, raw, state
 from .derive import ReplayCarry, derive_day
-from .retention import REPLAY_WINDOW_DAYS
+from .platform.retention import REPLAY_WINDOW_DAYS
+from .platform.store import DatasetStore
+from .platform.tables import TABLES, Origin, TableSpec
 from .status import restore, retain
-from .store import DatasetStore
-from .tables import TABLES, Origin, TableSpec
 
 
 @dataclass(frozen=True)

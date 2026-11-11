@@ -25,9 +25,8 @@ from hf_data_crawl import bronze, raw
 from hf_data_crawl.api import ALLOWED_PLACEHOLDERS, EXPAND_WHITELIST, LIST_UNRETURNED_FIELDS
 from hf_data_crawl.collect import LEAN_EXPAND
 from hf_data_crawl.enrich import ENRICH_EXPAND
-from hf_data_crawl.silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
-from hf_data_crawl.store import DatasetStore
-from hf_data_crawl.tables import (
+from hf_data_crawl.platform.store import DatasetStore
+from hf_data_crawl.platform.tables import (
     BRONZE_DERIVED_COLUMNS,
     BRONZE_SCHEMA,
     BRONZE_SOURCE_FIELDS,
@@ -35,6 +34,7 @@ from hf_data_crawl.tables import (
     SILVER_SCHEMA,
     UNCONDITIONAL_FIELDS,
 )
+from hf_data_crawl.silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
 
 DAY = date(2026, 11, 4)
 

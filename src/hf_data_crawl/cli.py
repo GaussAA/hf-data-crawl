@@ -24,15 +24,18 @@ from .delivery import DeliveryBlocked, DeliveryResult, Preview, deliver, preview
 from .deriving import check_and_recover
 from .doctor import diagnose, sync_alert
 from .enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
-from .env import load_env_file
 from .files import FileFetcher, FileSummary, HfFilesApi
 from .gold import BOARDS, GoldCatalog, GoldNotReady, UnsafeQuery
 from .health import record as record_health
 from .lineage import restamp
-from .lock import LockBusy, exclusive
 from .method import METHOD_DIR, METHOD_DOC, METHOD_INDEX, problems
 from .method import sync as sync_method
 from .metrics import lookup
+from .platform.env import load_env_file
+from .platform.lock import LockBusy, exclusive
+from .platform.retention import BACKUP_PRUNE_AFTER_DAYS, REPLAY_WINDOW_DAYS
+from .platform.runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs, write_run
+from .platform.store import DatasetStore
 from .rebuild import RebuildSummary, divergent_since, rebuild_from_raw, replay_suffix
 from .reconcile import PROBE_DAILY_LIMIT, Reconciler, ReconcileSummary
 from .report import Reporter
@@ -56,8 +59,6 @@ from .requirement import (
     version_conflict,
 )
 from .requirement import load as load_spec
-from .retention import BACKUP_PRUNE_AFTER_DAYS, REPLAY_WINDOW_DAYS
-from .runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs, write_run
 from .sizes import (
     HfSizeApi,
     SizeFetcher,
@@ -67,7 +68,6 @@ from .sizes import (
     read_staged,
     tail,
 )
-from .store import DatasetStore
 from .transport import HttpxTransport
 
 #: 会改写数据目录的命令，执行期间持有独占锁。query 只读且单次查询很短，
@@ -880,7 +880,7 @@ def _warn_frozen_rows(frame: pl.DataFrame) -> None:
     不改数据、不过滤——用不用这些行是判断，该由人来做。但不说一声，那个「下载量
     28 万」会被当成今天的读数，而它可能停在四天前；改名后的旧 id 更是永远不再更新。
     """
-    from .vocab import INACTIVE
+    from .platform.vocab import INACTIVE
 
     if "status" not in frame.columns:
         return

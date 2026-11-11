@@ -11,9 +11,9 @@ from pathlib import Path
 import pytest
 
 from hf_data_crawl.cli import main
-from hf_data_crawl.lock import LOCK_NAME, LockBusy, describe_holder, exclusive
-from hf_data_crawl.runs import read_runs
-from hf_data_crawl.store import DatasetStore
+from hf_data_crawl.platform.lock import LOCK_NAME, LockBusy, describe_holder, exclusive
+from hf_data_crawl.platform.runs import read_runs
+from hf_data_crawl.platform.store import DatasetStore
 
 
 def test_同一目录第二把锁拿不到并说明占用者(tmp_path: Path) -> None:
@@ -50,7 +50,7 @@ def test_另一个进程持有时本进程拿不到且进程结束后释放(tmp_
         """
         import sys, time
         from pathlib import Path
-        from hf_data_crawl.lock import exclusive
+        from hf_data_crawl.platform.lock import exclusive
         with exclusive(Path(sys.argv[1]), "reconcile"):
             print("held", flush=True)
             time.sleep(60)
@@ -148,7 +148,7 @@ def test_report在锁被占用时留下失败记录(tmp_path: Path, monkeypatch:
 
 def test_不等待时只试一次就失败(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """人工命令：报错比干等更有用。"""
-    from hf_data_crawl import lock as lock_mod
+    from hf_data_crawl.platform import lock as lock_mod
 
     calls = {"n": 0}
 
@@ -170,7 +170,7 @@ def test_给等待时会重试直到拿到(tmp_path: Path, monkeypatch: pytest.M
 
     2026-11-07 实测：collect 03:10 撞上仍在跑的 fetch-sizes，整轮采集作废。
     """
-    from hf_data_crawl import lock as lock_mod
+    from hf_data_crawl.platform import lock as lock_mod
 
     calls = {"n": 0}
 
@@ -189,7 +189,7 @@ def test_给等待时会重试直到拿到(tmp_path: Path, monkeypatch: pytest.M
 
 def test_等待超时后仍然失败(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """等到超时还没释放，必须如实失败，不能无限等下去。"""
-    from hf_data_crawl import lock as lock_mod
+    from hf_data_crawl.platform import lock as lock_mod
 
     monkeypatch.setattr(lock_mod, "_try_lock", lambda _handle: False)
     monkeypatch.setattr(lock_mod.time, "sleep", lambda _seconds: None)

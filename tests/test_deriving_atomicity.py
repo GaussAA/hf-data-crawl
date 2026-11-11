@@ -21,8 +21,8 @@ from hf_data_crawl.deriving import (
     flag_path,
     mark_deriving,
 )
+from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.raw import CARD_LABEL
-from hf_data_crawl.store import DatasetStore
 
 
 def test_标记文件创建(tmp_path: Path) -> None:

@@ -19,9 +19,9 @@ import hf_data_crawl.compact as compact_module
 from hf_data_crawl import raw, state
 from hf_data_crawl.compact import CompactMismatch, compact
 from hf_data_crawl.derive import derive_day
+from hf_data_crawl.platform.retention import manifest_path, read_compressed_dates
+from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.rebuild import discover_raw_dates, rebuild_from_raw
-from hf_data_crawl.retention import manifest_path, read_compressed_dates
-from hf_data_crawl.store import DatasetStore
 
 COLD = [date(2026, 10, day) for day in (1, 2, 3)]
 HOT = date(2026, 11, 7)

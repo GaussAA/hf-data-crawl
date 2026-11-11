@@ -7,8 +7,8 @@
 
 from __future__ import annotations
 
+from hf_data_crawl.platform.vocab import Status
 from hf_data_crawl.session import Baseline, Seen, diff_sets
-from hf_data_crawl.vocab import Status
 
 
 def test_两方都有sha且不同算变更() -> None:

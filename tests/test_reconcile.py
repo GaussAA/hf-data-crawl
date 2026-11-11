@@ -16,8 +16,8 @@ import pytest
 from hf_data_crawl import raw, state
 from hf_data_crawl.api import HfDatasetApi, HfResponse
 from hf_data_crawl.derive import derive_day
+from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.reconcile import Reconciler
-from hf_data_crawl.store import DatasetStore
 
 DAY1 = date(2026, 11, 1)
 DAY2 = date(2026, 11, 2)
@@ -460,7 +460,7 @@ def test_探测统计进差异清单(store: DatasetStore) -> None:
 
 def test_探测优先在架的_已判过的排后面(store: DatasetStore) -> None:
     """已判为非在架的库每轮都被重探，等于拿一半配额去确认旧结论。"""
-    from hf_data_crawl.vocab import Status
+    from hf_data_crawl.platform.vocab import Status
 
     ids = seed_many(store, 5)
     state.mark_status(store, {"acme/a": Status.DISAPPEARED, "acme/b": Status.DISAPPEARED})
@@ -475,7 +475,7 @@ def test_探测优先在架的_已判过的排后面(store: DatasetStore) -> Non
 
 def test_在架的不够限额时才复核已判过的(store: DatasetStore) -> None:
     """非在架的不能被饿死：命中概率低，但真被恢复时要能翻回来。"""
-    from hf_data_crawl.vocab import Status
+    from hf_data_crawl.platform.vocab import Status
 
     ids = seed_many(store, 4)
     state.mark_status(store, {"acme/a": Status.DISAPPEARED, "acme/b": Status.DISAPPEARED})
@@ -487,7 +487,7 @@ def test_在架的不够限额时才复核已判过的(store: DatasetStore) -> N
 
 
 def test_在架优先后排到前面_轮转仍不重复(store: DatasetStore) -> None:
-    from hf_data_crawl.vocab import Status
+    from hf_data_crawl.platform.vocab import Status
 
     ids = seed_many(store, 6)
     state.mark_status(store, {"acme/a": Status.DISAPPEARED})

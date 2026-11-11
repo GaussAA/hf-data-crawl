@@ -45,10 +45,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from . import bronze, raw
-from .atomic import write_bytes
+from .platform.atomic import write_bytes
 
 if TYPE_CHECKING:
-    from .store import DatasetStore
+    from .platform.store import DatasetStore
 
 #: 一个分片约装这么多条记录。必须留足分片数，Bronze 重建才有并行度：
 #: 5 万条一片时 11-04 只有 26 片，低于 `bronze.PARALLEL_MIN_FILES`，重建退回串行，

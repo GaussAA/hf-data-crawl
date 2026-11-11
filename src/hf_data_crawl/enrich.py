@@ -24,9 +24,9 @@ from datetime import date
 
 from . import card
 from .api import IDENTITY_EXPAND, MAX_LIMIT, HfDatasetApi, Page
+from .platform.store import DatasetStore
 from .raw import CARD_LABEL
 from .scan import ScanRun, ScanSpec, ScanSummary
-from .store import DatasetStore
 from .watermark import Watermark, extract_last_modified
 
 #: 比 lean 档多要卡片本体；论文关联与引用文本已在 `IDENTITY_EXPAND` 基座里，

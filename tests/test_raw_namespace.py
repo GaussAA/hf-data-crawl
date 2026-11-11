@@ -23,8 +23,8 @@ import pytest
 from hf_data_crawl import archive, bronze, raw
 from hf_data_crawl.api import IDENTITY_EXPAND, Page
 from hf_data_crawl.enrich import ENRICH_EXPAND
+from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.scan import ScanRun, ScanSpec
-from hf_data_crawl.store import DatasetStore
 
 DAY = date(2026, 11, 7)
 

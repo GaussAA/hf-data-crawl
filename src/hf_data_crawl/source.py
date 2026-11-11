@@ -17,7 +17,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from .store import DatasetStore
+from .platform.store import DatasetStore
 
 
 class SourceMissing(RuntimeError):

@@ -30,11 +30,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from . import raw
-from .atomic import write_bytes
-from .retention import backup_raw_dir, cold_dir, manifest_path, read_compressed_dates
+from .platform.atomic import write_bytes
+from .platform.retention import backup_raw_dir, cold_dir, manifest_path, read_compressed_dates
 
 if TYPE_CHECKING:
-    from .store import DatasetStore
+    from .platform.store import DatasetStore
 
 #: 与 archive 分片同量级，保留并行度。
 BASELINE_RECORDS = 10_000

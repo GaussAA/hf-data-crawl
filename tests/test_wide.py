@@ -26,8 +26,8 @@ from hf_data_crawl.cli import WRITE_COMMANDS, main
 from hf_data_crawl.derive import derive_day
 from hf_data_crawl.fields import DEFAULT_COLUMNS
 from hf_data_crawl.gold import GoldCatalog, wide_column_names
-from hf_data_crawl.runs import read_runs
-from hf_data_crawl.store import DatasetStore
+from hf_data_crawl.platform.runs import read_runs
+from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.wide import WideExportMismatch, export_wide
 
 DAY = date(2026, 11, 1)

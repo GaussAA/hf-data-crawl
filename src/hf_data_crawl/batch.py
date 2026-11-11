@@ -18,7 +18,7 @@ from typing import Any, Protocol
 
 import polars as pl
 
-from .tables import PolarsType
+from .platform.tables import PolarsType
 
 
 class FetchResult(Protocol):

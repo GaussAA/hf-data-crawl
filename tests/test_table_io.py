@@ -13,10 +13,10 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from hf_data_crawl import tables
-from hf_data_crawl.atomic import write_parquet
-from hf_data_crawl.store import DatasetStore
-from hf_data_crawl.tables import CARD_CONFIGS_SCHEMA, OBSERVATIONS_SCHEMA, SIZE_SCHEMA
+from hf_data_crawl.platform import tables
+from hf_data_crawl.platform.atomic import write_parquet
+from hf_data_crawl.platform.store import DatasetStore
+from hf_data_crawl.platform.tables import CARD_CONFIGS_SCHEMA, OBSERVATIONS_SCHEMA, SIZE_SCHEMA
 
 DAY1 = date(2026, 11, 1)
 DAY2 = date(2026, 11, 2)

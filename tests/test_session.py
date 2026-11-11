@@ -10,13 +10,13 @@ import pytest
 
 from hf_data_crawl import raw
 from hf_data_crawl.derive import derive_day
+from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.session import (
     BASELINE_FILENAME,
     SEEN_FILENAME,
     ReconcileSession,
     diff_sets,
 )
-from hf_data_crawl.store import DatasetStore
 
 DAY = date(2026, 11, 1)
 CHECKPOINT = "reconcile-checkpoint.json"

@@ -14,9 +14,9 @@ import polars as pl
 import pytest
 
 from hf_data_crawl import bronze, gold, raw
+from hf_data_crawl.platform.store import DatasetStore
+from hf_data_crawl.platform.tables import TABLES, Origin, TableSpec, table
 from hf_data_crawl.rebuild import _clear, clear_derived
-from hf_data_crawl.store import DatasetStore
-from hf_data_crawl.tables import TABLES, Origin, TableSpec, table
 
 # ---------------------------------------------------------------- 登记完整性
 
@@ -171,7 +171,7 @@ def test_每张表都登记了url列() -> None:
 
 
 def test_url由id严格拼出() -> None:
-    from hf_data_crawl.tables import DATASET_URL, url_for
+    from hf_data_crawl.platform.tables import DATASET_URL, url_for
 
     assert url_for("acme/x") == DATASET_URL + "acme/x"
     assert url_for("a/b-c_d") == "https://huggingface.co/datasets/a/b-c_d"
@@ -179,7 +179,7 @@ def test_url由id严格拼出() -> None:
 
 def test_落盘后url与实际id对得上(tmp_path: Path) -> None:
     """光有列不够，值必须真能拼对——这是「点开就是那个数据集」的前提。"""
-    from hf_data_crawl.tables import DATASET_URL
+    from hf_data_crawl.platform.tables import DATASET_URL
 
     store = DatasetStore(tmp_path / "data")
     raw.write(

@@ -11,7 +11,7 @@ import pytest
 from hf_data_crawl import archive, bronze, raw
 from hf_data_crawl.archive import ArchiveMismatch, archive_day
 from hf_data_crawl.cli import main
-from hf_data_crawl.store import DatasetStore
+from hf_data_crawl.platform.store import DatasetStore
 
 DAY = date(2026, 11, 3)
 

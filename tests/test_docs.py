@@ -17,7 +17,7 @@ import pytest
 
 from hf_data_crawl.cli import main
 from hf_data_crawl.datadoc import missing_docs, render
-from hf_data_crawl.tables import TABLES
+from hf_data_crawl.platform.tables import TABLES
 
 STAMP = datetime(2026, 11, 7, 12, 0)
 

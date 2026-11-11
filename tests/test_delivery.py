@@ -29,6 +29,7 @@ from hf_data_crawl.delivery import (
 )
 from hf_data_crawl.derive import derive_day
 from hf_data_crawl.fields import CONTRACT_VERSION, DEFAULT_COLUMNS
+from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.requirement import (
     DELIVERIES_DIR,
     MANIFEST_NAME,
@@ -37,7 +38,6 @@ from hf_data_crawl.requirement import (
     directory_name,
     spec_digest,
 )
-from hf_data_crawl.store import DatasetStore
 
 DAY = date(2026, 11, 1)
 NOW = datetime(2026, 11, 8, 15, 20, 0, tzinfo=UTC)

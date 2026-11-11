@@ -50,8 +50,8 @@ import polars as pl
 
 from .api import DEFAULT_BASE_URL, HfResponse, Transport, TransportError
 from .batch import collect_rows
-from .coerce import as_int
-from .tables import FILES_SCHEMA, url_for
+from .platform.coerce import as_int
+from .platform.tables import FILES_SCHEMA, url_for
 
 #: tree 接口每页硬上限；显式带上 limit，免得哪天上游默认值变了口径跟着漂。
 TREE_LIMIT = 1000
