@@ -1,7 +1,7 @@
 # data 目录说明
 
 > 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-09 23:10，**请勿手工编辑**。
-> 表结构与行数由代码和实际文件算出；字段含义维护在 `src/hf_data_crawl/fielddocs.py`。
+> 表结构与行数由代码和实际文件算出；字段含义维护在 `src/hf_data_crawl/ops/fielddocs.py`。
 > 改完代码后重新生成即可，`tests/test_docs.py` 会在忘记生成时报错。
 
 ## 一、数据是怎么流过来的

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from hf_data_crawl.cli import main
+from hf_data_crawl.ops.cli import main
 from hf_data_crawl.platform.lock import LOCK_NAME, LockBusy, describe_holder, exclusive
 from hf_data_crawl.platform.runs import read_runs
 from hf_data_crawl.platform.store import DatasetStore
@@ -113,7 +113,7 @@ def test_docs在锁被占用时等不到就失败(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """docs 需要一致快照，撞上写命令时应先等；等不到再明确失败，不生成半新半旧的文件。"""
-    from hf_data_crawl import cli
+    from hf_data_crawl.ops import cli
 
     monkeypatch.setattr(cli, "SNAPSHOT_LOCK_WAIT", 0.0)
     root = tmp_path / "data"
@@ -129,7 +129,7 @@ def test_docs在锁被占用时等不到就失败(
 
 def test_report在锁被占用时留下失败记录(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """report 同样要读一致快照；锁失败也照常写 runs，便于事后看到原因。"""
-    from hf_data_crawl import cli
+    from hf_data_crawl.ops import cli
 
     monkeypatch.setattr(cli, "SNAPSHOT_LOCK_WAIT", 0.0)
     root = tmp_path / "data"

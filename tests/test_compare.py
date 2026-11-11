@@ -131,7 +131,7 @@ def test_缺产物要说清楚而不是空比(tmp_path: Path) -> None:
 
 
 def run_cli(tmp_path: Path, *argv: str) -> int:
-    from hf_data_crawl.cli import main
+    from hf_data_crawl.ops.cli import main
 
     return main(
         ["--data-dir", str(tmp_path / "data"), "--requests-dir", str(tmp_path / "req"), *argv]

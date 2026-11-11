@@ -85,7 +85,7 @@ def test_没有脚本绕过公共包装自己写日志() -> None:
 
 
 def test_数据说明写明日志按轮命名() -> None:
-    from hf_data_crawl.datadoc import SIDE_FILES
+    from hf_data_crawl.ops.datadoc import SIDE_FILES
 
     entry = next(item for item in SIDE_FILES if item[0] == "logs/")
     assert "按轮命名" in entry[1]

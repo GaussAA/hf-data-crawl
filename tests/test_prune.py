@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from hf_data_crawl.ops.prune import PruneTarget, apply, plan, total_size
 from hf_data_crawl.platform.store import DatasetStore
-from hf_data_crawl.prune import PruneTarget, apply, plan, total_size
 
 NOW = datetime(2026, 11, 9, 20, 0)
 

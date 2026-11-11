@@ -26,8 +26,8 @@ from hf_data_crawl.acquire.files import (
     HfFilesApi,
     next_cursor,
 )
-from hf_data_crawl.cli import WRITE_COMMANDS, main
 from hf_data_crawl.hf.api import HfResponse, TransportError
+from hf_data_crawl.ops.cli import WRITE_COMMANDS, main
 from hf_data_crawl.pipeline import raw, state
 from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.runs import read_runs

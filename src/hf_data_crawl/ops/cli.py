@@ -16,11 +16,11 @@ from pathlib import Path
 
 import polars as pl
 
-from .acquire.collect import Collector, CollectSummary
-from .acquire.enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
-from .acquire.files import FileFetcher, FileSummary, HfFilesApi
-from .acquire.reconcile import PROBE_DAILY_LIMIT, Reconciler, ReconcileSummary
-from .acquire.sizes import (
+from ..acquire.collect import Collector, CollectSummary
+from ..acquire.enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
+from ..acquire.files import FileFetcher, FileSummary, HfFilesApi
+from ..acquire.reconcile import PROBE_DAILY_LIMIT, Reconciler, ReconcileSummary
+from ..acquire.sizes import (
     HfSizeApi,
     SizeFetcher,
     SizeSummary,
@@ -29,13 +29,13 @@ from .acquire.sizes import (
     read_staged,
     tail,
 )
-from .delivery import compare, specdiff
-from .delivery.backfill import FillError, header_change, header_of
-from .delivery.delivery import DeliveryBlocked, DeliveryResult, Preview, deliver, preview, run_due
-from .delivery.method import METHOD_DIR, METHOD_DOC, METHOD_INDEX, problems
-from .delivery.method import sync as sync_method
-from .delivery.metrics import lookup
-from .delivery.requirement import (
+from ..delivery import compare, specdiff
+from ..delivery.backfill import FillError, header_change, header_of
+from ..delivery.delivery import DeliveryBlocked, DeliveryResult, Preview, deliver, preview, run_due
+from ..delivery.method import METHOD_DIR, METHOD_DOC, METHOD_INDEX, problems
+from ..delivery.method import sync as sync_method
+from ..delivery.metrics import lookup
+from ..delivery.requirement import (
     DELIVERIES_DIR,
     HISTORY_DIR,
     INPUT_DIR,
@@ -54,22 +54,22 @@ from .delivery.requirement import (
     spec_digest,
     version_conflict,
 )
-from .delivery.requirement import load as load_spec
+from ..delivery.requirement import load as load_spec
+from ..hf.api import MAX_LIMIT, HfDatasetApi, Transport
+from ..hf.transport import HttpxTransport
+from ..pipeline import state
+from ..pipeline.deriving import check_and_recover
+from ..pipeline.lineage import restamp
+from ..pipeline.rebuild import RebuildSummary, divergent_since, rebuild_from_raw, replay_suffix
+from ..platform.env import load_env_file
+from ..platform.lock import LockBusy, exclusive
+from ..platform.retention import BACKUP_PRUNE_AFTER_DAYS, REPLAY_WINDOW_DAYS
+from ..platform.runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs, write_run
+from ..platform.store import DatasetStore
+from ..query.gold import BOARDS, GoldCatalog, GoldNotReady, UnsafeQuery
+from ..query.report import Reporter
 from .doctor import diagnose, sync_alert
 from .health import record as record_health
-from .hf.api import MAX_LIMIT, HfDatasetApi, Transport
-from .hf.transport import HttpxTransport
-from .pipeline import state
-from .pipeline.deriving import check_and_recover
-from .pipeline.lineage import restamp
-from .pipeline.rebuild import RebuildSummary, divergent_since, rebuild_from_raw, replay_suffix
-from .platform.env import load_env_file
-from .platform.lock import LockBusy, exclusive
-from .platform.retention import BACKUP_PRUNE_AFTER_DAYS, REPLAY_WINDOW_DAYS
-from .platform.runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs, write_run
-from .platform.store import DatasetStore
-from .query.gold import BOARDS, GoldCatalog, GoldNotReady, UnsafeQuery
-from .query.report import Reporter
 
 #: 会改写数据目录的命令，执行期间持有独占锁。query 只读且单次查询很短，
 #: 不在此列；report/docs 不改数据，但要同时读多张表，与写命令并发会读到
@@ -623,8 +623,8 @@ def _archive(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     """归档符合条件的日期。某天验证失败就记为失败，但不影响已完成的其他日期。"""
     from datetime import timedelta
 
+    from ..pipeline.rebuild import discover_raw_dates
     from .archive import ArchiveMismatch, archive_day
-    from .pipeline.rebuild import discover_raw_dates
 
     if args.date:
         days = [date.fromisoformat(args.date)]
@@ -676,7 +676,7 @@ def _enrich(args: argparse.Namespace, store: DatasetStore, transport: Transport 
     if args.ids:
         # 按需补：只问点名的这几个库。全量扫一遍要十几小时，而实际被交付命中的
         # 常常只有几十个；逐条问一次，换到的是默认面那两列不再空着。
-        from .pipeline.card import backfill
+        from ..pipeline.card import backfill
 
         ids = [item.strip() for item in args.ids.split(",") if item.strip()]
         if not ids:
@@ -881,7 +881,7 @@ def _warn_frozen_rows(frame: pl.DataFrame) -> None:
     不改数据、不过滤——用不用这些行是判断，该由人来做。但不说一声，那个「下载量
     28 万」会被当成今天的读数，而它可能停在四天前；改名后的旧 id 更是永远不再更新。
     """
-    from .platform.vocab import INACTIVE
+    from ..platform.vocab import INACTIVE
 
     if "status" not in frame.columns:
         return
@@ -956,7 +956,7 @@ def _doctor(store: DatasetStore, *, snapshot: bool, requests_root: Path | None =
 
 def _export_wide(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     """导出宽表。失败由 `_execute` 统一记进 runs/，不留半截文件。"""
-    from .delivery.wide import export_wide
+    from ..delivery.wide import export_wide
 
     target = Path(args.out) if args.out else None
     summary = export_wide(store, target)
@@ -1039,8 +1039,8 @@ def _compact(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     """压缩冷区日期。一次合并全部目标日期与已有基线，避免逐日重写基线。"""
     from datetime import timedelta
 
+    from ..pipeline.rebuild import discover_raw_dates
     from .compact import CompactMismatch, compact
-    from .pipeline.rebuild import discover_raw_dates
 
     if args.date:
         days = [date.fromisoformat(args.date)]

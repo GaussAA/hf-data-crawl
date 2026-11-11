@@ -29,10 +29,10 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .platform.retention import BACKUP_PRUNE_AFTER_DAYS
+from ..platform.retention import BACKUP_PRUNE_AFTER_DAYS
 
 if TYPE_CHECKING:
-    from .platform.store import DatasetStore
+    from ..platform.store import DatasetStore
 
 #: 允许清理的子树。写死成常量而不是参数：清理命令一旦能指向别处，
 #: 一次笔误就可能是删掉 `data/raw`。

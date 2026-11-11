@@ -446,7 +446,7 @@ def test_外部访问配置已锁死(catalog: GoldCatalog) -> None:
 
 
 def test_query命令行对非只读语句返回失败(tmp_path: Path, capsys: Any) -> None:
-    from hf_data_crawl.cli import main
+    from hf_data_crawl.ops.cli import main
 
     store = DatasetStore(tmp_path / "data")
     seed(store, DAY1, [record(1, downloads=100)])

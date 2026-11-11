@@ -26,13 +26,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .platform.atomic import write_text
+from ..platform.atomic import write_text
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from ..platform.store import DatasetStore
     from .doctor import Finding
-    from .platform.store import DatasetStore
 
 HEALTH_NAME = "health-history.jsonl"
 #: 保留最近多少次体检。每日两次（09:00 + 登录后）约合 250 天。

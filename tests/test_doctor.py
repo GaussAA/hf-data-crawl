@@ -11,10 +11,10 @@ from typing import Any
 
 import polars as pl
 
-from hf_data_crawl.cli import main
-from hf_data_crawl.doctor import ALERT_NAME, Finding, diagnose, sync_alert
-from hf_data_crawl.health import read as read_health
 from hf_data_crawl.hf.api import HfResponse
+from hf_data_crawl.ops.cli import main
+from hf_data_crawl.ops.doctor import ALERT_NAME, Finding, diagnose, sync_alert
+from hf_data_crawl.ops.health import read as read_health
 from hf_data_crawl.pipeline import lineage
 from hf_data_crawl.pipeline.lineage import path_of as lineage_path
 from hf_data_crawl.platform.lock import LockBusy
@@ -396,7 +396,7 @@ def test_skip_if_done只认同一快照日(tmp_path: Path) -> None:
 
 
 def test_Raw规模超阈值要报(tmp_path: Path, monkeypatch: Any) -> None:
-    import hf_data_crawl.doctor as doctor
+    import hf_data_crawl.ops.doctor as doctor
 
     store = DatasetStore(tmp_path / "data")
     healthy(store)
@@ -649,8 +649,8 @@ def test_doctor拿不到锁时降级为非快照(tmp_path: Path, monkeypatch: An
             )
         ]
 
-    monkeypatch.setattr("hf_data_crawl.cli.exclusive", busy)
-    monkeypatch.setattr("hf_data_crawl.cli.diagnose", fake_diagnose)
+    monkeypatch.setattr("hf_data_crawl.ops.cli.exclusive", busy)
+    monkeypatch.setattr("hf_data_crawl.ops.cli.diagnose", fake_diagnose)
 
     code = main(["--data-dir", str(root), "doctor", "--lock-wait", "0"])
 
@@ -765,7 +765,7 @@ def drop_raw_day(store: DatasetStore, day: date) -> None:
 
 def test_已知断日只印不判_不再天天红(tmp_path: Path) -> None:
     """不补的缺口若天天判红，ALERT.txt 会长期挂同一条，告警就废了。"""
-    from hf_data_crawl.doctor import KNOWN_RAW_GAPS
+    from hf_data_crawl.ops.doctor import KNOWN_RAW_GAPS
 
     store = DatasetStore(tmp_path / "data")
     healthy(store)
@@ -781,7 +781,7 @@ def test_已知断日只印不判_不再天天红(tmp_path: Path) -> None:
 
 def test_已知缺口之外的新断日照常判红(tmp_path: Path) -> None:
     """白名单只赦免登记过的日子，新掉的必须照报——否则它就是一张免罪符。"""
-    from hf_data_crawl.doctor import KNOWN_RAW_GAPS
+    from hf_data_crawl.ops.doctor import KNOWN_RAW_GAPS
 
     store = DatasetStore(tmp_path / "data")
     healthy(store)

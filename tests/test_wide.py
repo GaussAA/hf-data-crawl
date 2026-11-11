@@ -20,10 +20,10 @@ from typing import Any
 import polars as pl
 import pytest
 
-from hf_data_crawl.cli import WRITE_COMMANDS, main
 from hf_data_crawl.delivery import wide as wide_module
 from hf_data_crawl.delivery.fields import DEFAULT_COLUMNS
 from hf_data_crawl.delivery.wide import WideExportMismatch, export_wide
+from hf_data_crawl.ops.cli import WRITE_COMMANDS, main
 from hf_data_crawl.pipeline import raw, state
 from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.runs import read_runs

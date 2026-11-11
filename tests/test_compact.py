@@ -15,8 +15,8 @@ from typing import Any
 
 import pytest
 
-import hf_data_crawl.compact as compact_module
-from hf_data_crawl.compact import CompactMismatch, compact
+import hf_data_crawl.ops.compact as compact_module
+from hf_data_crawl.ops.compact import CompactMismatch, compact
 from hf_data_crawl.pipeline import raw, state
 from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.pipeline.rebuild import discover_raw_dates, rebuild_from_raw
@@ -227,7 +227,7 @@ def test_校验失败时撤销新分片且原文件不动(
 
 
 def test_compact命令端到端可用(tmp_path: Path) -> None:
-    from hf_data_crawl.cli import main
+    from hf_data_crawl.ops.cli import main
 
     store = DatasetStore(tmp_path / "cli-data")
     seed(store)

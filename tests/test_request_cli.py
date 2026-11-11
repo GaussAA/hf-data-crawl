@@ -12,8 +12,8 @@ import openpyxl
 import pytest
 import yaml
 
-from hf_data_crawl.cli import main
 from hf_data_crawl.delivery.requirement import SPEC_NAME, Kind, load, resolve_dir
+from hf_data_crawl.ops.cli import main
 
 
 def run(tmp_path: Path, *argv: str) -> int:

@@ -8,9 +8,9 @@ from typing import Any
 
 import pytest
 
-from hf_data_crawl import archive
-from hf_data_crawl.archive import ArchiveMismatch, archive_day
-from hf_data_crawl.cli import main
+from hf_data_crawl.ops import archive
+from hf_data_crawl.ops.archive import ArchiveMismatch, archive_day
+from hf_data_crawl.ops.cli import main
 from hf_data_crawl.pipeline import bronze, raw
 from hf_data_crawl.platform.store import DatasetStore
 

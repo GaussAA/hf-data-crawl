@@ -16,7 +16,7 @@ from typing import Any
 import polars as pl
 import pytest
 
-from hf_data_crawl.cli import main
+from hf_data_crawl.ops.cli import main
 from hf_data_crawl.pipeline import raw, state
 from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.pipeline.lineage import path_of as lineage_path
