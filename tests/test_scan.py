@@ -174,7 +174,7 @@ def test_钩子先于游标保存(store: DatasetStore) -> None:
 
 def test_钩子之后被打断时已见集合不缺页(store: DatasetStore) -> None:
     """模拟被杀在「钩子」与「存游标」之间：续跑会重抓这一页，最坏是重复追加。"""
-    from hf_data_crawl.session import ReconcileSession
+    from hf_data_crawl.acquire.session import ReconcileSession
 
     checkpoint_name = "reconcile-checkpoint.json"
     session = ReconcileSession.open(store, checkpoint_filename=checkpoint_name)

@@ -15,14 +15,14 @@ from typing import Any
 import polars as pl
 import pytest
 
-from hf_data_crawl.hf.api import HfResponse, TransportError
-from hf_data_crawl.sizes import (
+from hf_data_crawl.acquire.sizes import (
     SIZE_SCHEMA,
     HfSizeApi,
     SizeFetcher,
     SizeSummary,
     tail,
 )
+from hf_data_crawl.hf.api import HfResponse, TransportError
 
 DAY = date(2026, 11, 4)
 

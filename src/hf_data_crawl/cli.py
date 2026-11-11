@@ -17,12 +17,22 @@ from pathlib import Path
 import polars as pl
 
 from . import compare, specdiff
+from .acquire.collect import Collector, CollectSummary
+from .acquire.enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
+from .acquire.files import FileFetcher, FileSummary, HfFilesApi
+from .acquire.reconcile import PROBE_DAILY_LIMIT, Reconciler, ReconcileSummary
+from .acquire.sizes import (
+    HfSizeApi,
+    SizeFetcher,
+    SizeSummary,
+    StagingWriter,
+    clear_staged,
+    read_staged,
+    tail,
+)
 from .backfill import FillError, header_change, header_of
-from .collect import Collector, CollectSummary
 from .delivery import DeliveryBlocked, DeliveryResult, Preview, deliver, preview, run_due
 from .doctor import diagnose, sync_alert
-from .enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
-from .files import FileFetcher, FileSummary, HfFilesApi
 from .gold import BOARDS, GoldCatalog, GoldNotReady, UnsafeQuery
 from .health import record as record_health
 from .hf.api import MAX_LIMIT, HfDatasetApi, Transport
@@ -39,7 +49,6 @@ from .platform.lock import LockBusy, exclusive
 from .platform.retention import BACKUP_PRUNE_AFTER_DAYS, REPLAY_WINDOW_DAYS
 from .platform.runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs, write_run
 from .platform.store import DatasetStore
-from .reconcile import PROBE_DAILY_LIMIT, Reconciler, ReconcileSummary
 from .report import Reporter
 from .requirement import (
     DELIVERIES_DIR,
@@ -61,15 +70,6 @@ from .requirement import (
     version_conflict,
 )
 from .requirement import load as load_spec
-from .sizes import (
-    HfSizeApi,
-    SizeFetcher,
-    SizeSummary,
-    StagingWriter,
-    clear_staged,
-    read_staged,
-    tail,
-)
 
 #: 会改写数据目录的命令，执行期间持有独占锁。query 只读且单次查询很短，
 #: 不在此列；report/docs 不改数据，但要同时读多张表，与写命令并发会读到

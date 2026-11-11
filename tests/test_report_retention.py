@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hf_data_crawl.reconcile import REPORT_KEEP, prune_reports
+from hf_data_crawl.acquire.reconcile import REPORT_KEEP, prune_reports
 
 
 def touch(directory: Path, name: str) -> Path:

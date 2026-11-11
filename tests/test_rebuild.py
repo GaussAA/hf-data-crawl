@@ -141,7 +141,7 @@ def test_重建不清除规模表(store: DatasetStore) -> None:
     """
     import polars as pl
 
-    from hf_data_crawl.sizes import SIZE_SCHEMA
+    from hf_data_crawl.acquire.sizes import SIZE_SCHEMA
 
     store.upsert(
         "size",

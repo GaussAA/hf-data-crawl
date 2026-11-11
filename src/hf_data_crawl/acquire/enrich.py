@@ -22,12 +22,12 @@ import time
 from dataclasses import dataclass
 from datetime import date
 
-from .hf.api import IDENTITY_EXPAND, MAX_LIMIT, HfDatasetApi, Page
-from .hf.scan import ScanRun, ScanSpec, ScanSummary
-from .hf.watermark import Watermark, extract_last_modified
-from .pipeline import card
-from .pipeline.raw import CARD_LABEL
-from .platform.store import DatasetStore
+from ..hf.api import IDENTITY_EXPAND, MAX_LIMIT, HfDatasetApi, Page
+from ..hf.scan import ScanRun, ScanSpec, ScanSummary
+from ..hf.watermark import Watermark, extract_last_modified
+from ..pipeline import card
+from ..pipeline.raw import CARD_LABEL
+from ..platform.store import DatasetStore
 
 #: 比 lean 档多要卡片本体；论文关联与引用文本已在 `IDENTITY_EXPAND` 基座里，
 #: 这里不再重复列出（重复会让请求发出同名的 expand 键）。

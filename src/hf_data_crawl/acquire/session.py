@@ -33,12 +33,12 @@ from typing import Any
 
 import polars as pl
 
-from .hf.checkpoint import FileCheckpoint
-from .pipeline import state
-from .platform.atomic import write_parquet
-from .platform.store import DatasetStore
-from .platform.tables import PolarsType
-from .platform.vocab import INACTIVE
+from ..hf.checkpoint import FileCheckpoint
+from ..pipeline import state
+from ..platform.atomic import write_parquet
+from ..platform.store import DatasetStore
+from ..platform.tables import PolarsType
+from ..platform.vocab import INACTIVE
 
 BASELINE_FILENAME = "reconcile-baseline.parquet"
 SEEN_FILENAME = "reconcile-seen.csv"

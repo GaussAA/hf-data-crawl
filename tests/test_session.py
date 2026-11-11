@@ -8,15 +8,15 @@ from typing import Any
 
 import pytest
 
-from hf_data_crawl.pipeline import raw
-from hf_data_crawl.pipeline.derive import derive_day
-from hf_data_crawl.platform.store import DatasetStore
-from hf_data_crawl.session import (
+from hf_data_crawl.acquire.session import (
     BASELINE_FILENAME,
     SEEN_FILENAME,
     ReconcileSession,
     diff_sets,
 )
+from hf_data_crawl.pipeline import raw
+from hf_data_crawl.pipeline.derive import derive_day
+from hf_data_crawl.platform.store import DatasetStore
 
 DAY = date(2026, 11, 1)
 CHECKPOINT = "reconcile-checkpoint.json"

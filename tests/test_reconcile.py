@@ -13,11 +13,11 @@ from urllib.parse import parse_qs, urlparse
 import polars as pl
 import pytest
 
+from hf_data_crawl.acquire.reconcile import Reconciler
 from hf_data_crawl.hf.api import HfDatasetApi, HfResponse
 from hf_data_crawl.pipeline import raw, state
 from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.store import DatasetStore
-from hf_data_crawl.reconcile import Reconciler
 
 DAY1 = date(2026, 11, 1)
 DAY2 = date(2026, 11, 2)
@@ -504,7 +504,7 @@ def test_在架优先后排到前面_轮转仍不重复(store: DatasetStore) -> 
 
 def test_排序键改版后旧游标作废(store: DatasetStore) -> None:
     """判据一改，旧游标指向的是另一个序列里的位置；续用只会从中间切开。"""
-    from hf_data_crawl.reconcile import probe_cursor_path
+    from hf_data_crawl.acquire.reconcile import probe_cursor_path
 
     ids = seed_many(store, 6)
     path = probe_cursor_path(store)

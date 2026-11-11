@@ -13,7 +13,7 @@ from typing import Any
 import polars as pl
 import pytest
 
-from hf_data_crawl.enrich import Enricher, scan_changed_cards
+from hf_data_crawl.acquire.enrich import Enricher, scan_changed_cards
 from hf_data_crawl.hf.api import HfDatasetApi, HfResponse
 from hf_data_crawl.hf.watermark import Watermark
 from hf_data_crawl.pipeline import raw

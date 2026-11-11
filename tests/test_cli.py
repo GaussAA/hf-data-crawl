@@ -15,6 +15,7 @@ from typing import Any
 import polars as pl
 import pytest
 
+from hf_data_crawl.acquire.sizes import SIZE_SCHEMA, StagingWriter, staged_shards
 from hf_data_crawl.cli import main
 from hf_data_crawl.hf.api import HfResponse
 from hf_data_crawl.pipeline import raw, state
@@ -22,7 +23,6 @@ from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.lock import exclusive
 from hf_data_crawl.platform.runs import read_runs
 from hf_data_crawl.platform.store import DatasetStore
-from hf_data_crawl.sizes import SIZE_SCHEMA, StagingWriter, staged_shards
 
 DAY = date(2026, 11, 4)
 DAY_ARG = DAY.isoformat()

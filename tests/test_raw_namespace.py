@@ -21,7 +21,7 @@ from typing import Any
 import pytest
 
 from hf_data_crawl import archive
-from hf_data_crawl.enrich import ENRICH_EXPAND
+from hf_data_crawl.acquire.enrich import ENRICH_EXPAND
 from hf_data_crawl.hf.api import IDENTITY_EXPAND, Page
 from hf_data_crawl.hf.scan import ScanRun, ScanSpec
 from hf_data_crawl.pipeline import bronze, raw
