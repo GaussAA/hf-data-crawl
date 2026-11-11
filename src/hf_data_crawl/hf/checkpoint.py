@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from typing import Protocol
 
-from .platform.atomic import write_text
+from ..platform.atomic import write_text
 
 
 class Checkpoint(Protocol):

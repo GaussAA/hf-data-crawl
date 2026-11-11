@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from hf_data_crawl.checkpoint import FileCheckpoint
+from hf_data_crawl.hf.checkpoint import FileCheckpoint
 
 
 def test_保存后可重读到同一游标(tmp_path: Path) -> None:

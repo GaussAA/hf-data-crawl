@@ -19,10 +19,10 @@ from typing import Any
 import polars as pl
 import pytest
 
-from hf_data_crawl.api import HfResponse, TransportError
 from hf_data_crawl.cli import WRITE_COMMANDS, main
 from hf_data_crawl.files import EMPTY_PAGE_GRACE, TREE_LIMIT, FileFetcher, HfFilesApi, next_cursor
 from hf_data_crawl.gold import GoldCatalog, wide_column_names
+from hf_data_crawl.hf.api import HfResponse, TransportError
 from hf_data_crawl.pipeline import raw, state
 from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.runs import read_runs

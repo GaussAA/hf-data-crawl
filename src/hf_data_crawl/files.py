@@ -48,8 +48,8 @@ from urllib.parse import parse_qs, urlsplit
 
 import polars as pl
 
-from .api import DEFAULT_BASE_URL, HfResponse, Transport, TransportError
 from .batch import collect_rows
+from .hf.api import DEFAULT_BASE_URL, HfResponse, Transport, TransportError
 from .platform.coerce import as_int
 from .platform.tables import FILES_SCHEMA, url_for
 

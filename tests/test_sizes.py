@@ -15,7 +15,7 @@ from typing import Any
 import polars as pl
 import pytest
 
-from hf_data_crawl.api import HfResponse, TransportError
+from hf_data_crawl.hf.api import HfResponse, TransportError
 from hf_data_crawl.sizes import (
     SIZE_SCHEMA,
     HfSizeApi,

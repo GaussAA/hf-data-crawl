@@ -15,8 +15,8 @@ from typing import Any
 import polars as pl
 import pytest
 
-from hf_data_crawl.api import HfResponse
 from hf_data_crawl.cli import main
+from hf_data_crawl.hf.api import HfResponse
 from hf_data_crawl.pipeline import raw, state
 from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.lock import exclusive

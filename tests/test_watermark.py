@@ -12,8 +12,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from hf_data_crawl.checkpoint import MemoryCheckpoint
-from hf_data_crawl.watermark import (
+from hf_data_crawl.hf.checkpoint import MemoryCheckpoint
+from hf_data_crawl.hf.watermark import (
     Watermark,
     WatermarkCheckpoint,
     _is_reasonable_timestamp,

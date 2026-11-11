@@ -33,7 +33,7 @@ from typing import Any
 
 import polars as pl
 
-from .checkpoint import FileCheckpoint
+from .hf.checkpoint import FileCheckpoint
 from .pipeline import state
 from .platform.atomic import write_parquet
 from .platform.store import DatasetStore

@@ -17,7 +17,6 @@ from pathlib import Path
 import polars as pl
 
 from . import compare, specdiff
-from .api import MAX_LIMIT, HfDatasetApi, Transport
 from .backfill import FillError, header_change, header_of
 from .collect import Collector, CollectSummary
 from .delivery import DeliveryBlocked, DeliveryResult, Preview, deliver, preview, run_due
@@ -26,6 +25,8 @@ from .enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
 from .files import FileFetcher, FileSummary, HfFilesApi
 from .gold import BOARDS, GoldCatalog, GoldNotReady, UnsafeQuery
 from .health import record as record_health
+from .hf.api import MAX_LIMIT, HfDatasetApi, Transport
+from .hf.transport import HttpxTransport
 from .method import METHOD_DIR, METHOD_DOC, METHOD_INDEX, problems
 from .method import sync as sync_method
 from .metrics import lookup
@@ -69,7 +70,6 @@ from .sizes import (
     read_staged,
     tail,
 )
-from .transport import HttpxTransport
 
 #: 会改写数据目录的命令，执行期间持有独占锁。query 只读且单次查询很短，
 #: 不在此列；report/docs 不改数据，但要同时读多张表，与写命令并发会读到
