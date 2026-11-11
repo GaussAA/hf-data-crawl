@@ -455,3 +455,63 @@ def test_探测统计进差异清单(store: DatasetStore) -> None:
     assert probe_rows.height == 1
     assert "probed=2" in probe_rows["detail"][0]
     assert "deferred=3" in probe_rows["detail"][0]
+
+
+def test_探测优先在架的_已判过的排后面(store: DatasetStore) -> None:
+    """已判为非在架的库每轮都被重探，等于拿一半配额去确认旧结论。"""
+    from hf_data_crawl.status import Status
+
+    ids = seed_many(store, 5)
+    store.mark_status({"acme/a": Status.DISAPPEARED, "acme/b": Status.DISAPPEARED})
+    transport = FakeCursorTransport([[]], detail={item: {"id": item} for item in ids})
+
+    summary = reconciler(transport, store, probe_limit=2).run(DAY2, limit=100)
+
+    assert summary.probe_probed == 2
+    # 在架的是 c/d/e，先探它们；a/b 已判过，排到后面。
+    assert set(transport.probed) == {"acme/c", "acme/d"}
+
+
+def test_在架的不够限额时才复核已判过的(store: DatasetStore) -> None:
+    """非在架的不能被饿死：命中概率低，但真被恢复时要能翻回来。"""
+    from hf_data_crawl.status import Status
+
+    ids = seed_many(store, 4)
+    store.mark_status({"acme/a": Status.DISAPPEARED, "acme/b": Status.DISAPPEARED})
+    transport = FakeCursorTransport([[]], detail={item: {"id": item} for item in ids})
+
+    reconciler(transport, store, probe_limit=4).run(DAY2, limit=100)
+
+    assert set(transport.probed) == {"acme/a", "acme/b", "acme/c", "acme/d"}
+
+
+def test_在架优先后排到前面_轮转仍不重复(store: DatasetStore) -> None:
+    from hf_data_crawl.status import Status
+
+    ids = seed_many(store, 6)
+    store.mark_status({"acme/a": Status.DISAPPEARED})
+    detail = {item: {"id": item} for item in ids}
+
+    first = FakeCursorTransport([[]], detail=detail)
+    reconciler(first, store, probe_limit=3).run(DAY2, limit=100)
+    second = FakeCursorTransport([[]], detail=detail)
+    reconciler(second, store, probe_limit=3).run(DAY2, limit=100)
+
+    assert set(first.probed).isdisjoint(second.probed)
+    assert set(first.probed) | set(second.probed) == set(ids)
+
+
+def test_排序键改版后旧游标作废(store: DatasetStore) -> None:
+    """判据一改，旧游标指向的是另一个序列里的位置；续用只会从中间切开。"""
+    from hf_data_crawl.reconcile import probe_cursor_path
+
+    ids = seed_many(store, 6)
+    path = probe_cursor_path(store)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # 不带 order 的就是改版前的档案；3001 % 6 = 1，若被沿用会从第二个开始。
+    path.write_text('{"offset": 3001}', encoding="utf-8")
+    transport = FakeCursorTransport([[]], detail={item: {"id": item} for item in ids})
+
+    reconciler(transport, store, probe_limit=2).run(DAY2, limit=100)
+
+    assert set(transport.probed) == {"acme/a", "acme/b"}

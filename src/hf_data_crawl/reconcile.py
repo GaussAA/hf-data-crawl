@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date
@@ -51,6 +52,10 @@ PROBE_DAILY_LIMIT = 2000
 
 #: 轮转游标：记「下一轮从排序后的第几个开始」，让每天都探到不同的库。
 PROBE_CURSOR_NAME = "probe-cursor.json"
+
+#: 探测排序键的版本。判据一改（如从纯 id 改成「在架优先」），旧游标指向的就是
+#: 另一个序列里的位置，续用只会从中间切开；故版本不符即归零，从头扫一遍。
+PROBE_ORDER_VERSION = 2
 
 
 def probe_cursor_path(store: DatasetStore) -> Path:
@@ -158,7 +163,9 @@ class Reconciler:
         probe_reactivated: list[str] = []
         probed = failed = deferred = 0
         if stopped_reason == "end":
-            verdicts, probed, failed, deferred = self._classify_missing(diff.missing)
+            verdicts, probed, failed, deferred = self._classify_missing(
+                diff.missing, statuses=session.status_of(diff.missing)
+            )
             disappeared = [i for i, s in verdicts.items() if s is Status.DISAPPEARED]
             restricted = [i for i, s in verdicts.items() if s is Status.RESTRICTED]
             renamed = [i for i, s in verdicts.items() if s is Status.RENAMED]
@@ -206,7 +213,12 @@ class Reconciler:
             probe_deferred=deferred,
         )
 
-    def _classify_missing(self, missing: list[str]) -> tuple[dict[str, Status], int, int, int]:
+    def _classify_missing(
+        self,
+        missing: list[str],
+        *,
+        statuses: Mapping[str, str] | None = None,
+    ) -> tuple[dict[str, Status], int, int, int]:
         """复核「没扫到」的真实原因，返回 (判定, 已探, 失败, 顺延)。
 
         列表扫描看不见一个库，可能是删除、转私有或改名。直接问一次详情接口即可
@@ -216,13 +228,13 @@ class Reconciler:
         5 分钟，一次探完几千个必然大批限流。顺延不是偷懒——探测失败本就不落状态，
         本来要留待下轮；明确排队至少让「下一轮探谁」可预期，也让积压量被体检看见。
 
-        按 id 稳定排序后从游标处取，探完把游标推到末尾。轮转保证每天都换一批，
-        而不是日复一日重复探前两千个。
+        按 `statuses` 把在架的排前面，再按 id 稳定排序、从游标处取。已判定为非在架
+        的不必天天复核：它们本就不在列表里，每轮都探等于拿一半配额去确认旧结论。
         """
         if not missing:
             return {}, 0, 0, 0
 
-        batch, next_offset = self._probe_batch(missing)
+        batch, next_offset = self._probe_batch(missing, statuses or {})
         verdicts: dict[str, Status] = {}
         failed = 0
         with ThreadPoolExecutor(max_workers=self._probe_workers) as pool:
@@ -235,9 +247,16 @@ class Reconciler:
         self._write_probe_cursor(next_offset)
         return verdicts, len(batch), failed, len(missing) - len(batch)
 
-    def _probe_batch(self, missing: list[str]) -> tuple[list[str], int]:
-        """按轮转游标取本轮要探的一批，返回 (这批 id, 下一轮的游标)。"""
-        ordered = sorted(missing)
+    def _probe_batch(
+        self, missing: list[str], statuses: Mapping[str, str]
+    ) -> tuple[list[str], int]:
+        """按轮转游标取本轮要探的一批，返回 (这批 id, 下一轮的游标)。
+
+        排序键是「在架优先」：active 排前面，已判为非在架的排后面。后者仍会被探到
+        （在架的凑不满限额时），但不再占每天的黄金配额——实测 6579 个待复核里有
+        2933 个是早已判过的，全探一遍等于四成半的请求白花。
+        """
+        ordered = sorted(missing, key=lambda item: (statuses.get(item, "") != "active", item))
         total = len(ordered)
         if self._probe_limit >= total:
             return ordered, 0
@@ -248,12 +267,15 @@ class Reconciler:
         )
 
     def _read_probe_cursor(self) -> int:
-        """读轮转游标；档案缺失或损坏一律当 0，不因此中断对账。"""
+        """读轮转游标；档案缺失、损坏、或排序版本不符一律当 0，不因此中断对账。"""
         try:
             body = json.loads(probe_cursor_path(self._store).read_text(encoding="utf-8"))
-            value = body.get("offset") if isinstance(body, dict) else None
         except (OSError, ValueError):
             return 0
+        if not isinstance(body, dict) or body.get("order") != PROBE_ORDER_VERSION:
+            # 没有 order 的是本字段引入前的旧档案；排序键已换，位置不可沿用。
+            return 0
+        value = body.get("offset")
         return value if isinstance(value, int) and value >= 0 else 0
 
     def _write_probe_cursor(self, offset: int) -> None:
@@ -261,7 +283,11 @@ class Reconciler:
         path = probe_cursor_path(self._store)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            write_text(path, json.dumps({"offset": offset}, ensure_ascii=False) + "\n")
+            write_text(
+                path,
+                json.dumps({"offset": offset, "order": PROBE_ORDER_VERSION}, ensure_ascii=False)
+                + "\n",
+            )
         except OSError:
             return
 

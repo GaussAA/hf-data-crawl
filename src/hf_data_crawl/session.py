@@ -26,7 +26,7 @@
 from __future__ import annotations
 
 import csv
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -181,6 +181,19 @@ class ReconcileSession:
         """会话开始时该库的状态；基线里没有则为 None。"""
         entry = self._baseline.get(dataset_id)
         return entry[1] if entry else None
+
+    def status_of(self, dataset_ids: Iterable[str]) -> dict[str, str]:
+        """批量取这批 id 在会话开始时的状态。
+
+        只查传入的那些，不把整份基线摊成字典：基线是 113 万个 id，全摊一遍的
+        内存代价远超它换来的便利，而调用方每次只关心几十上百到几千个。
+        """
+        found: dict[str, str] = {}
+        for dataset_id in dataset_ids:
+            entry = self._baseline.get(dataset_id)
+            if entry is not None:
+                found[dataset_id] = entry[1]
+        return found
 
     def remember(self, records: list[dict[str, Any]]) -> None:
         """追加本页见过的 id 与 sha。
