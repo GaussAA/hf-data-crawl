@@ -110,7 +110,7 @@
     本就是「变化才追加」的压缩表示；② 热区——`build` 默认只重放近 7 天；
     ③ 冷区 Raw——`compact` 跨天去重压成一份基线（`groups` 仍冻结写入序），
     原分块移入 `backup/raw/` 不删。**实证**：只重放热区与全量重放、逐日正常跑
-    三向逐行等价（见 `tests/test_rebuild.py`）。`build --full` 保留旧逃生舱；
+    三向逐行等价（见 `tests/pipeline/test_rebuild.py`）。`build --full` 保留旧逃生舱；
     权威层缺失时自动回退全量。`doctor` 把 `cold/raw/manifest.json` 的日期算作
     「有观测」，避免部分压缩时残留分区拉长窗口造成断日误判。    **代价**：清理 backup 后若权威层
     损坏，只能恢复近 7 天——故原分块默认绝不自动删除。

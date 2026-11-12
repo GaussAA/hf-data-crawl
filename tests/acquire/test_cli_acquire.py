@@ -1,9 +1,4 @@
-"""命令行整条路径的行为测试：参数 → 注入的传输 → 落盘 → 运行记录 → 退出码。
-
-`main(..., transport=...)` 是唯一的注入缝。这里不联网，只验四条联网命令各自
-走完后：退出码对不对、`runs/` 里记的是不是成败一致、数据表里有没有行。
-假传输各自在本文件里写小的，不依赖别的测试文件。
-"""
+"""采集类命令经 `main` 的端到端行为：成功留痕、失败留痕、抓取期间不持锁。"""
 
 from __future__ import annotations
 
@@ -174,9 +169,6 @@ def test_日期写错记成失败而不是抛到外面(root: Path, command: str)
     assert transport.calls == [], "日期解析失败时不该发出任何请求"
 
 
-# ---------------------------------------------------------------- 规模补齐：锁外抓取
-
-
 def _stage_sizes(root: Path, ids: list[str]) -> None:
     """模拟上一轮中断留下的暂存分片。"""
     store = DatasetStore(root)
@@ -292,38 +284,3 @@ def test_合并拿不到锁时保留分片供下轮继续(root: Path) -> None:
     assert transport.calls == []
     assert store.read("size").height == 1
     assert staged_shards(store) == []
-
-
-def test_查询结果含冻结行要出提示(capsys: pytest.CaptureFixture[str]) -> None:
-    """改名后的旧 id 永远不再更新；不提示，它的旧值会被当成今天的读数。"""
-    from hf_data_crawl.query.commands import _warn_frozen_rows
-
-    _warn_frozen_rows(
-        pl.DataFrame(
-            {
-                "id": ["a/1", "a/2", "a/3"],
-                "downloads": [10, 20, 30],
-                "status": ["active", "renamed", "disappeared"],
-            }
-        )
-    )
-
-    out = capsys.readouterr().out
-    assert "2 行状态不是 active" in out
-
-
-def test_查询结果全在架时不打扰(capsys: pytest.CaptureFixture[str]) -> None:
-    from hf_data_crawl.query.commands import _warn_frozen_rows
-
-    _warn_frozen_rows(pl.DataFrame({"id": ["a/1"], "status": ["active"]}))
-
-    assert capsys.readouterr().out == ""
-
-
-def test_结果里没有状态列就不作声(capsys: pytest.CaptureFixture[str]) -> None:
-    """多数查询不投影 status；没有这一列就无从判断，别凭 id 猜。"""
-    from hf_data_crawl.query.commands import _warn_frozen_rows
-
-    _warn_frozen_rows(pl.DataFrame({"id": ["a/1"], "downloads": [10]}))
-
-    assert capsys.readouterr().out == ""

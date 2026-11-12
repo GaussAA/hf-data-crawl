@@ -109,7 +109,7 @@ S1–S8 交付后的两轮工作，合计 15 个提交。此处只记「改了�
 
 | 问题 | 处置 |
 |---|---|
-| `expand[]` 是白名单**裁剪**，未请求的 `private` 整列为空（111.5 万行） | 抽出 `IDENTITY_EXPAND` 基座；新增 `tests/test_schema_contract.py` 把「表结构的列」与「请求的字段」钉成唯一真相源 |
+| `expand[]` 是白名单**裁剪**，未请求的 `private` 整列为空（111.5 万行） | 抽出 `IDENTITY_EXPAND` 基座；新增 `tests/pipeline/test_schema_contract.py` 把「表结构的列」与「请求的字段」钉成唯一真相源 |
 | `trendingScore` 抓了 99.9% 却没落任何表 | 补列 |
 | **Bronze 按文件名字典序去重**：摘要随机，旧批次压住新批次（头部两万名的 `main_size` 只剩 11,552 条） | 先改 mtime，后改为「写入序落在 Raw 里」 |
 | `build` 误删不可重算的 `size.parquet`（两万条、13 分钟抓取无声消失） | 改由表登记表的 `Origin` 决定清除范围 |

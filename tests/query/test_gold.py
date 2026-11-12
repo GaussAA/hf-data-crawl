@@ -466,7 +466,7 @@ def test_README列出全部内置榜单() -> None:
     新增一榜只改 gold.py 时，query 的候选项会自动跟着变，README 却不会——
     读文档的人于是查不到新榜。这条断言把那处静默漂移改成显式失败。
     """
-    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    readme = (Path(__file__).resolve().parents[2] / "README.md").read_text(encoding="utf-8")
     section = readme.split("内置榜单（", 1)[1].split("**两个下载口径", 1)[0]
     listed = set(re.findall(r"^\| `([a-z_]+)` \|", section, flags=re.MULTILINE))
     expected = set(BOARDS)

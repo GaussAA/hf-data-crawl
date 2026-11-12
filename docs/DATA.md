@@ -2,7 +2,7 @@
 
 > 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-09 23:10，**请勿手工编辑**。
 > 表结构与行数由代码和实际文件算出；字段含义维护在 `src/hf_data_crawl/ops/fielddocs.py`。
-> 改完代码后重新生成即可，`tests/test_docs.py` 会在忘记生成时报错。
+> 改完代码后重新生成即可，`tests/ops/test_docs.py` 会在忘记生成时报错。
 
 ## 一、数据是怎么流过来的
 
@@ -589,7 +589,7 @@ v5 起标签列回到 LIST 原值，与 `gold.datasets` 视图完全同构：要
 但只补**头部**完全可行：`fetch-files` 默认每库取一页，有后续页就标 `truncated`，
 拿不到全库真值时如实承认是下限；单库详情头部实测 13-25 MB / 44-76 s，已弃用。
 文件级元数据只在榜单头部按需补，不进日常扫描。边界由
-`api.LIST_UNRETURNED_FIELDS` 与 `tests/test_schema_contract.py` 钉死。
+`api.LIST_UNRETURNED_FIELDS` 与 `tests/pipeline/test_schema_contract.py` 钉死。
 
 `citation` 与 `paperswithcode_id` 进基座只为让各来源 Raw 留下可回溯副本：
 它们不对应 Bronze 列、也不进宽表；`carddata` 表仍只由 `card-*` 分块解析，

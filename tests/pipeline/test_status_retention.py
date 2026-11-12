@@ -1,4 +1,4 @@
-"""Dataset 状态：词表、探测映射、重建留存协议。"""
+"""重建留存协议：非在架状态先落快照，重建后写回，快照随之删除。"""
 
 from __future__ import annotations
 
@@ -10,12 +10,10 @@ from typing import Any
 import polars as pl
 import pytest
 
-from hf_data_crawl.acquire.reconcile import STATUS_BY_VERDICT
 from hf_data_crawl.pipeline import raw, state
 from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.pipeline.rebuild import restore, retain, snapshot_path
 from hf_data_crawl.platform.store import DatasetStore
-from hf_data_crawl.platform.vocab import INACTIVE, Status
 
 DAY = date(2026, 11, 1)
 
@@ -50,44 +48,11 @@ def status_of(store: DatasetStore, dataset_id: str) -> str:
     return frame.row(0, named=True)["status"]
 
 
-# ---------------------------------------------------------------- 词表与映射
-
-
-def test_词表恰好四值() -> None:
-    assert {status.value for status in Status} == {
-        "active",
-        "disappeared",
-        "restricted",
-        "renamed",
-    }
-
-
-def test_非在架集合不含active() -> None:
-    assert Status.ACTIVE not in INACTIVE
-    assert INACTIVE == {Status.DISAPPEARED, Status.RESTRICTED, Status.RENAMED}
-
-
-def test_探测结论映射到状态() -> None:
-    assert STATUS_BY_VERDICT == {
-        "deleted": Status.DISAPPEARED,
-        "restricted": Status.RESTRICTED,
-        "renamed": Status.RENAMED,
-        "present": Status.ACTIVE,
-    }
-
-
-def test_unknown结论不在映射内表示先别动() -> None:
-    assert "unknown" not in STATUS_BY_VERDICT
-
-
 def test_mark_status拒绝词表外的值(store: DatasetStore) -> None:
     with pytest.raises(ValueError, match="gone"):
         state.mark_status(store, {"acme/ds-1": "gone"})
 
     assert status_of(store, "acme/ds-1") == "active"
-
-
-# ---------------------------------------------------------------- 留存协议
 
 
 def test_无失效项时不写快照(store: DatasetStore) -> None:

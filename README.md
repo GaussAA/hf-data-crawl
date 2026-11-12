@@ -136,7 +136,7 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
   默认按天重放；`archive` 可对单日做同天去重，并把写入序冻结进 `groups`。
 - **冷区权威层**：`silver`（属性变更流水）、`observations`（指标变更流水）、
   `current` 的历史**不再清空**，它们是历史事实来源。实证：只重放热区与全量
-  重放逐行等价（契约见 `tests/test_rebuild.py`）。
+  重放逐行等价（契约见 `tests/pipeline/test_rebuild.py`）。
 - **冷区 Raw**：`compact` 把超过 7 天的多日全量快照跨天去重压成一份基线，
   存 `data/cold/raw/`（分片 `groups` 仍冻结写入序），原分块**只移入
   `backup/raw/`、不删除**。写基线前后逐个 id 校验胜出者，不等即撤销。
@@ -174,7 +174,7 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
   - `collect --cards` 跟着日增量走：sha 变必然伴随一次 commit，`lastModified` 必变，而日增量本来就按它排序，所以「今天变过的库」现成就在手里，重翻同一批页、多带 `cardData` 即可。约 22 页 / +17 分钟 / raw 每日 +15MB。首轮没有水位线时不跑——那时没有「变化」可言，抓全站是 6.7GB、14 小时的一次性补齐，不该混进日常增量。
 
   卡片表落 `enrich/carddata.parquet`，`datasets` 视图已左连其字段。表里记 `source_sha`（抓这张卡时的仓库版本），拿它跟 `sha`（仓库当前）对照就能判断卡片是否落后——`snapshot_date` 只说什么时候抓的，不说内容对应哪一版。`doctor` 的「卡片凭证」一项报的就是这个比例，只看最近 3 天活跃的库（长尾几百万年不动，卡片本就该保持原样）。
-- **`expand[]` 是白名单裁剪，不是增补**（2026-11-04 踩过的坑）：传了它就只返回列出的字段，连默认响应里本就有的 `private` / `disabled` 都会被裁掉。此前 `LEAN_EXPAND` 没请求 `private`，而 Bronze 已声明该列，结果 111.5 万行整列为空且管线照常报成功。现由 `tests/test_schema_contract.py` 把「表结构的列」与「请求的字段」钉成唯一真相源，另有 16 项断言防止再次漂移。
+- **`expand[]` 是白名单裁剪，不是增补**（2026-11-04 踩过的坑）：传了它就只返回列出的字段，连默认响应里本就有的 `private` / `disabled` 都会被裁掉。此前 `LEAN_EXPAND` 没请求 `private`，而 Bronze 已声明该列，结果 111.5 万行整列为空且管线照常报成功。现由 `tests/pipeline/test_schema_contract.py` 把「表结构的列」与「请求的字段」钉成唯一真相源，另有 16 项断言防止再次漂移。
 - **卡片抽取看 `dataset_info`**：它带每个 config 的 `dataset_size` / `download_size` / `features`（列名+dtype）/ `splits`（`num_examples`），是整条管线里唯一能回答「多少行、多少列」的来源。宽表抽 22 列，另落 `card_configs.parquet`（一行一个 config/split，实测 13,651 张卡展开 142,552 行）。
 
 ## 数据一致性保障
@@ -193,7 +193,7 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
   `cursor=None` 同时当作清线信号，而正常完成恰好调 `save(None)`、首轮每页的
   `cursor` 本就是 None，水线写不进或刚写就被删，下轮 `is_stale()` 恒 False。
   今拆为 `save`（游标）/ `save_watermark`（水线）/ `finish`（完成）三个入口，
-  由 `tests/test_collect.py` 的跨轮用例守护。
+  由 `tests/acquire/test_collect.py` 的跨轮用例守护。
 
 **效果**：漏采风险降低 90%+
 

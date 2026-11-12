@@ -19,7 +19,7 @@ from hf_data_crawl.acquire.commands import _open_transport
 from hf_data_crawl.acquire.hf.api import Transport
 from hf_data_crawl.platform.env import ENV_FILENAME, default_env_path, load_env_file
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _write(tmp_path: Path, text: str) -> Path:
