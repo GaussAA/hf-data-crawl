@@ -649,8 +649,8 @@ def test_doctor拿不到锁时降级为非快照(tmp_path: Path, monkeypatch: An
             )
         ]
 
-    monkeypatch.setattr("hf_data_crawl.ops.cli.exclusive", busy)
-    monkeypatch.setattr("hf_data_crawl.ops.cli.diagnose", fake_diagnose)
+    monkeypatch.setattr("hf_data_crawl.ops.commands.exclusive", busy)
+    monkeypatch.setattr("hf_data_crawl.ops.commands.diagnose", fake_diagnose)
 
     code = main(["--data-dir", str(root), "doctor", "--lock-wait", "0"])
 

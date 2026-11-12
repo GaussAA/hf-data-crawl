@@ -18,6 +18,7 @@ import yaml
 from support import write_method
 
 from hf_data_crawl.delivery import method
+from hf_data_crawl.delivery.commands import deliveries_of
 from hf_data_crawl.delivery.delivery import (
     EXECUTORS,
     DeliveryBlocked,
@@ -35,7 +36,7 @@ from hf_data_crawl.delivery.requirement import (
     directory_name,
     spec_digest,
 )
-from hf_data_crawl.ops.cli import deliveries_of, main
+from hf_data_crawl.ops.cli import main
 from hf_data_crawl.pipeline import raw
 from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.store import DatasetStore
