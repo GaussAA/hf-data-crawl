@@ -15,8 +15,8 @@ from typing import Any
 import polars as pl
 import pytest
 
+from hf_data_crawl.acquire.hf.api import HfResponse
 from hf_data_crawl.acquire.sizes import SIZE_SCHEMA, StagingWriter, staged_shards
-from hf_data_crawl.hf.api import HfResponse
 from hf_data_crawl.ops.cli import main
 from hf_data_crawl.pipeline import raw, state
 from hf_data_crawl.pipeline.derive import derive_day

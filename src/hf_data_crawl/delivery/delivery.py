@@ -87,9 +87,7 @@ from .requirement import (
     spec_digest,
     version_conflict,
 )
-from .requirement import (
-    load as load_spec,
-)
+from .requirement import load as load_spec
 from .source import SourceMissing, SourceStamp, file_stamp, stamp
 
 #: 交付目录名的时刻格式。到秒：同一分钟内跑两个需求是常态。

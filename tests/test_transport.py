@@ -7,9 +7,9 @@ from typing import Any
 import httpx
 import pytest
 
-from hf_data_crawl.hf import transport as transport_module
-from hf_data_crawl.hf.api import TransportError
-from hf_data_crawl.hf.transport import HttpxTransport
+from hf_data_crawl.acquire.hf import transport as transport_module
+from hf_data_crawl.acquire.hf.api import TransportError
+from hf_data_crawl.acquire.hf.transport import HttpxTransport
 
 #: 构造 Client 不联网；显式给代理，避免 httpx 去读本机环境变量里的 NO_PROXY。
 LOCAL_PROXY = "http://127.0.0.1:1"

@@ -20,8 +20,6 @@ from typing import Any
 
 import polars as pl
 
-from ..hf.api import MAX_LIMIT, HfDatasetApi, Page
-from ..hf.scan import ScanRun, ScanSpec
 from ..pipeline import state
 from ..pipeline.derive import derive_day
 from ..pipeline.status import STATUS_BY_VERDICT
@@ -30,6 +28,8 @@ from ..platform.store import DatasetStore
 from ..platform.tables import PolarsType
 from ..platform.vocab import INACTIVE, Status
 from .collect import LEAN_EXPAND
+from .hf.api import MAX_LIMIT, HfDatasetApi, Page
+from .hf.scan import ScanRun, ScanSpec
 from .session import ReconcileSession
 
 RECONCILE_CHECKPOINT = "reconcile-checkpoint.json"

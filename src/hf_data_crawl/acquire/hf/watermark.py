@@ -34,7 +34,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from ..platform.atomic import write_text
+from ...platform.atomic import write_text
 from .checkpoint import Checkpoint
 
 

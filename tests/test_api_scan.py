@@ -11,8 +11,8 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from hf_data_crawl.hf.api import HfDatasetApi, HfResponse, TransportError
-from hf_data_crawl.hf.checkpoint import MemoryCheckpoint
+from hf_data_crawl.acquire.hf.api import HfDatasetApi, HfResponse, TransportError
+from hf_data_crawl.acquire.hf.checkpoint import MemoryCheckpoint
 
 
 class FakeTransport:

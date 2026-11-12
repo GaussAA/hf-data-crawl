@@ -22,8 +22,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Protocol
 
-from ..pipeline import raw
-from ..platform.store import DatasetStore
+from ...pipeline import raw
+from ...platform.store import DatasetStore
 from .api import IDENTITY_EXPAND, MAX_LIMIT, Page
 from .checkpoint import Checkpoint
 

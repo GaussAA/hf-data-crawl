@@ -13,8 +13,8 @@ from typing import Any
 
 import pytest
 
-from hf_data_crawl.hf.api import IDENTITY_EXPAND, Page
-from hf_data_crawl.hf.scan import ScanRun, ScanSpec
+from hf_data_crawl.acquire.hf.api import IDENTITY_EXPAND, Page
+from hf_data_crawl.acquire.hf.scan import ScanRun, ScanSpec
 from hf_data_crawl.platform.store import DatasetStore
 
 DAY = date(2026, 11, 4)

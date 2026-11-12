@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 from typing import cast
 
-from hf_data_crawl.hf.api import Transport
+from hf_data_crawl.acquire.hf.api import Transport
 from hf_data_crawl.ops.cli import _open_transport
 from hf_data_crawl.platform.env import ENV_FILENAME, default_env_path, load_env_file
 

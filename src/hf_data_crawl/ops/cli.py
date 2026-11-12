@@ -19,6 +19,8 @@ import polars as pl
 from ..acquire.collect import Collector, CollectSummary
 from ..acquire.enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
 from ..acquire.files import FileFetcher, FileSummary, HfFilesApi
+from ..acquire.hf.api import MAX_LIMIT, HfDatasetApi, Transport
+from ..acquire.hf.transport import HttpxTransport
 from ..acquire.reconcile import PROBE_DAILY_LIMIT, Reconciler, ReconcileSummary
 from ..acquire.sizes import (
     HfSizeApi,
@@ -55,12 +57,10 @@ from ..delivery.requirement import (
     version_conflict,
 )
 from ..delivery.requirement import load as load_spec
-from ..hf.api import MAX_LIMIT, HfDatasetApi, Transport
-from ..hf.transport import HttpxTransport
 from ..pipeline import state
-from ..pipeline.deriving import check_and_recover
 from ..pipeline.lineage import restamp
 from ..pipeline.rebuild import RebuildSummary, divergent_since, rebuild_from_raw, replay_suffix
+from ..pipeline.recovery import check_and_recover
 from ..platform.env import load_env_file
 from ..platform.lock import LockBusy, exclusive
 from ..platform.retention import BACKUP_PRUNE_AFTER_DAYS, REPLAY_WINDOW_DAYS

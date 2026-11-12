@@ -16,12 +16,12 @@ from hf_data_crawl.pipeline import raw
 from hf_data_crawl.pipeline.deriving import (
     STALE_THRESHOLD_SECONDS,
     DerivingFlag,
-    check_and_recover,
     clear_deriving,
     flag_path,
     mark_deriving,
 )
 from hf_data_crawl.pipeline.raw import CARD_LABEL
+from hf_data_crawl.pipeline.recovery import check_and_recover
 from hf_data_crawl.platform.store import DatasetStore
 
 
@@ -309,7 +309,7 @@ def test_有Raw时清理后重新派生(tmp_path: Path, monkeypatch) -> None:
     rederived: list[date] = []
     monkeypatch.setattr("hf_data_crawl.pipeline.deriving.has_raw", lambda *_: True)
     monkeypatch.setattr(
-        "hf_data_crawl.pipeline.deriving._rederive", lambda _store, day: rederived.append(day)
+        "hf_data_crawl.pipeline.recovery._rederive", lambda _store, day: rederived.append(day)
     )
 
     recovered = check_and_recover(store)
@@ -347,7 +347,7 @@ def test_只有卡片批次时按可重放处理(tmp_path: Path, monkeypatch) ->
 
     rederived: list[date] = []
     monkeypatch.setattr(
-        "hf_data_crawl.pipeline.deriving._rederive", lambda _store, day: rederived.append(day)
+        "hf_data_crawl.pipeline.recovery._rederive", lambda _store, day: rederived.append(day)
     )
 
     recovered = check_and_recover(store)

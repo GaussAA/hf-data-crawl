@@ -21,12 +21,7 @@ from typing import Any
 
 import polars as pl
 
-from ..delivery.fields import (
-    CONTRACT_VERSION,
-    DEFAULT_COLUMNS,
-    EXTENDED_FIELDS,
-    EXTENDED_NOTE,
-)
+from ..delivery.fields import CONTRACT_VERSION, DEFAULT_COLUMNS, EXTENDED_FIELDS, EXTENDED_NOTE
 from ..pipeline.raw import BRONZE_LABELS, CARD_LABEL
 from ..platform.tables import TABLES, Origin, TableSpec
 from .fielddocs import describe

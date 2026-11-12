@@ -11,7 +11,7 @@ from typing import Any
 
 import polars as pl
 
-from hf_data_crawl.hf.api import HfResponse
+from hf_data_crawl.acquire.hf.api import HfResponse
 from hf_data_crawl.ops.cli import main
 from hf_data_crawl.ops.doctor import ALERT_NAME, Finding, diagnose, sync_alert
 from hf_data_crawl.ops.health import read as read_health
