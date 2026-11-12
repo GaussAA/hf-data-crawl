@@ -83,3 +83,25 @@ def test_命令生成的文档与渲染函数一致(tmp_path: Path) -> None:
 
     assert "## 五、几个容易误解的地方" in written
     assert "请勿手工编辑" in written
+
+
+def test_文档提到的源码文件必须真的存在(tmp_path: Path) -> None:
+    """生成物被手工改过，重新生成就会把手改的部分冲掉。
+
+    2026-11-13 实测：`docs/DATA.md` 里补了切片前缀（`delivery/fields.py`），生成器
+    却仍输出裸名 `fields.py`——重新生成即回退。这类漂移没有守卫就只能靠人记得，
+    而「记得」不是机制。故：文档里每个以 `.py` 结尾的引用，都必须能在仓库根或
+    `src/hf_data_crawl/` 下找到。
+    """
+    import re
+
+    repo = Path(__file__).resolve().parents[2]
+    text = render(tmp_path / "data", STAMP)
+    refs = sorted(set(re.findall(r"`([A-Za-z0-9_/]+\.py)`", text)))
+
+    missing = [
+        ref
+        for ref in refs
+        if not (repo / ref).is_file() and not (repo / "src" / "hf_data_crawl" / ref).is_file()
+    ]
+    assert missing == [], f"文档引用了不存在的源码文件：{missing}"

@@ -15,7 +15,7 @@ from .doctor import diagnose, sync_alert
 from .health import record as record_health
 
 
-def _archive(args: argparse.Namespace, store: DatasetStore) -> Outcome:
+def run_archive(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     """归档符合条件的日期。某天验证失败就记为失败，但不影响已完成的其他日期。"""
     from datetime import timedelta
 
@@ -65,7 +65,7 @@ def _archive(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     return Outcome(payload)
 
 
-def _compact(args: argparse.Namespace, store: DatasetStore) -> Outcome:
+def run_compact(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     """压缩冷区日期。一次合并全部目标日期与已有基线，避免逐日重写基线。"""
     from datetime import timedelta
 
@@ -108,7 +108,7 @@ def _compact(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     )
 
 
-def _prune(args: argparse.Namespace, store: DatasetStore) -> Outcome:
+def run_prune(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     """清理备份。搬运与销毁分开：这里只销毁，且只碰 `backup/`。"""
     from .prune import apply, plan, total_size
 
@@ -179,7 +179,7 @@ def _doctor(store: DatasetStore, *, snapshot: bool, requests_root: Path | None =
     return 1 if any(item.problem for item in findings) else 0
 
 
-def _doctor_locked(store: DatasetStore, wait: float, *, requests_root: Path | None = None) -> int:
+def run_doctor(store: DatasetStore, wait: float, *, requests_root: Path | None = None) -> int:
     """体检优先在一致快照上跑；等不到写锁就降级，不阻塞人工排障。
 
     与 report/docs 不同：那两个命令拿不到锁直接失败，因为产出的文件必须基于
@@ -193,7 +193,7 @@ def _doctor_locked(store: DatasetStore, wait: float, *, requests_root: Path | No
         return _doctor(store, snapshot=False, requests_root=requests_root)
 
 
-def _write_docs(args: argparse.Namespace, store: DatasetStore) -> int:
+def run_docs(args: argparse.Namespace, store: DatasetStore) -> int:
     """生成 data 目录说明。纯本地动作，不联网。
 
     缺字段说明时退出码为 1：文档不完整等于没写，应当在生成那一刻就看见。

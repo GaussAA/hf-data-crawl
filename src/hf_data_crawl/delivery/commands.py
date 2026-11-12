@@ -37,7 +37,7 @@ from .requirement import (
 from .requirement import load as load_spec
 
 
-def _export_wide(args: argparse.Namespace, store: DatasetStore) -> Outcome:
+def run_export_wide(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     """导出宽表。失败由 `_execute` 统一记进 runs/，不留半截文件。"""
     from .wide import export_wide
 
@@ -93,7 +93,7 @@ def manifest_summary(directory: Path) -> str:
     return f"  {rows} 行 · {status}"
 
 
-def _request(args: argparse.Namespace) -> int:
+def run_request(args: argparse.Namespace) -> int:
     """需求管理里不写数据的几个动作，都不持数据目录的锁。"""
     root = Path(args.requests_dir)
     if args.request_action == "new":
@@ -578,7 +578,7 @@ def _request_show(root: Path, request_id: str) -> int:
     return 0
 
 
-def _request_run(args: argparse.Namespace, store: DatasetStore) -> int:
+def run_request_run(args: argparse.Namespace, store: DatasetStore) -> int:
     """交付一次。一次性需求交付过就不再自动重复，加 --force 才重交。"""
     root = Path(args.requests_dir)
     try:
@@ -637,7 +637,7 @@ def _print_delivery(result: DeliveryResult) -> None:
         print(f"  {health.note}")
 
 
-def _request_run_due(args: argparse.Namespace, store: DatasetStore) -> int:
+def run_request_run_due(args: argparse.Namespace, store: DatasetStore) -> int:
     """跑所有到期的需求。一个失败不挡别的，但整体退出码会反映出来。"""
     root = Path(args.requests_dir)
     if not root.is_dir():

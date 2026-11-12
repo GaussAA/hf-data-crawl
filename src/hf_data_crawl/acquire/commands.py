@@ -69,7 +69,9 @@ def _collected_today(store: DatasetStore, snapshot: date) -> bool:
     return False
 
 
-def _collect(args: argparse.Namespace, store: DatasetStore, transport: Transport | None) -> Outcome:
+def run_collect(
+    args: argparse.Namespace, store: DatasetStore, transport: Transport | None
+) -> Outcome:
     snapshot = _snapshot(args)
     if args.skip_if_done and not args.dry_run and _collected_today(store, snapshot):
         print(f"{snapshot} 已完整采集过，跳过。")
@@ -92,7 +94,7 @@ def _collect(args: argparse.Namespace, store: DatasetStore, transport: Transport
     return Outcome(summary)
 
 
-def _reconcile(
+def run_reconcile(
     args: argparse.Namespace, store: DatasetStore, transport: Transport | None
 ) -> Outcome:
     snapshot = _snapshot(args)
@@ -106,7 +108,9 @@ def _reconcile(
     return Outcome(summary)
 
 
-def _enrich(args: argparse.Namespace, store: DatasetStore, transport: Transport | None) -> Outcome:
+def run_enrich(
+    args: argparse.Namespace, store: DatasetStore, transport: Transport | None
+) -> Outcome:
     snapshot = _snapshot(args)
     api = HfDatasetApi(transport=_open_transport(transport))
 
@@ -141,7 +145,7 @@ def _enrich(args: argparse.Namespace, store: DatasetStore, transport: Transport 
     return Outcome(summary_run)
 
 
-def _fetch_sizes(
+def run_fetch_sizes(
     args: argparse.Namespace,
     store: DatasetStore,
     transport: Transport | None,
@@ -203,7 +207,7 @@ def _fetch_sizes(
     return Outcome(summary)
 
 
-def _fetch_files(
+def run_fetch_files(
     args: argparse.Namespace, store: DatasetStore, transport: Transport | None
 ) -> Outcome:
     snapshot = _snapshot(args)

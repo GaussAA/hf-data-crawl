@@ -12,33 +12,33 @@ from datetime import datetime
 from pathlib import Path
 
 from ..acquire.commands import (
-    _collect,
-    _enrich,
-    _fetch_files,
-    _fetch_sizes,
-    _reconcile,
+    run_collect,
+    run_enrich,
+    run_fetch_files,
+    run_fetch_sizes,
+    run_reconcile,
 )
 from ..acquire.hf.api import MAX_LIMIT, Transport
 from ..acquire.reconcile import PROBE_DAILY_LIMIT
 from ..delivery.commands import (
-    _export_wide,
-    _request,
-    _request_run,
-    _request_run_due,
+    run_export_wide,
+    run_request,
+    run_request_run,
+    run_request_run_due,
 )
 from ..delivery.requirement import (
     Cadence,
     Kind,
 )
-from ..pipeline.commands import _build
+from ..pipeline.commands import run_build
 from ..pipeline.recovery import check_and_recover
 from ..platform.lock import LockBusy, exclusive
 from ..platform.retention import BACKUP_PRUNE_AFTER_DAYS, REPLAY_WINDOW_DAYS
 from ..platform.runs import Outcome, write_run
 from ..platform.store import DatasetStore
-from ..query.commands import _query, _report
+from ..query.commands import run_query, run_report
 from ..query.gold import BOARDS
-from .commands import _archive, _compact, _doctor_locked, _prune, _write_docs
+from .commands import run_archive, run_compact, run_docs, run_doctor, run_prune
 
 #: 会改写数据目录的命令，执行期间持有独占锁。query 只读且单次查询很短，
 #: 不在此列；report/docs 不改数据，但要同时读多张表，与写命令并发会读到
@@ -401,36 +401,38 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
             print("   提示：残留派生层已清理；有 Raw 的日期已重新派生，无 Raw 的仅清理")
 
     if args.command == "collect":
-        return _execute(store, "collect", lambda: _collect(args, store, transport), lock_wait)
+        return _execute(store, "collect", lambda: run_collect(args, store, transport), lock_wait)
     if args.command == "reconcile":
-        return _execute(store, "reconcile", lambda: _reconcile(args, store, transport), lock_wait)
+        return _execute(
+            store, "reconcile", lambda: run_reconcile(args, store, transport), lock_wait
+        )
     if args.command == "build":
-        return _execute(store, "build", lambda: _build(args, store), lock_wait)
+        return _execute(store, "build", lambda: run_build(args, store), lock_wait)
     if args.command == "archive":
-        return _execute(store, "archive", lambda: _archive(args, store), lock_wait)
+        return _execute(store, "archive", lambda: run_archive(args, store), lock_wait)
     if args.command == "compact":
-        return _execute(store, "compact", lambda: _compact(args, store), lock_wait)
+        return _execute(store, "compact", lambda: run_compact(args, store), lock_wait)
     if args.command == "prune":
-        return _execute(store, "prune", lambda: _prune(args, store), lock_wait)
+        return _execute(store, "prune", lambda: run_prune(args, store), lock_wait)
     if args.command == "enrich":
-        return _execute(store, "enrich", lambda: _enrich(args, store, transport), lock_wait)
+        return _execute(store, "enrich", lambda: run_enrich(args, store, transport), lock_wait)
     if args.command == "fetch-sizes":
         return _execute(
             store,
             "fetch-sizes",
-            lambda: _fetch_sizes(args, store, transport, lock_wait),
+            lambda: run_fetch_sizes(args, store, transport, lock_wait),
             lock_wait,
         )
     if args.command == "fetch-files":
         return _execute(
-            store, "fetch-files", lambda: _fetch_files(args, store, transport), lock_wait
+            store, "fetch-files", lambda: run_fetch_files(args, store, transport), lock_wait
         )
     if args.command == "report":
-        return _execute(store, "report", lambda: _report(args, store), lock_wait)
+        return _execute(store, "report", lambda: run_report(args, store), lock_wait)
     if args.command == "export-wide":
-        return _execute(store, "export-wide", lambda: _export_wide(args, store), lock_wait)
+        return _execute(store, "export-wide", lambda: run_export_wide(args, store), lock_wait)
     if args.command == "query":
-        return _query(args, store)
+        return run_query(args, store)
     if args.command == "request":
         # new / list / show 只读写 requests/，不碰数据目录，不参与数据锁；
         # run 要读多张表出一个一致快照，与 report / docs 同规矩——先等一会儿锁。
@@ -439,19 +441,19 @@ def main(argv: list[str] | None = None, *, transport: Transport | None = None) -
             try:
                 with exclusive(store.root, "request-run", wait):
                     if args.request_action == "run":
-                        return _request_run(args, store)
-                    return _request_run_due(args, store)
+                        return run_request_run(args, store)
+                    return run_request_run_due(args, store)
             except LockBusy as error:
                 print(f"交付失败：{error}")
                 return 1
-        return _request(args)
+        return run_request(args)
     if args.command == "doctor":
-        return _doctor_locked(store, lock_wait, requests_root=Path(args.requests_dir))
+        return run_doctor(store, lock_wait, requests_root=Path(args.requests_dir))
     if args.command == "docs":
         # docs 不写 runs/，但同样要在一致快照上生成；拿不到锁就明确失败。
         try:
             with exclusive(store.root, "docs", lock_wait):
-                return _write_docs(args, store)
+                return run_docs(args, store)
         except LockBusy as error:
             print(f"docs 失败：{type(error).__name__}: {error}")
             return 1

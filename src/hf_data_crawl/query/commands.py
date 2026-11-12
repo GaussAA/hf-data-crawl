@@ -13,7 +13,7 @@ from .gold import GoldCatalog, GoldNotReady, UnsafeQuery
 from .report import Reporter
 
 
-def _query(args: argparse.Namespace, store: DatasetStore) -> int:
+def run_query(args: argparse.Namespace, store: DatasetStore) -> int:
     try:
         catalog = GoldCatalog(store)
     except GoldNotReady as error:
@@ -58,7 +58,7 @@ def _warn_frozen_rows(frame: pl.DataFrame) -> None:
     )
 
 
-def _report(args: argparse.Namespace, store: DatasetStore) -> Outcome:
+def run_report(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     try:
         catalog = GoldCatalog(store)
     except GoldNotReady as error:

@@ -17,6 +17,18 @@ Single-context: one `GLOSSARY.md` at the repo root plus `docs/adr/`. See `docs/a
 ### Data flow
 Complete pipeline (collect → derive → query) is in [DATA.md](docs/DATA.md).
 
+### Slices and the dependency rule
+
+`src/hf_data_crawl/` is one package of six vertical slices, ordered
+
+```
+platform < pipeline < {acquire, query} < delivery < ops
+```
+
+`acquire/hf` is a sub-package of `acquire`, not a slice. A module may import only strictly lower-ranked slices or its own; `acquire` and `query` share a rank and must not import each other. Cut along "who the data flows through", never along file type: `platform` is lock/atomic-write/store/vocab/runs, `pipeline` is bronze → silver → observations → current, `acquire` is scanning and probing, `query` is Gold views, `delivery` is requests and archives, `ops` is doctor/archive/compact/prune/docs and the CLI.
+
+`tests/test_architecture.py` enforces four rules: every module lives in a registered slice (the package root holds nothing but `__init__`/`__main__`), imports only go downwards, `platform` imports no other slice, and the module graph is acyclic — counting imports inside functions and `TYPE_CHECKING` blocks, since a lazy import hides a cycle just as well. A fifth rule forbids importing an underscore-prefixed name across a slice boundary: each slice exposes public entries (`run_collect`, `run_build`, `run_request_run`, …) and `ops/cli.py` is the only composition root. Bumping a private handler's name across slices breaks the CLI at import time with an error that points nowhere near the change. See GLOSSARY #75.
+
 ### Derive order
 `pipeline/derive.py` defines strict order: bronze → silver → observations → current.
 Must preserve this order. See GLOSSARY #4.

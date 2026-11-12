@@ -499,6 +499,28 @@ md5 却每次不同，「这次和上次一样吗」只能靠人肉比对。
 `fill.input` 记着它的相对路径、字节数与 sha256。要换一张新表，把文件放进 `input/`、
 改 `fill.source.path` 并把 `version` 加一即可，全程不必碰外部路径。
 
+## 代码结构
+
+`src/hf_data_crawl/` 按垂直切片组织，依赖只能单向下行：
+
+```
+platform < pipeline < {acquire, query} < delivery < ops
+```
+
+| 切片 | 职责 |
+| --- | --- |
+| `platform/` | 锁、原子写、存储、词表、运行台账——最底层，不依赖任何切片 |
+| `pipeline/` | bronze → silver → observations → current、marker、lineage、recovery |
+| `acquire/` | 采集、对账、卡片、规模与文件清单；`hf/` 为其内部子包（API、传输、水位线） |
+| `query/` | Gold 视图与榜单 |
+| `delivery/` | 需求管理与交付：字段契约、回填、宽表导出、口径与产物比对 |
+| `ops/` | 体检、归档、压缩、清理、文档生成，以及命令行入口 `ops/cli.py` |
+
+`acquire` 与 `query` 同档，互不依赖；`ops/cli.py` 是唯一的组合根，只调各切片公开的
+`run_*` 入口，不碰下划线开头的实现。这五条规则由 `tests/test_architecture.py` 强制：
+切片归位、只许下行、`platform` 不依赖他人、模块图无环（含延迟导入与 `TYPE_CHECKING`）、
+跨切片禁用私有名。
+
 ## 开发
 
 ```bash

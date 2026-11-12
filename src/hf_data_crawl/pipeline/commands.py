@@ -10,7 +10,7 @@ from ..platform.store import DatasetStore
 from .rebuild import RebuildSummary, divergent_since, rebuild_from_raw, replay_suffix
 
 
-def _build(args: argparse.Namespace, store: DatasetStore) -> Outcome:
+def run_build(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     if args.full and args.stale:
         print("失败：--full 与 --stale 互斥；全量重放不需要挑日期。")
         return Outcome({"error": "flags"}, code=1, reason="--full 与 --stale 不能同时给")

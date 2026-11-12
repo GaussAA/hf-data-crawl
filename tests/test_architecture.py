@@ -1,6 +1,6 @@
 """架构依赖规则：切片之间只能单向依赖，且不得成环。
 
-次序（小者在下）：platform < pipeline < {acquire, query} < delivery < ops。`n`acquire/hf` 是 acquire 内部的子包，不单独成片。
+次序（小者在下）：platform < pipeline < {acquire, query} < delivery < ops。`acquire/hf` 是 acquire 内部的子包，不单独成片。
 每个切片只能 import 次序严格低于自己的切片，或自己内部的模块；同一档的两个切片
 （acquire 与 query）互不 import。检查覆盖所有导入：顶层、函数内延迟导入、
 `TYPE_CHECKING` 块里的导入，一视同仁，否则延迟导入会把环藏起来。
@@ -32,18 +32,33 @@ def _module_name(path: Path) -> str:
     return ".".join(parts)
 
 
+def _base_module(path: Path, node: ast.ImportFrom) -> str:
+    """一条 from-import 的来源模块（不含导入的名字）。"""
+    if node.level == 0:
+        return node.module or ""
+    package = _module_name(path).split(".")
+    if path.name != "__init__.py":
+        package = package[:-1]
+    package = package[: len(package) - (node.level - 1)]
+    return ".".join([*package, *([node.module] if node.module else [])])
+
+
 def _resolve(path: Path, node: ast.ImportFrom) -> list[str]:
     """把一条 from-import 解析成它指向的绝对模块名列表。"""
-    if node.level == 0:
-        base = node.module or ""
-    else:
-        package = _module_name(path).split(".")
-        if path.name != "__init__.py":
-            package = package[:-1]
-        package = package[: len(package) - (node.level - 1)]
-        base = ".".join([*package, *([node.module] if node.module else [])])
+    base = _base_module(path, node)
     # `from pkg import a, b` 里的 a、b 可能是子模块：两种解释都收下。
     return [base, *(f"{base}.{alias.name}" for alias in node.names)]
+
+
+def _imported_names(path: Path) -> list[tuple[int, str, str]]:
+    """(行号, 来源模块, 被导入的名字)。用于检查跨切片导入是否用了私有名。"""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    found: list[tuple[int, str, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            base = _base_module(path, node)
+            found.extend((node.lineno, base, alias.name) for alias in node.names)
+    return found
 
 
 def _imports(path: Path) -> list[tuple[int, str]]:
@@ -137,3 +152,26 @@ def test_no_import_cycles_between_modules() -> None:
         if module not in state:
             visit(module, [])
     assert cycles == [], "\n".join(cycles)
+
+
+def test_cross_slice_imports_use_public_names() -> None:
+    """跨切片只许导入公开名。
+
+    切片内的下划线开头是实现细节：别的切片一旦依赖它，任何一次内部重命名都会
+    在 import 期炸掉，而报错只会指向「模块里没有这个名字」，与真正的改动隔了
+    好几层。命令入口尤其容易犯这个错——组合根图省事就直接抓私有处理器。
+    """
+    violations: list[str] = []
+    for path in _sources():
+        mine = _slice_of(_module_name(path))
+        if mine is None:
+            continue
+        for lineno, module, name in _imported_names(path):
+            if not module.startswith(PACKAGE):
+                continue
+            theirs = _slice_of(module)
+            if theirs is None or theirs == mine:
+                continue
+            if name.startswith("_") and not (name.startswith("__") and name.endswith("__")):
+                violations.append(f"{path.relative_to(SRC)}:{lineno} {mine} -> {module}.{name}")
+    assert violations == [], "\n".join(violations)
