@@ -459,7 +459,7 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "    后果有二：同一 id 若两边都有，指标以扫描批次为准；某一日补抓覆盖越广，",
         "    该日观测行数就越多——11-07 因补抓覆盖近全库，观测由 20.5 万补到 78.2 万，",
         "    这不是虚增，原先那 20.5 万才是只扫了头部。",
-        "    **`silver` 用的是同一份当日帧**（`bronze.day_frame`）：补位若只做在状态层，",
+        "    **`silver` 用的是同一份当日帧**（`pipeline.bronze.day_frame`）：补位若只做在状态层，",
         "    这批库会有当前态、有观测，却没有属性行——2026-11-08 体检实测 203 个，",
         "    `datasets` 宽视图里它们的 tags / description 整片为 null。",
         "13. **`runs/` 与 `logs/` 不是重复**：前者是机读台账（JSON，doctor 与两轮对比都靠它，",
