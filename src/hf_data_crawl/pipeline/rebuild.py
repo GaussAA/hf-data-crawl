@@ -47,7 +47,7 @@ from ..platform.retention import REPLAY_WINDOW_DAYS
 from ..platform.store import DatasetStore
 from ..platform.tables import TABLES, Origin, TableSpec
 from ..platform.vocab import Status
-from . import deriving, lineage, raw, state
+from . import lineage, marker, raw, state
 from .derive import ReplayCarry, derive_day
 
 
@@ -199,7 +199,7 @@ def clear_derived(store: DatasetStore, *, hot_dates: set[date] | None = None) ->
     # 局部重放只清热区日期的分区，Bronze 也按日清：此前整表清除会把冷区
     # 日期的 Bronze 一并删掉，而这些日子不在本次重放范围内。
     for snapshot in hot_dates:
-        deriving.clear_day(store, snapshot)
+        marker.clear_day(store, snapshot)
 
 
 def _clear_stale_state(store: DatasetStore) -> None:

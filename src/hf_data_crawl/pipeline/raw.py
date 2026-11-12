@@ -265,7 +265,7 @@ class RawDay:
     """某一天在 Raw 主目录里的形态。
 
     此前「哪天有 Raw、哪天可重放」有三套答案：`rebuild.discover_raw_dates`
-    只看目录里有没有任意 `*.json.gz`，`deriving._has_raw` 只认 `part` / `top`，
+    只看目录里有没有任意 `*.json.gz`，`marker.has_raw` 只认 `part` / `top`，
     `doctor._raw_gaps` 又自行并上冷区清单。恢复、重建、体检对同一天可能给出
     不同结论。这个模型把它们收成一处。
 

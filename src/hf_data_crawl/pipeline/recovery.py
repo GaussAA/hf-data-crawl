@@ -1,11 +1,11 @@
 """派生崩溃恢复：发现超时的派生标记，清掉残留并从该日起后缀重放。
 
-标记的写与清是 `deriving` 里的底层原语，`derive` / `rebuild` 都要用；恢复则要
-调 `rebuild` 做重放。两件事原先放在同一个模块，于是 `derive → deriving →
-rebuild → derive` 成环，靠函数内延迟导入勉强躲过。拆开后依赖只剩一个方向：
-`recovery → rebuild → derive → deriving`。
+标记的写与清是 `marker` 里的底层原语，`derive` / `rebuild` 都要用；恢复则要
+调 `rebuild` 做重放。两件事原先放在同一个模块（当时叫 `deriving`），于是
+`derive → deriving → rebuild → derive` 成环，靠函数内延迟导入勉强躲过。拆开后
+依赖只剩一个方向：`recovery → rebuild → derive → marker`。
 
-原理、窗口与不覆盖的场景见 `deriving` 模块文档串。
+原理、窗口与不覆盖的场景见 `marker` 模块文档串。
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
-from . import deriving
+from . import marker
 from .rebuild import rebuild_from_raw, replay_suffix
 
 if TYPE_CHECKING:
@@ -29,7 +29,7 @@ def check_and_recover(store: DatasetStore) -> list[date]:
     now = datetime.now(UTC)
 
     for path in store.state_dir.glob("deriving-*.flag"):
-        flag = deriving.load_flag(path)
+        flag = marker.load_flag(path)
         if flag is None:
             # 损坏的标记文件，直接删除
             path.unlink(missing_ok=True)
@@ -44,11 +44,11 @@ def check_and_recover(store: DatasetStore) -> list[date]:
             continue
 
         elapsed = (now - started).total_seconds()
-        if elapsed > deriving.STALE_THRESHOLD_SECONDS:
+        if elapsed > marker.STALE_THRESHOLD_SECONDS:
             # 超过阈值：先清掉残留的派生层，再视 Raw 是否还在决定是否重派生。
-            deriving.clear_day(store, flag.snapshot_date)
+            marker.clear_day(store, flag.snapshot_date)
             path.unlink(missing_ok=True)
-            if deriving.has_raw(store, flag.snapshot_date):
+            if marker.has_raw(store, flag.snapshot_date):
                 _rederive(store, flag.snapshot_date)
             recovered.append(flag.snapshot_date)
 

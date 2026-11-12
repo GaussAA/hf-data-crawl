@@ -508,7 +508,7 @@
 
     三处配套，都是被真实代价逼出来的：
 
-    - **`SourceStamp` 单拆 `delivery/source.py`**：`delivery` 要按 kind 分派到 `backfill`，而
+    - **`SourceStamp` 单拆 `delivery/stamp.py`**：`delivery` 要按 kind 分派到 `backfill`，而
       `backfill` 又要算底库指纹；指纹若留在 `delivery` 里就会成环，import 顺序变成隐性
       契约，只在某个入口下才炸。
     - **产物绝不外写**：曾允许把补全表另存到对方目录，于是同一份产物出现在两处，三个月
@@ -576,7 +576,7 @@
 
 60. **Raw 日的唯一判据是 `pipeline.raw.RawDay`**（2026-11-08）：此前「哪天有 Raw、哪天可
     重放」有三套答案——`pipeline.rebuild.discover_raw_dates` 认目录里任意 `*.json.gz`，
-    `deriving._has_raw` 只认 `part` / `top`，`ops.doctor._raw_gaps` 又自行并冷区清单。
+    `marker.has_raw` 只认 `part` / `top`，`ops.doctor._raw_gaps` 又自行并冷区清单。
     恢复、重建、体检对同一天可能给出不同结论。
 
     现在 `pipeline/raw.py` 用一个冻结模型回答，三处调用点只读它：

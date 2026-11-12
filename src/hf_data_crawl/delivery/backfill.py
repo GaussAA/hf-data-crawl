@@ -75,7 +75,7 @@ from openpyxl.styles import Alignment, Font
 from ..platform.atomic import replace
 from ..platform.store import DatasetStore
 from ..query.gold import GoldCatalog
-from .source import SourceStamp, stamp
+from .stamp import SourceStamp, stamp
 
 #: HF 的标签是英文枚举，回填进中文表要归一；词表外的新枚举原样保留，不硬猜。
 #: spec 里可用 `lexicon:` 追加，但追加项只对本份 spec 生效。

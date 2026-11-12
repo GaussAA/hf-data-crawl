@@ -13,7 +13,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from hf_data_crawl.pipeline import raw
-from hf_data_crawl.pipeline.deriving import (
+from hf_data_crawl.pipeline.marker import (
     STALE_THRESHOLD_SECONDS,
     DerivingFlag,
     clear_deriving,
@@ -307,7 +307,7 @@ def test_有Raw时清理后重新派生(tmp_path: Path, monkeypatch) -> None:
     )
 
     rederived: list[date] = []
-    monkeypatch.setattr("hf_data_crawl.pipeline.deriving.has_raw", lambda *_: True)
+    monkeypatch.setattr("hf_data_crawl.pipeline.marker.has_raw", lambda *_: True)
     monkeypatch.setattr(
         "hf_data_crawl.pipeline.recovery._rederive", lambda _store, day: rederived.append(day)
     )

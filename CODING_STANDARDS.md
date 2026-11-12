@@ -59,7 +59,7 @@ except Exception:
     raise  # 保留标记供下次恢复
 ```
 
-启动时检查并恢复。见 `pipeline/deriving.py` 和 ADR-0001。
+启动时检查并恢复。见 `pipeline/marker.py` 和 ADR-0001。
 
 ---
 
