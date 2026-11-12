@@ -74,13 +74,13 @@ hf-data-crawl request      run-due                  # 只跑到期的（计划�
 
 写命令（`collect` / `reconcile` / `build` / `enrich` / `fetch-sizes` / `fetch-files` / `archive` / `compact` / `prune` / `export-wide`）执行期间持有 `data/.lock` 的独占锁，同一时刻只能跑一个；拿不到锁会失败并在 `runs/` 留记录。进程被杀后系统自动释放，不会留下死锁。`report` 与 `query` 不加锁。
 
-**默认交付底库**：`current` 只保留 19 列状态标量，语义字段分散在 `silver` / `carddata` / `size`。`export-wide` 按 `fields.py` 的**默认交付字段契约**把 `gold.datasets` 视图裁成 31 列，写成 `data/exports/datasets.parquet`——只留与数据集有关、有用且必要的画像字段（标识、描述、热度、许可、语言、模态、任务、数据类型、标签、补充画像、学术关联、规模、大小），把水印、抓取状态、卡片凭证与九成空的补抓列排除在外。v2 补回详情页 `Tags`；**v3 曾把 13 个多值列压成 `;` 字符串**以绕开预览器读不了 LIST 的缺陷，该缺陷已在上游 `vscode-office` 修好（PR #27），**v5 遂撤销压平、恢复 LIST 原值**，导出物与视图从此同构、可直接 `list_contains` 精确筛；**v4 克制新增 5 列**：`pretty_name` / `multilinguality` / `arxiv_ids` / `source_datasets` / `task_ids`。
+**默认交付底库**：`current` 只保留 19 列状态标量，语义字段分散在 `silver` / `carddata` / `size`。`export-wide` 按 `delivery/fields.py` 的**默认交付字段契约**把 `gold.datasets` 视图裁成 31 列，写成 `data/exports/datasets.parquet`——只留与数据集有关、有用且必要的画像字段（标识、描述、热度、许可、语言、模态、任务、数据类型、标签、补充画像、学术关联、规模、大小），把水印、抓取状态、卡片凭证与九成空的补抓列排除在外。v2 补回详情页 `Tags`；**v3 曾把 13 个多值列压成 `;` 字符串**以绕开预览器读不了 LIST 的缺陷，该缺陷已在上游 `vscode-office` 修好（PR #27），**v5 遂撤销压平、恢复 LIST 原值**，导出物与视图从此同构、可直接 `list_contains` 精确筛；**v4 克制新增 5 列**：`pretty_name` / `multilinguality` / `arxiv_ids` / `source_datasets` / `task_ids`。
 
 `regions` 实测 100% 有值但 **99.94% 是 HF 自动推断的 `us`**，故不进默认面；它与 DOI、引用、项目主页等共 19 个字段登记在 `EXTENDED_FIELDS`，需要时写 `output.columns: [id, regions, ...]` 点名即可投列——**默认面管「不指定时给什么」，不是「总共有什么」**。完整清单见 [docs/DATA.md](docs/DATA.md) 第八节。这份文件也是**数据集筛选需求未指定 `output.columns` 时的默认投影**；不登记为表、不参与状态更新，视图本身仍保留全部 72 列。四处共用一份定义，详见 [GLOSSARY](GLOSSARY.md) #62–#65。
 
-**文件清单补采（试点）**：列表接口请求也不返回 `siblings`（见 [docs/DATA.md](docs/DATA.md) 第九节）；单库详情虽返回，但下载量头部实测 13-25 MB / 44-76 s，按头部补会反复超时。`fetch-files` 改走 `/tree/main?recursive=true&expand=false`：每页固定 1000 条、约 110-230 KB / 0.4-0.7 s。默认每库只取第一页，有后续页时标 `truncated=true`——此时 `file_count` / `total_bytes` / `file_formats` / `has_readme` 都只是**这一页的下限**，不是全库真值；要完整清单须显式加大 `--max-pages`。结果落 `enrich/files.parquet`（`Origin.NETWORK`，重建不清），自动进入 `datasets` 宽视图。断点续跑、失败分类、写锁与边跑边落库与 `fetch-sizes` 共用 `batch.collect_rows` 骨架；临时失败不入库、下轮自然重试。这是按头部补的**子集**，别拿它算全站分布。匿名配额实测 500 请求 / 300 秒固定窗口，跑满 1000 需分批；429 会按响应头 `Retry-After` 退避，仍不够时临时失败不落库、下次重跑本命令由断点续跑接力。带 `HF_TOKEN` 可提到 **1000 请求 / 300 秒**（实测），写进仓库根 `.env` 即可，命令自动读取且**不覆盖**已 export 的值；令牌只在本机文件里，值绝不进日志与 `runs/`。已标 `truncated` 的行默认被断点续跑跳过，想补成完整清单须显式 `--refresh-truncated --max-pages N`：它只重抓截断行、完整行照旧跳过；`--max-pages` 仍为 1 时命令直接失败，因为一页上限下重抓只是把截断重新确认一遍。
+**文件清单补采（试点）**：列表接口请求也不返回 `siblings`（见 [docs/DATA.md](docs/DATA.md) 第九节）；单库详情虽返回，但下载量头部实测 13-25 MB / 44-76 s，按头部补会反复超时。`fetch-files` 改走 `/tree/main?recursive=true&expand=false`：每页固定 1000 条、约 110-230 KB / 0.4-0.7 s。默认每库只取第一页，有后续页时标 `truncated=true`——此时 `file_count` / `total_bytes` / `file_formats` / `has_readme` 都只是**这一页的下限**，不是全库真值；要完整清单须显式加大 `--max-pages`。结果落 `enrich/files.parquet`（`Origin.NETWORK`，重建不清），自动进入 `datasets` 宽视图。断点续跑、失败分类、写锁与边跑边落库与 `fetch-sizes` 共用 `acquire.batch.collect_rows` 骨架；临时失败不入库、下轮自然重试。这是按头部补的**子集**，别拿它算全站分布。匿名配额实测 500 请求 / 300 秒固定窗口，跑满 1000 需分批；429 会按响应头 `Retry-After` 退避，仍不够时临时失败不落库、下次重跑本命令由断点续跑接力。带 `HF_TOKEN` 可提到 **1000 请求 / 300 秒**（实测），写进仓库根 `.env` 即可，命令自动读取且**不覆盖**已 export 的值；令牌只在本机文件里，值绝不进日志与 `runs/`。已标 `truncated` 的行默认被断点续跑跳过，想补成完整清单须显式 `--refresh-truncated --max-pages N`：它只重抓截断行、完整行照旧跳过；`--max-pages` 仍为 1 时命令直接失败，因为一页上限下重抓只是把截断重新确认一遍。
 
-内置榜单（`gold.BOARDS` 是唯一真相源：`query --board` 的候选项由它自动生成，`report` 页面复用同一批口径）：
+内置榜单（`query.gold.BOARDS` 是唯一真相源：`query --board` 的候选项由它自动生成，`report` 页面复用同一批口径）：
 
 | 榜单 | 口径 | 用于 |
 |---|---|---|
@@ -130,7 +130,7 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 的后写记录覆盖完整记录、整列静默变空。命名空间**不参与排序**，胜负仍由
 `written_at` 决定。
 
-**Raw 保留策略（2026-11-07 起，三层语义，常量集中在 `retention.py`）**：
+**Raw 保留策略（2026-11-07 起，三层语义，常量集中在 `platform/retention.py`）**：
 
 - **热区**：近 7 天（`REPLAY_WINDOW_DAYS`）的 `data/raw/dt=*` 原样保留，`build`
   默认按天重放；`archive` 可对单日做同天去重，并把写入序冻结进 `groups`。
@@ -150,17 +150,17 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 `archive` 只移不删，`prune` 才删，且只动 `data/backup/`。理由很直白：
 「永不删除」等于把磁盘交给时间，每天约 330 MB 原始分块进 backup，一年上百 GB，
 而它们早已被冷区基线（按 id 去重、体量恒定）取代。阈值与 `compact` 共用
-`retention.BACKUP_PRUNE_AFTER_DAYS`（7 天），按**目录名**判龄而不是 mtime
+`platform.retention.BACKUP_PRUNE_AFTER_DAYS`（7 天），按**目录名**判龄而不是 mtime
 （同步盘会整体改掉 mtime）。`prune --dry-run` 只算不删；`doctor` 的「存储」一项
 把 data 总量摊成 raw / cold / backup / reports / 其余，谁在长一眼可见。
 
 
-每张表的身份（路径、schema、来源）统一登记在 `tables.py`，读写、视图、重建清理都从它取，不在各处各自硬编码。
+每张表的身份（路径、schema、来源）统一登记在 `platform/tables.py`，读写、视图、重建清理都从它取，不在各处各自硬编码。
 
 ## 设计要点
 
 - **两档采样**：日增量走 lean 档（不含 `cardData`，16 字段约 980 B/条）；`cardData` 只在需要时单独取。实测 full 档约 6 KB/条，全站日拉会白白多传数倍字节。补齐 `private`/`disabled`/`mainSize` 只让 lean 档从 923 涨到 980 B/条（+6.2%）。
-- **一轮扫描的时序只有一处**：`scan.ScanRun` 管「翻页 → 落盘 → 存游标 → 判停止」，日增量、顶部刷新、全量对账、卡片补齐只提供策略。两条不变量在此一层：游标必须在写盘后、任何停止判断前保存（否则续跑重抓上一页）；页数上限由本层判定而非交给生成器（生成器到限时静默 return，说不出停止原因）。
+- **一轮扫描的时序只有一处**：`acquire.hf.scan.ScanRun` 管「翻页 → 落盘 → 存游标 → 判停止」，日增量、顶部刷新、全量对账、卡片补齐只提供策略。两条不变量在此一层：游标必须在写盘后、任何停止判断前保存（否则续跑重抓上一页）；页数上限由本层判定而非交给生成器（生成器到限时静默 return，说不出停止原因）。
 - **排序必须显式**：不传 `sort` 时 HF 的游标基于 `trendingScore`，会随时间漂移，翻页必漏。全量用 `createdAt`（不可变），增量用 `lastModified`。
 - **写入序落在 Raw 里**：`write_raw` 把 `written_at`（UTC、微秒）记进 payload 的 `meta`，Bronze 去重按它排序；文件名摘要、mtime、`label` 的字母序一概不作数。mtime 一复制就变，靠它排序会让「Raw 是唯一事实来源」名不副实——同一批数据在另一台机器上可能推出不同的 Bronze，且不报错。摘要不含 `written_at`，否则同内容重写会不断产生新文件。
 - **水位线以时间戳为边界，但异常值必须先滤**：实测存在 2028 年的 `lastModified`，单调性假设会失效；过滤规则与「连续 N 页无新 id」后备见下文「数据一致性保障 §1」。
@@ -210,7 +210,7 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 
 **2026-11-08 补**：原子替换本身在 Windows 上也会失败——Defender 实时扫描会在文件
 刚写完时短暂持有句柄，`os.replace` 随即报 WinError 5（实测 `reconcile` 第 10 分钟
-替换 checkpoint 失败，整轮 30 分钟作废）。`atomic.replace` 现对 `PermissionError`
+替换 checkpoint 失败，整轮 30 分钟作废）。`platform.atomic.replace` 现对 `PermissionError`
 退避重试三次（20/60/180ms），其余异常立即抛出。详见 GLOSSARY #47。
 
 ### 3. 派生凭据：Raw 被改过，就得证明派生跟上了（2026-11-08）
@@ -230,9 +230,9 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 - `build --stale` 只重放「最早出问题那天 → 最新日」的**后缀**，不是只修那一天。
   Silver 的「变了才追加」要拿前一日当锚点，Observations 同理，而 Current 是拿当日帧
   覆盖同名 id——中间缺任何一天都会拿错锚点，且当前态回退。这条约束由
-  `rebuild.replay_suffix` 单独实现，调用方不自己拼日期。
+  `pipeline.rebuild.replay_suffix` 单独实现，调用方不自己拼日期。
 - `archive` 是**已校验的等价改写**（移走原件前验过 Bronze 逐行相等），跑完调
-  `lineage.restamp` 只刷新指纹、不重派生。不刷新的话下轮体检会把等价改写报成滞后
+  `pipeline.lineage.restamp` 只刷新指纹、不重派生。不刷新的话下轮体检会把等价改写报成滞后
   ——假警报会训练人忽略告警。
 
 **效果**：把「派生是不是最新」从人的记忆变成一份可读的凭证。机制上线首轮会把
@@ -240,12 +240,12 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 
 ### 4. 补位同源：属性层、当前态、观测看同一份当日帧（2026-11-08）
 
-**问题**：`bronze.build` 只读 `part` / `top`（当日扫描），只在补抓批次 `card-*` 里
+**问题**：`pipeline.bronze.build` 只读 `part` / `top`（当日扫描），只在补抓批次 `card-*` 里
 出现的库不进 Bronze——这是有意的，混进去会让 Bronze 行数随补抓节奏膨胀 45%
 （实测 233 万→338 万），而真正只缺 203 个库。但补位此前**只做在状态层**：
 `current` 与 `observations` 有这批库，`silver` 没有。
 
-**解决方案**：补位提到 `bronze.day_frame`——按 id 补空位（已在扫描帧里的记录一律
+**解决方案**：补位提到 `pipeline.bronze.day_frame`——按 id 补空位（已在扫描帧里的记录一律
 不动，胜负仍归扫描批次），`silver` 与 `state` 共用这一份帧；Bronze 分区本身仍然纯净。
 
 **效果**：2026-11-08 体检的层间勾稽量出 **203 个库**在 current 里、却没有一行属性，
@@ -270,14 +270,14 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 - 监控指标：[docs/operations/MONITORING.md](docs/operations/MONITORING.md)
 - **标签维度拆 16 类**：按全站 950 万条标签实测频次补齐 `modality`（12.7%）/`region`（11.7%）/`format`（8.6%）等；无前缀标签单列 `plain_tags`（13.7%，旧式 `text`/`image` 标记都在这里）。维度覆盖率 51.5% → 99.9%。`tag_values` 长表视图由映射表自动生成，新增维度不必改 SQL；白名单之外的任意前缀（`model:`、`eval:` 等长尾）走 `tag_index` 视图——它直接展开原始 `tags`，按第一个冒号切分，1,200 万行只算不存。
 - **规模数据走 datasets-server**：列表接口的 `mainSize` 是仓库字节，卡片声明的行数只覆盖少数数据集（当前覆盖率见 [docs/DATA.md](docs/DATA.md)）。`fetch-sizes` 打 `/size` 拿 `num_rows` 与 `num_columns`。实测成功率约 80%，并发 16 稳定 26 req/s，两万条约 790 秒。失败分类处理：500/401/501 记 `unavailable` 落库并默认跳过（永久缺失，重试只会白烧 30% 预算）；429/502/503 退避重试且不落库（下轮自然重试）。
-- **宽视图由 schema 拼装**：`datasets` 的列不再手抄，由 `tables.py` 的 schema 按固定顺序拼接，重名**先到先得**；需要区分口径的列改名（`size.num_rows → server_num_rows`，与卡片口径的 `card_num_rows` 并存）；`raw`（每行数 KB 的整行 JSON）与重复的 `snapshot_date` 排除在外。手抄的代价是漂移——加一个卡片字段，`card` 视图自动有，`datasets` 安静地少一列。
+- **宽视图由 schema 拼装**：`datasets` 的列不再手抄，由 `platform/tables.py` 的 schema 按固定顺序拼接，重名**先到先得**；需要区分口径的列改名（`size.num_rows → server_num_rows`，与卡片口径的 `card_num_rows` 并存）；`raw`（每行数 KB 的整行 JSON）与重复的 `snapshot_date` 排除在外。手抄的代价是漂移——加一个卡片字段，`card` 视图自动有，`datasets` 安静地少一列。
 - **「最新一行」有物化与视图两套实现，必须永远一致**：`current` 是物化表，`latest_silver` 是窗口视图。`current` 的带入列由两个 schema **求交**推导，不手抄；`status` / `first_seen_at` / `last_seen_at` 是本地判断，不得混进 Silver。一致性由测试守护（实测 111.7 万行、15 个公共列取值相同）。
 - **失效状态不是「删除」一种**：对账后逐条探测，404 才是删除，401 是转私有（库还在），307 是改名（跟随到 200 拿到新 id）。三者混记会让下架数虚高，也让改名后的库在下轮变成「新增」而丢掉观测史。
 - **探测本身会被限流**：全站扫描已用掉一千多次请求，而配额是 1000 请求 / 5 分钟。故每轮只探 `--probe-limit`（默认 2000）个，其余顺延，按「在架优先」排序 + 游标轮转（`meta/probe-cursor.json`）保证每天都换一批、且先探状态真有疑问的（实测 6579 个待复核里 2933 个是早已判过的）。探测遇 429 会照 `retry-after` 退避重试，**只有真耗尽才落 `unknown`**——`unknown` 的处置是「先别动」，落多了，已下架的库会永远挂着 `active`。失败数、顺延数都进对账摘要与差异清单，`doctor` 对失败占比超 20% 判红。
 - **非 active 的行不是现势值**：`renamed` / `disappeared` / `restricted` 的行，指标停在最后一次看到时的值。`query` 出结果时若带 `status` 列且有这类行，末尾会明说一句，不改数据也不过滤。
 - **命令成败只有一个判定点**：命令返回 `Outcome(payload, code, reason)`，退出码与 `runs/` 记录由同一处推出；`write_run` 不接受外部传入的 `status`——可传的 status 一定有传错的那天。
-- **原子写只有一个入口**：`atomic.py` 的四个函数管所有落盘，临时文件与目标同目录（跨盘替换会退化）。中断时不能留下半张 HTML——那比旧页面更糟。
-- **列编码只有一套规则**：`coerce.py` 管「一个 JSON 值怎么落进一列」。铁律是取不到留 None、绝不猜：`private: "true"` 是字符串不是布尔，猜成 True 会让「是否受限」失去可信度。
+- **原子写只有一个入口**：`platform/atomic.py` 的四个函数管所有落盘，临时文件与目标同目录（跨盘替换会退化）。中断时不能留下半张 HTML——那比旧页面更糟。
+- **列编码只有一套规则**：`platform/coerce.py` 管「一个 JSON 值怎么落进一列」。铁律是取不到留 None、绝不猜：`private: "true"` 是字符串不是布尔，猜成 True 会让「是否受限」失去可信度。
 
 ## 定时
 
@@ -357,7 +357,7 @@ sha256，于是「基于哪一版清单」和「基于哪一版底库」一样�
 变了就对不上账——与用 `current_md5` 钉底库是同一手法。
 
 `spec.yaml` 里 `kind: query` 带 `criteria` / `order_by` / `output`，`kind: backfill`
-带 `fill:`（输入表、逐列取值方式）。`requirement.py` 负责读与校验，`delivery.py`
+带 `fill:`（输入表、逐列取值方式）。`delivery/requirement.py` 负责读与校验，`delivery/delivery.py`
 只认统一的 `Payload`，按 `EXECUTORS` 把活分派给执行体——将来多一种形态，写一个
 执行体、注册一行即可，不必新开目录、命令或台账。
 
@@ -392,10 +392,10 @@ sha256，于是「基于哪一版清单」和「基于哪一版底库」一样�
 新增 X；少了 Y」——不阻断，但「字段悄悄换了」再也不会无声无息。
 
 **query 形态的口径只写词条，不写字段名**：`下载量` 是近 30 天，`累计下载量` 才是
-历史累计——同一句话两种理解差两个数量级。词表见 `metrics.py` 与
+历史累计——同一句话两种理解差两个数量级。词表见 `delivery/metrics.py` 与
 [GLOSSARY](GLOSSARY.md) #51，`request show` 会把口径连同编译后的 SQL 一起打出来。
 
-**不写 `output.columns` 就按默认底库交付**：31 列字段契约在 `fields.py`（逐列中文
+**不写 `output.columns` 就按默认底库交付**：31 列字段契约在 `delivery/fields.py`（逐列中文
 定义、分组、页面标签对照、`EXTENDED_FIELDS`、`CONTRACT_VERSION`）。`data/exports/datasets.parquet`
 是这份契约的物化，列序完全一致；`manifest.json` 记 `projection.source = default` 与契约版本，
 README 附逐列定义表、「详情页标签 ↔ 库列」对照表及扩展字段清单——页面叫 `Tasks` /

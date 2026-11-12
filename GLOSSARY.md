@@ -17,7 +17,7 @@
 | **Watermark** | 增量扫描的停止条件，表示「早于此刻的记录本轮不必再看」 | 不是 `max(lastModified)`——实测存在 2028 年的异常值 |
 | **Reconcile** | 全量核对：确认哪些 Dataset 仍在、哪些已下架、哪些字段被外部改动 | 不是重新抓一遍就完事，核心产出是差异 |
 | **Status** | `current.status` 的取值，四值：`active` / `disappeared` / `restricted` / `renamed`，词表即 `platform.vocab.Status`，写入时校验。探测结论到状态的映射在 `acquire.reconcile.STATUS_BY_VERDICT`：`deleted→disappeared`、`restricted→restricted`、`renamed→renamed`、`present→active` | 不是 `Disappeared` 的同义词；「没扫到」不等于 `disappeared` |
-| **Reconcile session** | 一次（可能分段的）全量核对的游标、已见集合与基线，同键、同生命周期，由 `session.ReconcileSession` 拥有；基线固定在会话开始时，分段跑与单次跑的差异计数必须一致 | 不是 `Checkpoint`——后者只记游标一件事 |
+| **Reconcile session** | 一次（可能分段的）全量核对的游标、已见集合与基线，同键、同生命周期，由 `acquire.session.ReconcileSession` 拥有；基线固定在会话开始时，分段跑与单次跑的差异计数必须一致 | 不是 `Checkpoint`——后者只记游标一件事 |
 | **Disappeared** | 全量核对没扫到、且单库探测返回 404 的 Dataset（Status 的一个取值） | 不是删除——本地观测史必须保留；转私有是 `restricted`，改名是 `renamed` |
 | **Observation** | 某一轮对某 Dataset 指标的一次读数，带 `snapshot_date` | 不是当前态；当前态只有一行 |
 
@@ -60,27 +60,27 @@
    - 体积信息已由 `mainSize`（100% 覆盖）与 datasets-server 的 `num_bytes_original` 双重覆盖，`usedStorage` 的差值仅是 git 历史开销。
 17. **写入序是 Raw 的不变量**（2026-11-05）：`write_raw` 把 `written_at`（UTC、微秒）写进 payload 的 `meta`，Bronze 去重按它排序。**文件名摘要、mtime、`label` 的字母序都不参与排序**——mtime 在复制目录、解压归档、换机迁移后都会变，届时同一批 Raw 会推出不同 Bronze，与 `rebuild` 的承诺直接冲突。摘要**不含** `written_at`，否则同内容重写会不断产生新文件、幂等失效。旧分块无此字段时按文件名确定性定序，**不再读 mtime**（2026-11-07）；历史分区应先跑 `archive --date`，把真实写入序冻结进归档分片的 `groups`，此后 Raw 自包含、迁移不改结果。键首位 0/1 保证新分块永远排在其后。
 18. **`rebuild` 有两处不来自 Raw 的例外**，重建时须特殊对待：① `enrich/size.parquet` 来自 datasets-server，删了无法重算，故只删卡片表；② `current.status` 的失效值来自单库探测，重建前留存、重建后写回，否则一次 build 就把全部 restricted / renamed 清零（2026-11-05 实测 463 条归零）。
-19. **表身份登记在 `tables.py`**（2026-11-05）：每个 `TableSpec` 记录名字、路径模板（`{dt}` 表示按日分区）、schema 与 `Origin`（`RAW` / `NETWORK` / `STATE`）。读写、Gold 视图、重建清理一律从它派生。
+19. **表身份登记在 `platform/tables.py`**（2026-11-05）：每个 `TableSpec` 记录名字、路径模板（`{dt}` 表示按日分区）、schema 与 `Origin`（`RAW` / `NETWORK` / `STATE`）。读写、Gold 视图、重建清理一律从它派生。
     **`Origin` 决定重建时该不该删**——`NETWORK` 表（目前只有 `size`）删了就得重抓，必须保留；`RAW` 与 `STATE` 可重算，重建时清除。
     此前这门知识散在五处（store 的文件名常量、各模块的 schema、gold 的硬编码路径、rebuild 的删除清单、README 的目录树），任一处改名都不报错：gold 的 glob 落空会静默退化成空视图，rebuild 曾因此误删两万条规模数据。
-20. **一轮扫描的时序只有一处实现**（`scan.ScanRun`，2026-11-05）：翻页 → 落盘 → 页钩子 → 存游标 → 判停止。四个调用方（日增量、顶部刷新、全量对账、卡片补齐）只提供 `ScanSpec` 策略。
+20. **一轮扫描的时序只有一处实现**（`acquire.hf.scan.ScanRun`，2026-11-05）：翻页 → 落盘 → 页钩子 → 存游标 → 判停止。四个调用方（日增量、顶部刷新、全量对账、卡片补齐）只提供 `ScanSpec` 策略。
     两条不变量写在这个 module 里而不交给调用方：
     ① **游标必须在写盘之后、任何 break 判断之前保存**——调用方随时可能停在下一页之前，而 `api.scan` 的生成器此刻已暂停，它内部那句 `save` 不会执行，续跑会重抓上一页。**页钩子排在存游标之前**：钩子带副作用（对账追加已见集合），若游标先存，两者之间被杀，续跑会跳过这一页的副作用；反过来最坏只是重做一页，所以钩子必须幂等；
     ② **页数上限由本层判定而非传给生成器**——生成器到限时是静默 `return`，只有本层判才能说出准确的停止原因（`max_pages` 与 `end` 必须能区分，前者要保住游标）。
-21. **命令的成败只有一个判定点**（`runs.Outcome`，2026-11-05）：命令返回 `Outcome(payload, code, reason)`，`_execute` 据 `failed` 写唯一一份运行记录，`write_run` **不接受外部传入的 status**——可传的 status 一定有传错的那天。
+21. **命令的成败只有一个判定点**（`platform.runs.Outcome`，2026-11-05）：命令返回 `Outcome(payload, code, reason)`，`_execute` 据 `failed` 写唯一一份运行记录，`write_run` **不接受外部传入的 status**——可传的 status 一定有传错的那天。
     此前异常路径写 `failed`、正常返回一律写 `success`，于是 `report` 在无数据时退出码 1、`runs/` 里却是成功记录：同一条命令的结局被劈成两半。
 22. **宽视图 `datasets` 由 schema 拼装**（2026-11-05）：列不再手抄，按 `_VIEW_SOURCES` 顺序拼接，**重名先到先得**；需区分口径的列在 `_VIEW_RENAMES` 改名（`size.num_rows → server_num_rows`，与卡片口径的 `card_num_rows` 并存）；`raw`（每行数 KB 的整行 JSON）与重复的 `snapshot_date` 在 `_VIEW_EXCLUDED` 排除。
     此前手抄 42 列，加一个卡片字段时 `card` 视图由 schema 生成、自动就有，`datasets` 却安静地少一列——查询照常跑，只是那一列不存在。
 23. **「最新一行」有两套实现，必须永远一致**（2026-11-05）：`current` 是物化（18 列），`latest_silver` 是窗口视图（36 列，带全部维度）。
-    - `state.CARRIED_COLUMNS` 由 `CURRENT_SCHEMA` 与 `BRONZE_SCHEMA`（当天完整标量状态，含指标）**求交**而来，不再手抄——手抄会漏，而漏掉的表现是「视图里查得到、物化表里是 null」。
-    - `state.COMPUTED_COLUMNS`（`first_seen_at` / `last_seen_at` / `status`）是本地判断，**不得出现在 Silver 里**，否则会出现两个 status 各说各话。
+    - `pipeline.state.CARRIED_COLUMNS` 由 `CURRENT_SCHEMA` 与 `BRONZE_SCHEMA`（当天完整标量状态，含指标）**求交**而来，不再手抄——手抄会漏，而漏掉的表现是「视图里查得到、物化表里是 null」。
+    - `pipeline.state.COMPUTED_COLUMNS`（`first_seen_at` / `last_seen_at` / `status`）是本地判断，**不得出现在 Silver 里**，否则会出现两个 status 各说各话。
     - 两者的一致性由测试守护：实测 111.7 万行、15 个公共列取值完全相同。
-24. **原子写只有一个入口**（`atomic.py`）：`write_bytes` / `write_text` / `write_parquet` / `write_csv`。临时文件必须与目标**同目录**——`os.replace` 的原子性依赖同一文件系统，跨盘会退化成「复制 + 删除」。六个写点曾只做三处，遗漏的恰是面向用户的三个（榜单页、运行记录、对账清单）。
-25. **列编码规则只有一套**（`coerce.py`）：`as_int` / `as_float` / `as_bool` / `as_text` / `as_list` / `as_json`。
+24. **原子写只有一个入口**（`platform/atomic.py`）：`write_bytes` / `write_text` / `write_parquet` / `write_csv`。临时文件必须与目标**同目录**——`os.replace` 的原子性依赖同一文件系统，跨盘会退化成「复制 + 删除」。六个写点曾只做三处，遗漏的恰是面向用户的三个（榜单页、运行记录、对账清单）。
+25. **列编码规则只有一套**（`platform/coerce.py`）：`as_int` / `as_float` / `as_bool` / `as_text` / `as_list` / `as_json`。
     铁律是**取不到留 None，绝不猜**：`private: "true"` 是字符串不是布尔，猜成 True 会让「是否受限」失去可信度。此前 `_as_int` 在三处逐字相同、`_as_text` 同名而异义（一处 `str()`、一处逗号拼接）。
 26. **`rebuild` 不是事务性的**（2026-11-05 实测）：它在「清除 state」与「写回失效状态」之间被打断时，那些不来自 raw 的判断会**永久丢失**——一次 build 被 SIGTERM 杀掉，456 条 `restricted` / `renamed` 全部归零。
     故状态在清理**之前**写入 `meta/failed-status.json`（不属于任何登记表，清理够不到），下次 build 从快照接上。
-    **快照只表示「重建进行中」**（`rebuild.retain` / `rebuild.restore`）：写回成功后立刻删除。留着的话，下一次重建会把它当成「上次被打断」，把期间已恢复的库改回旧状态。
+    **快照只表示「重建进行中」**（`pipeline.rebuild.retain` / `pipeline.rebuild.restore`）：写回成功后立刻删除。留着的话，下一次重建会把它当成「上次被打断」，把期间已恢复的库改回旧状态。
     已接受的缝隙：写回完成、快照尚未删除时被杀，且之后又有对账恢复了某个库，下次重建会被旧快照改回——窗口极窄，不做合并逻辑。
 27. **Watermark 基于时间戳而非"连续 N 页无新 id"**（2026-11-07 修复）：旧机制在跨日运行时存在漏采风险——假设 00:01 启动 collect，HF 上有 10 个今天新上架的库排在列表最前面，连续 3 页都没有"昨天晚上更新的库"，watermark 提前触发，但实际上昨天 23:58 更新的库还没扫到。
     新机制：只有当"连续 N 页的最老 lastModified 仍晚于上次运行记录的最新 lastModified"时，才认为到达水位线。
@@ -99,13 +99,13 @@
     身份，归档后来源彻底丢失；如今同一天里不同目的的全站快照各有独立页码空间，
     `archive` 按 (类别, 来源) 分流，分片名与 `groups.source` 都保留来源。旧格式与
     旧归档分片一律归为 `legacy` 兼容读取，**不改写任何历史文件**。
-    配套不变式：`ScanSpec.__post_init__` 强制 `expand` 必含 `api.IDENTITY_EXPAND`——
+    配套不变式：`ScanSpec.__post_init__` 强制 `expand` 必含 `acquire.hf.api.IDENTITY_EXPAND`——
     不同来源共享同一去重池，后写的更窄记录会覆盖完整记录、让整列静默变空；
-    `archive.DEDUPE_LABELS` 引用 `raw.BRONZE_LABELS`，去重类别不再有第二份字面量。
+    `ops.archive.DEDUPE_LABELS` 引用 `pipeline.raw.BRONZE_LABELS`，去重类别不再有第二份字面量。
     **命名空间不参与排序**：胜负仍由 `written_at` 决定（见 #17）。
 31. **Raw 不再是唯一事实来源**（2026-11-07，大帅钦点「移入 backup 不删、窗口 7 天」）：
     `rebuild` 旧契约是清空全部派生层、按天重放所有历史 Raw，于是跨天全量快照
-    必须永久留着、主目录线性膨胀。新契约分三层，常量集中在 `retention.py`：
+    必须永久留着、主目录线性膨胀。新契约分三层，常量集中在 `platform/retention.py`：
     ① 冷区权威层——`silver` / `observations` / `current` 的历史不再清空，它们
     本就是「变化才追加」的压缩表示；② 热区——`build` 默认只重放近 7 天；
     ③ 冷区 Raw——`compact` 跨天去重压成一份基线（`groups` 仍冻结写入序），
@@ -124,14 +124,14 @@
     其余约 90 万行由 `_rebuild_current` 沿用 previous，而 `_align_frame` 对旧表
     缺列一律补 null——加列后约九成行的新字段会长期为空（与 2026-11-04
     `private` 整列静默变空同源）；且 `silver` 已是「同 id 最新即当前属性」，
-    再存一份会形成双真相源。列清单由 `gold.wide_columns()` 单一生成：
+    再存一份会形成双真相源。列清单由 `query.gold.wide_columns()` 单一生成：
     视图 SQL、导出校验、数据说明第八节共用，杜绝第二份手抄清单。
 33. **白名单合法 ≠ 列表接口会返回**（2026-11-07 实测）：383 万条 Raw 全量普查并
     逐项探接口后确认，`siblings` / `resourceGroup` 在 `expand[]` 白名单里合法，
     但列表接口收到请求也不返回（带 `full=true` 同样没有），全库出现 0 次。
     `siblings` 只在单库详情接口（一次约 1.2 MB，含 rfilename / blobId / size），
     `/tree/main?recursive=true` 约 200 KB 且硬上限 1000 条，逐库补 112 万不现实。
-    故 `api.LIST_UNRETURNED_FIELDS` 登记二者，`ALLOWED_PLACEHOLDERS` 只放行
+    故 `acquire.hf.api.LIST_UNRETURNED_FIELDS` 登记二者，`ALLOWED_PLACEHOLDERS` 只放行
     `resourceGroup`（历史占位列、整列为空），契约测试禁止 `siblings` 进任何扫描请求。
     **顺带纠正一次误判**：`citation`（8,486 次）/ `paperswithcode_id`（8,452 次）/
     `cardData`（96.7 万次）并非「从未采」——早先只取每个分块首条记录看 key，
@@ -148,7 +148,7 @@
     可显式翻页。此前 #16 否定的「589 B 顶层树」是**非递归**树，拿不到子目录文件，
     与本次递归树并不矛盾。落 `files` 表（`Origin.NETWORK`，`rebuild` 不清），
     tree 拿不到 `usedStorage`，故不留 `storage_bytes` 空壳列；并发调度、flush 与进度
-    抽到 `batch.collect_rows`，`size` 与 `files` 共用骨架；失败仍分「永久缺失落库」
+    抽到 `acquire.batch.collect_rows`，`size` 与 `files` 共用骨架；失败仍分「永久缺失落库」
     与「临时失败不落库」两类。**宽视图改名判重同步修正**：旧逻辑先拿原列名查 used，
     `files.status` 因与 `current.status` 撞名被跳过、改名 `files_status` 没机会生效，
     `files.formats` 也与 `silver.formats` 撞名；现按改名后的目标名判重，宽视图 65 → 71
@@ -157,7 +157,7 @@
     321 个撞 429；根因是固定 2 秒退避早于窗口重置，改为尊重 `Retry-After`
     （非有限值 / 负数回退指数、合法值夹 60 秒）后，续跑 321/321 全成功、0 失败。
 35. **本机凭据放 `.env`，只在联网那一刻读**（2026-11-07）：`HF_TOKEN` / `HF_PROXY`
-    由 `env.load_env_file` 在 `_open_transport` / `_files_transport` 里加载，**不覆盖**
+    由 `platform.env.load_env_file` 在 `_open_transport` / `_files_transport` 里加载，**不覆盖**
     已存在的环境变量（命令行与 CI 显式给的值优先）；文件缺失、坏编码一律静默跳过，
     返回值只含键名——值一旦被打进日志或 `runs/`，`.gitignore` 就白设了。
     不在 `main` 开头统一读盘：测试注入假传输时便不碰磁盘，本机令牌不污染用例。
@@ -186,15 +186,15 @@
     `language:` 两套 ISO 码混用（`eng` 与 `en` 并存），按语言聚合会把同一语言劈成两行。
     修法：无前缀模态词**额外**投一份进 `modalities`（原词仍留 `plain_tags`，不丢原样），
     只收语义明确的 11 个别名，`lidar`/`rgb`/`mesh` 刻意不归一（归错比不归更坏）；
-    语言只做 **3→2 单向折叠**（`langs.ISO3_TO_ISO1` 184 条，pycountry 一次性导出后
+    语言只做 **3→2 单向折叠**（`pipeline.langs.ISO3_TO_ISO1` 184 条，pycountry 一次性导出后
     固化，运行时不依赖它），无 639-1 码的 `yue`/`ceb`/`cmn` 原样保留。`multimodal`
     是本仓库**扩展取值**，HF 官方 9 种 modality 里没有。实跑（全量重放后）：全库
     3,358 个库可查 `multimodal`，`eng` 残留归零、`en` 合并至 141,285 次，
     `modalities` 今日批次覆盖 73.9% → 74.3%。
 39. **全量重放暴露 27 行不可复现**（2026-11-08，待大帅定夺）：`build --full` 后
     `current` 从 1,121,641 降到 1,121,614。逐条追查：27 条全部 `first_seen=11-07`，
-    raw 里**只存在于 `card-*` 分块**，而 `bronze.build` 按设计只读 `part`/`top`
-    （见 `bronze.py` 注释：卡片批次不属当日标量快照），故重放时它们进不了
+    raw 里**只存在于 `card-*` 分块**，而 `pipeline.bronze.build` 按设计只读 `part`/`top`
+    （见 `pipeline/bronze.py` 注释：卡片批次不属当日标量快照），故重放时它们进不了
     bronze → silver → current。**与 #38 的 silver 改动无关**（silver 不参与 current），
     是首次全量重放才暴露的既有不可复现性。已从
     `data/backup/state-before-silver-20261108-0015/` 还原该 27 行，id 集合与备份
@@ -202,9 +202,9 @@
     ① 让 bronze 也接收「card 分块里 part/top 未见的 id」，重放才真正等价于增量；
     ② 接受 0.002% 不可复现，在文档写明并靠 backup 兜底。臣未擅自改 bronze 口径。
 40. **补抓批次在状态层补位，不进 Bronze**（2026-11-08，接 #39）：解 #39 的那 27 行时，
-    第一版把 `card-*` 并进 `bronze.build`，实测 Bronze 从 **233 万涨到 338 万（+45%）**，
-    而真正只缺 203 个库——正是 `bronze.build` 注释里警告的「行数随补抓节奏膨胀」。
-    改为在**读时**补空位：`bronze.day_frame` 读补抓批次，只把当日帧未见的 id
+    第一版把 `card-*` 并进 `pipeline.bronze.build`，实测 Bronze 从 **233 万涨到 338 万（+45%）**，
+    而真正只缺 203 个库——正是 `pipeline.bronze.build` 注释里警告的「行数随补抓节奏膨胀」。
+    改为在**读时**补空位：`pipeline.bronze.day_frame` 读补抓批次，只把当日帧未见的 id
     并进来（已在的一律不动，胜负仍归扫描批次），Bronze 分区保持纯净。台账：`current`
     由 1,121,641 变为 **1,121,817**——多出的 176 个库是 enrich 抓过、却从未进过任何
     一天扫描的真实数据集，现在既进底库也能重放出来。连续两次 `build --full` 的
@@ -212,7 +212,7 @@
     **连带影响须记明**：观测台账同样被补位，11-07 由 205,545 涨到 782,026，前三天
     分毫未变。这不是虚增——11-07 的 `card-*` 批次含 1,119,899 个去重 id（补抓覆盖
     近全库），而当日扫描只有 219,869 个，故原先那 20.5 万才是异常低值。代价是
-    **「观测 ⊄ bronze」**这条不变量被打破：补位行由 `bronze.day_frame` 合成，只能靠
+    **「观测 ⊄ bronze」**这条不变量被打破：补位行由 `pipeline.bronze.day_frame` 合成，只能靠
     那套逻辑复现，不能只拿 bronze 分区反推。口径已写入 `docs/DATA.md` 第五节第 12 条。
     **同日补记**：补位最初只做在状态层，`silver` 看不到这批库——实测 203 个库有
     current、有观测、没有属性行，见 #45。
@@ -264,23 +264,23 @@
     三个配套：
     ① `build --stale` 只重放「最早出问题日 → 最新日」的**后缀**，不是只修那一天。
        Silver 的「变了才追加」要前一日当锚点，Observations 同理，而
-       `state._rebuild_current` 是拿当日帧覆盖同名 id 的**全部标量列与
+       `pipeline.state._rebuild_current` 是拿当日帧覆盖同名 id 的**全部标量列与
        last_seen_at**——只放中间某天，当前态会整体回退到那天的值。该约束由
-       `rebuild.replay_suffix` 单独实现。
-    ② `deriving._rederive`（崩溃恢复）原只重派生一天，同样会回退 current，改为
+       `pipeline.rebuild.replay_suffix` 单独实现。
+    ② `pipeline.recovery._rederive`（崩溃恢复）原只重派生一天，同样会回退 current，改为
        后缀重放。
     ③ `archive` 是**已校验的等价改写**（移走原件前验过 Bronze 逐行相等），跑完
-       调 `lineage.restamp` 只换指纹不动行数；不刷的话下轮体检把等价改写报成滞后，
+       调 `pipeline.lineage.restamp` 只换指纹不动行数；不刷的话下轮体检把等价改写报成滞后，
        而假警报会训练人忽略告警。
     机制上线首轮 4 天全无凭证，跑一次 `build --stale` 即建立基线。
 45. **补位只做在状态层，属性层就空了 203 行**（2026-11-08，接 #40）：`doctor`
     新增的层间勾稽第一次运行就量出：**203 个数据集在 `current` 里、在 `silver`
     里没有属性行**。逐个在 Raw 里定位，203/203 全部只出现在
     `dt=2026-11-07/card` 批次——正是 #40 那批「只在补抓批次出现」的库。补位当时
-    只喂给了 `state`（当前态、观测），`silver.build` 仍只读 Bronze 分区，于是这批
+    只喂给了 `state`（当前态、观测），`pipeline.silver.build` 仍只读 Bronze 分区，于是这批
     库有指标、有状态、无属性；`datasets` 宽视图以 current 为基底左连，它们的
     tags / description **整片为 null**，查询照常返回，只是查不出来。
-    修法：补位提到 `bronze.day_frame`（按 id 补空位、已在扫描帧的不动），
+    修法：补位提到 `pipeline.bronze.day_frame`（按 id 补空位、已在扫描帧的不动），
     `silver` 与 `state` 共用同一份当日帧。Bronze 分区本身仍只收 part/top。
     同时把三条勾稽固化进体检：current ↔ observations 双向差集、current ↔ silver
     覆盖、current 的 `last_seen_at` 是否落后于最新 Raw 日（采了却没进当前态）。
@@ -292,7 +292,7 @@
     恰恰决定要不要动手。`runs/` 不能承担：它记的是「命令成没成功」，而 `doctor`
     的退出码 1 是「有告警」而非「命令失败」，混进去会让「近 7 天无失败运行」失真。
     今单独一份流水 `state/health-history.jsonl`：一行一次，只存时间、问题条数与
-    问题原文，保留 `HEALTH_KEEP=500` 次（每日两次约合 250 天）。`health.streak()`
+    问题原文，保留 `HEALTH_KEEP=500` 次（每日两次约合 250 天）。`ops.health.streak()`
     据此回答「连续几次」。
     **只记问题不记正常项**：正常项每天都在变（小时数、文件数、行龄），全存下来
     只会把「哪天开始坏」淹在噪音里；要复看某天的完整结论，取同日 `logs/` 的
@@ -306,7 +306,7 @@
     拒绝，整轮 30 分钟作废（游标尚可续跑，但那一轮的对账结论全丢）。同一文件
     此后手动替换立即成功——说明占用是**毫秒级**的，来自 Defender 实时扫描或
     索引服务在文件刚写完时的短暂持有，不是锁。
-    修法：`atomic.replace` 对 `PermissionError` 退避重试三次（20/60/180ms，合计
+    修法：`platform.atomic.replace` 对 `PermissionError` 退避重试三次（20/60/180ms，合计
     约 0.26 秒），四个写点（bytes/text/parquet/csv）统一走它。
     **重试只对瞬态**：其余异常（磁盘满、路径不存在）立即抛出，不重试——让真因
     迟到近一秒才浮现，比失败本身更难查。持续占用（三次仍失败）也如实报错：
@@ -407,7 +407,7 @@
     `downloads_all_time` 是**历史累计**。前者筛出几千个库，后者几十万个。
     **这不是实现细节，是需求本身没定义。**
 
-    所以需求只允许写词条：`metrics.py` 把词条钉到列，每条带一句 definition；
+    所以需求只允许写词条：`delivery/metrics.py` 把词条钉到列，每条带一句 definition；
     `request show` 打印它，交付包的 README 照抄它。要偏离默认就写全名
     （「累计下载量」），不要指望读到的人猜到你想的是哪个。
 
@@ -421,7 +421,7 @@
 
     为什么不让需求直接写字段名：宽视图已经改名过两轮（`source_sha` 进宽表时
     还得改成 `card_source_sha` 以免与 `sha` 混淆）。词条是给人用的稳定名字，
-    字段是实现细节——改列名时只该改 `metrics.py` 一处。
+    字段是实现细节——改列名时只该改 `delivery/metrics.py` 一处。
 
 52. **交付编译必须钉死排序，否则「可复现」是空话**（2026-11-08）：判据是同一条需求
     两次交付的 `sha256` 相同。而 SQL 不给 `ORDER BY` 时行序由执行计划决定，
@@ -485,7 +485,7 @@
 
     顺带一条 YAML 的坑：`yaml.safe_load` 对**重复键**是「后写覆盖前写」且不报错。spec 里
     出现两处同名几乎总是笔误——改了下处、上处还留着，跑起来用的是后者，人看着自己写的
-    那行明明对。故 `requirement.load()` 用 `_StrictLoader` 在读入处直接拒绝重复键；两类
+    那行明明对。故 `delivery.requirement.load()` 用 `_StrictLoader` 在读入处直接拒绝重复键；两类
     需求共用一份 spec 后，这道防线不能只挂在某一个口径体上（见 #57）。
 
     还有一处更隐蔽：解析 `https://huggingface.co/datasets/nvidia/PhysicalAI-GR00T` 时若
@@ -508,7 +508,7 @@
 
     三处配套，都是被真实代价逼出来的：
 
-    - **`SourceStamp` 单拆 `source.py`**：`delivery` 要按 kind 分派到 `backfill`，而
+    - **`SourceStamp` 单拆 `delivery/source.py`**：`delivery` 要按 kind 分派到 `backfill`，而
       `backfill` 又要算底库指纹；指纹若留在 `delivery` 里就会成环，import 顺序变成隐性
       契约，只在某个入口下才炸。
     - **产物绝不外写**：曾允许把补全表另存到对方目录，于是同一份产物出现在两处，三个月
@@ -520,7 +520,7 @@
     一并退役：`fill` 子命令、独立的 fill spec 文件、`fills/<编号>/runs/*.json` 台账。
     `FILL-0001` 迁为 `REQ-0002`（`kind: backfill`），运行记录改由统一 manifest 承担；
     `--dry-run` 升为 `request run` 的通用能力，预演不落盘、也不受护栏阻断——它本就是
-    用来看「会不会 0 行」的，此时套护栏自相矛盾。重复键校验随之上移到 `requirement.load()`，
+    用来看「会不会 0 行」的，此时套护栏自相矛盾。重复键校验随之上移到 `delivery.requirement.load()`，
     因为两类需求读的是同一份 `spec.yaml`。
 
 58. **需求目录自包含，目录名语义化**（2026-11-08）：大帅点破的一条——「即使我告诉了你
@@ -574,22 +574,22 @@
       持锁，「读到某一刻的完整快照」这条不变。`fetch-sizes` 仍在 `WRITE_COMMANDS`
       里，启动检查/恢复未完成派生照旧。
 
-60. **Raw 日的唯一判据是 `raw.RawDay`**（2026-11-08）：此前「哪天有 Raw、哪天可
-    重放」有三套答案——`rebuild.discover_raw_dates` 认目录里任意 `*.json.gz`，
-    `deriving._has_raw` 只认 `part` / `top`，`doctor._raw_gaps` 又自行并冷区清单。
+60. **Raw 日的唯一判据是 `pipeline.raw.RawDay`**（2026-11-08）：此前「哪天有 Raw、哪天可
+    重放」有三套答案——`pipeline.rebuild.discover_raw_dates` 认目录里任意 `*.json.gz`，
+    `deriving._has_raw` 只认 `part` / `top`，`ops.doctor._raw_gaps` 又自行并冷区清单。
     恢复、重建、体检对同一天可能给出不同结论。
 
-    现在 `raw.py` 用一个冻结模型回答，三处调用点只读它：
+    现在 `pipeline/raw.py` 用一个冻结模型回答，三处调用点只读它：
 
     - **`replayable`**：主目录里有 `bronze`（part/top，含归档分片）或 `supplements`
       （`card-*`）；只有它能进入 `build` 与崩溃恢复的重放。
     - **`observed`**：可重放，或已压进冷区（`cold/raw/manifest.json`）——体检据此
       判断断日，冷区日不再被误报。
     - **`files`**：`bronze + supplements`，即派生输入全集；
-      `lineage.source_fingerprint` 直接用它，并与「指纹非空」保持恒等。
+      `pipeline.lineage.source_fingerprint` 直接用它，并与「指纹非空」保持恒等。
 
     **唯一行为变化**是「仅 card 批次的日子」从不可重放变为可重放：这类日子本来就
-    通过 `bronze.day_frame` 的补位进入 `current` / `observations`，恢复时跳过它
+    通过 `pipeline.bronze.day_frame` 的补位进入 `current` / `observations`，恢复时跳过它
     才会制造不一致。2026-11-08 在数据副本上审计：5 个 Raw 日中 card-only 日为 0，
     归档日 2 天（11-03、11-04）且 `bronze` 非空，故 `archive` / `compact` 的候选
     条件不变（不改成「只看 bronze」）。
@@ -633,8 +633,8 @@
     无前缀标签（页面 `Tags`）整组丢了，v2 补回 `tags` / `plain_tags` 升到 26 列，
     见 #63。
 
-    **三处共用一份契约**（`fields.py`）：`wide.export_wide` 按它写文件、
-    `requirement.compile_sql` 按它投影、`doctor._artifact_freshness` 勾稽导出列集。
+    **三处共用一份契约**（`delivery/fields.py`）：`delivery.wide.export_wide` 按它写文件、
+    `delivery.requirement.compile_sql` 按它投影、`ops.doctor._artifact_freshness` 勾稽导出列集。
     **刻意不让查询运行时去读导出文件的 schema**：导出物每天才刷新一次，可能滞后于
     底库；若口径依赖它，就会出现「数据来自 A 版导出、manifest 记着 B 版 current
     指纹」的不一致。文件是契约的物化与可交付底库，不是运行时的口径源。
@@ -980,7 +980,7 @@
     - **实际影响有限且可解释**：`observations` 少一天读数；增速榜按「最近两个观测点」
       计算，那天缺失会让 11-05 → 11-07 的两日变化被当作一个间隔，增速因而略偏高。
       两端的读数都是真的，失的只是中间那一点，且 `snapshot_date` 会如实显示间隔。
-    - **机制：`doctor.KNOWN_RAW_GAPS`**（日期 → 理由）。登记过的日子**仍会印出来**，
+    - **机制：`ops.doctor.KNOWN_RAW_GAPS`**（日期 → 理由）。登记过的日子**仍会印出来**，
       但不判红、不进 `ALERT.txt`。不判红不是「假装没有」，而是这条已经补不回来，天天
       喊只会训练人忽略告警——`ALERT.txt` 长期挂着同一条，等于没有告警。
     - **边界**：白名单只赦免登记过的那几天。同窗口里新掉的日期照常判红，且报错信息

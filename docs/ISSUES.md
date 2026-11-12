@@ -125,13 +125,13 @@ S1–S8 交付后的两轮工作，合计 15 个提交。此处只记「改了�
 | # | 深化 | 消除的漂移 |
 |---|---|---|
 | 1 | 写入序成为 Raw 的不变量（`written_at`） | `rebuild` 声称「Raw 是唯一事实来源」，实际靠 mtime |
-| 2 | 表登记表（`tables.py`） | 表身份散在五处；gold 的 glob 落空会静默退化成空视图 |
+| 2 | 表登记表（`platform/tables.py`） | 表身份散在五处；gold 的 glob 落空会静默退化成空视图 |
 | 3 | `ScanRun` 统一四份扫描循环 | 游标保存时机只靠一段注释维系 |
 | 4 | 命令成败收敛到 `Outcome` | 退出码 1 而 `runs/` 记 success |
 | 5 | `datasets` 宽视图由 schema 拼装 | 手抄 42 列，加字段时静默少一列 |
 | 6 | 「最新一行」两套实现加一致性测试 | `_CURRENT_CARRIED` 是手抄子集，漏列不报错 |
-| 7 | 原子写（`atomic.py`） | 六处写点只做三处，遗漏的恰是面向用户的 |
-| 8 | 列编码（`coerce.py`） | `_as_int` 三份逐字相同，`_as_text` 同名异义 |
+| 7 | 原子写（`platform/atomic.py`） | 六处写点只做三处，遗漏的恰是面向用户的 |
+| 8 | 列编码（`platform/coerce.py`） | `_as_int` 三份逐字相同，`_as_text` 同名异义 |
 
 **两处自身事故，已入回归**：
 1. `rebuild` 非事务性——「清空 state」与「写回失效状态」之间被打断（SIGTERM），
@@ -152,10 +152,10 @@ S1–S8 交付后的两轮工作，合计 15 个提交。此处只记「改了�
 |---|---|---|
 | `d620537` | `status` 模块（状态词表、探测映射、重建留存） | 存活库被判 renamed；旧快照回灌 |
 | `b40dc5a` | `session` 模块（对账会话，基线随会话固定） | 续跑丢差异；隔天续跑误探测 |
-| `044dfee` `861ff20` `947731d` | 拆 `DatasetStore`：表读写走登记表，流程拆为 `raw` / `bronze` / `state`，卡片并入 `card` | 登记表不真正驱动读写；`store.py` 504 行混杂流程 |
+| `044dfee` `861ff20` `947731d` | 拆 `DatasetStore`：表读写走登记表，流程拆为 `raw` / `bronze` / `state`，卡片并入 `card` | 登记表不真正驱动读写；`platform/store.py` 504 行混杂流程 |
 | `38330bd` | `derive_day` 单一入口 | 推导四步的顺序抄在 3 处 + 约 10 处测试 |
 | `5ef5268` | CLI 注入缝 `main(transport=)`，`_snapshot` | 四条联网命令无整路径测试 |
-| `02f2a77` `c5e1622` | 页面榜单全部取 `gold.BOARDS` | 榜单 SQL 两处各抄一份 |
+| `02f2a77` `c5e1622` | 页面榜单全部取 `query.gold.BOARDS` | 榜单 SQL 两处各抄一份 |
 | `ce6a226` | 删除 `build_*` / `update_state` 转发 | 浅层转发 |
 | `f75e510` | `.gitattributes`，统一 LF | CRLF 噪声 |
 
@@ -163,8 +163,8 @@ S1–S8 交付后的两轮工作，合计 15 个提交。此处只记「改了�
 
 | 步骤 | 前 | 后 | 做法 |
 |---|---|---|---|
-| `bronze.build` | 271.7s | 23.9s | 分块解压 + 逐条编码交进程池，合并前按排序键整体排序 |
-| `silver.build` | 82.1s | 4.2s | 逐行字典改 polars 整表表达式 |
+| `pipeline.bronze.build` | 271.7s | 23.9s | 分块解压 + 逐条编码交进程池，合并前按排序键整体排序 |
+| `pipeline.silver.build` | 82.1s | 4.2s | 逐行字典改 polars 整表表达式 |
 | 完整 `rebuild`（3 个日期） | 未测 | 56~62s | — |
 | 数据目录 | ~1.8GB | ~0.92GB | Silver 去 `raw`；Silver 改变更流水；Bronze 只留最新一天 |
 
@@ -207,6 +207,6 @@ S1–S8 交付后的两轮工作，合计 15 个提交。此处只记「改了�
   `xet_enabled` 四列全空，11-04 补齐，造成约 111 万行的一次性“属性变化”。11-05 仅 4,018 行；
   长期稳态只有一天样本，未验证。
 - 首次在副本上并行 `rebuild` 出现过一次 `BrokenProcessPool`，之后两次正常，原因未查明
-  （怀疑内存压力）。复现时先降低 `bronze.MAX_WORKERS`。
+  （怀疑内存压力）。复现时先降低 `pipeline.bronze.MAX_WORKERS`。
 - `rebuild` 仍不增量：改动一天要全量重放全部日期。
 - `PRD-hf-data-crawl-v1.0.md` 里的接口名是历史文档，与代码不符，未改。

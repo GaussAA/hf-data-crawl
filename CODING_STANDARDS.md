@@ -59,7 +59,7 @@ except Exception:
     raise  # 保留标记供下次恢复
 ```
 
-启动时检查并恢复。见 `deriving.py` 和 ADR-0001。
+启动时检查并恢复。见 `pipeline/deriving.py` 和 ADR-0001。
 
 ---
 
@@ -75,7 +75,7 @@ def _is_reasonable(value):
     return True
 ```
 
-见 `watermark.py` 的时间戳过滤（过滤未来 7 天以外的异常值）。
+见 `acquire/hf/watermark.py` 的时间戳过滤（过滤未来 7 天以外的异常值）。
 
 ---
 

@@ -443,7 +443,7 @@ mtime 一复制就变，靠它排序会让「Raw 是唯一事实来源」名不�
     后果有二：同一 id 若两边都有，指标以扫描批次为准；某一日补抓覆盖越广，
     该日观测行数就越多——11-07 因补抓覆盖近全库，观测由 20.5 万补到 78.2 万，
     这不是虚增，原先那 20.5 万才是只扫了头部。
-    **`silver` 用的是同一份当日帧**（`bronze.day_frame`）：补位若只做在状态层，
+    **`silver` 用的是同一份当日帧**（`pipeline.bronze.day_frame`）：补位若只做在状态层，
     这批库会有当前态、有观测，却没有属性行——2026-11-08 体检实测 203 个，
     `datasets` 宽视图里它们的 tags / description 整片为 null。
 13. **`runs/` 与 `logs/` 不是重复**：前者是机读台账（JSON，doctor 与两轮对比都靠它，
@@ -512,7 +512,7 @@ mtime 一复制就变，靠它排序会让「Raw 是唯一事实来源」名不�
 数据类型、规模、大小。
 
 这份文件同时是**默认参考交付底库**：数据集筛选需求若未写 `output.columns`，
-就按同一份契约投影。契约在 `fields.py`（含逐列中文定义与 `CONTRACT_VERSION`），
+就按同一份契约投影。契约在 `delivery/fields.py`（含逐列中文定义与 `CONTRACT_VERSION`），
 导出物、查询编译、体检勾稽三处共用，不在文档里手抄第二份列清单。
 
 契约 v5 共 31 列，含 `tags` / `plain_tags`
@@ -558,7 +558,7 @@ v5 起标签列回到 LIST 原值，与 `gold.datasets` 视图完全同构：要
 
 **它是可重建的投影，不是第五张状态表**：
 
-- 不登记进 `TABLES`，不参与 `state.update` / `build` / `compact`；
+- 不登记进 `TABLES`，不参与 `pipeline.state.update` / `build` / `compact`；
 - 删掉不影响任何派生，重跑一次 `export-wide` 就能重建；
 - 事实源仍是 `raw/`，权威层仍是 `silver` / `observations` / `current`。
 
@@ -589,7 +589,7 @@ v5 起标签列回到 LIST 原值，与 `gold.datasets` 视图完全同构：要
 但只补**头部**完全可行：`fetch-files` 默认每库取一页，有后续页就标 `truncated`，
 拿不到全库真值时如实承认是下限；单库详情头部实测 13-25 MB / 44-76 s，已弃用。
 文件级元数据只在榜单头部按需补，不进日常扫描。边界由
-`api.LIST_UNRETURNED_FIELDS` 与 `tests/pipeline/test_schema_contract.py` 钉死。
+`acquire.hf.api.LIST_UNRETURNED_FIELDS` 与 `tests/pipeline/test_schema_contract.py` 钉死。
 
 `citation` 与 `paperswithcode_id` 进基座只为让各来源 Raw 留下可回溯副本：
 它们不对应 Bronze 列、也不进宽表；`carddata` 表仍只由 `card-*` 分块解析，
