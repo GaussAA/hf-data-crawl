@@ -1,7 +1,8 @@
 """状态词表：Status 枚举与 INACTIVE 集合。
 
-从 status.py 拆出来是因为这两个被多处引用（store、state、reconcile），
-而 retain/restore 只在 rebuild 里用。拆开后 platform 不再依赖 pipeline。
+被 state、reconcile、rebuild 共用，所以放在最底层的 platform：上层各取所需，
+不必为拿一个枚举而互相依赖。探测结论到状态的映射在 `reconcile`，状态留存协议
+在 `rebuild`，各归用它的模块。
 """
 
 from __future__ import annotations

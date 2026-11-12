@@ -226,7 +226,7 @@ def test_上次重建中断时仍能从快照恢复状态(store: DatasetStore) -
     """
     import shutil
 
-    from hf_data_crawl.pipeline.status import retain
+    from hf_data_crawl.pipeline.rebuild import retain
 
     state.mark_status(store, {"acme/ds-2": "restricted"})
     retain(store)  # 重建的第一步：快照落盘

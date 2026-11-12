@@ -22,7 +22,6 @@ import polars as pl
 
 from ..pipeline import state
 from ..pipeline.derive import derive_day
-from ..pipeline.status import STATUS_BY_VERDICT
 from ..platform.atomic import write_csv, write_text
 from ..platform.store import DatasetStore
 from ..platform.tables import PolarsType
@@ -31,6 +30,14 @@ from .collect import LEAN_EXPAND
 from .hf.api import MAX_LIMIT, HfDatasetApi, Page
 from .hf.scan import ScanRun, ScanSpec
 from .session import ReconcileSession
+
+#: 探测结论 → 落库状态。`unknown`（网络异常等）不在表内，表示「先别动」。
+STATUS_BY_VERDICT: dict[str, Status] = {
+    "deleted": Status.DISAPPEARED,
+    "restricted": Status.RESTRICTED,
+    "renamed": Status.RENAMED,
+    "present": Status.ACTIVE,
+}
 
 RECONCILE_CHECKPOINT = "reconcile-checkpoint.json"
 
