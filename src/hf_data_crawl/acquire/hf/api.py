@@ -46,7 +46,7 @@ EXPAND_WHITELIST: frozenset[str] = frozenset(
 #: 所有写入 Raw 的扫描共同遵守的最低字段契约。HF 的 `expand[]` 是白名单裁剪，
 #: 任何写入 Raw 的扫描都必须至少请求这些字段：不同来源共享同一去重池，缺字段的
 #: 分块一旦后写，就会覆盖完整记录，让整列静默变空（2026-11-04 实测 private 曾
-#: 100% 为空）。由 `ScanSpec` 在构造期校验，并由 `tests/test_schema_contract.py`
+#: 100% 为空）。由 `ScanSpec` 在构造期校验，并由 `tests/pipeline/test_schema_contract.py`
 #: 与表结构互校。
 #:
 #: 末两项不对应 Bronze 列：它们稀疏（全库约 0.5% / 0.3%），但实测只多约 0.2%

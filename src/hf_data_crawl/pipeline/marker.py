@@ -13,7 +13,7 @@
 
 解决方案
 --------
-在 `derive_day()` 开头写一个"派生中标记文件"（如 `state/deriving-YYYY-MM-DD.flag`），
+在 `derive_day()` 开头写一个"派生中标记文件"（如 `state/marker-YYYY-MM-DD.marker`），
 包含开始时间戳。派生成功后删除。
 
 启动时检查：
@@ -53,43 +53,43 @@ STALE_THRESHOLD_SECONDS = 600  # 10 分钟
 
 
 @dataclass(frozen=True)
-class DerivingFlag:
+class Marker:
     """派生中标记。"""
 
     snapshot_date: date
     started_at: str  # ISO 8601 UTC 时间戳
 
 
-def flag_path(store: DatasetStore, snapshot_date: date) -> Path:
+def marker_path(store: DatasetStore, snapshot_date: date) -> Path:
     """标记文件路径。"""
-    return store.state_dir / f"deriving-{snapshot_date.isoformat()}.flag"
+    return store.state_dir / f"marker-{snapshot_date.isoformat()}.marker"
 
 
-def mark_deriving(store: DatasetStore, snapshot_date: date) -> None:
+def write_marker(store: DatasetStore, snapshot_date: date) -> None:
     """标记开始派生某一天。"""
-    flag = DerivingFlag(
+    marker = Marker(
         snapshot_date=snapshot_date,
         started_at=datetime.now(UTC).isoformat(timespec="seconds"),
     )
     content = json.dumps(
-        {"snapshot_date": flag.snapshot_date.isoformat(), "started_at": flag.started_at},
+        {"snapshot_date": marker.snapshot_date.isoformat(), "started_at": marker.started_at},
         ensure_ascii=False,
     )
-    write_text(flag_path(store, snapshot_date), content)
+    write_text(marker_path(store, snapshot_date), content)
 
 
-def clear_deriving(store: DatasetStore, snapshot_date: date) -> None:
+def clear_marker(store: DatasetStore, snapshot_date: date) -> None:
     """清除派生标记（派生完成）。"""
-    flag_path(store, snapshot_date).unlink(missing_ok=True)
+    marker_path(store, snapshot_date).unlink(missing_ok=True)
 
 
-def load_flag(path: Path) -> DerivingFlag | None:
+def load_marker(path: Path) -> Marker | None:
     """加载标记文件；损坏返回 None。"""
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         snapshot_date = date.fromisoformat(payload["snapshot_date"])
         started_at = payload["started_at"]
-        return DerivingFlag(snapshot_date=snapshot_date, started_at=started_at)
+        return Marker(snapshot_date=snapshot_date, started_at=started_at)
     except (json.JSONDecodeError, KeyError, ValueError, OSError):
         return None
 

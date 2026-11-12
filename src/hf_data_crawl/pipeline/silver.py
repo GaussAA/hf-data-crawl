@@ -2,7 +2,7 @@
 
 整张表用 polars 表达式一次算完，不再逐行转 Python 字典：111 万行的实测里，
 逐行版本 82 秒，向量化版本 1.5 秒，输出逐行相等。规则本身（标签怎么归维度）
-不变；`tests/test_silver_derive.py` 用一份逐行参考实现对照，防止向量化把边界
+不变；`tests/pipeline/test_silver_derive.py` 用一份逐行参考实现对照，防止向量化把边界
 情形悄悄改掉。
 
 Silver 是属性变更流水，不是每日快照
@@ -169,7 +169,7 @@ def _with_plain_modalities(frame: pl.DataFrame) -> pl.DataFrame:
     """无前缀词里的模态别名额外投一份到 `modalities`，原词仍留在 `plain_tags`。
 
     追加在基础行之后，故 `modalities` 的取值顺序是「前缀取值在前、无前缀别名在后」；
-    `tests/test_silver_derive.py` 的逐行参考实现按同一顺序写，两边逐行相等。
+    `tests/pipeline/test_silver_derive.py` 的逐行参考实现按同一顺序写，两边逐行相等。
     """
     extra = (
         frame.filter(pl.col("column") == PLAIN_TAG_COLUMN)

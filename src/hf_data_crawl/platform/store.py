@@ -1,10 +1,8 @@
 """数据仓入口：持有根目录，并提供按登记表读写的通用表访问。
 
-领域方法已迁移：
-- read_bronze/read_silver/read_observations/read_enrich 等 → 调用方直接用 read(name, dt)
-- write_raw → raw.write
-- mark_status → state.mark_status
-- merge_sizes/merge_files → sizes.py/files.py
+这里只做通用读写：按表名与日期取路径、读、写。领域规则各归其所：
+Raw 落盘在 `pipeline.raw`，状态标记在 `pipeline.state`，规模与文件清单的合并在
+`acquire.sizes` / `acquire.files`。
 """
 
 from __future__ import annotations

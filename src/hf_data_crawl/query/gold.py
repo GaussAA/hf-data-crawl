@@ -393,7 +393,7 @@ class GoldCatalog:
         #
         # 单次扫描：每行先打包成「维度 → 取值列表」的结构体数组再展开。此前是 16 路
         # UNION ALL，每一路都重新算一遍 latest_silver 的窗口函数，全量 count(*) 要
-        # 8~9 秒；单次扫描实测 3.6 秒，结果逐行相同（tests/test_gold.py 对照旧写法）。
+        # 8~9 秒；单次扫描实测 3.6 秒，结果逐行相同（tests/query/test_gold.py 对照旧写法）。
         packed = ", ".join(
             f"{{'dimension': '{column}', 'vals': {column}}}"
             for column in (*TAG_DIMENSIONS.values(), PLAIN_TAG_COLUMN)

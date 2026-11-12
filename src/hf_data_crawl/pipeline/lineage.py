@@ -178,7 +178,7 @@ def stamp(
     """派生产出后落一条戳记；该日已无 Raw 可指纹时不动档案，返回 None。
 
     「派生完成即写戳记」是这套机制唯一需要遵守的纪律：写入点在 `derive_day` 末尾，
-    与 `clear_deriving` 相邻——标记文件回答「派生是不是跑到一半崩了」，戳记回答
+    与 `clear_marker` 相邻——标记文件回答「派生是不是跑到一半崩了」，戳记回答
     「跑完的那一次是照着哪一版 Raw 跑的」。
     """
     source = source_fingerprint(store, snapshot_date)

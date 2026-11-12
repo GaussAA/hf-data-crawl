@@ -25,7 +25,7 @@ from typing import Any
 import openpyxl
 import yaml
 
-from hf_data_crawl.backfill import FillError, parse_reference
+from hf_data_crawl.delivery.backfill import FillError, parse_reference
 
 #: method/scripts/ 往上数三层就是需求目录。不写死绝对路径：目录要能整体搬走。
 REQUEST_DIR = Path(__file__).resolve().parents[2]

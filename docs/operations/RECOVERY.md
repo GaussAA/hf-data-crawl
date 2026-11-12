@@ -14,7 +14,7 @@
 
 **手动检查**：
 ```bash
-ls data/state/deriving-*.flag
+ls data/state/marker-*.marker
 ```
 
 ---

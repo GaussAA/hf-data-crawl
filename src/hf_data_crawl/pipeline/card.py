@@ -87,7 +87,7 @@ def extract_files(
     构造 DataFrame，只回传 Arrow 序列化后的表。
 
     每个分块带回自己的排序键，父进程按既有键序归并后再落表，因此与串行
-    「`read_batches` 排序 → 逐条抽取」逐行等价（见 tests/test_card.py 的等价测试）。
+    「`read_batches` 排序 → 逐条抽取」逐行等价（见 tests/pipeline/test_card.py 的等价测试）。
     """
     stamp = snapshot_date.isoformat()
     jobs = [(tuple(str(path) for path in chunk), stamp) for chunk in _chunks(files)]

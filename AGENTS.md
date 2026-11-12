@@ -27,7 +27,7 @@ Add new terms there first before using them.
 
 ### Consistency mechanisms
 - Watermark: `acquire/hf/watermark.py` (timestamp-based, filters anomalies)
-- Deriving atomicity: `pipeline/marker.py` (flag-file primitives) + `pipeline/recovery.py` (`check_and_recover`: clears the stale day, then replays the suffix, never a single day; split out so `recovery → rebuild → derive → marker` stays one-way)
+- Derive atomicity: `pipeline/marker.py` (marker-file primitives) + `pipeline/recovery.py` (`check_and_recover`: clears the stale day, then replays the suffix, never a single day; split out so `recovery → rebuild → derive → marker` stays one-way)
 - Derive provenance: `pipeline/lineage.py` (per-day Raw fingerprint; staleness detection + `build --stale`)
 - Layer reconcile: `ops.doctor._layer_reconcile` (current ↔ observations ↔ silver, plus last_seen_at vs newest Raw)
 - Artifact freshness: `ops.doctor._artifact_freshness` (exports must match current id-for-id; enrich tables only report coverage)

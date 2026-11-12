@@ -15,10 +15,10 @@ from pathlib import Path
 from hf_data_crawl.pipeline import raw
 from hf_data_crawl.pipeline.marker import (
     STALE_THRESHOLD_SECONDS,
-    DerivingFlag,
-    clear_deriving,
-    flag_path,
-    mark_deriving,
+    Marker,
+    clear_marker,
+    marker_path,
+    write_marker,
 )
 from hf_data_crawl.pipeline.raw import CARD_LABEL
 from hf_data_crawl.pipeline.recovery import check_and_recover
@@ -30,9 +30,9 @@ def test_标记文件创建(tmp_path: Path) -> None:
     store = DatasetStore(tmp_path)
     snapshot_date = date(2026, 11, 7)
 
-    mark_deriving(store, snapshot_date)
+    write_marker(store, snapshot_date)
 
-    path = flag_path(store, snapshot_date)
+    path = marker_path(store, snapshot_date)
     assert path.exists()
 
     # 验证内容
@@ -50,11 +50,11 @@ def test_标记文件删除(tmp_path: Path) -> None:
     store = DatasetStore(tmp_path)
     snapshot_date = date(2026, 11, 7)
 
-    mark_deriving(store, snapshot_date)
-    path = flag_path(store, snapshot_date)
+    write_marker(store, snapshot_date)
+    path = marker_path(store, snapshot_date)
     assert path.exists()
 
-    clear_deriving(store, snapshot_date)
+    clear_marker(store, snapshot_date)
     assert not path.exists()
 
 
@@ -64,7 +64,7 @@ def test_删除不存在的标记不报错(tmp_path: Path) -> None:
     snapshot_date = date(2026, 11, 7)
 
     # 直接删除，不应崩溃
-    clear_deriving(store, snapshot_date)
+    clear_marker(store, snapshot_date)
 
 
 def test_无标记时不触发恢复(tmp_path: Path) -> None:
@@ -80,13 +80,13 @@ def test_新标记不触发恢复(tmp_path: Path) -> None:
     store = DatasetStore(tmp_path)
     snapshot_date = date(2026, 11, 7)
 
-    mark_deriving(store, snapshot_date)
+    write_marker(store, snapshot_date)
 
     recovered = check_and_recover(store)
     assert recovered == []
 
     # 标记文件应仍然存在
-    assert flag_path(store, snapshot_date).exists()
+    assert marker_path(store, snapshot_date).exists()
 
 
 def test_超时标记触发恢复(tmp_path: Path) -> None:
@@ -109,9 +109,9 @@ def test_超时标记触发恢复(tmp_path: Path) -> None:
     obs_path.write_text("fake obs", encoding="utf-8")
 
     # 创建超时的标记（时间设为很久以前）
-    path = flag_path(store, snapshot_date)
+    path = marker_path(store, snapshot_date)
     old_time = datetime.now(UTC) - timedelta(seconds=STALE_THRESHOLD_SECONDS + 60)
-    flag = DerivingFlag(
+    entry = Marker(
         snapshot_date=snapshot_date,
         started_at=old_time.isoformat(timespec="seconds"),
     )
@@ -119,8 +119,8 @@ def test_超时标记触发恢复(tmp_path: Path) -> None:
     path.write_text(
         json.dumps(
             {
-                "snapshot_date": flag.snapshot_date.isoformat(),
-                "started_at": flag.started_at,
+                "snapshot_date": entry.snapshot_date.isoformat(),
+                "started_at": entry.started_at,
             }
         ),
         encoding="utf-8",
@@ -153,7 +153,7 @@ def test_恢复不影响其他日期(tmp_path: Path) -> None:
         bronze_path.write_text(f"bronze {dt}", encoding="utf-8")
 
     # 只有 date2 有超时标记
-    path = flag_path(store, date2)
+    path = marker_path(store, date2)
     old_time = datetime.now(UTC) - timedelta(seconds=STALE_THRESHOLD_SECONDS + 60)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -185,7 +185,7 @@ def test_多个超时标记全部恢复(tmp_path: Path) -> None:
     # 创建多个超时标记
     old_time = datetime.now(UTC) - timedelta(seconds=STALE_THRESHOLD_SECONDS + 60)
     for dt in dates:
-        path = flag_path(store, dt)
+        path = marker_path(store, dt)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps(
@@ -203,7 +203,7 @@ def test_多个超时标记全部恢复(tmp_path: Path) -> None:
 
     # 所有标记文件被删除
     for dt in dates:
-        assert not flag_path(store, dt).exists()
+        assert not marker_path(store, dt).exists()
 
 
 def test_损坏的标记文件被删除(tmp_path: Path) -> None:
@@ -212,7 +212,7 @@ def test_损坏的标记文件被删除(tmp_path: Path) -> None:
     snapshot_date = date(2026, 11, 7)
 
     # 创建损坏的标记文件
-    path = flag_path(store, snapshot_date)
+    path = marker_path(store, snapshot_date)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("not json", encoding="utf-8")
 
@@ -228,7 +228,7 @@ def test_时间戳格式错误的标记被删除(tmp_path: Path) -> None:
     store = DatasetStore(tmp_path)
     snapshot_date = date(2026, 11, 7)
 
-    path = flag_path(store, snapshot_date)
+    path = marker_path(store, snapshot_date)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
@@ -262,7 +262,7 @@ def test_只清理派生层不清理current(tmp_path: Path) -> None:
     bronze_path.write_text("fake bronze", encoding="utf-8")
 
     # 创建超时标记
-    path = flag_path(store, snapshot_date)
+    path = marker_path(store, snapshot_date)
     old_time = datetime.now(UTC) - timedelta(seconds=STALE_THRESHOLD_SECONDS + 60)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -293,7 +293,7 @@ def test_有Raw时清理后重新派生(tmp_path: Path, monkeypatch) -> None:
     bronze_path.parent.mkdir(parents=True, exist_ok=True)
     bronze_path.write_text("fake bronze", encoding="utf-8")
 
-    path = flag_path(store, snapshot_date)
+    path = marker_path(store, snapshot_date)
     old_time = datetime.now(UTC) - timedelta(seconds=STALE_THRESHOLD_SECONDS + 60)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -332,7 +332,7 @@ def test_只有卡片批次时按可重放处理(tmp_path: Path, monkeypatch) ->
         label=CARD_LABEL,
     )
 
-    path = flag_path(store, snapshot_date)
+    path = marker_path(store, snapshot_date)
     path.parent.mkdir(parents=True, exist_ok=True)
     old_time = datetime.now(UTC) - timedelta(seconds=STALE_THRESHOLD_SECONDS + 60)
     path.write_text(
@@ -362,7 +362,7 @@ def test_阈值边界(tmp_path: Path) -> None:
 
     # 刚好达到阈值 + 1 秒
     snapshot_date1 = date(2026, 11, 7)
-    path1 = flag_path(store, snapshot_date1)
+    path1 = marker_path(store, snapshot_date1)
     time1 = datetime.now(UTC) - timedelta(seconds=STALE_THRESHOLD_SECONDS + 1)
     path1.parent.mkdir(parents=True, exist_ok=True)
     path1.write_text(
@@ -377,7 +377,7 @@ def test_阈值边界(tmp_path: Path) -> None:
 
     # 刚好未达到阈值 - 1 秒
     snapshot_date2 = date(2026, 11, 8)
-    path2 = flag_path(store, snapshot_date2)
+    path2 = marker_path(store, snapshot_date2)
     time2 = datetime.now(UTC) - timedelta(seconds=STALE_THRESHOLD_SECONDS - 1)
     path2.parent.mkdir(parents=True, exist_ok=True)
     path2.write_text(

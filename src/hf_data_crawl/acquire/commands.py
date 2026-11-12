@@ -1,4 +1,4 @@
-"""`acquire` 切片的命令处理函数（原 ops/cli.py），解析与分派仍在 ops/cli。"""
+"""`acquire` 切片的命令处理函数，参数解析与分派在 ops/cli。"""
 
 from __future__ import annotations
 

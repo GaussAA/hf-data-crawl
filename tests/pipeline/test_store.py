@@ -156,7 +156,7 @@ def test_同页多次写入以后写者为准(store: DatasetStore) -> None:
     """同 id 去重的基本语义：最后写入的那份胜出。
 
     「不依赖文件名字典序」「不依赖 mtime」这两条更强的保证由
-    tests/test_raw_order.py 负责；此处只守住最基础的一条。
+    tests/pipeline/test_raw_order.py 负责；此处只守住最基础的一条。
     """
     raw.write(
         store,

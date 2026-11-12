@@ -1,9 +1,9 @@
 """派生崩溃恢复：发现超时的派生标记，清掉残留并从该日起后缀重放。
 
-标记的写与清是 `marker` 里的底层原语，`derive` / `rebuild` 都要用；恢复则要
-调 `rebuild` 做重放。两件事原先放在同一个模块（当时叫 `deriving`），于是
-`derive → deriving → rebuild → derive` 成环，靠函数内延迟导入勉强躲过。拆开后
-依赖只剩一个方向：`recovery → rebuild → derive → marker`。
+标记的写与清是 `marker` 里的底层原语，`derive` / `rebuild` 都要用；恢复要调
+`rebuild` 做重放，所以恢复不能放进 `marker`，否则 `derive → marker → rebuild →
+derive` 成环。依赖只许一个方向：`recovery → rebuild → derive → marker`，
+由 `tests/test_architecture.py` 守护。
 
 原理、窗口与不覆盖的场景见 `marker` 模块文档串。
 """
@@ -28,16 +28,16 @@ def check_and_recover(store: DatasetStore) -> list[date]:
     recovered: list[date] = []
     now = datetime.now(UTC)
 
-    for path in store.state_dir.glob("deriving-*.flag"):
-        flag = marker.load_flag(path)
-        if flag is None:
+    for path in store.state_dir.glob("marker-*.marker"):
+        entry = marker.load_marker(path)
+        if entry is None:
             # 损坏的标记文件，直接删除
             path.unlink(missing_ok=True)
             continue
 
         # 检查是否超过阈值
         try:
-            started = datetime.fromisoformat(flag.started_at)
+            started = datetime.fromisoformat(entry.started_at)
         except ValueError:
             # 时间戳格式错误，视为损坏
             path.unlink(missing_ok=True)
@@ -46,11 +46,11 @@ def check_and_recover(store: DatasetStore) -> list[date]:
         elapsed = (now - started).total_seconds()
         if elapsed > marker.STALE_THRESHOLD_SECONDS:
             # 超过阈值：先清掉残留的派生层，再视 Raw 是否还在决定是否重派生。
-            marker.clear_day(store, flag.snapshot_date)
+            marker.clear_day(store, entry.snapshot_date)
             path.unlink(missing_ok=True)
-            if marker.has_raw(store, flag.snapshot_date):
-                _rederive(store, flag.snapshot_date)
-            recovered.append(flag.snapshot_date)
+            if marker.has_raw(store, entry.snapshot_date):
+                _rederive(store, entry.snapshot_date)
+            recovered.append(entry.snapshot_date)
 
     return recovered
 

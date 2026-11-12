@@ -24,7 +24,7 @@
 - 只有当"连续 N 页的最老 lastModified 仍晚于水位线"时才停止
 - 过滤"当前时间 + 7 天"之后的异常值
 
-**实现**：新增 `watermark.py` (167 行)
+**实现**：新增 `acquire/hf/watermark.py` (167 行)
 
 **折衷**：如果 HF 修复异常时间戳，这些记录的 lastModified 会突然变旧，可能再次漏采——但这比"永久卡住"要好。
 
@@ -33,11 +33,11 @@
 ### 2. 派生原子性使用标记文件
 
 **方案**：
-- 开始派生前写 `state/deriving-YYYY-MM-DD.flag`（含时间戳）
+- 开始派生前写 `state/marker-YYYY-MM-DD.marker`（含时间戳）
 - 派生成功后删除标记
 - 启动时检查：标记超过 10 分钟 → 清理派生层 → 重新派生
 
-**实现**：新增 `deriving.py` (120 行)
+**实现**：新增 `pipeline/marker.py` (120 行)
 
 **折衷**：派生完成、标记删除前崩溃，不会清理——但这个窗口极窄（只有"删除文件"这一步）。
 
@@ -52,7 +52,7 @@
 - 至少一方 sha 为 null → `undetectable_change`
 - 对账报告单独列出无法检测的库
 
-**实现**：修改 `session.py` + `reconcile.py`
+**实现**：修改 `acquire/session.py` + `acquire/reconcile.py`
 
 **折衷**：不强制调用详情接口（会让对账从数小时变成一整天），接受"部分库无法检测变更"的现实。
 
@@ -86,7 +86,7 @@
 ## 验证
 
 - ✅ 全量测试通过（`uv run pytest -q`）
-- ✅ 新增测试覆盖 watermark / deriving / sha 检测的边界情况
+- ✅ 新增测试覆盖 watermark / marker / sha 检测的边界情况
 
 ---
 

@@ -1,4 +1,4 @@
-"""`ops` 切片的命令处理函数（原 ops/cli.py），解析与分派仍在 ops/cli。"""
+"""`ops` 切片的命令处理函数，参数解析与分派在 ops/cli。"""
 
 from __future__ import annotations
 
@@ -207,6 +207,6 @@ def _write_docs(args: argparse.Namespace, store: DatasetStore) -> int:
     if gaps:
         preview = "、".join(f"{name}.{column}" for name, column in gaps[:6])
         print(f"  [!] {len(gaps)} 个字段缺说明：{preview}{' …' if len(gaps) > 6 else ''}")
-        print("      补在 src/hf_data_crawl/fielddocs.py 里")
+        print("      补在 src/hf_data_crawl/ops/fielddocs.py 里")
         return 1
     return 0

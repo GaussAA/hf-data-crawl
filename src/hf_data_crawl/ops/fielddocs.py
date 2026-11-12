@@ -11,7 +11,7 @@
 - 只写「这一列回答什么问题」，不写「它是怎么算出来的」——后者属于代码注释。
 - 通用列放 `COMMON`，各表共用；表内同名列覆盖通用说明。
 - 新增列却忘了写说明时，`docs` 命令会把它标成「待补」并计数，
-  `tests/test_docs.py` 会因此变红——不会悄悄漏掉。
+  `tests/ops/test_docs.py` 会因此变红——不会悄悄漏掉。
 """
 
 from __future__ import annotations

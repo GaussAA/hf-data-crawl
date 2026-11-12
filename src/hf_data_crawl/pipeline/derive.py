@@ -27,7 +27,7 @@ from datetime import date
 from typing import TYPE_CHECKING
 
 from . import bronze, card, lineage, silver, state
-from .marker import clear_deriving, mark_deriving
+from .marker import clear_marker, write_marker
 
 if TYPE_CHECKING:
     from ..platform.store import DatasetStore
@@ -83,13 +83,13 @@ def derive_day(
     原子性保护：开始前标记、完成后清除。如果中途崩溃，下次启动时
     `check_and_recover()` 会检测到标记文件并清理该日的派生层。
 
-    凭证：成功路径在 `clear_deriving` 之前写戳记。写入顺序很重要——戳记先落、
+    凭证：成功路径在 `clear_marker` 之前写戳记。写入顺序很重要——戳记先落、
     标记后清，中途崩掉时戳记可能已经写了而派生标记还在，下次恢复会重派一遍并
     覆盖戳记；反过来（先清标记后写戳记）则会出现「没有标记、也没有凭证」的
     空档，体检看到的就是「这天从没派生过」，与「派生过但没记下」无法区分。
     """
     # 标记开始派生
-    mark_deriving(store, snapshot_date)
+    write_marker(store, snapshot_date)
 
     try:
         bronze_rows = bronze.build(store, snapshot_date)
@@ -131,7 +131,7 @@ def derive_day(
         )
 
         # 派生成功，清除标记
-        clear_deriving(store, snapshot_date)
+        clear_marker(store, snapshot_date)
         return result
     except Exception:
         # 派生失败，保留标记（供下次启动恢复）

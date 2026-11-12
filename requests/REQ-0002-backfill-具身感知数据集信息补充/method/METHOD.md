@@ -63,7 +63,7 @@
 
 - 底库：`data/exports/datasets.parquet`；本次基于哪一版，见 `deliveries/20261108T180736/manifest.json` 的 `source.current_md5`
 - 代码：`hf-data-crawl` 版本与提交号，见同份 manifest 的 `method.env`
-- 依赖：`openpyxl`（读表）、`pyyaml`（读口径）、`hf_data_crawl.backfill.parse_reference`（URL 归一，复用引擎而不另写正则）
+- 依赖：`openpyxl`（读表）、`pyyaml`（读口径）、`hf_data_crawl.delivery.backfill.parse_reference`（URL 归一，复用引擎而不另写正则）
 
 ## 已知边界
 

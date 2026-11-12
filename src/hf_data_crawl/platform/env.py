@@ -16,7 +16,7 @@ import re
 from collections.abc import Iterator
 from pathlib import Path
 
-#: 私密配置的文件名。根 `.gitignore` 已登记，实现在 `tests/test_env.py` 里钉死。
+#: 私密配置的文件名。根 `.gitignore` 已登记，实现在 `tests/acquire/test_env.py` 里钉死。
 ENV_FILENAME = ".env"
 
 #: 允许的变量名形态：拒绝 `1BAD=x`、`带空格 的键=x` 这类脏行，免得污染 os.environ。
