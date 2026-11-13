@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
+from typing import Literal
 
 import polars as pl
 
@@ -66,11 +67,32 @@ def write_text(path: Path, content: str) -> None:
     write_bytes(path, content.encode("utf-8"))
 
 
-def write_parquet(frame: pl.DataFrame, path: Path) -> None:
-    """原子写入 parquet。"""
+def write_parquet(
+    frame: pl.DataFrame,
+    path: Path,
+    *,
+    compression: Literal["zstd", "lz4", "snappy", "gzip", "brotli", "uncompressed"] = "zstd",
+    compression_level: int | None = None,
+) -> None:
+    """原子写入 parquet,默认 zstd 压缩。
+
+    Args:
+        frame: 要写入的 DataFrame
+        path: 目标路径
+        compression: 压缩格式,可选:
+            - "zstd" (默认): 平衡压缩率(~5x)与速度,推荐用于归档
+            - "lz4": 极快但压缩率低(~2x),适合临时文件
+            - "snappy": 快但压缩率低(~2x),兼容性好
+            - "gzip": 慢但压缩率高(~6x),兼容性最好
+            - "uncompressed": 无压缩,仅用于测试
+        compression_level: 压缩级别,None 表示默认:
+            - zstd: 1-22 (默认 3)
+            - gzip: 1-9 (默认 6)
+            - 其他格式忽略此参数
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = _temp_for(path)
-    frame.write_parquet(temp)
+    frame.write_parquet(temp, compression=compression, compression_level=compression_level)
     replace(temp, path)
 
 
