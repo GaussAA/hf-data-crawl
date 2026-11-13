@@ -91,6 +91,10 @@ ALLOWED_PLACEHOLDERS: frozenset[str] = frozenset({"resourceGroup"})
 MAX_LIMIT = 1000
 RETRYABLE_STATUS: frozenset[int] = frozenset({429, 500, 502, 503, 504})
 
+#: 单次退避的上限（秒）。服务器给的 `retry-after` / `t=` 可能等于整个限流窗口，
+#: 照单全睡会让一次调用的退避加起来长达半小时以上；封顶后由调用方的预算兜底。
+MAX_RETRY_SLEEP = 30.0
+
 
 class TransportError(RuntimeError):
     """传输层失败（连接中断、TLS 握手失败、代理断流）。
@@ -389,7 +393,11 @@ class HfDatasetApi:
     def _retry_delay(self, response: HfResponse, attempt: int) -> float:
         _, reset_in = _parse_rate_limit(response.headers)
         if reset_in:
-            return float(reset_in)
+            # `t=` 是「窗口还剩多少秒」，最长等于整个窗口（实测 300 秒）。原来直接
+            # 睡满，一次探测退避 5 次就是 25 分钟；探测阶段 2000 个 × 8 线程足以拖成
+            # 几小时，还攥着写锁不放（2026-11-13 实测堵死日常链 2 小时 50 分）。
+            # 封顶后仍会退避，但「等太久」由调用方的时间预算兜底，不再由单次睡眠决定。
+            return min(float(reset_in), MAX_RETRY_SLEEP)
         return min(self._retry_base_delay * (2**attempt), 60.0)
 
     @staticmethod

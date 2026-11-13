@@ -66,6 +66,19 @@ PROBE_CURSOR_NAME = "probe-cursor.json"
 #: 另一个序列里的位置，续用只会从中间切开；故版本不符即归零，从头扫一遍。
 PROBE_ORDER_VERSION = 2
 
+#: 探测阶段的时间预算（秒）。
+#:
+#: 探测是唯一「结果可以不要」的环节：判不出来的库本就留待下轮，状态不动。
+#: 但它持有写锁——2026-11-13 实测，扫描把配额吃光后，探测逐个撞 429 并按
+#: `retry-after` 睡满整个窗口（最长 300 秒），2000 个探测 × 最多 5 次重试 ÷ 8 线程
+#: 足以把进程挂上数小时，整条日常链就此堵死（当晚卡了 2 小时 50 分，导出未跑）。
+#: 故给探测一个墙钟上限：到点就收工，剩下的顺延，绝不为了几个库占着锁过夜。
+PROBE_TIME_BUDGET = 15 * 60.0
+
+#: 探测分批提交的批大小。批与批之间检查预算，才停得下来；一次提交几千个，
+#: 线程池会把它们全部跑完，预算形同虚设。
+PROBE_CHUNK = 128
+
 
 def probe_cursor_path(store: DatasetStore) -> Path:
     """放在 `meta/` 而非 `state/`：它不属于任何登记表，重建清不到它。"""
@@ -118,6 +131,7 @@ class Reconciler:
         checkpoint_filename: str = RECONCILE_CHECKPOINT,
         probe_workers: int = 8,
         probe_limit: int = PROBE_DAILY_LIMIT,
+        probe_budget: float = PROBE_TIME_BUDGET,
     ) -> None:
         self._api = api
         self._store = store
@@ -125,6 +139,8 @@ class Reconciler:
         self._checkpoint_filename = checkpoint_filename
         self._probe_workers = max(1, probe_workers)
         self._probe_limit = max(1, probe_limit)
+        # 0 或负数表示不设预算（测试与手动排障用），生产一律给正数。
+        self._probe_budget = probe_budget
 
     def run(
         self,
@@ -243,23 +259,34 @@ class Reconciler:
         if not missing:
             return {}, 0, 0, 0
 
-        batch, next_offset = self._probe_batch(missing, statuses or {})
+        batch, start, total = self._probe_batch(missing, statuses or {})
         verdicts: dict[str, Status] = {}
         failed = 0
+        probed = 0
+        deadline = time.monotonic() + self._probe_budget if self._probe_budget > 0 else None
         with ThreadPoolExecutor(max_workers=self._probe_workers) as pool:
-            for dataset_id, probe in zip(batch, pool.map(self._api.probe, batch), strict=True):
-                status = STATUS_BY_VERDICT.get(probe.verdict)
-                if status is None:
-                    failed += 1
-                    continue
-                verdicts[dataset_id] = status
-        self._write_probe_cursor(next_offset)
-        return verdicts, len(batch), failed, len(missing) - len(batch)
+            while probed < len(batch):
+                # 预算按批检查：一批 128 个，最坏多跑一批就停，不会几千个一起冲出去。
+                if deadline is not None and time.monotonic() >= deadline:
+                    break
+                chunk = batch[probed : probed + PROBE_CHUNK]
+                for dataset_id, probe in zip(chunk, pool.map(self._api.probe, chunk), strict=True):
+                    status = STATUS_BY_VERDICT.get(probe.verdict)
+                    if status is None:
+                        failed += 1
+                        continue
+                    verdicts[dataset_id] = status
+                probed += len(chunk)
+        # 游标只前进「已探到」的部分：超预算没探的仍留在队首，下一轮先探它们，
+        # 而不是被整批跳过、白等一整个轮转周期。
+        if total:
+            self._write_probe_cursor((start + probed) % total)
+        return verdicts, probed, failed, len(missing) - probed
 
     def _probe_batch(
         self, missing: list[str], statuses: Mapping[str, str]
-    ) -> tuple[list[str], int]:
-        """按轮转游标取本轮要探的一批，返回 (这批 id, 下一轮的游标)。
+    ) -> tuple[list[str], int, int]:
+        """按轮转游标取本轮要探的一批，返回 (这批 id, 起点, 序列总数)。
 
         排序键是「在架优先」：active 排前面，已判为非在架的排后面。后者仍会被探到
         （在架的凑不满限额时），但不再占每天的黄金配额——实测 6579 个待复核里有
@@ -268,11 +295,12 @@ class Reconciler:
         ordered = sorted(missing, key=lambda item: (statuses.get(item, "") != "active", item))
         total = len(ordered)
         if self._probe_limit >= total:
-            return ordered, 0
+            return ordered, 0, total
         start = self._read_probe_cursor() % total
         return (
             (ordered + ordered)[start : start + self._probe_limit],
-            (start + self._probe_limit) % total,
+            start,
+            total,
         )
 
     def _read_probe_cursor(self) -> int:

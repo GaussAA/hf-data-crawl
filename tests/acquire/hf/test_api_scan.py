@@ -11,7 +11,12 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from hf_data_crawl.acquire.hf.api import HfDatasetApi, HfResponse, TransportError
+from hf_data_crawl.acquire.hf.api import (
+    MAX_RETRY_SLEEP,
+    HfDatasetApi,
+    HfResponse,
+    TransportError,
+)
 from hf_data_crawl.acquire.hf.checkpoint import MemoryCheckpoint
 
 
@@ -391,3 +396,23 @@ def test_探测重试耗尽才算无结论() -> None:
 
     assert probe.verdict == "unknown"
     assert transport.calls == 3  # 首次 + 两次重试，之后不再徒劳地打接口
+
+
+def test_退避不睡满整个限流窗口() -> None:
+    """`t=300` 指的是「窗口还剩 300 秒」，不是「该睡 300 秒」。
+
+    照单全睡时，一次探测退避 5 轮就是 25 分钟；2000 个探测足以把进程挂上数小时，
+    还攥着写锁（2026-11-13 实测堵死日常链 2 小时 50 分）。
+    """
+
+    class _Noop:
+        def get(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> HfResponse:
+            raise AssertionError("只验退避计算，不该发请求")
+
+    api = HfDatasetApi(transport=_Noop())
+    response = HfResponse(status=429, headers={"RateLimit": '"api";r=0;t=300'}, body=b"{}")
+
+    assert api._retry_delay(response, 0) == MAX_RETRY_SLEEP
+    # 没有限流头时仍走指数退避，并保持原有 60 秒上限。
+    plain = HfResponse(status=503, headers={}, body=b"{}")
+    assert api._retry_delay(plain, 10) == 60.0

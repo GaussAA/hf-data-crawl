@@ -199,3 +199,52 @@ def test_等待超时后仍然失败(tmp_path: Path, monkeypatch: pytest.MonkeyP
     with pytest.raises(lock_mod.LockBusy):
         with lock_mod.exclusive(tmp_path, "scheduled", wait_seconds=10):
             pass
+
+
+def test_锁文件打不开时按占用处理而不是抛原始异常(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-11-13 实测：对账卡住持锁期间，第二个进程连 `open("a+b")` 都被拒。
+
+    那时抛的是原始 PermissionError，`--lock-wait` 等不了、doctor 也降级不了，
+    整条链以异常栈收场。打不开与锁被占，处置只能是同一件事。
+    """
+    from hf_data_crawl.platform import lock as lock_mod
+
+    monkeypatch.setattr(lock_mod, "_open_lock_file", lambda _root: None)
+
+    with pytest.raises(lock_mod.LockBusy, match="占用"):
+        with lock_mod.exclusive(tmp_path, "manual"):
+            pass
+
+
+def test_锁文件打不开时仍会等够时间才放弃(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """计划任务给的是 900 秒：不能因为「打不开」就立刻判失败。"""
+    from hf_data_crawl.platform import lock as lock_mod
+
+    monkeypatch.setattr(lock_mod, "_open_lock_file", lambda _root: None)
+    started = time.monotonic()
+
+    with pytest.raises(lock_mod.LockBusy):
+        with lock_mod.exclusive(tmp_path, "daily", wait_seconds=0.3):
+            pass
+
+    assert time.monotonic() - started >= 0.25
+
+
+def test_打不开过后恢复可写就能拿到锁(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """占用者退出后锁文件立刻可写，等待方应当接着干，而不是继续报错。"""
+    from hf_data_crawl.platform import lock as lock_mod
+
+    real = lock_mod._open_lock_file
+    calls = {"n": 0}
+
+    def flaky(root: Path) -> object:
+        calls["n"] += 1
+        return None if calls["n"] <= 2 else real(root)
+
+    monkeypatch.setattr(lock_mod, "_open_lock_file", flaky)
+    with lock_mod.exclusive(tmp_path, "daily", wait_seconds=2):
+        pass
+
+    assert calls["n"] >= 3

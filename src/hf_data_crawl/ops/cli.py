@@ -116,8 +116,8 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument(
         "--pages-without-new",
         type=int,
-        default=3,
-        help="连续多少页无新记录即判定到达水位线",
+        default=None,
+        help="连续多少页无新记录即判定到达水位线。默认 3（--preset 可覆盖）",
     )
     collect.add_argument("--dry-run", action="store_true", help="只探一页并打印字段，不落盘")
     collect.add_argument(
@@ -125,15 +125,18 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["default", "aggressive", "maximum", "minimal", "conservative"],
         default=None,
         help=(
-            "使用预设配置 (会覆盖 max-pages/refresh-top/pages-without-new)。"
+            "使用预设配置，只填未显式指定的参数（--refresh-top 等显式值不会被覆盖）。"
             "可选: default(推荐), aggressive(高新鲜度), maximum(需异步), minimal(测试), conservative(旧行为)"
         ),
     )
     collect.add_argument(
         "--refresh-top",
         type=int,
-        default=5000,
-        help="额外按下载量补扫前 N 名（0 表示不补），用于让增速榜每天有新读数。默认 5000",
+        default=None,
+        help=(
+            "额外按下载量补扫前 N 名（0 表示不补），用于让增速榜每天有新读数。"
+            "默认 5000（--preset 可覆盖）"
+        ),
     )
 
     collect.add_argument(

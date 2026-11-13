@@ -516,3 +516,20 @@ def test_排序键改版后旧游标作废(store: DatasetStore) -> None:
     reconciler(transport, store, probe_limit=2).run(DAY2, limit=100)
 
     assert set(transport.probed) == {"acme/a", "acme/b"}
+
+
+def test_探测超预算就收工_剩余顺延(store: DatasetStore) -> None:
+    """探测是唯一「结果可以不要」的环节，不该为它占着写锁过夜。
+
+    2026-11-13 实测：扫描吃光配额后，探测逐个撞 429 并按 retry-after 睡满窗口，
+    进程挂了两小时五十分，整条日常链停在导出之前。
+    """
+    ids = seed_many(store, 5)
+    transport = FakeCursorTransport([[]], detail={item: {"id": item} for item in ids})
+
+    # 预算设得比一次检查还短：不该探任何一条，全部顺延。
+    summary = reconciler(transport, store, probe_limit=5, probe_budget=1e-9).run(DAY2, limit=100)
+
+    assert summary.probe_probed == 0
+    assert summary.probe_deferred == 5
+    assert transport.probed == []

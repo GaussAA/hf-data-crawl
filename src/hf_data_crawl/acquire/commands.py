@@ -11,6 +11,7 @@ import polars as pl
 from ..pipeline import state
 from ..platform.env import load_env_file
 from ..platform.lock import exclusive
+from ..platform.presets import get_preset
 from ..platform.runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs
 from ..platform.store import DatasetStore
 from .collect import Collector, CollectSummary
@@ -69,23 +70,39 @@ def _collected_today(store: DatasetStore, snapshot: date) -> bool:
     return False
 
 
+#: 未给 `--refresh-top` 时补扫的头部数量。给这个默认值是为了让增速榜每天有新读数：
+#: 只靠 `lastModified` 水位线的话，下载量涨了但文件没变的库永远拿不到第二个观测点。
+DEFAULT_REFRESH_TOP = 5000
+
+#: 未给 `--pages-without-new` 时，连续多少页无新记录即判定到达水位线。
+DEFAULT_PAGES_WITHOUT_NEW = 3
+
+
+def apply_collect_defaults(args: argparse.Namespace) -> None:
+    """把预设与默认值填进 `args`；**只填空位，一个显式参数都不改**。
+
+    早先的写法用「值是否等于默认值」来判断用户有没有指定，于是 `--refresh-top 5000`
+    （恰好等于当时的默认值）会被预设悄悄换掉，命令行上还看不出任何提示。argparse
+    本身分不清「没给」与「给了默认值」，所以只能让这两个参数没有默认值——`None`
+    才是可靠的哨兵。
+    """
+    preset = get_preset(args.preset) if args.preset else None
+    if preset is not None:
+        print(f"使用预设: {preset.name} - {preset.description}")
+    if args.max_pages is None and preset is not None:
+        args.max_pages = preset.max_pages
+    if args.refresh_top is None:
+        args.refresh_top = preset.refresh_top if preset is not None else DEFAULT_REFRESH_TOP
+    if args.pages_without_new is None:
+        args.pages_without_new = (
+            preset.pages_without_new if preset is not None else DEFAULT_PAGES_WITHOUT_NEW
+        )
+
+
 def run_collect(
     args: argparse.Namespace, store: DatasetStore, transport: Transport | None
 ) -> Outcome:
-    # 应用预设配置
-    if args.preset:
-        from ..platform.presets import get_preset
-
-        preset = get_preset(args.preset)
-        print(f"使用预设: {preset.name} - {preset.description}")
-
-        # 只在用户未手动指定时才应用预设值
-        if args.max_pages is None:
-            args.max_pages = preset.max_pages
-        if args.refresh_top == 5000:  # 检查是否为新默认值
-            args.refresh_top = preset.refresh_top
-        if args.pages_without_new == 3:  # 检查是否为默认值
-            args.pages_without_new = preset.pages_without_new
+    apply_collect_defaults(args)
 
     snapshot = _snapshot(args)
     if args.skip_if_done and not args.dry_run and _collected_today(store, snapshot):
