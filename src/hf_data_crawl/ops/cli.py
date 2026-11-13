@@ -10,7 +10,9 @@ import os
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
+from ..acquire import MAX_LIMIT, PROBE_DAILY_LIMIT
 from ..acquire.commands import (
     run_collect,
     run_enrich,
@@ -18,26 +20,26 @@ from ..acquire.commands import (
     run_fetch_sizes,
     run_reconcile,
 )
-from ..acquire.hf.api import MAX_LIMIT, Transport
-from ..acquire.reconcile import PROBE_DAILY_LIMIT
+from ..delivery import Cadence, Kind
 from ..delivery.commands import (
     run_export_wide,
     run_request,
     run_request_run,
     run_request_run_due,
 )
-from ..delivery.requirement import (
-    Cadence,
-    Kind,
-)
 from ..pipeline.commands import run_build
 from ..pipeline.recovery import check_and_recover
-from ..platform.lock import LockBusy, exclusive
-from ..platform.retention import BACKUP_PRUNE_AFTER_DAYS, REPLAY_WINDOW_DAYS
-from ..platform.runs import Outcome, write_run
-from ..platform.store import DatasetStore
+from ..platform import (
+    BACKUP_PRUNE_AFTER_DAYS,
+    REPLAY_WINDOW_DAYS,
+    DatasetStore,
+    LockBusy,
+    Outcome,
+    exclusive,
+    write_run,
+)
+from ..query import BOARDS
 from ..query.commands import run_query, run_report
-from ..query.gold import BOARDS
 from .commands import run_archive, run_compact, run_docs, run_doctor, run_prune
 
 #: 会改写数据目录的命令，执行期间持有独占锁。query 只读且单次查询很短，
@@ -377,8 +379,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None, *, transport: Transport | None = None) -> int:
-    """命令行入口。`transport` 是唯一的注入缝：测试传假实现，生产不传。"""
+def main(argv: list[str] | None = None, *, transport: Any = None) -> int:
+    """命令行入口。
+
+    Args:
+        argv: 命令行参数,None 时使用 sys.argv[1:]
+        transport: 网络传输抽象,仅供测试注入假实现。生产环境传 None,
+            由各命令内部创建真实传输。类型标注为 Any 以避免 CLI 层耦合
+            acquire 切片的内部抽象。
+    """
     args = build_parser().parse_args(argv)
     store = DatasetStore(Path(args.data_dir))
     # 未显式给 --lock-wait 时按命令取默认值：写命令立即失败，生成命令先等一会儿；
