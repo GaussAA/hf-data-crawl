@@ -38,7 +38,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `compact` | 压缩冷区 Raw：跨天去重成一份基线，原分块移入 `backup/raw/` 不删除 | 否 |
 | `prune` | 清理备份：把 `backup/` 里超过 7 天的分片真正删掉，释放磁盘（只动 `backup/`） | 是 |
 | `docs` | 生成 `docs/DATA.md`：data 目录结构、各文件作用、全部字段含义 | 否 |
-| `export-wide` | 把 `datasets` 宽视图导出成单文件 parquet（可重建，不参与状态更新） | 否 |
+| `export-wide` | 把 `datasets` 宽视图导出成单文件 parquet（zstd 压缩；可重建，不参与状态更新） | 否 |
 
 常用参数：
 

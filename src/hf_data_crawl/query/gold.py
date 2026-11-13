@@ -17,6 +17,12 @@ from ..pipeline.silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
 from ..platform.store import DatasetStore
 from ..platform.tables import DATASET_URL, TIMESTAMP, PolarsType, table
 
+#: `copy_wide()` 的 parquet 压缩。DuckDB 的 `COPY ... FORMAT PARQUET` 默认 snappy，
+#: 与全库其余 parquet（zstd）不一致，且实测交付底库多占四成：112 万行 × 31 列，
+#: snappy 211.4 MB / zstd 125.7 MB。写死在此而非做成参数，是为让「交付物的字节」
+#: 只有一种结果——导出物不该因调用方不同而换压缩。
+COPY_COMPRESSION = "ZSTD"
+
 #: 宽视图里需要改名的列：来源表 → {原列名: 视图里的名字}。
 #:
 #: 只写真正需要区分的：`size.num_rows` 若原样进视图，与卡片口径的
@@ -367,7 +373,8 @@ class GoldCatalog:
             raise ValueError(f"导出目标必须在数据目录内：{destination}（数据目录 {root}）")
         escaped = destination.resolve().as_posix().replace("'", "''")
         self._connection.execute(
-            f"COPY (SELECT {projection or '*'} FROM datasets) TO '{escaped}' (FORMAT PARQUET)"
+            f"COPY (SELECT {projection or '*'} FROM datasets) TO '{escaped}' "
+            f"(FORMAT PARQUET, COMPRESSION {COPY_COMPRESSION})"
         )
 
     def close(self) -> None:

@@ -104,6 +104,26 @@ def test_默认产物落在_exports_目录(store: DatasetStore) -> None:
     assert export_wide(store).path == store.root / "exports" / "datasets.parquet"
 
 
+def test_导出物用_zstd_压缩(store: DatasetStore) -> None:
+    """压紧方式也是交付物的口径：DuckDB 的 COPY 默认 snappy，同样数据多占四成。
+
+    钉住这一条不是为省几个字节，而是为了让导出物与全库其余 parquet 一致——
+    压缩方式一变，体积与下游解码路径都会变，属于契约的一部分。
+    压缩方式从 parquet 元数据里读，不去猜文件后缀或大小。
+    """
+    import duckdb
+
+    summary = export_wide(store)
+    target = summary.path.as_posix().replace("'", "''")
+
+    with duckdb.connect() as connection:
+        rows = connection.execute(
+            f"SELECT DISTINCT compression FROM parquet_metadata('{target}')"
+        ).fetchall()
+
+    assert {row[0] for row in rows} == {"ZSTD"}
+
+
 def test_导出不改任何状态表(store: DatasetStore) -> None:
     before = _fingerprint(store.root)
     assert before, "夹具应当已造出登记表文件"
