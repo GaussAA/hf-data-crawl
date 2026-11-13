@@ -72,6 +72,21 @@ def _collected_today(store: DatasetStore, snapshot: date) -> bool:
 def run_collect(
     args: argparse.Namespace, store: DatasetStore, transport: Transport | None
 ) -> Outcome:
+    # 应用预设配置
+    if args.preset:
+        from ..platform.presets import get_preset
+
+        preset = get_preset(args.preset)
+        print(f"使用预设: {preset.name} - {preset.description}")
+
+        # 只在用户未手动指定时才应用预设值
+        if args.max_pages is None:
+            args.max_pages = preset.max_pages
+        if args.refresh_top == 5000:  # 检查是否为新默认值
+            args.refresh_top = preset.refresh_top
+        if args.pages_without_new == 3:  # 检查是否为默认值
+            args.pages_without_new = preset.pages_without_new
+
     snapshot = _snapshot(args)
     if args.skip_if_done and not args.dry_run and _collected_today(store, snapshot):
         print(f"{snapshot} 已完整采集过，跳过。")

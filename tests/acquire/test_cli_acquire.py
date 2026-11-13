@@ -92,7 +92,7 @@ def run(root: Path, *argv: str, transport: Any) -> int:
 def test_collect走完整条路径并留下成功记录(root: Path) -> None:
     transport = PagedTransport([[record(1), record(2)], [record(3)]])
 
-    code = run(root, "collect", "--date", DAY_ARG, transport=transport)
+    code = run(root, "collect", "--date", DAY_ARG, "--refresh-top", "0", transport=transport)
 
     store = DatasetStore(root)
     runs = read_runs(store)
