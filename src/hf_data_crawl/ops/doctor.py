@@ -63,10 +63,9 @@ ARTIFACT_MAX_AGE_DAYS = 7
 #: 快照日」，不取日历上的今天——链条 03:10 才跑，零点到那时之间必须不算陈旧。
 FIELD_SWEEP_SHARE = 0.90
 
-#: 没有周期任务、按需更新的富化表：只报覆盖，不判年龄。
-#: `files` 是试点（默认只取下载量前 1000 名的首屏清单），既不排期也不承诺新鲜，
-#: 拿「7 天没动」去喊它，等于每天报一次「按需的东西没按需地跑」，久了就没人看。
-UNSCHEDULED_TABLES: frozenset[str] = frozenset({"files"})
+#: 富化表的年龄红线：默认 7 天。`files` 是周日任务、且只补下载量前 1000 名的首屏，
+#: 给到 10 天——漏跑一次不至于立刻喊，连丢一周才说明这条链路真停了。
+TABLE_MAX_AGE_DAYS: dict[str, int] = {"files": 10}
 
 #: 「活跃库」的判定窗口：日增量按 lastModified 扫到水位线，最近一天基本覆盖；
 #: 留 3 天是给漏跑与补跑留余量，而不把长尾算进卡片凭证的落后比例。
@@ -388,12 +387,10 @@ def _artifact_freshness(store: DatasetStore, today: date) -> Finding:
         if not isinstance(newest, date):
             notes.append(f"{label}覆盖 {share_text}（日期缺失）")
             continue
-        if name in UNSCHEDULED_TABLES:
-            notes.append(f"{label}覆盖 {share_text}（按需，不排期）")
-            continue
         notes.append(f"{label}覆盖 {share_text}（最新 {newest}）")
+        limit_days = TABLE_MAX_AGE_DAYS.get(name, ARTIFACT_MAX_AGE_DAYS)
         age_days = (today - newest).days
-        if age_days > ARTIFACT_MAX_AGE_DAYS:
+        if age_days > limit_days:
             problems.append(
                 f"{label}表已 {age_days} 天没更新（最新 {newest}），"
                 f"检查 enrich / fetch-sizes / fetch-files 是否还在跑"
