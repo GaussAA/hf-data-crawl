@@ -58,9 +58,15 @@ STALENESS_ALERT_DAYS = 7
 #: 说明那条链路已经停了，而不是「它本来就慢」。
 ARTIFACT_MAX_AGE_DAYS = 7
 
-#: 列表字段每轮都该被全站扫描「见过」一次，今日占比低于此值即判不合格：
-#: 那说明这一轮扫描没扫完（被截断、失败或没跑），而不是个别库慢半拍。
-FIELD_TODAY_SHARE = 0.90
+#: 最近一轮全站对账该覆盖全库。低于此值即判不合格：那说明这一轮扫描没扫完
+#: （被截断、失败或没跑），而不是个别库慢半拍。基准取「最近一次成功对账的
+#: 快照日」，不取日历上的今天——链条 03:10 才跑，零点到那时之间必须不算陈旧。
+FIELD_SWEEP_SHARE = 0.90
+
+#: 没有周期任务、按需更新的富化表：只报覆盖，不判年龄。
+#: `files` 是试点（默认只取下载量前 1000 名的首屏清单），既不排期也不承诺新鲜，
+#: 拿「7 天没动」去喊它，等于每天报一次「按需的东西没按需地跑」，久了就没人看。
+UNSCHEDULED_TABLES: frozenset[str] = frozenset({"files"})
 
 #: 「活跃库」的判定窗口：日增量按 lastModified 扫到水位线，最近一天基本覆盖；
 #: 留 3 天是给漏跑与补跑留余量，而不把长尾算进卡片凭证的落后比例。
@@ -382,6 +388,9 @@ def _artifact_freshness(store: DatasetStore, today: date) -> Finding:
         if not isinstance(newest, date):
             notes.append(f"{label}覆盖 {share_text}（日期缺失）")
             continue
+        if name in UNSCHEDULED_TABLES:
+            notes.append(f"{label}覆盖 {share_text}（按需，不排期）")
+            continue
         notes.append(f"{label}覆盖 {share_text}（最新 {newest}）")
         age_days = (today - newest).days
         if age_days > ARTIFACT_MAX_AGE_DAYS:
@@ -395,14 +404,42 @@ def _artifact_freshness(store: DatasetStore, today: date) -> Finding:
     return Finding(False, "产物新鲜度：" + "；".join(notes))
 
 
-def _field_freshness(store: DatasetStore, today: date) -> Finding:
+def _last_sweep_date(runs: list[dict]) -> date | None:
+    """最近一次成功全站对账的快照日；没跑过则 None。
+
+    快照日是「那轮本该覆盖到的那一天」，比 `finished_at` 稳：续跑、跨零点、
+    补跑都不会让它漂。取不到就退回完成时刻的日期。
+    """
+    for item in reversed(runs):
+        if item.get("command") != "reconcile" or item.get("status") != "success":
+            continue
+        payload = item.get("payload") or {}
+        raw = payload.get("snapshot_date")
+        if raw:
+            try:
+                return date.fromisoformat(str(raw))
+            except ValueError:
+                pass
+        finished = item.get("finished_at")
+        if finished:
+            try:
+                return datetime.fromisoformat(str(finished)).date()
+            except ValueError:
+                pass
+    return None
+
+
+def _field_freshness(store: DatasetStore, runs: list[dict]) -> Finding:
     """按字段类别报「新不新」，而不是笼统说「数据新鲜」。
 
     三类字段的刷新机制不同，揉成一个指标必然误导：
 
     - **列表字段**（标识、描述、下载量、标签…）：`reconcile` 每轮按 `createdAt`
-      把全站翻完并落 raw，故每个周期内全库都该被「见过」一次。判据就是
-      `current.last_seen_at`：今日占比低，说明那轮扫描没扫完。
+      把全站翻完并落 raw，故每个周期内全库都该被「见过」一次。判据是「最近一轮
+      成功对账覆盖了多少行」——**不能拿日历上的「今天」当尺子**：链条每天 03:10
+      才跑，零点到那时之间查一次，全库都还是昨天的日期，会天天误报全红（这正是
+      2026-11-15 01:40 实测踩到的）。以最近一次成功对账为基准，既没有这段空窗，
+      也能照样逮住「扫到一半就收工」。
     - **卡片字段**：跟着 `lastModified` 变化集抓，覆盖率天然受上游限制——
       2026-11-14 抽 30 个「无卡」库直问 HF，30 个上游同样没有 `cardData`，
       故 68% 是上游分布，不是我们的缺口。真正该盯的是「有卡库的凭证是否
@@ -415,8 +452,11 @@ def _field_freshness(store: DatasetStore, today: date) -> Finding:
     if current.height == 0:
         return Finding(True, "字段新鲜度：current 为空，无法判定")
 
-    seen_today = current.filter(pl.col("last_seen_at") == today).height
-    share = seen_today / current.height
+    sweep = _last_sweep_date(runs)
+    if sweep is None:
+        return Finding(True, "字段新鲜度：还没有成功的全量对账，无法判定列表字段")
+    seen = current.filter(pl.col("last_seen_at") >= sweep).height
+    share = seen / current.height
 
     cards = store.read("carddata")
     covered = cards["id"].n_unique() if cards.height else 0
@@ -440,15 +480,15 @@ def _field_freshness(store: DatasetStore, today: date) -> Finding:
         ).height
 
     text = (
-        f"字段新鲜度：列表字段今日 {share:.1%}（{seen_today}/{current.height}）"
+        f"字段新鲜度：列表字段最近一轮（{sweep}）覆盖 {share:.1%}（{seen}/{current.height}）"
         f" · 卡片覆盖 {covered / current.height:.1%}（上游卡片本就不全）"
         f" · 规模覆盖 {sizes.height / current.height:.1%}、最新 {newest_size or '无'}"
         f" · 规模待重取 {stale} 个"
     )
-    if share < FIELD_TODAY_SHARE:
+    if share < FIELD_SWEEP_SHARE:
         return Finding(
             True,
-            text + f"；列表字段今日占比不足 {FIELD_TODAY_SHARE:.0%}，本轮全站扫描没扫完",
+            text + f"；最近一轮覆盖不足 {FIELD_SWEEP_SHARE:.0%}，那轮全站扫描没扫完",
         )
     return Finding(False, text)
 
@@ -827,7 +867,7 @@ def diagnose(
         _raw_gaps(store, now.date()),
         _derive_state(store),
         _snapshot_dependent(_artifact_freshness(store, now.date())),
-        _snapshot_dependent(_field_freshness(store, now.date())),
+        _snapshot_dependent(_field_freshness(store, runs)),
         _snapshot_dependent(_card_provenance(store, now.date())),
         _raw_growth(store),
         _cold_backlog(store, now.date()),

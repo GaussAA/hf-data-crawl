@@ -808,11 +808,12 @@ def test_字段新鲜度把标量与富化表分开报(tmp_path: Path) -> None:
     """
     store = DatasetStore(tmp_path / "data")
     put_current(store, NOW.date())
+    make_run(store, "reconcile", NOW)
 
     item = next(f for f in diagnose(store, NOW) if f.text.startswith("字段新鲜度"))
 
     assert not item.problem
-    assert "列表字段今日 100.0%" in item.text
+    assert "列表字段最近一轮（2026-11-10）覆盖 100.0%" in item.text
     assert "卡片覆盖" in item.text
     assert "规模待重取" in item.text
 
@@ -825,6 +826,7 @@ def test_全站扫描没扫完时字段新鲜度判红(tmp_path: Path) -> None:
     """
     store = DatasetStore(tmp_path / "data")
     put_current(store, NOW.date() - timedelta(days=2))
+    make_run(store, "reconcile", NOW)
 
     item = next(f for f in diagnose(store, NOW) if f.text.startswith("字段新鲜度"))
 
