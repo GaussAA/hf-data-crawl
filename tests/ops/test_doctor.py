@@ -796,3 +796,37 @@ def test_已知缺口之外的新断日照常判红(tmp_path: Path) -> None:
     assert len(hits) == 1
     assert fresh.isoformat() in hits[0]
     assert known.isoformat() not in hits[0]
+
+
+# ---------------------------------------------------------------- 字段级新鲜度
+
+
+def test_字段新鲜度把标量与富化表分开报(tmp_path: Path) -> None:
+    """一个「新鲜」笼统结论会骗人：标量每日全站刷，规模按内容变才刷。
+
+    这里只验口径：今日全见过的底库不该判红，且四类字段各有各的数字。
+    """
+    store = DatasetStore(tmp_path / "data")
+    put_current(store, NOW.date())
+
+    item = next(f for f in diagnose(store, NOW) if f.text.startswith("字段新鲜度"))
+
+    assert not item.problem
+    assert "列表字段今日 100.0%" in item.text
+    assert "卡片覆盖" in item.text
+    assert "规模待重取" in item.text
+
+
+def test_全站扫描没扫完时字段新鲜度判红(tmp_path: Path) -> None:
+    """列表字段今日占比是「这轮扫完没有」的直接证据，低于九成即不合格。
+
+    库老了但仍是 active，说明它已连续多轮没被列表扫到——那正是扫描被截断或
+    中途失败的样子，而不是「它本来就没变」。
+    """
+    store = DatasetStore(tmp_path / "data")
+    put_current(store, NOW.date() - timedelta(days=2))
+
+    item = next(f for f in diagnose(store, NOW) if f.text.startswith("字段新鲜度"))
+
+    assert item.problem
+    assert "没扫完" in item.text

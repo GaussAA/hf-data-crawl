@@ -201,6 +201,7 @@ class SizeFetcher:
         top: int = 20_000,
         retry_unavailable: bool = False,
         existing: pl.DataFrame | None = None,
+        refresh: Iterable[str] = (),
         flush: Callable[[pl.DataFrame], object] | None = None,
         flush_every: int = 5_000,
     ) -> tuple[SizeSummary, pl.DataFrame]:
@@ -213,7 +214,7 @@ class SizeFetcher:
         """
         started = time.monotonic()
         candidates = list(dataset_ids or [])[:top]
-        done = _resolved_ids(existing, retry_unavailable=retry_unavailable)
+        done = _resolved_ids(existing, retry_unavailable=retry_unavailable, refresh=refresh)
         pending = [dataset_id for dataset_id in candidates if dataset_id not in done]
         skipped = len(candidates) - len(pending)
 
@@ -244,14 +245,54 @@ class SizeFetcher:
         )
 
 
-def _resolved_ids(existing: pl.DataFrame | None, *, retry_unavailable: bool) -> set[str]:
-    """已处理过的 id。默认连不可用的一并跳过，避免每轮重烧 30% 的预算。"""
+def _resolved_ids(
+    existing: pl.DataFrame | None,
+    *,
+    retry_unavailable: bool,
+    refresh: Iterable[str] = (),
+) -> set[str]:
+    """已处理过的 id。默认连不可用的一并跳过，避免每轮重烧 30% 的预算。
+
+    `refresh` 里的 id 一律从「已处理」中剔除：规模是**内容的函数**，库一旦改动
+    （`lastModified` 越过抓取日），旧的行数就不再是事实。跳过判据只能表达
+    「问过没」，表达不了「问过之后它变了没有」——这一层必须由调用方显式提出。
+    """
     if existing is None or existing.height == 0:
         return set()
     if retry_unavailable:
         # 只重试 ok 以外的，ok 的没必要再查。
-        return set(existing.filter(pl.col("status") == "ok")["id"].to_list())
-    return set(existing["id"].to_list())
+        done = set(existing.filter(pl.col("status") == "ok")["id"].to_list())
+    else:
+        done = set(existing["id"].to_list())
+    return done - set(refresh)
+
+
+def stale_ids(current: pl.DataFrame, existing: pl.DataFrame) -> pl.DataFrame:
+    """规模已落后于内容的行：`lastModified` 晚于规模抓取日，且上次是成功的。
+
+    判据取「抓取当天」而非更细的时刻，是因为 `size.snapshot_date` 只有日期：
+    同日之内的改动可能漏判一天，下一轮仍会被发现（日期越过即成立），不会永久
+    漏掉。宁可晚一天，也不拿「看起来相等」冒充新鲜。
+
+    新库不在此列：它压根没有规模行，`join` 时自然缺席，走常规缺口补抓。
+    `unavailable` 的也不在此列：那是「上游没做 parquet 转换」，改 README 不会
+    让它变得有行数，逐日重烧只是白费预算。要重试那批，用周任务的全量趟加
+    `--retry-unavailable`，那是另一件事。
+    """
+    empty = current.head(0)
+    if current.height == 0 or existing.height == 0:
+        return empty
+    # 两张表都有 `status`：不先改名，`pl.col("status")` 取到的是底库的在架状态
+    # （active/disappeared），过滤恒不成立——判据会静默变成「永远没有陈旧」。
+    joined = current.join(
+        existing.select("id", "snapshot_date", pl.col("status").alias("size_status")),
+        on="id",
+        how="inner",
+    )
+    return joined.filter(
+        (pl.col("size_status") == "ok")
+        & (pl.col("last_modified").dt.date() > pl.col("snapshot_date"))
+    )
 
 
 #: 抓取期间的暂存目录（相对数据根）。分片只写真数据、不碰正式表，故写它不必持锁。

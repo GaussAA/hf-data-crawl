@@ -26,7 +26,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 |---|---|---|
 | `collect` | 日增量：按 `lastModified` 倒序扫到水位线 | 是 |
 | `enrich` | 按下载量取头部，补抓 `cardData`（标签、config/split 明细、行数列数） | 是 |
-| `fetch-sizes` | 经 datasets-server 补规模与列数（`num_rows` / `num_columns_max`） | 是 |
+| `fetch-sizes` | 经 datasets-server 补规模与列数（`num_rows` / `num_columns_max`）；`--changed N` 只重取内容已变的库 | 是 |
 | `fetch-files` | 按下载量取头部，经 `/tree/main` 补文件清单汇总（试点：top 1000，每库默认 1 页） | 是 |
 | `reconcile` | 全量对账：按 `createdAt` 稳定序扫全站，产出新增/删除/转私有/改名/sha 变更 | 是 |
 | `build` | 重建派生层：默认只重放近 7 天热区，`--stale` 只修派生滞后的日子及其后，`--full` 全量重放 | 否 |
@@ -45,7 +45,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 ```bash
 hf-data-crawl collect      [--date YYYY-MM-DD] [--limit 1000] [--max-pages N] [--pages-without-new 3] [--refresh-top 20000] [--cards] [--card-pages 200] [--dry-run]
 hf-data-crawl enrich       [--date YYYY-MM-DD] [--top 20000] [--limit 1000]
-hf-data-crawl fetch-sizes  [--date YYYY-MM-DD] [--top 20000] [--workers 16] [--retry-unavailable]
+hf-data-crawl fetch-sizes  [--date YYYY-MM-DD] [--top 20000] [--changed N] [--workers 16] [--retry-unavailable]
 hf-data-crawl fetch-files  [--date YYYY-MM-DD] [--top 1000] [--workers 8] [--retry-unavailable] [--timeout 30] [--max-retries 1] [--max-pages 1] [--refresh-truncated]
 hf-data-crawl reconcile    [--date YYYY-MM-DD] [--limit 1000] [--max-pages N] [--probe-limit 2000]
 hf-data-crawl build        [--stale | --full]                            # 默认只重放近 7 天
@@ -269,7 +269,7 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 - 故障恢复：[docs/operations/RECOVERY.md](docs/operations/RECOVERY.md)
 - 监控指标：[docs/operations/MONITORING.md](docs/operations/MONITORING.md)
 - **标签维度拆 16 类**：按全站 950 万条标签实测频次补齐 `modality`（12.7%）/`region`（11.7%）/`format`（8.6%）等；无前缀标签单列 `plain_tags`（13.7%，旧式 `text`/`image` 标记都在这里）。维度覆盖率 51.5% → 99.9%。`tag_values` 长表视图由映射表自动生成，新增维度不必改 SQL；白名单之外的任意前缀（`model:`、`eval:` 等长尾）走 `tag_index` 视图——它直接展开原始 `tags`，按第一个冒号切分，1,200 万行只算不存。
-- **规模数据走 datasets-server**：列表接口的 `mainSize` 是仓库字节，卡片声明的行数只覆盖少数数据集（当前覆盖率见 [docs/DATA.md](docs/DATA.md)）。`fetch-sizes` 打 `/size` 拿 `num_rows` 与 `num_columns`。实测成功率约 80%，并发 16 稳定 26 req/s，两万条约 790 秒。失败分类处理：500/401/501 记 `unavailable` 落库并默认跳过（永久缺失，重试只会白烧 30% 预算）；429/502/503 退避重试且不落库（下轮自然重试）。
+- **规模数据走 datasets-server**：列表接口的 `mainSize` 是仓库字节，卡片声明的行数只覆盖少数数据集（当前覆盖率见 [docs/DATA.md](docs/DATA.md)）。`fetch-sizes` 打 `/size` 拿 `num_rows` 与 `num_columns`。实测成功率约 80%，并发 16 稳定 26 req/s，两万条约 790 秒。失败分类处理：500/401/501 记 `unavailable` 落库并默认跳过（永久缺失，重试只会白烧 30% 预算）；429/502/503 退避重试且不落库（下轮自然重试）。**规模是内容的函数**：跳过判据只能表达「问过没」，表达不了「问过之后它变了没有」，故每日链条跑 `fetch-sizes --changed 8000`，按 `lastModified > snapshot_date` 重取那批已变的库；周日那次全量趟负责补从未问过的存量，两者分工，互不替代。
 - **宽视图由 schema 拼装**：`datasets` 的列不再手抄，由 `platform/tables.py` 的 schema 按固定顺序拼接，重名**先到先得**；需要区分口径的列改名（`size.num_rows → server_num_rows`，与卡片口径的 `card_num_rows` 并存）；`raw`（每行数 KB 的整行 JSON）与重复的 `snapshot_date` 排除在外。手抄的代价是漂移——加一个卡片字段，`card` 视图自动有，`datasets` 安静地少一列。
 - **「最新一行」有物化与视图两套实现，必须永远一致**：`current` 是物化表，`latest_silver` 是窗口视图。`current` 的带入列由两个 schema **求交**推导，不手抄；`status` / `first_seen_at` / `last_seen_at` 是本地判断，不得混进 Silver。一致性由测试守护（实测 111.7 万行、15 个公共列取值相同）。
 - **失效状态不是「删除」一种**：对账后逐条探测，404 才是删除，401 是转私有（库还在），307 是改名（跟随到 200 拿到新 id）。三者混记会让下架数虚高，也让改名后的库在下轮变成「新增」而丢掉观测史。
@@ -288,9 +288,9 @@ Get-ScheduledTask -TaskName hf-* | Get-ScheduledTaskInfo   # 核对
 uv run hf-data-crawl doctor                        # 手动体检；有问题退出码 1，并写 data\ALERT.txt
 ```
 
-**例行是一条链，不是一个钟点表**。`scripts\daily.ps1` 按序跑七步（采集 → 派生 → 对账 → 导出 → 交付 → 清理备份 → 体检），每步调一个包装脚本的等价命令；`scripts\*.ps1` 仍是可单独手动跑的入口（collect / reconcile / export / deliver / doctor / sizes / archive / compact / prune）。公共部分（定位 `uv`、代理默认值、日志、退出码）抽在 `scripts\_common.ps1`。
+**例行是一条链，不是一个钟点表**。`scripts\daily.ps1` 按序跑八步（采集 → 派生 → 对账 → 规模随变化刷新 → 导出 → 交付 → 清理备份 → 体检），每步调一个包装脚本的等价命令；`scripts\*.ps1` 仍是可单独手动跑的入口（collect / reconcile / export / deliver / doctor / sizes / archive / compact / prune）。公共部分（定位 `uv`、代理默认值、日志、退出码）抽在 `scripts\_common.ps1`。
 
-时钟只负责「什么时候开始」，**先后由脚本里的顺序保证**：采集 → `build --stale` → 对账 → 导出 → 交付 → 体检。导出与交付**依赖 `build` 成功**（派生层没跟上就发布，等于把旧值当新值交出去），前置失败即跳过并在 `-daily.log` 里写明原因；对账是独立的全站扫描，采集失败也照样跑；体检永远跑，且它的非零只记「告警」不算链条失败——告警与故障挤进同一个码，铃声很快就没人听。
+时钟只负责「什么时候开始」，**先后由脚本里的顺序保证**：采集 → `build --stale` → 对账 → `fetch-sizes --changed` → 导出 → 交付 → 体检。导出与交付**依赖 `build` 成功**（派生层没跟上就发布，等于把旧值当新值交出去），前置失败即跳过并在 `-daily.log` 里写明原因；对账是独立的全站扫描，采集失败也照样跑；体检永远跑，且它的非零只记「告警」不算链条失败——告警与故障挤进同一个码，铃声很快就没人听。
 
 这条设计来自 2026-11-09 的一次实测：机器 00:30 之后关机、19:03 开机，`-StartWhenAvailable` 把错过的五个任务**在同一分钟全部补跑**，导出抢在对账前完成，一出来就落后 2,466 行，体检随即误报并以退出码 1 收场。故补跑只留给 `hf-daily`（补的是整条链），compact / sizes / archive 是互不相干的纯周期维护，错过就等下一轮——它们补跑只会跟链抢写锁。
 

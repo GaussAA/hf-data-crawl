@@ -56,6 +56,10 @@ $steps = @(
         Arguments = @("--lock-wait", "900", "build", "--stale") },
     @{ Name = "reconcile"; Label = "全站对账"; Requires = @(); Report = $false
         Arguments = @("--lock-wait", "900", "reconcile") },
+    # 规模随内容走：只在库改动（lastModified 越过抓取日）后重取，日取几千个，
+    # 与周日那次全量轮替分工——全量补缺，这步保鲜。
+    @{ Name = "sizes"; Label = "规模随变化刷新"; Requires = @("reconcile"); Report = $false
+        Arguments = @("--lock-wait", "900", "fetch-sizes", "--changed", "8000") },
     @{ Name = "export"; Label = "导出宽表"; Requires = @("build", "reconcile"); Report = $false
         Arguments = @("--lock-wait", "900", "export-wide") },
     @{ Name = "deliver"; Label = "到期需求交付"; Requires = @("build", "reconcile"); Report = $false

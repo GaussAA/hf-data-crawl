@@ -58,6 +58,10 @@ STALENESS_ALERT_DAYS = 7
 #: 说明那条链路已经停了，而不是「它本来就慢」。
 ARTIFACT_MAX_AGE_DAYS = 7
 
+#: 列表字段每轮都该被全站扫描「见过」一次，今日占比低于此值即判不合格：
+#: 那说明这一轮扫描没扫完（被截断、失败或没跑），而不是个别库慢半拍。
+FIELD_TODAY_SHARE = 0.90
+
 #: 「活跃库」的判定窗口：日增量按 lastModified 扫到水位线，最近一天基本覆盖；
 #: 留 3 天是给漏跑与补跑留余量，而不把长尾算进卡片凭证的落后比例。
 ACTIVE_DAYS = 3
@@ -389,6 +393,64 @@ def _artifact_freshness(store: DatasetStore, today: date) -> Finding:
     if problems:
         return Finding(True, "产物新鲜度：" + "；".join(problems))
     return Finding(False, "产物新鲜度：" + "；".join(notes))
+
+
+def _field_freshness(store: DatasetStore, today: date) -> Finding:
+    """按字段类别报「新不新」，而不是笼统说「数据新鲜」。
+
+    三类字段的刷新机制不同，揉成一个指标必然误导：
+
+    - **列表字段**（标识、描述、下载量、标签…）：`reconcile` 每轮按 `createdAt`
+      把全站翻完并落 raw，故每个周期内全库都该被「见过」一次。判据就是
+      `current.last_seen_at`：今日占比低，说明那轮扫描没扫完。
+    - **卡片字段**：跟着 `lastModified` 变化集抓，覆盖率天然受上游限制——
+      2026-11-14 抽 30 个「无卡」库直问 HF，30 个上游同样没有 `cardData`，
+      故 68% 是上游分布，不是我们的缺口。真正该盯的是「有卡库的凭证是否
+      与当前 sha 一致」，那由 `_card_provenance` 负责，此处只报覆盖。
+    - **规模字段**：`fetch-sizes` 的跳过判据只能表达「问过没」，表达不了
+      「问过之后它变了没有」。`--changed` 按 `lastModified > snapshot_date`
+      重取，这里报还剩多少没跟上、最老的一批停在哪天。
+    """
+    current = state.read_current(store)
+    if current.height == 0:
+        return Finding(True, "字段新鲜度：current 为空，无法判定")
+
+    seen_today = current.filter(pl.col("last_seen_at") == today).height
+    share = seen_today / current.height
+
+    cards = store.read("carddata")
+    covered = cards["id"].n_unique() if cards.height else 0
+    sizes = store.read("size")
+    stale = 0
+    newest_size: date | None = None
+    if sizes.height:
+        newest_size = sizes.select(pl.col("snapshot_date").max()).item()
+        # 与 `fetch-sizes --changed` 同一口径：只算「上次真拿到了规模」的库。
+        # 把 unavailable 的算进来，这个数会永远清不零，人也就不再看了。
+        # 两张表都有 `status`，改名后再过滤——否则取到的是底库的在架状态，
+        # 判据恒不成立，这一项会假装永远是 0。
+        joined = current.join(
+            sizes.select("id", "snapshot_date", pl.col("status").alias("size_status")),
+            on="id",
+            how="inner",
+        )
+        stale = joined.filter(
+            (pl.col("size_status") == "ok")
+            & (pl.col("last_modified").dt.date() > pl.col("snapshot_date"))
+        ).height
+
+    text = (
+        f"字段新鲜度：列表字段今日 {share:.1%}（{seen_today}/{current.height}）"
+        f" · 卡片覆盖 {covered / current.height:.1%}（上游卡片本就不全）"
+        f" · 规模覆盖 {sizes.height / current.height:.1%}、最新 {newest_size or '无'}"
+        f" · 规模待重取 {stale} 个"
+    )
+    if share < FIELD_TODAY_SHARE:
+        return Finding(
+            True,
+            text + f"；列表字段今日占比不足 {FIELD_TODAY_SHARE:.0%}，本轮全站扫描没扫完",
+        )
+    return Finding(False, text)
 
 
 def _card_provenance(store: DatasetStore, today: date) -> Finding:
@@ -765,6 +827,7 @@ def diagnose(
         _raw_gaps(store, now.date()),
         _derive_state(store),
         _snapshot_dependent(_artifact_freshness(store, now.date())),
+        _snapshot_dependent(_field_freshness(store, now.date())),
         _snapshot_dependent(_card_provenance(store, now.date())),
         _raw_growth(store),
         _cold_backlog(store, now.date()),

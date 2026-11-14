@@ -278,6 +278,12 @@ def build_parser() -> argparse.ArgumentParser:
     sizes = subparsers.add_parser("fetch-sizes", help="经 datasets-server 补规模与列数")
     sizes.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
     sizes.add_argument("--top", type=int, default=20_000, help="按下载量取前多少名")
+    sizes.add_argument(
+        "--changed",
+        type=int,
+        default=0,
+        help="规模随内容刷新：重取 lastModified 晚于抓取日的库，最多 N 个（0 表示不做）",
+    )
     sizes.add_argument("--workers", type=int, default=16, help="并发数，实测 16 稳定在 22 req/s")
     sizes.add_argument(
         "--retry-unavailable",

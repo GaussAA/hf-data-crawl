@@ -43,6 +43,7 @@ Add new terms there first before using them.
 - Derive provenance: `pipeline/lineage.py` (per-day Raw fingerprint; staleness detection + `build --stale`)
 - Layer reconcile: `ops.doctor._layer_reconcile` (current ↔ observations ↔ silver, plus last_seen_at vs newest Raw)
 - Artifact freshness: `ops.doctor._artifact_freshness` (exports must match current id-for-id; enrich tables only report coverage)
+- Field freshness: `ops.doctor._field_freshness` answers "is a cycle enough?" per field class — list fields by `current.last_seen_at` today-share (red below 90%, meaning the full sweep did not finish), card coverage (68% is upstream: 30/30 sampled no-card datasets also have no `cardData` on HF), size coverage plus a `stale` count. Sizes track content, not just "asked once": `fetch-sizes --changed N` re-fetches rows where `lastModified > snapshot_date` and the last status was `ok`; `unavailable` rows are upstream-permanent and are retried only by the weekly full pass with `--retry-unavailable`. Beware both tables carry `status` — rename before filtering or the predicate silently matches the library status instead. See GLOSSARY #76.
 - Card provenance: `ops.doctor._card_provenance` (`carddata.source_sha` vs `current.sha`, active libs only)
 - Change-set cards: `acquire.enrich.scan_changed_cards` (same `lastModified` watermark as collect; writes `card-*`, never Bronze)
 - Single day frame: `pipeline.bronze.day_frame` (Bronze partition + card-batch supplements; shared by `silver` and `state`)

@@ -27,6 +27,7 @@ from .sizes import (
     StagingWriter,
     clear_staged,
     read_staged,
+    stale_ids,
     tail,
 )
 
@@ -204,18 +205,35 @@ def run_fetch_sizes(
         existing = pl.concat([existing, staged], how="vertical_relaxed")
 
     ordered = current.sort("downloads", descending=True, nulls_last=True)
+    # 规模是内容的函数：库改了（lastModified 越过抓取日），旧的行数就不再是事实。
+    # `--changed N` 只重取这批里的前 N 个（按下载量），不重扫全站——全量那一趟留
+    # 给周任务，这里补的是「每天都变」的那一小撮。
+    refresh: set[str] = set()
+    if args.changed > 0:
+        stale = stale_ids(current, store.read("size"))
+        picked = stale.sort("downloads", descending=True, nulls_last=True).head(args.changed)
+        refresh = set(picked["id"].to_list())
+        if not refresh:
+            print("规模无陈旧：没有内容变更晚于抓取日的库。")
+            return Outcome({"changed": 0, "refreshed": 0})
+        ordered = ordered.filter(pl.col("id").is_in(sorted(refresh)))
+        print(f"规模随变化刷新：{len(refresh)} 个库内容已变，重取其规模。")
+
     fetcher = SizeFetcher(
         api=HfSizeApi(transport=_open_transport(transport)),
         workers=args.workers,
         progress=_progress_line,
     )
     writer = StagingWriter(store, snapshot)
+    candidates = ordered["id"].to_list()
     summary, frame = fetcher.run(
         snapshot,
-        dataset_ids=ordered["id"].to_list(),
-        top=max(1, args.top),
+        dataset_ids=candidates,
+        # 指定了 refresh 集合就按这批来，`--top` 的截断不该再把它们切掉。
+        top=max(1, len(candidates) if refresh else args.top),
         retry_unavailable=args.retry_unavailable,
         existing=existing,
+        refresh=refresh,
         # 边跑边落暂存分片：中断时最多损失一个批次，但写入发生在锁外。
         flush=writer.write,
         flush_every=args.flush_every,

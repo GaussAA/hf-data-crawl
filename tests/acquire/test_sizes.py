@@ -199,6 +199,63 @@ def test_已存在的id默认跳过() -> None:
     assert frame.height == 1
 
 
+def test_指定的库即使已存在也会重取() -> None:
+    """`refresh` 是「问过之后它变了」的唯一表达方式：跳过判据只看有没有行。
+
+    规模是内容的函数。库改了而规模行还在，跳过判据会一直把它当成「已处理」，
+    于是行数永远停在改之前——这不是慢半拍，是永久错。
+    """
+    existing = pl.DataFrame(
+        {
+            "id": ["acme/ds-0"],
+            "status": ["ok"],
+            "snapshot_date": [date(2026, 11, 1)],
+        }
+    )
+    transport = FakeSizeTransport({"acme/ds-0": payload(9)})
+
+    summary, frame = run_batch(transport, ["acme/ds-0"], existing=existing, refresh={"acme/ds-0"})
+
+    assert summary.skipped == 0
+    assert transport.calls == ["acme/ds-0"]
+    assert frame.height == 1
+
+
+def test_陈旧判据只看内容晚于抓取日() -> None:
+    """同日不判陈旧：`snapshot_date` 只有日期，宁可晚一天，不拿貌似相等冒充新鲜。"""
+    from datetime import datetime
+
+    from hf_data_crawl.acquire.sizes import stale_ids
+
+    current = pl.DataFrame(
+        {
+            "id": ["acme/same", "acme/changed", "acme/new", "acme/no_size"],
+            # 底库也有 `status`（active/disappeared）。两张表同名列时，过滤若取到
+            # 这一列，判据恒不成立——夹具带它，才钉得住这个坑。
+            "status": ["active"] * 4,
+            "last_modified": [
+                datetime(2026, 11, 3, 8),
+                datetime(2026, 11, 5, 9),
+                datetime(2026, 11, 9, 9),
+                datetime(2026, 11, 6, 9),
+            ],
+        }
+    )
+    existing = pl.DataFrame(
+        {
+            "id": ["acme/same", "acme/changed", "acme/no_size"],
+            "snapshot_date": [date(2026, 11, 3), date(2026, 11, 3), date(2026, 11, 3)],
+            "status": ["ok", "ok", "unavailable"],
+        }
+    )
+
+    stale = stale_ids(current, existing)
+
+    # 新库没有规模行，本就不在这条判据里——它走常规缺口补抓；
+    # unavailable 的改了 README 也变不出行数，逐日重烧只是白费预算。
+    assert stale["id"].to_list() == ["acme/changed"]
+
+
 def test_重试开关只跳过已成功的() -> None:
     existing = pl.DataFrame(
         {
