@@ -79,6 +79,18 @@ PROBE_TIME_BUDGET = 15 * 60.0
 #: 线程池会把它们全部跑完，预算形同虚设。
 PROBE_CHUNK = 128
 
+#: 同一个库连续多少轮拿不到结论就单独报告。
+#:
+#: 单轮 `unknown` 的处置是「先别动」，且上一轮已修好「失败项不消费轮转额度、
+#: 下轮优先再探」——所以偶发限流会自己好。连续三轮仍判不出来，说明不是偶发：
+#: 状态会一直停在旧值，而单轮失败占比里它被稀释成一个小数字。故按 id 记历史，
+#: 到线就单独点名，交给人工核对上游/配额。
+#:
+#: **这里刻意不做排序降级**：把连续失败的库挪到批次末尾，等于把最需要复核的
+#: 推远，恰好退回上轮刚修掉的「先别动变成一直没看」。GLOSSARY #73 的降级对象
+#: 是「已有明确结论的非在架库」，与「判不出结论」性质不同，不可照搬。
+PROBE_DEGRADE_AFTER = 3
+
 
 def probe_cursor_path(store: DatasetStore) -> Path:
     """放在 `meta/` 而非 `state/`：它不属于任何登记表，重建清不到它。"""
@@ -117,6 +129,8 @@ class ReconcileSummary:
     probe_failed: int = 0
     #: 本轮未探测、顺延到下一轮的库数。积压量长期不降，说明限额或配额要调。
     probe_deferred: int = 0
+    #: 连续 `PROBE_DEGRADE_AFTER` 轮都拿不到结论的库数；具体 id 见差异清单。
+    probe_degraded: int = 0
 
 
 class Reconciler:
@@ -141,6 +155,9 @@ class Reconciler:
         self._probe_limit = max(1, probe_limit)
         # 0 或负数表示不设预算（测试与手动排障用），生产一律给正数。
         self._probe_budget = probe_budget
+        #: 本轮判定出的「连续失败」清单，由 `_classify_missing` 填写、`run` 读取。
+        #: 不放进返回值是为了不动那四元组的既有契约；每轮 `run` 开头重置。
+        self._probe_degraded: list[str] = []
 
     def run(
         self,
@@ -150,6 +167,7 @@ class Reconciler:
         max_pages: int | None = None,
     ) -> ReconcileSummary:
         started = time.monotonic()
+        self._probe_degraded = []
 
         # 基线在会话开始时固定：有界停止那一轮也会更新 current，续跑若再读 current，
         # 上半段的新增与 sha 变更就被当成「本来就有」而丢掉。
@@ -187,6 +205,7 @@ class Reconciler:
         renamed: list[str] = []
         probe_reactivated: list[str] = []
         probed = failed = deferred = 0
+        verdicts: dict[str, Status] = {}
         if stopped_reason == "end":
             verdicts, probed, failed, deferred = self._classify_missing(
                 diff.missing, statuses=session.status_of(diff.missing)
@@ -203,6 +222,21 @@ class Reconciler:
             state.mark_status(self._store, verdicts)
             session.close()
 
+        # `derive_day` 会把当日帧里出现的 id 一律置为 active（`_rebuild_current`）。
+        # 当日帧来自该日**所有** Raw 分块（含 collect 批次与 card 补位），并不等于
+        # 本轮全站扫描「见到」的库。于是已判为非在架、本轮既没扫到也没探出结论的
+        # 库，会被旧分块静默翻回 active，差异清单里没有任何痕迹——「先别动」被
+        # 破坏。这里按会话基线把未获结论者的状态写回：翻状态的权力只归对账判定。
+        # 基线固定在会话开始（`ReconcileSession.open`），不受 derive_day 影响。
+        unresolved = [item for item in diff.missing if item not in verdicts]
+        restore = {
+            item: value
+            for item, value in session.status_of(unresolved).items()
+            if value in INACTIVE
+        }
+        if restore:
+            state.mark_status(self._store, restore)
+
         report_path = self._write_report(
             snapshot_date,
             stopped_reason,
@@ -215,6 +249,7 @@ class Reconciler:
             probe_reactivated=probe_reactivated,
             undetectable=undetectable,
             probe=(probed, failed, deferred),
+            degraded=self._probe_degraded,
         )
 
         return ReconcileSummary(
@@ -236,6 +271,7 @@ class Reconciler:
             probe_probed=probed,
             probe_failed=failed,
             probe_deferred=deferred,
+            probe_degraded=len(self._probe_degraded),
         )
 
     def _classify_missing(
@@ -262,6 +298,7 @@ class Reconciler:
         batch, start, total = self._probe_batch(missing, statuses or {})
         verdicts: dict[str, Status] = {}
         failed = 0
+        settled = 0
         probed = 0
         deadline = time.monotonic() + self._probe_budget if self._probe_budget > 0 else None
         with ThreadPoolExecutor(max_workers=self._probe_workers) as pool:
@@ -276,11 +313,31 @@ class Reconciler:
                         failed += 1
                         continue
                     verdicts[dataset_id] = status
+                    settled += 1
                 probed += len(chunk)
-        # 游标只前进「已探到」的部分：超预算没探的仍留在队首，下一轮先探它们，
-        # 而不是被整批跳过、白等一整个轮转周期。
+        # 逐库连续失败史：成功判定即清零，判不出来的累计到 `PROBE_DEGRADE_AFTER`。
+        # 只保留仍在本轮 missing 里的 id——被列表重新扫到的库已不再是「判不出来」，
+        # 留着会让档案随全站 id 无限膨胀。排序不动：见常量处的说明。
+        still_missing = set(missing)
+        failures = {
+            key: value for key, value in self._read_probe_failures().items() if key in still_missing
+        }
+        settled_ids = set(verdicts)
+        for dataset_id in settled_ids:
+            failures.pop(dataset_id, None)
+        failed_ids = {item for item in batch[:probed] if item not in settled_ids}
+        for dataset_id in failed_ids:
+            failures[dataset_id] = min(PROBE_DEGRADE_AFTER, failures.get(dataset_id, 0) + 1)
+        self._probe_degraded = sorted(
+            key for key, value in failures.items() if value >= PROBE_DEGRADE_AFTER
+        )
+
+        # 游标只前进「成功判定」的部分：超预算没探的仍留在队首，下一轮先探它们。
+        # 探测失败（unknown）的库没有落任何状态，若也计入游标，它们要等一整个
+        # 轮转周期才再被看一次——「先别动」就成了「一直没看」。`probed` 仍表示
+        # 本轮发出的探测数，供摘要与体检使用，两者语义不混。
         if total:
-            self._write_probe_cursor((start + probed) % total)
+            self._write_probe_cursor((start + settled) % total, failures)
         return verdicts, probed, failed, len(missing) - probed
 
     def _probe_batch(
@@ -303,26 +360,52 @@ class Reconciler:
             total,
         )
 
-    def _read_probe_cursor(self) -> int:
-        """读轮转游标；档案缺失、损坏、或排序版本不符一律当 0，不因此中断对账。"""
+    def _read_probe_archive(self) -> dict[str, Any]:
+        """读轮转档案（offset / order / failures）；缺失或损坏一律当空档案。"""
         try:
             body = json.loads(probe_cursor_path(self._store).read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return 0
-        if not isinstance(body, dict) or body.get("order") != PROBE_ORDER_VERSION:
+            return {}
+        return body if isinstance(body, dict) else {}
+
+    def _read_probe_cursor(self) -> int:
+        """读轮转游标；档案缺失、损坏、或排序版本不符一律当 0，不因此中断对账。"""
+        body = self._read_probe_archive()
+        if body.get("order") != PROBE_ORDER_VERSION:
             # 没有 order 的是本字段引入前的旧档案；排序键已换，位置不可沿用。
             return 0
         value = body.get("offset")
         return value if isinstance(value, int) and value >= 0 else 0
 
-    def _write_probe_cursor(self, offset: int) -> None:
-        """写轮转游标。写不进去最多让下轮从同一处开始，不该让整轮判定作废。"""
+    def _read_probe_failures(self) -> dict[str, int]:
+        """读逐库连续失败轮数；版本不符或损坏一律当「没有历史」，不中断对账。"""
+        body = self._read_probe_archive()
+        if body.get("order") != PROBE_ORDER_VERSION:
+            return {}
+        raw = body.get("failures")
+        if not isinstance(raw, dict):
+            return {}
+        return {
+            str(key): value
+            for key, value in raw.items()
+            if isinstance(value, int) and 0 < value <= PROBE_DEGRADE_AFTER
+        }
+
+    def _write_probe_cursor(self, offset: int, failures: Mapping[str, int] | None = None) -> None:
+        """写轮转档案。写不进去最多让下轮从同一处开始，不该让整轮判定作废。"""
         path = probe_cursor_path(self._store)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             write_text(
                 path,
-                json.dumps({"offset": offset, "order": PROBE_ORDER_VERSION}, ensure_ascii=False)
+                json.dumps(
+                    {
+                        "offset": offset,
+                        "order": PROBE_ORDER_VERSION,
+                        "failures": dict(failures or {}),
+                    },
+                    ensure_ascii=False,
+                )
                 + "\n",
             )
         except OSError:
@@ -342,6 +425,7 @@ class Reconciler:
         probe_reactivated: list[str] | None = None,
         undetectable: list[str] | None = None,
         probe: tuple[int, int, int] | None = None,
+        degraded: list[str] | None = None,
     ) -> Path:
         rows: list[dict[str, Any]] = [
             {"kind": "run", "id": "", "detail": f"stopped_reason={stopped_reason}", "note": ""}
@@ -386,6 +470,15 @@ class Reconciler:
                 "note": "无法检测变更（sha为null）",
             }
             for item in undetectable or []
+        ]
+        rows += [
+            {
+                "kind": "probe_degraded",
+                "id": item,
+                "detail": f"streak={PROBE_DEGRADE_AFTER}",
+                "note": f"连续 {PROBE_DEGRADE_AFTER} 轮探测无结论，状态停在旧值；需人工核对",
+            }
+            for item in degraded or []
         ]
 
         self._report_dir.mkdir(parents=True, exist_ok=True)

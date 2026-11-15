@@ -350,3 +350,15 @@ def test_不传flush时行为不变() -> None:
     _, frame = SizeFetcher(api=api(transport), workers=2).run(DAY, dataset_ids=ids, top=3)
 
     assert frame.height == 3
+
+
+def test_top为0表示全量而不是写死行数() -> None:
+    """周任务用 `--top 0`：取 current 实际行数，底库涨了也不会漏掉长尾。"""
+    from hf_data_crawl.acquire.commands import resolve_size_top
+
+    assert resolve_size_top(0, 1_137_878, set()) == 1_137_878
+    assert resolve_size_top(20_000, 1_137_878, set()) == 20_000
+    # 指定 --changed 时这批一个都不能少，--top 不参与截断。
+    assert resolve_size_top(20_000, 8_000, {"acme/a"}) == 8_000
+    # 空候选也不能把 0 传给切片（[:0] 会得到空列表）。
+    assert resolve_size_top(0, 0, set()) == 1

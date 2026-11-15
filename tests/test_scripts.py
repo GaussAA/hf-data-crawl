@@ -146,3 +146,12 @@ def test_升级时清除旧的钟点任务() -> None:
     for legacy in ("hf-collect", "hf-reconcile", "hf-export", "hf-deliver", "hf-doctor"):
         assert f'"{legacy}"' in source, f"缺少旧任务 {legacy} 的清理"
     assert "Unregister-ScheduledTask" in source
+
+
+def test_规模补齐不写死全站行数() -> None:
+    """`--top 1122000` 会随底库增长过期，长尾永远补不到规模且不报任何错。"""
+    source = text(SCRIPTS / "sizes.ps1")
+
+    assert '"--top", "0"' in source
+    assert "1122000" not in source
+    assert "全量" in source

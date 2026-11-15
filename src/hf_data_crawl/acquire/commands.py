@@ -19,7 +19,7 @@ from .enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
 from .files import FileFetcher, FileSummary, HfFilesApi
 from .hf.api import HfDatasetApi, Transport
 from .hf.transport import HttpxTransport
-from .reconcile import Reconciler, ReconcileSummary
+from .reconcile import PROBE_DEGRADE_AFTER, Reconciler, ReconcileSummary
 from .sizes import (
     HfSizeApi,
     SizeFetcher,
@@ -178,6 +178,16 @@ def run_enrich(
     return Outcome(summary_run)
 
 
+def resolve_size_top(args_top: int, candidates: int, refresh: set[str]) -> int:
+    """把 `--top` 解析成实际的候选截断数。
+
+    `0` 表示全量：取 current 的实际行数，而不是脚本里写死一个会过期的常数——
+    底库涨到 120 万时，写死 1122000 会让长尾永远补不到规模，且没有任何报错。
+    指定 `--changed` 的刷新集合时这批一个都不能少，`--top` 不参与截断。
+    """
+    return max(1, candidates if refresh or args_top <= 0 else args_top)
+
+
 def run_fetch_sizes(
     args: argparse.Namespace,
     store: DatasetStore,
@@ -229,8 +239,7 @@ def run_fetch_sizes(
     summary, frame = fetcher.run(
         snapshot,
         dataset_ids=candidates,
-        # 指定了 refresh 集合就按这批来，`--top` 的截断不该再把它们切掉。
-        top=max(1, len(candidates) if refresh else args.top),
+        top=resolve_size_top(args.top, len(candidates), refresh),
         retry_unavailable=args.retry_unavailable,
         existing=existing,
         refresh=refresh,
@@ -359,6 +368,11 @@ def _print_reconcile(summary: ReconcileSummary) -> None:
         tail = f" · 顺延 {summary.probe_deferred}（下一轮继续）" if summary.probe_deferred else ""
         failed = f"，失败 {summary.probe_failed}" if summary.probe_failed else ""
         print(f"  探测复核 {summary.probe_probed} 个{failed}{tail}")
+    if summary.probe_degraded:
+        print(
+            f"  探测顽固失败 {summary.probe_degraded} 个（连续 {PROBE_DEGRADE_AFTER} 轮无结论，"
+            "见差异清单 probe_degraded 行）"
+        )
 
 
 def _print_enrich(summary: EnrichSummary) -> None:

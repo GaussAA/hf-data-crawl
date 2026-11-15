@@ -310,5 +310,43 @@ def test_跨日场景真实模拟() -> None:
     # 最老 21:50 严格早于基线 22:00，越过边界
     assert baseline.is_stale(page5)
 
+
+# ---------------------------------------------------------------- 时间口径
+
+
+def test_同一时刻不同精度不应被判为越界() -> None:
+    """`...:00.000Z` 与 `...:00Z` 是同一刻，字符串字典序却分得出先后。
+
+    旧实现用 min(str) 与 `<` 比 ISO 文本，`.`(46) 小于 `Z`(90)，于是同一时刻
+    会被判成「早于水位线」，扫描提前停止、昨天深夜的更新整批漏采。
+    """
+    watermark = Watermark("2026-11-06T23:50:00Z")
+
+    assert not watermark.is_stale(["2026-11-06T23:50:00.000Z"])
+    assert not watermark.is_stale(["2026-11-06T23:50:00+00:00"])
+
+
+def test_水位线推进按时间点而非字符串() -> None:
+    """带 +08:00 的旧水线（00:00 UTC）不该挡住更晚的 00:30Z。"""
+    watermark = Watermark("2026-11-07T08:00:00+08:00")
+
+    updated = watermark.update(["2026-11-07T00:30:00Z"])
+
+    assert updated.latest_modified == "2026-11-07T00:30:00Z"
+
+
+def test_同时刻不改写水位线格式() -> None:
+    """等价写法不该让持久化文件每轮抖动。"""
+    watermark = Watermark("2026-11-07T00:20:00Z")
+
+    updated = watermark.update(["2026-11-07T00:20:00.000Z"])
+
+    assert updated.latest_modified == "2026-11-07T00:20:00Z"
+
+
+def test_无时区后缀按UTC处理且不崩() -> None:
+    """naive 值与 aware 边界混用曾让 `min_time <= dt` 抛 TypeError。"""
+    assert _is_reasonable_timestamp("2026-11-07T00:20:00")
+
     # 结论：is_stale 必须始终拿“开始时的基线”比较；本轮累积的新时间戳
     # 只用于下一轮边界，不能改变本轮是否越界。

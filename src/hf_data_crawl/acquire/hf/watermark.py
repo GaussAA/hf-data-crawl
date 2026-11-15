@@ -50,52 +50,73 @@ class Watermark:
 
         页内最老的有效 lastModified 严格早于水位线，说明已经越过旧数据边界；
         整页都晚于水位线时尚未扫到旧数据，必须继续翻页。
+
+        比较走解析后的时间点，不是 ISO 字符串字典序：`...:00Z` 与
+        `...:00.000Z` 是同一刻，字典序却分得出大小；带 `+09:00` 的值更是
+        连日期都可能与前一天等价。用字符串比会静默改掉停页时机。
         """
-        if self.latest_modified is None:
-            # 首次运行，没有水位线
+        baseline = _parse_timestamp(self.latest_modified or "")
+        if baseline is None:
+            # 首次运行，或水位线损坏：继续扫描而不是永久卡住
             return False
 
-        valid_timestamps = [ts for ts in last_modified_list if ts and _is_reasonable_timestamp(ts)]
-
-        if not valid_timestamps:
+        valid = _valid_timestamps(last_modified_list)
+        if not valid:
             # 本页全是异常值，视为未越过水位线（继续扫描）
             return False
 
-        oldest_in_page = min(valid_timestamps)
-        return oldest_in_page < self.latest_modified
+        return min(item[1] for item in valid) < baseline
 
     def update(self, last_modified_list: list[str]) -> Watermark:
         """根据本页记录更新水位线，返回新水位线。"""
-        valid_timestamps = [ts for ts in last_modified_list if ts and _is_reasonable_timestamp(ts)]
-
-        if not valid_timestamps:
+        valid = _valid_timestamps(last_modified_list)
+        if not valid:
             # 本页无有效时间戳，水位线不变
             return self
 
-        page_latest = max(valid_timestamps)
-
-        if self.latest_modified is None:
+        page_latest, page_time = max(valid, key=lambda item: item[1])
+        baseline = _parse_timestamp(self.latest_modified or "")
+        if baseline is None or page_time > baseline:
+            # 写回保留原始字符串写法，不擅自改写上游格式；同一刻则不动水线。
             return Watermark(page_latest)
+        return self
 
-        # 取两者较新的
-        return Watermark(max(self.latest_modified, page_latest))
+
+def _parse_timestamp(timestamp: str) -> datetime | None:
+    """把 HF 的 lastModified 解析成 aware UTC；naive 值按 UTC 处理，坏值返回 None。
+
+    水位线文件与 API 响应的写法不总一致（`Z` / `+00:00` / 微秒 / 无后缀）。
+    统一成时间点再比较，格式差异才不会改变「哪一页该停」的判断；naive 值
+    按 UTC 处理也避免与 aware 边界相减时抛 TypeError。
+    """
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _valid_timestamps(values: list[str]) -> list[tuple[str, datetime]]:
+    """过滤异常值，给出 (原始字符串, 时间点) 对：写回时保留上游格式。"""
+    out: list[tuple[str, datetime]] = []
+    for text in values:
+        if not text or not _is_reasonable_timestamp(text):
+            continue
+        parsed = _parse_timestamp(text)
+        if parsed is not None:
+            out.append((text, parsed))
+    return out
 
 
 def _is_reasonable_timestamp(timestamp: str) -> bool:
-    """检查时间戳是否在合理范围内。
-
-    合理范围：不早于 2015-01-01（HF 成立前），不晚于当前时间 + 7 天。
-    """
-    try:
-        dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
+    """检查时间戳是否在合理范围内：2015-01-01 ~ 当前时间 + 7 天。"""
+    dt = _parse_timestamp(timestamp)
+    if dt is None:
         return False
-
     now = datetime.now(UTC)
-    min_time = datetime(2015, 1, 1, tzinfo=UTC)
-    max_time = now + timedelta(days=7)
-
-    return min_time <= dt <= max_time
+    return datetime(2015, 1, 1, tzinfo=UTC) <= dt <= now + timedelta(days=7)
 
 
 class WatermarkCheckpoint:

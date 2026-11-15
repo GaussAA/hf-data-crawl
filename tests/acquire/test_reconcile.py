@@ -533,3 +533,144 @@ def test_探测超预算就收工_剩余顺延(store: DatasetStore) -> None:
     assert summary.probe_probed == 0
     assert summary.probe_deferred == 5
     assert transport.probed == []
+
+
+# ---------------------------------------------------------------- 失败项不消费轮转额度
+
+
+def test_探测失败不消费轮转额度(store: DatasetStore) -> None:
+    """unknown 不落状态；游标按「成功判定数」前进，失败项下轮仍在队首。
+
+    旧实现按 `probed`（含失败）推进游标，于是一个 429 的库要等一整个轮转
+    周期才再被看到——「先别动」被悄悄变成了「一直没看」。
+    """
+    import json
+
+    from hf_data_crawl.acquire.reconcile import probe_cursor_path
+
+    ids = seed_many(store, 4)
+    transport = FakeCursorTransport(
+        [[]], detail={"acme/a": 429, "acme/b": 404, "acme/c": 404, "acme/d": 404}
+    )
+    probe = reconciler(transport, store, probe_limit=2)
+
+    verdicts, probed, failed, deferred = probe._classify_missing(
+        ids, statuses={item: "active" for item in ids}
+    )
+
+    assert (probed, failed, len(verdicts), deferred) == (2, 1, 1, 2)
+    cursor = json.loads(probe_cursor_path(store).read_text(encoding="utf-8"))
+    assert cursor["offset"] == 1, "失败项不能消费轮转额度"
+
+
+def test_全部判定成功时游标照常前进(store: DatasetStore) -> None:
+    """没有 unknown 时，游标仍按 probed 前进，原有轮转行为不变。"""
+    import json
+
+    from hf_data_crawl.acquire.reconcile import probe_cursor_path
+
+    ids = seed_many(store, 4)
+    transport = FakeCursorTransport([[]], detail={item: {"id": item} for item in ids})
+    probe = reconciler(transport, store, probe_limit=2)
+
+    probe._classify_missing(ids, statuses={item: "active" for item in ids})
+
+    cursor = json.loads(probe_cursor_path(store).read_text(encoding="utf-8"))
+    assert cursor["offset"] == 2
+
+
+def test_连续三轮探测失败要单独报告且不驱逐(store: DatasetStore) -> None:
+    """偶发 429 下轮会自愈；连续三轮仍无结论，必须点名且继续探（不排序降级）。"""
+    import json
+
+    from hf_data_crawl.acquire.reconcile import PROBE_DEGRADE_AFTER, probe_cursor_path
+
+    ids = seed_many(store, 3)
+    detail = {item: 429 for item in ids}
+    transports = [FakeCursorTransport([[]], detail=detail) for _ in range(PROBE_DEGRADE_AFTER)]
+    summaries = [reconciler(item, store, probe_limit=3).run(DAY2, limit=100) for item in transports]
+
+    assert [item.probe_degraded for item in summaries[:-1]] == [0] * (PROBE_DEGRADE_AFTER - 1)
+    assert summaries[-1].probe_degraded == 3
+    rows = pl.read_csv(summaries[-1].report_path)
+    assert rows.filter(pl.col("kind") == "probe_degraded").height == 3
+    failures = json.loads(probe_cursor_path(store).read_text(encoding="utf-8"))["failures"]
+    assert failures == {item: PROBE_DEGRADE_AFTER for item in ids}
+    assert set(transports[-1].probed) == set(ids), "降级不等于驱逐，仍要继续复核"
+
+
+def test_拿到结论就清零连续失败史(store: DatasetStore) -> None:
+    import json
+
+    from hf_data_crawl.acquire.reconcile import probe_cursor_path
+
+    ids = seed_many(store, 3)
+    for _ in range(2):
+        reconciler(
+            FakeCursorTransport([[]], detail={item: 429 for item in ids}),
+            store,
+            probe_limit=3,
+        ).run(DAY2, limit=100)
+    transport = FakeCursorTransport([[]], detail={item: {"id": item} for item in ids})
+
+    summary = reconciler(transport, store, probe_limit=3).run(DAY2, limit=100)
+
+    assert summary.probe_degraded == 0
+    assert json.loads(probe_cursor_path(store).read_text(encoding="utf-8"))["failures"] == {}
+
+
+def test_旧轮转档案没有失败史也不中断(store: DatasetStore) -> None:
+    import json
+
+    from hf_data_crawl.acquire.reconcile import PROBE_ORDER_VERSION, probe_cursor_path
+
+    ids = seed_many(store, 3)
+    path = probe_cursor_path(store)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"offset": 0, "order": PROBE_ORDER_VERSION}), encoding="utf-8")
+
+    summary = reconciler(
+        FakeCursorTransport([[]], detail={item: 429 for item in ids}),
+        store,
+        probe_limit=3,
+    ).run(DAY2, limit=100)
+
+    assert summary.probe_failed == 3
+    assert summary.probe_degraded == 0
+    assert json.loads(path.read_text(encoding="utf-8"))["failures"] == {item: 1 for item in ids}
+
+
+def test_本轮探测无结论时非在架状态不被派生翻回active(store: DatasetStore) -> None:
+    """当日的 card 补位会把旧库读进当日帧；没判定就不许翻状态。
+
+    `derive_day` 的 `_rebuild_current` 无条件把当日帧里的 id 置 active，而当日帧
+    来自该日所有 Raw 分块，不等于本轮全站扫描见到的库。若本轮 429 拿不到结论，
+    旧分块就会把 renamed 静默翻成 active，且差异清单里不留一行。
+    """
+    from hf_data_crawl.pipeline.raw import CARD_LABEL
+
+    state.mark_status(store, {"acme/b": "renamed"})
+    raw.write(
+        store,
+        snapshot_date=DAY2,
+        page_index=1,
+        records=[record("b", "sha-b1")],
+        meta={},
+        label=CARD_LABEL,
+    )
+    transport = FakeCursorTransport([[record("a", "sha-a2")]], detail={"acme/b": 429})
+
+    reconciler(transport, store, probe_limit=10).run(DAY2, limit=100)
+
+    assert status_of(store, "acme/b") == "renamed"
+
+
+def test_重新扫到的库仍按设计自愈为在架(store: DatasetStore) -> None:
+    """修上一条不能把「库回来了」的自愈路径一起堵死。"""
+    state.mark_status(store, {"acme/b": "renamed"})
+    transport = FakeCursorTransport([[record("a", "sha-a2"), record("b", "sha-b2")]])
+
+    summary = reconciler(transport, store, probe_limit=10).run(DAY2, limit=100)
+
+    assert status_of(store, "acme/b") == "active"
+    assert summary.reactivated >= 1

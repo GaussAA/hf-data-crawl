@@ -12,7 +12,8 @@
     配额）；429/502/503 不算失败，下轮自然重试。想重试那批永久缺失的，加
     --retry-unavailable（约再花 3 小时）。
 
-    --top 1122000 覆盖全站：现在 100% 的数据集都有记录，其中约 74% 能拿到实测行数。
+    --top 0 表示全量：命令按 current 的实际行数取，不写死一个会随底库增长而过期的
+    数字。这里覆盖全站，其中约 74% 能拿到实测行数。
 
 .EXAMPLE
     pwsh -File scripts\sizes.ps1
@@ -28,5 +29,5 @@ param(
 
 exit (Invoke-HfTask -Name "sizes" -Arguments (@(
     "--lock-wait", "900",
-    "fetch-sizes", "--top", "1122000", "--workers", "16"
+    "fetch-sizes", "--top", "0", "--workers", "16"
 ) + $Rest))
