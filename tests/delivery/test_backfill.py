@@ -247,6 +247,45 @@ def test_产物名带路径被拒(tmp_path: Path) -> None:
         load_spec(spec)
 
 
+def overrides_spec(path: Path, raw: str) -> Path:
+    """造一份只改坏 `overrides` 的完整 REQ spec。"""
+    build_book(path.parent / "in.xlsx", ["acme/ds-1"])
+    path.write_text(
+        "id: REQ-0001\ntitle: 测试\nrequester: 测试者\nkind: backfill\n"
+        "fill:\n  source:\n    path: in.xlsx\n    header_row: 2\n    key_column: URL\n"
+        f'  overrides: "{raw}"\n'
+        "  output: {name: out.xlsx}\n"
+        '  columns: {"下载量": {field: downloads}}\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_判读表绝对路径被拒(tmp_path: Path) -> None:
+    """overrides 直接决定产物取值，不能指向需求目录之外还只记一个 basename。"""
+    outside = (tmp_path.parent / "outside-ov.json").resolve().as_posix()
+
+    spec = overrides_spec(tmp_path / "spec.yaml", outside)
+
+    with pytest.raises(SpecError, match="相对需求目录"):
+        load_spec(spec)
+
+
+def test_判读表越界被拒(tmp_path: Path) -> None:
+    spec = overrides_spec(tmp_path / "spec.yaml", "../outside-ov.json")
+
+    with pytest.raises(SpecError, match="越出了需求目录"):
+        load_spec(spec)
+
+
+def test_判读表不存在被拒(tmp_path: Path) -> None:
+    """相对但不存在也要在受理期报，别等交付时才发现判读值全空。"""
+    spec = overrides_spec(tmp_path / "spec.yaml", "missing-ov.json")
+
+    with pytest.raises(SpecError, match="判读表不存在"):
+        load_spec(spec)
+
+
 def test_一列只能有一种取值方式(tmp_path: Path) -> None:
     book = build_book(tmp_path / "in.xlsx", ["acme/ds-1"])
     spec = write_spec(

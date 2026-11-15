@@ -488,6 +488,11 @@ def compile_sql(spec: Spec) -> str:
     三者都由这里决定，调用方不再拼字符串。
     """
     if spec.mode is Mode.SQL:
+        # 逃生舱：手写 SQL 不经词表、运算符白名单与默认字段契约，原样透传。
+        # 安全边界完全由 GoldCatalog._guard（单条 SELECT）与只读连接
+        # （enable_external_access=false / allowed_directories）承担；这里任何
+        # 「顺手补一道过滤」都会把边界劈成两半，两处都不再可信。
+        # 端到端契约见 tests/query/test_gold.py 的自定义 SQL 测试。
         return (spec.sql or "").strip().rstrip(";")
 
     where = "\n  AND ".join(_clause(item) for item in spec.criteria)
@@ -790,7 +795,9 @@ def spec_body(spec: Spec) -> dict[str, Any]:
                 "key_column": fill.source.key_column,
             },
             "output": fill.output_name,
-            "overrides": fill.overrides.name if fill.overrides else None,
+            # 记相对路径而非 basename：判读表放在子目录时，`judge/ov.json` 改成
+            # `ov.json` 是换了输入，而 basename 记法会让指纹与版本闸门都当没变。
+            "overrides": fill.overrides_relative,
             "overwrite": fill.overwrite,
             "lexicon": dict(fill.lexicon),
             "notes": [list(item) for item in fill.notes],

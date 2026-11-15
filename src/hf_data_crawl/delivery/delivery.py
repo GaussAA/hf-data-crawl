@@ -45,7 +45,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -198,6 +198,23 @@ def _catalog(store: DatasetStore, catalog: GoldCatalog | None) -> GoldCatalog:
         raise DeliveryBlocked(str(error)) from error
 
 
+def _pinned_inputs(request_dir: Path, spec: Spec) -> tuple[str, ...]:
+    """这次交付实际用到的中间件相对路径（目前只有回填的判读表）。
+
+    原先 `method.stamp` 写死 `overrides.json`：判读表放在子目录时档案一处都没
+    钉住（「脚本 → 判读表 → 交付」那条链断在中间且不报错），而需求目录里恰好
+    躺着一份没用上的同名文件时，又会把它记成这次交付的输入。两头都不对。
+    """
+    fill = spec.fill
+    if fill is None or not fill.overrides_relative:
+        return ()
+    if not (request_dir / fill.overrides_relative).is_file():
+        raise DeliveryBlocked(
+            f"{spec.id}: 判读表 {fill.overrides_relative} 不在了（受理时还在）；补回后重跑"
+        )
+    return (fill.overrides_relative,)
+
+
 def _method_stamp(request_dir: Path, spec: Spec) -> dict[str, Any]:
     """交付前闸门：过程记录不合规就不出货。
 
@@ -214,7 +231,7 @@ def _method_stamp(request_dir: Path, spec: Spec) -> dict[str, Any]:
         raise DeliveryBlocked(
             f"{error}\n\n补齐后重跑；骨架用 `hf-data-crawl request method sync {spec.id}` 生成。"
         ) from None
-    return method.stamp(request_dir, record)
+    return method.stamp(request_dir, record, _pinned_inputs(request_dir, spec))
 
 
 def deliver(
@@ -364,7 +381,7 @@ def _execute(ctx: RunContext) -> Payload:
 
 def _query_payload(ctx: RunContext) -> Payload:
     frame = _query(ctx.spec, ctx.catalog)
-    definition = _query_definition(ctx.spec)
+    definition = _query_definition(ctx.spec, frame.columns)
     lines = _query_lines(ctx.spec)
     if ctx.dry_run:
         return Payload(
@@ -383,8 +400,30 @@ def _query_payload(ctx: RunContext) -> Payload:
     )
 
 
-def _query_definition(spec: Spec) -> dict[str, Any]:
-    """查询形态的机器读口径。`criteria` 带定义，交出去后不必回来翻词表。"""
+def _query_definition(spec: Spec, result_columns: Sequence[str]) -> dict[str, Any]:
+    """查询形态的机器读口径。`criteria` 带定义，交出去后不必回来翻词表。
+
+    `mode: sql` 的列集由手写 SELECT 决定（`compile_sql` 原样透传，见该处注释）。
+    这里若照旧写 `source=default` 并钉上 `CONTRACT_VERSION`，档案就会声称按 31 列
+    默认契约投影、实际只有两列——下游照 projection 复原口径必然得出错误结论。
+    手写 SQL 只记真实列集，不冒充契约。
+    """
+    criteria = [
+        {
+            "metric": item.metric,
+            "field": lookup(item.metric).field,
+            "op": item.op,
+            "value": _jsonable(item.value),
+            "definition": lookup(item.metric).definition,
+        }
+        for item in spec.criteria
+    ]
+    if spec.mode is Mode.SQL:
+        return {
+            "sql": compile_sql(spec),
+            "projection": {"source": "sql", "columns": list(result_columns)},
+            "criteria": criteria,
+        }
     using_default = not spec.output.columns
     return {
         "sql": compile_sql(spec),
@@ -393,16 +432,7 @@ def _query_definition(spec: Spec) -> dict[str, Any]:
             "default_columns_version": CONTRACT_VERSION,
             "columns": list(DEFAULT_COLUMNS) if using_default else list(spec.output.columns),
         },
-        "criteria": [
-            {
-                "metric": item.metric,
-                "field": lookup(item.metric).field,
-                "op": item.op,
-                "value": _jsonable(item.value),
-                "definition": lookup(item.metric).definition,
-            }
-            for item in spec.criteria
-        ],
+        "criteria": criteria,
     }
 
 
@@ -530,7 +560,8 @@ def _fill_definition(
                 "key_column": fill.source.key_column,
             },
             "output": fill.output_name,
-            "overrides": fill.overrides.name if fill.overrides else None,
+            # 与 `input.path` 同口径：记 spec 里的相对路径，不记 basename。
+            "overrides": fill.overrides_relative,
             "overwrite": fill.overwrite,
             "stamp_note": fill.stamp_note,
             "columns": [

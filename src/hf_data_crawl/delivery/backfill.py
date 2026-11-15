@@ -155,6 +155,10 @@ class FillSpec:
     output_name: str
     columns: tuple[ColumnRule, ...]
     overrides: Path | None = None
+    #: spec 里写的相对路径（`Path` 是解析后的绝对路径，进档案就成了「这台机器专属」）。
+    #: 判读表可以放在需求目录的子目录里，只记 basename 会让 `judge/ov.json` 与
+    #: `ov.json` 在档案里长得一模一样。
+    overrides_relative: str | None = None
     overwrite: bool = False
     lexicon: dict[str, str] = field(default_factory=dict)
     notes: tuple[tuple[str, str], ...] = ()
@@ -262,7 +266,9 @@ def from_mapping(body: Any, base_dir: Path, *, origin: str = "spec") -> FillSpec
         seen.add(item.name)
 
     overrides = body.get("overrides")
-    overrides_path = None if overrides in (None, "") else (base_dir / str(overrides)).resolve()
+    overrides_path, overrides_relative = (
+        (None, None) if overrides in (None, "") else _overrides_path(overrides, base_dir, origin)
+    )
     lexicon_raw = body.get("lexicon") or {}
     lexicon = (
         {str(k): str(v) for k, v in lexicon_raw.items()} if isinstance(lexicon_raw, dict) else {}
@@ -273,6 +279,7 @@ def from_mapping(body: Any, base_dir: Path, *, origin: str = "spec") -> FillSpec
         output_name=output_name,
         columns=columns,
         overrides=overrides_path,
+        overrides_relative=overrides_relative,
         overwrite=bool(body.get("overwrite", False)),
         lexicon=lexicon,
         notes=_notes(body.get("notes"), origin),
@@ -298,6 +305,31 @@ def _notes(raw: Any, origin: str) -> tuple[tuple[str, str], ...]:
                 raise FillError(f"{origin}: notes 的条目须是单键映射或二元组")
         return tuple(out)
     raise FillError(f"{origin}: notes 须是映射或列表")
+
+
+def _overrides_path(raw: Any, base_dir: Path, origin: str) -> tuple[Path, str]:
+    """判读表也是外部输入，与 `source` 同样必须钉在需求目录内。
+
+    它直接决定产物里的人工判读值。原先只做 `base / str(raw)` 的 resolve，绝对
+    路径与 `..` 都能指向目录外，而档案只记一个 basename——三个月后没人说得清
+    这份结论基于哪一版判读表，也无法复现。读入期拒绝，别等交付后才发现。
+
+    与 `_source` 一样连「spec 里写的相对路径」一起返回：档案与口径指纹都记它，
+    解析后的绝对路径只在本机用。
+    """
+    given = Path(str(raw)).expanduser()
+    if given.is_absolute():
+        raise FillError(
+            f"{origin}: overrides 必须是相对需求目录的路径，实得 {str(given)!r}；"
+            "先把判读表放进需求目录再引用它"
+        )
+    base = base_dir.resolve()
+    target = (base / given).resolve()
+    if not target.is_relative_to(base) or target == base:
+        raise FillError(f"{origin}: overrides 越出了需求目录：{str(given)!r}")
+    if not target.is_file():
+        raise FillError(f"{origin}: 判读表不存在或不是文件：{target}")
+    return target, given.as_posix()
 
 
 def _source(raw: Any, base_dir: Path, origin: str) -> TableSource:

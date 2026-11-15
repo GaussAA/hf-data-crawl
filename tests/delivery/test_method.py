@@ -270,3 +270,19 @@ def test_换行风格不同不算脚本改过(tmp_path: Path) -> None:
 
     assert method.problems(folder) == []
     assert index_of(folder)["scripts"][0]["sha256"] == registered
+
+
+def test_stamp只钉声明过的中间件(tmp_path: Path) -> None:
+    """需求目录里躺着一份没用上的 `overrides.json`，不该被记成这次交付的输入。
+
+    写死文件名时它会被无条件钉住：档案声称「这份结果基于那份判读表」，而实际
+    一个字都没用到——比缺指纹更坏，因为它看起来有。
+    """
+    _, folder = request_dir(tmp_path)
+    build_method(folder)
+    method.sync(folder, request_id="REQ-0001", title="测试需求", kind="query")
+    (folder / "overrides.json").write_text("{}", encoding="utf-8")
+
+    stamp = method.stamp(folder, method.read(folder), ())
+
+    assert stamp["inputs"] == {}

@@ -27,9 +27,10 @@
 
 一条链：脚本 → 判读表 → 交付
 ---------------------------
-回填类需求的 `overrides.json` 是人工判读的结论，它的上游是脚本（拉 README、
-核 splits），下游是交付。所以 `stamp()` 把 `overrides.json` 的 sha256 一并钉进
-交付档案：任一份历史交付都能顺着「哪版脚本、哪版判读表、哪版代码」倒查回去。
+回填类需求的判读表（spec 里的 `fill.overrides`，可放在需求目录的子目录）是人工
+判读的结论，它的上游是脚本（拉 README、核 splits），下游是交付。所以 `stamp()`
+把它的 sha256 连同**spec 里写的相对路径**一并钉进交付档案：任一份历史交付都能
+顺着「哪版脚本、哪版判读表、哪版代码」倒查回去。
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ import hashlib
 import json
 import subprocess
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -63,6 +65,10 @@ DRAFT_MARK = "<!-- 待填："
 REQUIRED_HEADING = "## 步骤"
 
 #: 随方法一起钉住的中间件：脚本产出、交付直接吃进去的东西。
+#:
+#: 这只是**直接调用 `stamp()` 时的默认值**。交付链走的是 spec 里真正写下的
+#: 相对路径（`fill.overrides`），因为判读表可以放在需求目录的子目录里，写死
+#: 一个 `overrides.json` 既钉不住它，又可能把同名但没用上的文件记成输入。
 PINNED_INPUTS = ("overrides.json",)
 
 
@@ -306,7 +312,7 @@ def read(request_dir: Path) -> Method:
 def skeleton(request_id: str, title: str, kind: str) -> str:
     """过程记录骨架。写完必须删掉 `DRAFT_MARK` 那一行，否则交付会被拦下。"""
     extra = (
-        "回填类多一层：判读结论进 `overrides.json`，"
+        "回填类多一层：判读结论进 spec 里 `fill.overrides` 指的那份表，"
         "所以「哪些列人判、判据是什么」必须写死，否则换个人会判出另一套结果。"
         if kind == "backfill"
         else "查询类的方法通常就是口径本身；这里写清「为什么定这个口径」「试跑时看到什么」。"
@@ -513,10 +519,19 @@ def env() -> dict[str, Any]:
     }
 
 
-def stamp(request_dir: Path, method: Method) -> dict[str, Any]:
-    """写进交付档案的 `method` 段：文档、索引、逐脚本指纹、被钉住的中间件、环境。"""
+def stamp(
+    request_dir: Path,
+    method: Method,
+    pinned_inputs: Iterable[str] = PINNED_INPUTS,
+) -> dict[str, Any]:
+    """写进交付档案的 `method` 段：文档、索引、逐脚本指纹、被钉住的中间件、环境。
+
+    `pinned_inputs` 是**这次交付实际用到的**中间件相对路径（键名即相对路径，
+    如 `judge/ov.json`）。交付链由 `spec.fill.overrides` 决定，见 `PINNED_INPUTS`
+    的注释；缺文件的条目跳过，因为「本来就没有」是合法形态（多数需求没有判读表）。
+    """
     pinned: dict[str, Any] = {}
-    for name in PINNED_INPUTS:
+    for name in pinned_inputs:
         path = request_dir / name
         if path.is_file():
             pinned[name] = {"bytes": path.stat().st_size, "sha256": digest(path)}

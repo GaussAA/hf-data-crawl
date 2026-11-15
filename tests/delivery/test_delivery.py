@@ -136,6 +136,24 @@ def test_manifest记下底库指纹与校验和(store: DatasetStore, tmp_path: P
     assert body["projection"]["columns"] == list(DEFAULT_COLUMNS)
 
 
+def test_手写SQL的交付不谎称按默认契约投影(store: DatasetStore, tmp_path: Path) -> None:
+    """`mode: sql` 的列集由 SELECT 决定，projection 说 31 列默认契约就是自相矛盾。"""
+    root = tmp_path / "req"
+    make_request(
+        root,
+        mode="sql",
+        sql='SELECT "id", "downloads" FROM datasets ORDER BY "id"',
+        criteria=[],
+    )
+
+    result = deliver(store, root, "REQ-0001", now=NOW)
+
+    body = yaml.safe_load((result.directory / MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert body["projection"]["source"] == "sql"
+    assert body["projection"]["columns"] == ["id", "downloads"]
+    assert "default_columns_version" not in body["projection"]
+
+
 def test_同一底库两次交付逐字节相同(store: DatasetStore, tmp_path: Path) -> None:
     """可复现的判据。靠的是编译时那条 "id" ASC 兜底。"""
     root = tmp_path / "req"
@@ -757,3 +775,60 @@ def test_档案记下输入表头_换表后标出来但照常交付(store: Datas
     assert later["health"]["header_note"].startswith("输入表头与上一份交付不同")
     assert "数据模态" in later["health"]["header_note"]
     assert "注意：" in (second.directory / "README.md").read_text(encoding="utf-8")
+
+
+def test_判读表放在子目录时档案记相对路径并钉住(store: DatasetStore, tmp_path: Path) -> None:
+    """`overrides` 原先只记 basename，`stamp` 又只认根目录的 `overrides.json`。
+
+    判读表挪进子目录后，档案既说不清它在哪、也没有它的指纹——「脚本 → 判读表
+    → 交付」那条链断在中间，且不报任何错。
+    """
+    root = tmp_path / "req"
+    book = make_book(tmp_path / "in.xlsx", ["acme/ds-1"])
+    judge = root / "REQ-0002" / "judge"
+    judge.mkdir(parents=True)
+    (judge / "ov.json").write_text('{"acme/ds-1": {"训练阶段": "后训练"}}', encoding="utf-8")
+    make_backfill_request(
+        root,
+        book,
+        fill={
+            "source": {"path": f"input/{book.name}", "header_row": 2, "key_column": "URL"},
+            "output": {"name": "已补全.xlsx"},
+            "overrides": "judge/ov.json",
+            "columns": {
+                "下载量": {"field": "downloads"},
+                "训练阶段": {"manual": "须读 README 判定"},
+            },
+        },
+    )
+
+    result = deliver(store, root, "REQ-0002", now=NOW)
+
+    body = json.loads((result.directory / MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert body["fill"]["overrides"] == "judge/ov.json"
+    assert body["method"]["inputs"]["judge/ov.json"]["sha256"] == method.digest(judge / "ov.json")
+
+
+def test_判读表换了子目录就算换了口径(tmp_path: Path) -> None:
+    """`spec_digest` 原先只吃 basename：`judge/ov.json` 改成 `ov.json` 指纹不变。
+
+    于是版本闸门会放行「输入换了却复用 v1」——那正是它存在要拦的东西。
+    """
+    book = make_book(tmp_path / "in.xlsx", ["acme/ds-1"])
+    base = {
+        "source": {"path": f"input/{book.name}", "header_row": 2, "key_column": "URL"},
+        "output": {"name": "已补全.xlsx"},
+        "columns": {"下载量": {"field": "downloads"}},
+    }
+    # 两份需求各放一个根目录：判读表存在与否在 `load` 时才校验，先建 spec 再补文件。
+    root_level = make_backfill_request(
+        tmp_path / "flat", book, fill={**base, "overrides": "ov.json"}
+    )
+    in_subdir = make_backfill_request(
+        tmp_path / "nested", book, fill={**base, "overrides": "judge/ov.json"}
+    )
+    (root_level.parent / "ov.json").write_text("{}", encoding="utf-8")
+    (in_subdir.parent / "judge").mkdir()
+    (in_subdir.parent / "judge" / "ov.json").write_text("{}", encoding="utf-8")
+
+    assert spec_digest(root_level) != spec_digest(in_subdir)
