@@ -191,3 +191,17 @@ def test_流水小锁不与主数据锁相争(tmp_path: Path) -> None:
         health.record(store, entries("甲"), NOW)
 
     assert len(health.read(store)) == 1
+
+
+def test_连续天数按自然日不按体检次数(tmp_path: Path) -> None:
+    """同一天跑三次体检，只算一天。
+
+    流水是一行一次 `doctor`，而 `doctor` 一天可能跑好几次：改完代码验一次、
+    排障再跑一次。按次数数会把「红了一天」说成「红了三天」，而那个数是用来
+    催人动手的，虚高比不报更坏。
+    """
+    store = DatasetStore(tmp_path / "data")
+    for hours in (0, 2, 5):
+        health.record(store, entries("Raw 断日"), NOW + timedelta(hours=hours))
+
+    assert health.streak(store, "raw_gaps") == 1

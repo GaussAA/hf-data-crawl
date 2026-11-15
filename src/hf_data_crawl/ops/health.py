@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 
 from ..platform.atomic import write_text
@@ -142,19 +142,39 @@ def record(
 
 
 def streak(store: DatasetStore, code: str) -> int:
-    """某个检查项连续红了几轮（从最近一次往回数）。
+    """某个检查项连续几**天**是红的（从最近一次往回数）。
 
     按 `code` 数，不按文案子串。原先的写法是 `any(keyword in text for text in
-    item.problems)`——文案里混进日期或数字就匹配不上（`"Raw 断日：2026-11-06 …"`
-    改一个字就断），而它断得**不报错**，只是从此永远返回 0。按检查项标识计数，
-    文案怎么改都不影响；`code` 与检查项一一对应，那才是「同一件事」的稳定身份。
+    item.problems)`——文案里混进日期或数字就匹配不上，而它断得**不报错**，只是
+    从此永远返回 0。按检查项标识计数，文案怎么改都不影响。
 
-    给不出结论时返回 0，而不是猜。没有 `codes` 的旧记录不参与计数。
+    按**自然日**去重，不按体检次数：流水是一行一次 `doctor`，而 `doctor` 一天可能
+    跑好几次（改完代码验一次、排障再跑一次）。按次数数会得出「连续 6 轮」，读起来
+    像红了六天——2026-11-15 当天就跑了六次，差点把这句话写进告警。
     """
-    count = 0
+    days = 0
+    last_day: date | None = None
     for item in reversed(read(store)):
-        if code in item.codes:
-            count += 1
-        else:
+        if code not in item.codes:
             break
-    return count
+        day = item.at.date()
+        if day != last_day:
+            days += 1
+            last_day = day
+    return days
+
+
+def red_days(store: DatasetStore, code: str, now: datetime) -> int:
+    """把「本次」也算进去的连续天数。
+
+    `streak` 数的是流水里已有的记录；本次体检还没写进流水，所以：
+
+    - 今天已经红过一次 → `streak` 已含今天，不重复加；
+    - 今天是第一次红 → 本次是新的一天，加一。
+
+    分开算而不是让 `streak` 猜，是因为「今天到底算不算新的一天」取决于本次这条
+    结论还没落盘这个事实——那是调用方知道的，不是流水能推出来的。
+    """
+    today = now.date()
+    already = any(record.at.date() == today and code in record.codes for record in read(store))
+    return streak(store, code) + (0 if already else 1)

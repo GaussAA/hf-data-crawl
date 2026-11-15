@@ -1071,8 +1071,8 @@ def test_每条体检结论都带检查项标识(tmp_path: Path) -> None:
     assert {"collect_freshness", "field_freshness", "raw_gaps", "storage"} <= set(codes)
 
 
-def test_告警标注连续轮数(tmp_path: Path) -> None:
-    """「已经红到第几轮」是决定要不要现在动手的依据，得写进告警。
+def test_告警标注连续天数(tmp_path: Path) -> None:
+    """「已经红到第几天」是决定要不要现在动手的依据，得写进告警。
 
     按 `code` 数而不是按文案子串：上一轮写「Raw 断日：11-05」、这一轮写
     「Raw 断日：11-06」，子串匹配会得出「换了件事」，按 code 才知道是同一项。
@@ -1089,4 +1089,30 @@ def test_告警标注连续轮数(tmp_path: Path) -> None:
     )
 
     body = (store.root / ALERT_NAME).read_text(encoding="utf-8")
-    assert "连续 2 轮" in body
+    assert "已连续 2 天" in body
+
+
+def test_同一天多次体检只算一天(tmp_path: Path) -> None:
+    """一天跑三次 `doctor` 不等于红了三天。
+
+    2026-11-15 当日为验改动跑了六次体检。若按次数数，告警会写「连续 6 轮」，
+    读起来像红了六天——那个数会比实际严重五倍，而它是用来催人动手的。
+    """
+    from hf_data_crawl.ops import health
+
+    store = DatasetStore(tmp_path / "data")
+    for hours in (0, 3, 6):
+        health.record(
+            store,
+            [Finding(True, "Raw 断日：2026-11-05", code="raw_gaps")],
+            NOW + timedelta(hours=hours),
+        )
+
+    sync_alert(
+        store,
+        [Finding(True, "Raw 断日：2026-11-05", code="raw_gaps")],
+        NOW + timedelta(hours=9),
+    )
+
+    body = (store.root / ALERT_NAME).read_text(encoding="utf-8")
+    assert "已连续" not in body

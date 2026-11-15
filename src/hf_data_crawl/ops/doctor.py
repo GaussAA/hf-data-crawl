@@ -36,7 +36,7 @@ from ..platform.store import DatasetStore
 from ..platform.tables import table
 from .finding import Finding
 from .finding import coded as _coded
-from .health import streak
+from .health import red_days
 
 ALERT_NAME = "ALERT.txt"
 
@@ -1087,10 +1087,11 @@ def sync_alert(
         lines.append("[非快照] 写锁被占用，跨表读数可能跨时点；请在写命令结束后重跑 doctor")
     lines += [f"hf-data-crawl 体检发现 {len(problems)} 个问题（{now:%Y-%m-%d %H:%M}）：", ""]
     for item in problems:
-        # 连续轮数按 `code` 数，不按文案子串：文案改一个字匹配就断，而「这条已经红到
-        # 第几轮」恰恰是决定要不要现在动手的依据。第一次红不标，免得每条都带个尾巴。
-        rounds = streak(store, item.code) if item.code else 0
-        lines.append(f"- {item.text}" + (f"（连续 {rounds + 1} 轮）" if rounds else ""))
+        # 连续天数按 `code` 数，且按自然日去重：`doctor` 一天可能跑好几次（改完验一次、
+        # 排障再跑一次），按次数数会得出「连续 6 轮」——读起来像红了六天。首次红不标，
+        # 免得每条都带个尾巴。
+        days = red_days(store, item.code, now) if item.code else 0
+        lines.append(f"- {item.text}" + (f"（已连续 {days} 天）" if days > 1 else ""))
     # 走原子写：两个 doctor 并发时 `path.write_text` 会先截断再写，读者可能
     # 看到半截告警。这里是全项目最后一个绕过 `platform.atomic` 的写点。
     write_text(path, "\n".join(lines) + "\n")
