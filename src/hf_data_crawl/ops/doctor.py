@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -86,6 +86,57 @@ CARD_BEHIND_ALERT_SHARE = 20.0
 _RECONCILE_DONE = frozenset({"end"})
 
 
+@dataclass(frozen=True)
+class RunContext:
+    """一次体检看到的世界：读一次，各处共用。
+
+    21 项检查原先各收自己要的那几样——`(store, today)`、`(runs, now)`、或者只有
+    `(requests_root)`——于是两个再简单不过的问题都答不上来：「这次体检读了哪些表」
+    要翻五个函数体，「陈旧按哪一刻算的」要在 `diagnose` 的 18 行里逐行核对。
+
+    读数只做一次。`current` 112 万行，读一次 0.08 秒，重复四次也才 0.3 秒——
+    所以这不是性能优化，是让「体检看了什么」有唯一答案。真正的收益在读代码的人：
+    一个值里看全，而不是跟着 21 个签名各猜一遍。
+
+    这不是「把参数打包」，而是**把共享输入收成一处**：谁需要什么、以哪个时刻为准，
+    从此写在这个类型上，而不是散在 21 个签名里。新增一项检查只写判定，取数不必
+    重来一遍。
+    """
+
+    store: DatasetStore
+    #: 判定用的时刻。时序类判据（几小时没跑、几天没动）一律取它。
+    now: datetime
+    runs: list[dict]
+    #: 底库全表。为空时各检查自己判「无法比对」，这里不做统一裁决。
+    current: pl.DataFrame
+    current_ids: frozenset[str]
+    #: 需求目录在数据目录之外，由调用方显式传入；没传就如实说没查。
+    requests_root: Path | None = None
+
+    @property
+    def today(self) -> date:
+        """日历日。**只给**「某张表最老停在哪天」这类判据用。
+
+        「新鲜不新鲜」不能用它：链条每天 03:10 才跑，零点到那时之间拿今天当尺子
+        必然全红（2026-11-15 01:40 实测踩过这个坑）。那种判据一律以「最近一次
+        成功对账的快照日」为基准，见 `_last_sweep_date`。
+        """
+        return self.now.date()
+
+
+def _context(store: DatasetStore, now: datetime, requests_root: Path | None) -> RunContext:
+    """把一次体检要用的东西读齐。所有读表都在这里发生，检查函数不再自己读。"""
+    current = state.read_current(store)
+    return RunContext(
+        store=store,
+        now=now,
+        runs=read_runs(store),
+        current=current,
+        current_ids=frozenset(current["id"].to_list()) if current.height else frozenset(),
+        requests_root=requests_root,
+    )
+
+
 def _run_time(value: object) -> datetime | None:
     """把 runs/ 里的时间戳统一成 naive UTC；坏值、空值返回 None。
 
@@ -141,7 +192,7 @@ def _freshness(
     return Finding(False, f"{label}：正常（{hours:.0f} 小时前，{last:%m-%d %H:%M}）")
 
 
-def _catalog_staleness(store: DatasetStore, today: date) -> Finding:
+def _catalog_staleness(ctx: RunContext) -> Finding:
     """底库有多旧：按 `last_seen_at` 算行龄。
 
     为什么不能只看「全量对账几天前跑成功过」：那条只说明任务跑没跑，不说明库里
@@ -150,7 +201,8 @@ def _catalog_staleness(store: DatasetStore, today: date) -> Finding:
     对账刷新；对账连着几天没成时，运行记录仍可能是「成功」，而底库已经在拿几天
     前的值充数。这里直接量行龄，不猜。
     """
-    frame = state.read_current(store)
+    today = ctx.today
+    frame = ctx.current
     if frame.height == 0:
         return Finding(True, "底库新鲜度：current 为空")
 
@@ -188,7 +240,8 @@ KNOWN_RAW_GAPS: dict[date, str] = {
 }
 
 
-def _raw_gaps(store: DatasetStore, today: date) -> Finding:
+def _raw_gaps(ctx: RunContext) -> Finding:
+    store, today = ctx.store, ctx.today
     # 冷区分区已被 compact 移出 data/raw，但那天确实采过：
     # 部分压缩后残留的早分区会把窗口拉长，已压缩的日子不登记就被误判成断日。
     dates = {day.snapshot_date for day in raw.observed_days(store)}
@@ -214,7 +267,7 @@ def _raw_gaps(store: DatasetStore, today: date) -> Finding:
     return Finding(False, f"Raw：近 {GAP_WINDOW_DAYS} 天没有断日")
 
 
-def _derive_state(store: DatasetStore) -> Finding:
+def _derive_state(ctx: RunContext) -> Finding:
     """派生层有没有跟上 Raw。
 
     这是全项目唯一直接回答「派生表是不是旧值」的检查。此前只能靠人回忆
@@ -225,6 +278,7 @@ def _derive_state(store: DatasetStore) -> Finding:
     判据取 `lineage` 的戳记：Raw 指纹变了而戳记没变，就是落后。没有戳记
     按「无凭证」报——它与落后在执行上是同一件事：都得跑一次派生才有据可查。
     """
+    store = ctx.store
     statuses = lineage.compare(store, [day.snapshot_date for day in raw.replayable_days(store)])
     if not statuses:
         return Finding(False, "派生凭证：没有可重放的 Raw 日期")
@@ -269,7 +323,7 @@ def _ids(store: DatasetStore, name: str) -> set[str] | None:
     return set(frame.get_column("id").to_list())
 
 
-def _layer_reconcile(store: DatasetStore) -> Finding:
+def _layer_reconcile(ctx: RunContext) -> Finding:
     """层间勾稽：同一批数据集在 current / observations / silver 里是否对得上。
 
     这三张表回答的是同一件事的不同面——当前态、指标史、属性史。任一侧多出
@@ -280,11 +334,11 @@ def _layer_reconcile(store: DatasetStore) -> Finding:
     说明有 Raw 采进来了却没有任何一行进入当前态——典型成因是派生没跑，
     或跑的是别的日期。
     """
-    current = state.read_current(store)
+    store, current = ctx.store, ctx.current
     if current.height == 0:
         return Finding(True, "层间勾稽：current 为空，无法比对")
 
-    current_ids = set(current["id"].to_list())
+    current_ids = set(ctx.current_ids)
     problems: list[str] = []
     notes: list[str] = []
 
@@ -364,7 +418,7 @@ def _share_text(ratio: float) -> str:
     return f"{percent:.1f}%" if percent < 10 else f"{percent:.0f}%"
 
 
-def _artifact_freshness(store: DatasetStore, today: date) -> Finding:
+def _artifact_freshness(ctx: RunContext) -> Finding:
     """富化表与导出物有没有跟上底库。
 
     为什么单独查：这些文件**都不跟着派生自动更新**。导出物只在跑 `export-wide`
@@ -380,10 +434,11 @@ def _artifact_freshness(store: DatasetStore, today: date) -> Finding:
     - **富化表只报覆盖与最新日期，不因覆盖不全告警**。长尾本来就没补过（按下载量
       取头部是设计），但「整张表超过 `ARTIFACT_MAX_AGE_DAYS` 没动过」是真停了。
     """
-    current = state.read_current(store)
+    store, today = ctx.store, ctx.today
+    current = ctx.current
     if current.height == 0:
         return Finding(True, "产物新鲜度：current 为空，无法比对")
-    current_ids = set(current["id"].to_list())
+    current_ids = set(ctx.current_ids)
     problems: list[str] = []
     notes: list[str] = []
 
@@ -472,7 +527,7 @@ def _last_sweep_date(runs: list[dict]) -> date | None:
     return None
 
 
-def _field_freshness(store: DatasetStore, runs: list[dict]) -> Finding:
+def _field_freshness(ctx: RunContext) -> Finding:
     """按字段类别报「新不新」，而不是笼统说「数据新鲜」。
 
     三类字段的刷新机制不同，揉成一个指标必然误导：
@@ -491,7 +546,8 @@ def _field_freshness(store: DatasetStore, runs: list[dict]) -> Finding:
       「问过之后它变了没有」。`--changed` 按 `lastModified > snapshot_date`
       重取，这里报还剩多少没跟上、最老的一批停在哪天。
     """
-    current = state.read_current(store)
+    store, runs = ctx.store, ctx.runs
+    current = ctx.current
     if current.height == 0:
         return Finding(True, "字段新鲜度：current 为空，无法判定")
 
@@ -501,7 +557,7 @@ def _field_freshness(store: DatasetStore, runs: list[dict]) -> Finding:
     seen = current.filter(pl.col("last_seen_at") >= sweep).height
     share = seen / current.height
 
-    current_ids = set(current["id"].to_list())
+    current_ids = set(ctx.current_ids)
     total = len(current_ids)
 
     cards = store.read("carddata")
@@ -530,7 +586,7 @@ def _field_freshness(store: DatasetStore, runs: list[dict]) -> Finding:
     return Finding(False, text)
 
 
-def _card_provenance(store: DatasetStore, today: date) -> Finding:
+def _card_provenance(ctx: RunContext) -> Finding:
     """卡片落后于仓库多少：拿 `carddata.source_sha` 对 `current.sha`。
 
     为什么要有这一项：卡片是「仓库里 README 的渲染结果」，仓库一变它就旧了。
@@ -544,6 +600,7 @@ def _card_provenance(store: DatasetStore, today: date) -> Finding:
     历史行 `source_sha` 为空（加列之前抓的），单独计数、不计入落后比例：空值是
     「没记账」，不是「记错了」，混在一起会把补记和漏抓说成同一件事。
     """
+    store, today = ctx.store, ctx.today
     pattern = f"{store.root.as_posix()}/{table('carddata').glob()}"
     # 旧表没有 source_sha 列（加列之前抓的），直接按两列 select 会整表读不出来，
     # 那会被误读成「没有卡片」。先看列名，缺了就补一列空值——空值是「没记账」。
@@ -558,8 +615,9 @@ def _card_provenance(store: DatasetStore, today: date) -> Finding:
     if "source_sha" not in card_frame.columns:
         card_frame = card_frame.with_columns(pl.lit(None, dtype=pl.Utf8).alias("source_sha"))
 
-    current = _scan_frame(store.path("current").as_posix(), ["id", "sha", "last_seen_at"])
-    if current is None or current.height == 0:
+    # 从上下文里取，不重读：同一份 current 在一次体检里只该读一遍。
+    current = ctx.current.select("id", "sha", "last_seen_at")
+    if current.height == 0:
         return Finding(True, "卡片凭证：current 读取失败，无法对照")
 
     active = current.filter(
@@ -594,8 +652,9 @@ def _card_provenance(store: DatasetStore, today: date) -> Finding:
     )
 
 
-def _raw_growth(store: DatasetStore) -> Finding:
+def _raw_growth(ctx: RunContext) -> Finding:
     """盯住 Raw 规模：compact 压跨天重复，热区仍会逐日增长，靠阈值兜底。"""
+    store = ctx.store
     files = (
         [path for path in store.raw_dir.rglob("*.json.gz") if path.is_file()]
         if store.raw_dir.exists()
@@ -612,8 +671,9 @@ def _raw_growth(store: DatasetStore) -> Finding:
     return Finding(False, f"Raw 规模：{len(files)} 个文件 / {total / 1024**2:.0f} MB（阈值内）")
 
 
-def _cold_backlog(store: DatasetStore, today: date) -> Finding:
+def _cold_backlog(ctx: RunContext) -> Finding:
     """超过重放窗口仍留在 data/raw 的分区：compact 没跟上，冷区未压缩。"""
+    store, today = ctx.store, ctx.today
     cutoff = today - timedelta(days=REPLAY_WINDOW_DAYS)
     pending = [
         day.snapshot_date for day in raw.replayable_days(store) if day.snapshot_date < cutoff
@@ -629,8 +689,9 @@ def _cold_backlog(store: DatasetStore, today: date) -> Finding:
     return Finding(False, f"Raw 冷区：{REPLAY_WINDOW_DAYS} 天前的分区均已压缩或不在主目录")
 
 
-def _archive_backlog(store: DatasetStore, today: date) -> Finding:
+def _archive_backlog(ctx: RunContext) -> Finding:
     """超过保留窗口仍是原始分块：写入序未冻结、同天重复未压缩。"""
+    store, today = ctx.store, ctx.today
     cutoff = today - timedelta(days=ARCHIVE_AFTER_DAYS)
     pending = [
         day.snapshot_date
@@ -648,7 +709,7 @@ def _archive_backlog(store: DatasetStore, today: date) -> Finding:
     return Finding(False, f"Raw 归档：{ARCHIVE_AFTER_DAYS} 天前的分区均已归档")
 
 
-def _storage(store: DatasetStore) -> Finding:
+def _storage(ctx: RunContext) -> Finding:
     """存储总账：谁在长，一眼看见。
 
     只报数、不判断——阈值判断交给各自那一项（备份积压、冷区积压、归档积压）。
@@ -656,6 +717,7 @@ def _storage(store: DatasetStore) -> Finding:
     raw 是热区（7 天窗口）、cold 是去重后的基线（体量恒定）、backup 是待销毁的
     副本（应当有界）、reports 是诊断产物。
     """
+    store = ctx.store
     from .prune import total_size
 
     def tree(path: Path) -> int:
@@ -677,12 +739,13 @@ def _storage(store: DatasetStore) -> Finding:
     )
 
 
-def _backup_backlog(store: DatasetStore, now: datetime) -> Finding:
+def _backup_backlog(ctx: RunContext) -> Finding:
     """archive / compact 只移不删；销毁归 `prune`，这里只盯它有没有跟上。
 
     判龄与清理共用 `prune.plan()`：若这里按 mtime、那边按目录名，两边会各说各话
     ——体检报「已清理」而实际没删，或反之。同一条规则只能有一处实现。
     """
+    store, now = ctx.store, ctx.now
     from .prune import plan as plan_prune
 
     targets = plan_prune(store, now=now)
@@ -699,13 +762,14 @@ def _backup_backlog(store: DatasetStore, now: datetime) -> Finding:
     )
 
 
-def _status_snapshot(store: DatasetStore) -> Finding:
+def _status_snapshot(ctx: RunContext) -> Finding:
     """状态留存快照：存在即异常，损坏会让非在架状态静默失去凭证。
 
     `doctor` 只读，不做自动修复（Q10 原议的 `--fix-snapshot`）：坏文件是重建
     被打断的唯一现场证据，删掉等于销毁证据，也修不回已经清空的 state。这里
     只把「静默回退」变成可见告警，并给出分情况的处置指引。
     """
+    store = ctx.store
     health = snapshot_health(store)
     path = snapshot_path(store).as_posix()
     if health.kind == "absent":
@@ -738,13 +802,14 @@ def _latest_probe_payload(runs: list[dict]) -> dict | None:
     return latest
 
 
-def _probe_quality(runs: list[dict]) -> Finding:
+def _probe_quality(ctx: RunContext) -> Finding:
     """最近一轮对账的探测质量。
 
     探测失败落成 `unknown`，处置是「先别动」——不报错，只是状态原地不动。配额紧
     的时候，一批早已下架的库会长期挂着 `active`，而界面上看不出任何异常。这条把
     它变成可数的结论：探了多少、失败多少、还有多少顺延。
     """
+    runs = ctx.runs
     latest = _latest_probe_payload(runs)
     if latest is None:
         return Finding(False, "探测复核：尚无带计数的对账记录（升级后首轮才有）")
@@ -766,13 +831,14 @@ def _probe_quality(runs: list[dict]) -> Finding:
     return Finding(False, f"探测复核：本轮探 {probed:,} 个、失败 {failed:,}{tail}")
 
 
-def _probe_degraded(runs: list[dict]) -> Finding:
+def _probe_degraded(ctx: RunContext) -> Finding:
     """连续多轮判不出来的库要单独点名，不能混在单轮失败占比里被稀释。
 
     单轮失败可能只是限流，下轮优先再探就会好；连续 `PROBE_DEGRADE_AFTER` 轮
     仍无结论，说明该库的状态已长期停在旧值，需要人去核对上游或配额。与
     `_probe_quality` 分开报，是为了让「成片失败」与「个别顽固」各自可见。
     """
+    runs = ctx.runs
     latest = _latest_probe_payload(runs)
     if latest is None:
         return Finding(False, "探测顽固失败：尚无带计数的对账记录")
@@ -787,7 +853,8 @@ def _probe_degraded(runs: list[dict]) -> Finding:
     )
 
 
-def _stale_temp_files(store: DatasetStore, now: datetime) -> Finding:
+def _stale_temp_files(ctx: RunContext) -> Finding:
+    store, now = ctx.store, ctx.now
     stale = [
         path
         for path in store.root.rglob("*.tmp")
@@ -805,12 +872,13 @@ def _failure_reason(item: dict) -> str:
     return str(item.get("reason") or fallback or "未记录原因")
 
 
-def _recent_failures(runs: list[dict], now: datetime) -> Finding:
+def _recent_failures(ctx: RunContext) -> Finding:
     """近 7 天里**尚未被后来的成功运行覆盖**的失败。
 
     同一命令失败后又成功了（例如对账断网后重跑），问题已经解决，再报只会让
     告警文件长期有效而失去信号价值。
     """
+    runs, now = ctx.runs, ctx.now
     reference = _run_time(now) or datetime.now()
     last_success: dict[str, datetime] = {}
     for item in runs:
@@ -846,7 +914,8 @@ def _recent_failures(runs: list[dict], now: datetime) -> Finding:
     return Finding(False, "近 7 天没有未恢复的失败运行")
 
 
-def _lock_state(store: DatasetStore) -> Finding:
+def _lock_state(ctx: RunContext) -> Finding:
+    store = ctx.store
     if not (store.root / LOCK_NAME).exists():
         return Finding(False, "写锁：空闲")
     try:
@@ -862,7 +931,7 @@ def _snapshot_dependent(finding: Finding) -> Finding:
     return Finding(finding.problem, finding.text, snapshot_dependent=True)
 
 
-def _request_self_contained(requests_root: Path | None) -> Finding:
+def _request_self_contained(ctx: RunContext) -> Finding:
     """已交付的需求，方法是否也留在了目录里。
 
     只判**交付过**的需求：还没交过的，方法正在写，天天报红只会训练人忽略告警；
@@ -871,6 +940,7 @@ def _request_self_contained(requests_root: Path | None) -> Finding:
     需求目录不在数据目录里，所以这项由调用方显式传进来；没传就如实说没查，
     不能一声不响地跳过（沉默会被当成「查过且通过」）。
     """
+    requests_root = ctx.requests_root
     if requests_root is None:
         return Finding(False, "需求自包含：未指定需求目录，本次未检查")
     if not requests_root.is_dir():
@@ -895,12 +965,13 @@ def _request_self_contained(requests_root: Path | None) -> Finding:
     return Finding(False, f"需求自包含：{checked} 份已交付需求的方法与脚本索引一致")
 
 
-def _spec_version_consistency(requests_root: Path | None) -> Finding:
+def _spec_version_consistency(ctx: RunContext) -> Finding:
     """口径改了却没升版本：档案会指着一份「当时说过、现在已经不是」的定义。
 
     这类错不会报错，只会让人拿着错的前提核对三个月，所以单列一项盯着。
     只判已交付的：没交过的需求，`history/` 里还没有「用过的那一版」，无所谓复用。
     """
+    requests_root = ctx.requests_root
     if requests_root is None:
         return Finding(False, "口径版本：未指定需求目录，本次未检查")
     if not requests_root.is_dir():
@@ -948,41 +1019,48 @@ def diagnose(
     自己和自己冲突。锁被占用只可能发生在非快照模式，那里才需要报告占用者。
     """
     now = now or datetime.now()
-    runs = read_runs(store)
+    ctx = _context(store, now, requests_root)
     findings = [
         _coded(
             "collect_freshness",
             _freshness(
-                runs, now, "collect", COLLECT_COMPLETE_REASONS, COLLECT_MAX_AGE, "日增量采集"
+                ctx.runs,
+                ctx.now,
+                "collect",
+                COLLECT_COMPLETE_REASONS,
+                COLLECT_MAX_AGE,
+                "日增量采集",
             ),
         ),
         _coded(
             "reconcile_freshness",
-            _freshness(runs, now, "reconcile", _RECONCILE_DONE, RECONCILE_MAX_AGE, "全量对账"),
+            _freshness(
+                ctx.runs, ctx.now, "reconcile", _RECONCILE_DONE, RECONCILE_MAX_AGE, "全量对账"
+            ),
         ),
-        _coded("catalog_staleness", _catalog_staleness(store, now.date())),
-        _coded("layer_reconcile", _snapshot_dependent(_layer_reconcile(store))),
-        _coded("raw_gaps", _raw_gaps(store, now.date())),
-        _coded("derive_state", _derive_state(store)),
-        _coded("status_snapshot", _status_snapshot(store)),
-        _coded("artifact_freshness", _snapshot_dependent(_artifact_freshness(store, now.date()))),
-        _coded("field_freshness", _snapshot_dependent(_field_freshness(store, runs))),
-        _coded("card_provenance", _snapshot_dependent(_card_provenance(store, now.date()))),
-        _coded("raw_growth", _raw_growth(store)),
-        _coded("cold_backlog", _cold_backlog(store, now.date())),
-        _coded("archive_backlog", _archive_backlog(store, now.date())),
-        _coded("storage", _storage(store)),
-        _coded("backup_backlog", _backup_backlog(store, now)),
-        _coded("probe_quality", _probe_quality(runs)),
-        _coded("probe_degraded", _probe_degraded(runs)),
-        _coded("recent_failures", _recent_failures(runs, now)),
-        _coded("temp_files", _stale_temp_files(store, now)),
-        _coded("request_self_contained", _request_self_contained(requests_root)),
-        _coded("spec_version", _spec_version_consistency(requests_root)),
+        _coded("catalog_staleness", _catalog_staleness(ctx)),
+        _coded("layer_reconcile", _snapshot_dependent(_layer_reconcile(ctx))),
+        _coded("raw_gaps", _raw_gaps(ctx)),
+        _coded("derive_state", _derive_state(ctx)),
+        _coded("status_snapshot", _status_snapshot(ctx)),
+        _coded("artifact_freshness", _snapshot_dependent(_artifact_freshness(ctx))),
+        _coded("field_freshness", _snapshot_dependent(_field_freshness(ctx))),
+        _coded("card_provenance", _snapshot_dependent(_card_provenance(ctx))),
+        _coded("raw_growth", _raw_growth(ctx)),
+        _coded("cold_backlog", _cold_backlog(ctx)),
+        _coded("archive_backlog", _archive_backlog(ctx)),
+        _coded("storage", _storage(ctx)),
+        _coded("backup_backlog", _backup_backlog(ctx)),
+        _coded("probe_quality", _probe_quality(ctx)),
+        _coded("probe_degraded", _probe_degraded(ctx)),
+        _coded("recent_failures", _recent_failures(ctx)),
+        _coded("temp_files", _stale_temp_files(ctx)),
+        _coded("request_self_contained", _request_self_contained(ctx)),
+        _coded("spec_version", _spec_version_consistency(ctx)),
     ]
     if snapshot:
         return findings
-    findings.append(_coded("lock_state", _lock_state(store)))
+    findings.append(_coded("lock_state", _lock_state(ctx)))
     return [
         replace(item, degraded=True, text=f"[非快照] {item.text}")
         if item.snapshot_dependent

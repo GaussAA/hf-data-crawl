@@ -23,7 +23,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..platform.atomic import write_text
@@ -62,10 +61,6 @@ class HealthRecord:
     @property
     def healthy(self) -> bool:
         return not self.problems
-
-
-def path_of(store: DatasetStore) -> Path:
-    return store.state_dir / HEALTH_NAME
 
 
 def read(store: DatasetStore) -> list[HealthRecord]:

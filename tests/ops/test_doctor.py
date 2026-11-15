@@ -13,7 +13,7 @@ import polars as pl
 
 from hf_data_crawl.acquire.hf.api import HfResponse
 from hf_data_crawl.ops.cli import main
-from hf_data_crawl.ops.doctor import ALERT_NAME, Finding, diagnose, sync_alert
+from hf_data_crawl.ops.doctor import ALERT_NAME, Finding, RunContext, diagnose, sync_alert
 from hf_data_crawl.ops.health import read as read_health
 from hf_data_crawl.pipeline import lineage
 from hf_data_crawl.pipeline.lineage import path_of as lineage_path
@@ -844,7 +844,22 @@ def test_全站扫描没扫完时字段新鲜度判红(tmp_path: Path) -> None:
 # ---------------------------------------------------------------- 失败覆盖的时间口径
 
 
-def test_后来成功覆盖失败按时间点而非字符串() -> None:
+def ctx_of(runs: list[dict], root: Path, now: datetime = NOW) -> RunContext:
+    """只造检查函数真正用到的那部分上下文，不落盘。
+
+    直接调单项检查的测试用它，比 `diagnose` 快也更好定位：一条判据坏掉时，
+    不必先被另外二十条搅一遍。
+    """
+    return RunContext(
+        store=DatasetStore(root / "data"),
+        now=now,
+        runs=runs,
+        current=pl.DataFrame(),
+        current_ids=frozenset(),
+    )
+
+
+def test_后来成功覆盖失败按时间点而非字符串(tmp_path: Path) -> None:
     """成功 10:00:00Z 早于失败 10:00:00.5Z，不能算「已恢复」。
 
     旧实现把两条 ISO 字符串直接比字典序，`Z`(90) 大于 `.`(46)，于是更早的
@@ -866,13 +881,13 @@ def test_后来成功覆盖失败按时间点而非字符串() -> None:
         },
     ]
 
-    finding = _recent_failures(runs, NOW)
+    finding = _recent_failures(ctx_of(runs, tmp_path))
 
     assert finding.problem
     assert "1 次未恢复" in finding.text
 
 
-def test_带时区的时间戳不会让体检崩溃() -> None:
+def test_带时区的时间戳不会让体检崩溃(tmp_path: Path) -> None:
     """runs/ 写的是本地 naive 时间；外部注入的 Z 后缀不能让减法抛 TypeError。"""
     from hf_data_crawl.ops.doctor import _recent_failures
 
@@ -881,7 +896,7 @@ def test_带时区的时间戳不会让体检崩溃() -> None:
         {"command": "collect", "status": "success", "started_at": "2026-11-10T11:00:00Z"},
     ]
 
-    finding = _recent_failures(runs, NOW)
+    finding = _recent_failures(ctx_of(runs, tmp_path))
 
     assert not finding.problem
 

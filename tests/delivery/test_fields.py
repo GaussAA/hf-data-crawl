@@ -20,11 +20,9 @@ from hf_data_crawl.delivery.fields import (
     GROUPS,
     PAGE_FIELDS,
     contract_errors,
-    default_columns,
     display_expr,
     display_value,
     projection_sql,
-    quoted_columns,
 )
 from hf_data_crawl.query.gold import wide_column_names
 
@@ -36,7 +34,6 @@ def test_契约自检通过() -> None:
 def test_默认列序以id开头且无重复() -> None:
     assert DEFAULT_COLUMNS[0] == "id"
     assert len(DEFAULT_COLUMNS) == len(set(DEFAULT_COLUMNS))
-    assert default_columns() == DEFAULT_COLUMNS
 
 
 def test_契约列都在宽视图里() -> None:
@@ -51,9 +48,16 @@ def test_每列都有中文说明且分组不漏列() -> None:
     assert all(COLUMN_NOTES[column].strip() for column in DEFAULT_COLUMNS)
 
 
-def test_SQL列清单与契约逐列一致() -> None:
-    assert quoted_columns() == ", ".join(f'"{column}"' for column in DEFAULT_COLUMNS)
-    assert quoted_columns().count('"') == len(DEFAULT_COLUMNS) * 2
+def test_SQL投影覆盖全部契约列() -> None:
+    """`projection_sql()` 才是导出与交付真正走的投影，漏一列等于交付少一列。
+
+    原先这里断言的是一个只被测试使用的 `quoted_columns()`——它等于一句 join 表达式，
+    改坏了也没有任何生产代码受影响，测的其实是「另一个函数写得对不对」。
+    """
+    sql = projection_sql()
+    missing = [column for column in DEFAULT_COLUMNS if f'"{column}"' not in sql]
+
+    assert not missing, f"投影里缺列：{missing}"
 
 
 def test_内部状态列不进默认交付面() -> None:
@@ -184,7 +188,6 @@ def test_CSV展平用原生表达式换成页面形式() -> None:
 def test_契约自检盯住新增的两张表() -> None:
     """对照表 / 兜底表指错列名，也要在改完当场炸。"""
     assert contract_errors() == []
-    assert quoted_columns().count('"') == len(DEFAULT_COLUMNS) * 2
     assert not set(DISPLAY_COLUMNS) - set(DEFAULT_COLUMNS)
 
 

@@ -280,16 +280,6 @@ _LANGUAGE_NAMES: dict[str, str] = {
 }
 
 
-def default_columns() -> tuple[str, ...]:
-    """默认交付列序。导出、编译、勾稽三处都从这里取。"""
-    return DEFAULT_COLUMNS
-
-
-def quoted_columns() -> str:
-    """纯列名清单（带双引号），供文档与自检使用；实际投影走 `projection_sql`。"""
-    return ", ".join(f'"{column}"' for column in DEFAULT_COLUMNS)
-
-
 def projection_sql() -> str:
     """默认投影的 SQL 列清单：契约列序不变，少数列带卡片兜底。
 
