@@ -12,7 +12,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Sequence
 from datetime import date, datetime
 from pathlib import Path
@@ -36,6 +35,7 @@ from .fields import (
 )
 from .metrics import lookup
 from .requirement import Kind, Mode, OutputFormat, Spec, compile_sql
+from .stamp import file_stamp
 
 
 def payload(ctx: RunContext) -> Payload:
@@ -185,14 +185,10 @@ def write_data(directory: Path, spec: Spec, frame: pl.DataFrame) -> list[dict[st
             _flat_for_csv(frame).write_csv(target)
         else:
             frame.write_parquet(target)
-        payload_bytes = target.read_bytes()
-        written.append(
-            {
-                "name": name,
-                "bytes": len(payload_bytes),
-                "sha256": hashlib.sha256(payload_bytes).hexdigest(),
-            }
-        )
+        # 与回填产物、输入快照走同一份判据（`stamp.file_stamp`：原字节 + sha256）。
+        # 这里曾内联一遍 sha256——同一份字节若有两套算法，两个数会写进档案的不同
+        # 字段，谁都不会报错，只有比对时才发现「同一份东西，两处记的不一样」。
+        written.append({"name": name, **file_stamp(target)})
     return written
 
 

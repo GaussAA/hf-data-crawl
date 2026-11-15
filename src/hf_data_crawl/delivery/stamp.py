@@ -58,6 +58,16 @@ def file_stamp(path: Path) -> dict[str, Any]:
 
     回填的输入表是需求目录里的快照，不再随外部文件变化。把它钉进 manifest，
     「这份交付基于哪一版清单」才和「基于哪一版底库」一样能自证。
+
+    与 `method.digest` 的分工要看清，两者在 manifest 里都叫 `sha256`，**不可互比**：
+
+    - 这里算**原字节**。交付产物（parquet / xlsx）与输入表是「这份文件本身」，
+      抹掉 `\\r` 会改数，等于把两份不同的文件说成同一份。
+    - `method.digest` 算**归一到 LF 的内容**。脚本与文档要在 Windows / Linux 之间
+      保持同一指纹，否则一 clone 下来就被当成「脚本改过」。
+
+    同名不同义是有意留的，不是漏统一：字段名一致、对象不同类。改名的代价是旧档案
+    读不了，收益只是少一次解释——不值。
     """
     payload = path.read_bytes()
     return {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
