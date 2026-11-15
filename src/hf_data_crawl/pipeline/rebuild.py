@@ -63,11 +63,30 @@ class RebuildSummary:
     mode: str = "window"
     card_rows: int = 0
     config_rows: int = 0
+    #: 已压入冷区、主目录没有 Raw 可重放的日期数。非零说明这次重建拿不回这些
+    #: 日期的历史；`--full` 会在执行前就被拒，recovery 回退则由它进台账。
+    cold_gaps: int = 0
 
 
 def discover_raw_dates(store: DatasetStore) -> list[date]:
     """可从主目录重放的日期（含归档分片与 card 补位），按时间升序。"""
     return [day.snapshot_date for day in raw.replayable_days(store)]
+
+
+def cold_gap_days(store: DatasetStore) -> list[date]:
+    """采过、但 Raw 已被 `compact` 搬离主目录、因而无法重放的日期。
+
+    `--full` 承诺「按全部 Raw 重放」，而可重放的只有主目录里那些分块：冷区
+    日期的分块在 `data/backup/raw/`，基线又只保「每个 id 最后一条」，按日切不出
+    历史。于是这些日期的 silver / observations 在被清空后**永远补不回来**。
+    判据取 `RawDay.compacted and not replayable`：只认「确实压走了、主目录也
+    确实再无分块」的日子，压缩后仍有残留文件（可重放）的不算。
+    """
+    return [
+        day.snapshot_date
+        for day in raw.observed_days(store)
+        if day.compacted and not day.replayable
+    ]
 
 
 def _authority_intact(store: DatasetStore) -> bool:
@@ -146,6 +165,12 @@ def rebuild_from_raw(
         )
     mode, replay = selected
     full = mode in {"full", "recovery"}
+    # 清空全部派生层之前，先记下有多少日期已经无 Raw 可重放：`--full` 由
+    # `run_build` 在入口拦下，recovery 是「权威层已坏」的抢救路径、不能拒，
+    # 但必须把「救不回来多少」喊出来并落进台账。
+    gaps = cold_gap_days(store) if full else []
+    if gaps and mode == "recovery":
+        _warn_cold_gaps(gaps)
 
     # 失效状态不是从 raw 派生的：它来自对账时的单库探测（404/401/307），
     # 而 state.update 会把本轮出现的每条记录都置为 active。清理前留存、
@@ -175,6 +200,18 @@ def rebuild_from_raw(
         mode=mode,
         card_rows=store.read("carddata").height,
         config_rows=store.read("card_configs").height,
+        cold_gaps=len(gaps),
+    )
+
+
+def _warn_cold_gaps(gaps: list[date]) -> None:
+    """recovery 回退时点名救不回来的日期。不抛错——此刻能救多少算多少。"""
+    shown = "、".join(day.isoformat() for day in gaps[:3])
+    more = f" 等 {len(gaps)} 天" if len(gaps) > 3 else ""
+    print(
+        f"[!] 冷区 {len(gaps)} 天没有 Raw 可重放（{shown}{more}）：本次只能按主目录里"
+        "仅存的 Raw 重建，这些日期的 silver / observations 历史无法恢复。"
+        "核对 data/backup/raw 是否还留着原分块，必要时先搬回再重跑"
     )
 
 
@@ -203,13 +240,22 @@ def clear_derived(store: DatasetStore, *, hot_dates: set[date] | None = None) ->
 
 
 def _clear_stale_state(store: DatasetStore) -> None:
-    """全量模式下作废游标与对账会话：重建后它们不再对应任何有效基线。"""
+    """全量模式下作废游标与对账会话：重建后它们不再对应任何有效基线。
+
+    `lineage.json` 也落在 `state/*.json` 里，但它不是会话文件：冷区日期的 Raw 已
+    移出主目录、不再参与重放，它们的派生凭证只存在这一份档案里。删掉等于把
+    「哪天派生过、基于哪版 Raw」永久抹掉，且 `lineage.compare` 会因档案缺失
+    静默跳过那些日子。故从通配结果里显式排除，名字取自 `lineage.path_of`。
+    """
+    keep = {lineage.path_of(store).name}
     stale_files = [
         *store.state_dir.glob("*.json"),
         *store.state_dir.glob("reconcile-*.csv"),
         *store.state_dir.glob("reconcile-baseline.parquet"),
     ]
     for stale in stale_files:
+        if stale.name in keep:
+            continue
         stale.unlink(missing_ok=True)
 
 
@@ -263,22 +309,81 @@ def retain(store: DatasetStore) -> dict[str, str]:
 
 
 def restore(store: DatasetStore, retained: dict[str, str]) -> None:
-    """把留存的状态写回，然后删除快照。"""
+    """把留存的状态写回，然后删除快照。
+
+    `mark_status` 只改 current 里**已有**的行。重建后 current 里没有的 id，状态
+    与整行一起静默消失：`--full` 在冷区已压缩时就是这种局面（`run_build` 会拦，
+    放行则明知故犯），recovery 回退也可能。快照随后就被删掉，这里是最后一次
+    能看见它的机会，故把丢弃数喊出来——沉默的丢失比报错的丢失更难查。
+    """
     if retained:
+        present = set(state.read_current(store)["id"].to_list())
+        dropped = sorted(dataset_id for dataset_id in retained if dataset_id not in present)
         state.mark_status(store, retained)
+        if dropped:
+            shown = "、".join(dropped[:3])
+            more = f" 等 {len(dropped)} 个" if len(dropped) > 3 else ""
+            print(
+                f"[!] 状态写回丢了 {len(dropped)} 个 id（{shown}{more}）：它们已不在重建后的 "
+                "current 里，主目录也没有其 Raw，整行随之消失。核对 data/backup/raw 与冷区清单"
+            )
     snapshot_path(store).unlink(missing_ok=True)
+
+
+@dataclass(frozen=True)
+class SnapshotHealth:
+    """状态留存快照的只读诊断结论。
+
+    `kind`：`absent` 不存在（正常终态）、`valid` 可解析（但存在本身就是异常）、
+    `corrupt` 读不出来或顶层不是 JSON 对象。`valid_count` / `invalid_count`
+    只对 `valid` 有意义。
+    """
+
+    kind: str
+    valid_count: int = 0
+    invalid_count: int = 0
+    error: str = ""
+
+
+def _load_snapshot_file(store: DatasetStore) -> tuple[object, SnapshotHealth]:
+    """读快照原文并顺带产出诊断结论；`retain` 与 doctor 共用同一份判据。
+
+    分开「文件损坏」与「文件不存在」是这条诊断的全部价值：两者在 `retain`
+    里都归一为 None，但一个是正常终态，另一个会让非在架状态静默失去凭证。
+    """
+    path = snapshot_path(store)
+    if not path.exists():
+        return None, SnapshotHealth(kind="absent")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as error:
+        return None, SnapshotHealth(kind="corrupt", error=f"{type(error).__name__}: {error}")
+    if not isinstance(payload, dict):
+        return None, SnapshotHealth(kind="corrupt", error="顶层不是 JSON 对象")
+    retained = _valid((str(key), str(value)) for key, value in payload.items())
+    return payload, SnapshotHealth(
+        kind="valid",
+        valid_count=len(retained),
+        invalid_count=len(payload) - len(retained),
+    )
+
+
+def snapshot_health(store: DatasetStore) -> SnapshotHealth:
+    """只读诊断状态留存快照，供 `doctor` 把静默回退变成可见告警。
+
+    快照存在本身即异常：它只表示「重建进行中」，成功写回后必须删除；留着会被
+    下一次重建当成「上次被打断」，把期间已恢复的库改回旧状态。损坏更麻烦——
+    `_read_snapshot` 返回 None，`retain` 静默回退读 current，而重建若已清空
+    state，非在架状态就再无来源。这里刻意不做自动修复：坏文件是唯一的现场
+    证据，删掉等于销毁证据，也修不回已经丢掉的状态。
+    """
+    return _load_snapshot_file(store)[1]
 
 
 def _read_snapshot(store: DatasetStore) -> dict[str, str] | None:
     """读上次留下的快照；不存在或损坏返回 None（调用方回退读 current）。"""
-    path = snapshot_path(store)
-    if not path.exists():
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return None
-    if not isinstance(payload, dict):
+    payload, health = _load_snapshot_file(store)
+    if health.kind != "valid" or not isinstance(payload, dict):
         return None
     return _valid((str(key), str(value)) for key, value in payload.items())
 

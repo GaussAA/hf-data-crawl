@@ -38,6 +38,12 @@ COMPUTED_COLUMNS: frozenset[str] = frozenset({"first_seen_at", "last_seen_at", "
 
 METRIC_COLUMNS: tuple[str, ...] = ("downloads", "downloads_all_time", "likes")
 
+#: 同日重跑会覆盖当日观测分区，行数本应持平（指标没变就不追加）。掉到一半以下
+#: 几乎只可能是当日 Raw 截断或补抓缺批：此时覆盖会把已有的历史观测静默删掉，
+#: 而 `appended` 只报增量、看不出「少了」。故覆盖前喊一声，但不阻断——同日幂等
+#: 是设计，不是缺陷，断在这里反而会让正常的重跑失败。
+OBSERVATION_SHRINK_SHARE = 0.5
+
 
 def read_current(store: DatasetStore) -> pl.DataFrame:
     """读 current 表，旧表的 status 缺失时补 active（沿用历史语义）。"""
@@ -185,6 +191,14 @@ def update(
             *[pl.col(column) for column in METRIC_COLUMNS],
         ]
     )
+
+    if before > 0 and new_observations.height < before * OBSERVATION_SHRINK_SHARE:
+        print(
+            f"[!] 观测行数骤降：{snapshot_date} 分区原有 {before} 行，本轮只写入 "
+            f"{new_observations.height} 行（不足 {OBSERVATION_SHRINK_SHARE:.0%}）。"
+            "同日覆盖是幂等设计，但当日 Raw 截断或补抓缺批会静默删掉历史观测——"
+            "核对当日 Raw 与补抓批次，确认不是缺批后再重跑派生"
+        )
 
     if new_observations.height == 0:
         store.path("observations", snapshot_date).unlink(missing_ok=True)

@@ -65,11 +65,17 @@ def marker_path(store: DatasetStore, snapshot_date: date) -> Path:
     return store.state_dir / f"marker-{snapshot_date.isoformat()}.marker"
 
 
-def write_marker(store: DatasetStore, snapshot_date: date) -> None:
-    """标记开始派生某一天。"""
+def write_marker(
+    store: DatasetStore, snapshot_date: date, *, started_at: str | None = None
+) -> None:
+    """标记开始派生某一天。
+
+    `started_at` 由恢复链在重放失败时传回原值：保留旧的超时点，下一次写命令
+    就能立刻重试，而不是重新计满 `STALE_THRESHOLD_SECONDS`。
+    """
     marker = Marker(
         snapshot_date=snapshot_date,
-        started_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        started_at=started_at or datetime.now(UTC).isoformat(timespec="seconds"),
     )
     content = json.dumps(
         {"snapshot_date": marker.snapshot_date.isoformat(), "started_at": marker.started_at},

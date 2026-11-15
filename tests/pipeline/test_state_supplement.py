@@ -150,3 +150,34 @@ def test_补进来的库属性取自补抓批次(store: DatasetStore) -> None:
 def test_卡片批次仍不进bronze去重池() -> None:
     """补位置是「按 id 补空位」，不是把 card 升格为同级来源——别顺手改这个常量。"""
     assert CARD_LABEL not in BRONZE_LABELS
+
+
+def test_覆盖分区前行数骤降要告警(store: DatasetStore, capsys: pytest.CaptureFixture[str]) -> None:
+    """3 行 → 1 行：覆盖是幂等设计，但少了两行必须被看见。"""
+    write(store, record("acme/a"), record("acme/b"), record("acme/c"))
+    bronze.build(store, DAY)
+    frame = bronze.day_frame(store, DAY)
+
+    state.update(store, DAY, frame=frame)
+    assert store.read_all("observations").height == 3
+    capsys.readouterr()
+
+    state.update(store, DAY, frame=frame.head(1))
+
+    out = capsys.readouterr().out
+    assert "观测行数骤降" in out
+    assert "原有 3 行" in out
+    assert store.read_all("observations").height == 1, "只告警、不阻断覆盖"
+
+
+def test_同日幂等重跑不误报(store: DatasetStore, capsys: pytest.CaptureFixture[str]) -> None:
+    """行数持平是常态，天天喊狼来了等于没有告警。"""
+    write(store, record("acme/a"), record("acme/b"))
+    bronze.build(store, DAY)
+    frame = bronze.day_frame(store, DAY)
+
+    state.update(store, DAY, frame=frame)
+    capsys.readouterr()
+    state.update(store, DAY, frame=frame)
+
+    assert "观测行数骤降" not in capsys.readouterr().out

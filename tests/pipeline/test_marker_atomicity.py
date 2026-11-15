@@ -12,6 +12,8 @@ import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from hf_data_crawl.pipeline import raw
 from hf_data_crawl.pipeline.marker import (
     STALE_THRESHOLD_SECONDS,
@@ -308,9 +310,13 @@ def test_有Raw时清理后重新派生(tmp_path: Path, monkeypatch) -> None:
 
     rederived: list[date] = []
     monkeypatch.setattr("hf_data_crawl.pipeline.marker.has_raw", lambda *_: True)
-    monkeypatch.setattr(
-        "hf_data_crawl.pipeline.recovery._rederive", lambda _store, day: rederived.append(day)
-    )
+
+    def ok_rederive(_store: DatasetStore, day: date) -> bool:
+        rederived.append(day)
+        return True
+
+    # `_rederive` 现在返回 bool：False 表示重放失败、标记必须留下。
+    monkeypatch.setattr("hf_data_crawl.pipeline.recovery._rederive", ok_rederive)
 
     recovered = check_and_recover(store)
 
@@ -346,9 +352,13 @@ def test_只有卡片批次时按可重放处理(tmp_path: Path, monkeypatch) ->
     )
 
     rederived: list[date] = []
-    monkeypatch.setattr(
-        "hf_data_crawl.pipeline.recovery._rederive", lambda _store, day: rederived.append(day)
-    )
+
+    def ok_rederive(_store: DatasetStore, day: date) -> bool:
+        rederived.append(day)
+        return True
+
+    # `_rederive` 现在返回 bool：False 表示重放失败、标记必须留下。
+    monkeypatch.setattr("hf_data_crawl.pipeline.recovery._rederive", ok_rederive)
 
     recovered = check_and_recover(store)
 
@@ -408,3 +418,70 @@ def test_state目录不存在不报错(tmp_path: Path) -> None:
     # 不应崩溃
     recovered = check_and_recover(store)
     assert recovered == []
+
+
+def stale_marker(store: DatasetStore, day: date, *, naive: bool = False) -> tuple[Path, str]:
+    """写一个已超时的标记，返回 (路径, 原始 started_at)。"""
+    old = datetime.now(UTC) - timedelta(seconds=STALE_THRESHOLD_SECONDS + 60)
+    if naive:
+        old = old.replace(tzinfo=None)
+    started_at = old.isoformat(timespec="seconds")
+    path = marker_path(store, day)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"snapshot_date": day.isoformat(), "started_at": started_at}),
+        encoding="utf-8",
+    )
+    return path, started_at
+
+
+def test_无时区的标记时间戳按UTC处理而不崩溃(tmp_path: Path) -> None:
+    """历史或人工写入的 marker 可能没有 Z；aware 减 naive 会抛 TypeError。
+
+    这段检查跑在 `_execute` 之外，抛出去就是所有写命令启动即崩、没有 failed
+    run、没有堆栈，故必须在这里兜住。
+    """
+    store = DatasetStore(tmp_path)
+    day = date(2026, 11, 7)
+    path, _ = stale_marker(store, day, naive=True)
+
+    recovered = check_and_recover(store)
+
+    assert recovered == [day]
+    assert not path.exists()
+
+
+def test_重放失败时标记保留且原时间戳不变(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """失败可能发生在首个 derive_day 之前，那时没有新标记续命。"""
+    store = DatasetStore(tmp_path)
+    day = date(2026, 11, 7)
+    monkeypatch.setattr("hf_data_crawl.pipeline.marker.has_raw", lambda *_: True)
+    monkeypatch.setattr("hf_data_crawl.pipeline.recovery._rederive", lambda *_: False)
+    path, started_at = stale_marker(store, day)
+
+    recovered = check_and_recover(store)
+
+    assert recovered == []
+    assert path.exists(), "标记先删会让该日派生层已清却再无人重放"
+    assert json.loads(path.read_text(encoding="utf-8"))["started_at"] == started_at
+
+
+def test_重放抛异常时留下标记供下次立即重试(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """真实 `_rederive` 吞异常返回 False；恢复链要据此保住标记。"""
+    store = DatasetStore(tmp_path)
+    day = date(2026, 11, 7)
+    monkeypatch.setattr("hf_data_crawl.pipeline.marker.has_raw", lambda *_: True)
+
+    def broken(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("Raw 坏了")
+
+    monkeypatch.setattr("hf_data_crawl.pipeline.recovery.rebuild_from_raw", broken)
+    path, _ = stale_marker(store, day)
+
+    recovered = check_and_recover(store)
+
+    assert recovered == []
+    assert path.exists()
+    assert "保留标记" in capsys.readouterr().out

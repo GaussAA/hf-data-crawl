@@ -415,3 +415,150 @@ def test_cli全量与定点互斥(tmp_path: Path) -> None:
 
     assert code == 1
     assert [item for item in (store.root / "runs").glob("*build*")]
+
+
+# ------------------------------------------------------- 全量重建的状态与凭证留存
+
+
+def test_全量重建逐id保留全部非在架状态(tmp_path: Path) -> None:
+    """`--full` 会清掉 current 再按天重放；失效状态来自探测、不在 Raw 里。
+
+    与局部重放不同的分支：全量模式清空全部 RAW/STATE 表并作废 state/ 会话文件，
+    留存协议必须照样把三种非在架状态逐 id 还原，且未标记过的库仍为在架。
+    """
+    store = DatasetStore(tmp_path / "data")
+    records = [record(index, index * 10) for index in range(1, 5)]
+    seed(store, DAY1, records)
+    seed(store, DAY2, records)
+    before = {
+        "acme/ds-1": "disappeared",
+        "acme/ds-2": "restricted",
+        "acme/ds-3": "renamed",
+    }
+    state.mark_status(store, before)
+
+    summary = rebuild_from_raw(store, window_days=None)
+
+    assert summary.mode == "full"
+    current = state.read_current(store)
+    after = dict(zip(current["id"].to_list(), current["status"].to_list(), strict=True))
+    assert {dataset_id: after[dataset_id] for dataset_id in before} == before
+    assert after["acme/ds-4"] == "active"
+
+
+def test_全量重建只清会话不清派生凭证(store: DatasetStore) -> None:
+    """`state/*.json` 通配不该连 `lineage.json` 一起删；冷区戳记只此一份。
+
+    冷区日期的 Raw 已移出主目录、不参与重放，它们的派生凭证不会被重放过程
+    重新写入——删了就是永久丢失，且 `divergent_since` 读不到也不会报错。
+    """
+    from hf_data_crawl.pipeline import lineage
+
+    cold_day = date(2026, 10, 31)
+    stamps = lineage.read(store)
+    stamps[cold_day] = lineage.DayStamp(
+        source="cold-baseline",
+        derived_at="2026-10-31T00:00:00+00:00",
+        bronze_rows=0,
+        silver_rows=0,
+        observations=0,
+    )
+    lineage._write(store, stamps)
+    checkpoints = ("collect-checkpoint.json", "reconcile-checkpoint.json")
+    for name in checkpoints:
+        (store.state_dir / name).write_text("{}", encoding="utf-8")
+
+    rebuild_from_raw(store, window_days=None)
+
+    assert cold_day in lineage.read(store)  # 该留的留
+    for name in checkpoints:
+        assert not (store.state_dir / name).exists()  # 该清的照样清
+
+
+# ---------------------------------------------------------------- 冷区与 --full
+# `--full` 的名字承诺「按全部 Raw 重放」，而 `compact` 每日把满 7 天的分块移去
+# `data/backup/raw/`。冷区日期的 silver / observations 一旦被清空就再也补不回来，
+# 故入口先校验；recovery 回退不能拒，但必须点名救不回来的日期。
+
+
+def _compacted(store: DatasetStore, day: date) -> None:
+    """按真实路径压缩某日：分块移入 backup/raw，日期进冷区清单。"""
+    from hf_data_crawl.ops.compact import compact
+
+    assert compact(store, [day]) is not None
+
+
+def test_全量重建在冷区缺口时被拒绝(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """拒绝必须发生在清空之前，否则「拒绝」只是事后报丧。"""
+    store = DatasetStore(tmp_path / "data")
+    seed(store, DAY1, [record(1, 100), record(2, 50), record(3, 7)])
+    seed(store, DAY2, [record(1, 180), record(2, 50)])
+    _compacted(store, DAY1)
+    before = state.read_current(store).height
+    before_obs = store.read_all("observations").height
+
+    code = main(["--data-dir", str(store.root), "build", "--full"])
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "压入冷区" in out
+    assert "--allow-cold-loss" in out
+    # 一行未动：current 与观测分区都还是压缩前的样子
+    assert state.read_current(store).height == before
+    assert store.read_all("observations").height == before_obs
+
+
+def test_逃生阀放行并写明损失(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """明知故犯也得留字据：放行后仍要印出「冷区 N 天未参与重放」。"""
+    store = DatasetStore(tmp_path / "data")
+    seed(store, DAY1, [record(1, 100), record(2, 50), record(3, 7)])
+    seed(store, DAY2, [record(1, 180), record(2, 50)])
+    _compacted(store, DAY1)
+
+    code = main(["--data-dir", str(store.root), "build", "--full", "--allow-cold-loss"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "已按 --allow-cold-loss 放行" in out
+    assert "冷区 1 天未参与重放" in out
+    assert state.read_current(store).height == 2  # ds-3 只在 11-01 出现过
+
+
+def test_recovery回退点名冷区缺口(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """权威层坏了只能按仅存 Raw 抢救，但得让人知道抢救回了多少。"""
+    store = DatasetStore(tmp_path / "data")
+    seed(store, DAY1, [record(1, 100), record(2, 50)])
+    seed(store, DAY2, [record(1, 180), record(2, 50)])
+    _compacted(store, DAY1)
+    store.path("observations", DAY2).unlink()
+    store.path("current").unlink()
+
+    summary = rebuild_from_raw(store, window_days=REPLAY_WINDOW_DAYS)
+
+    out = capsys.readouterr().out
+    assert summary.mode == "recovery"
+    assert summary.cold_gaps == 1
+    assert "冷区 1 天没有 Raw 可重放" in out
+    assert "无法恢复" in out
+
+
+def test_状态写回丢弃时点名(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """`mark_status` 只改 current 里已有的行；丢掉的 id 必须被喊出来。
+
+    直调 API 而非 CLI，是因为 CLI 已在入口拒绝——这条守的是「即使放行也不沉默」。
+    """
+    from hf_data_crawl.pipeline.rebuild import retain
+
+    store = DatasetStore(tmp_path / "data")
+    seed(store, DAY1, [record(1, 100), record(2, 50), record(3, 7)])
+    seed(store, DAY2, [record(1, 180), record(2, 50)])
+    state.mark_status(store, {"acme/ds-3": "disappeared"})
+    retain(store)  # 快照落盘：ds-3 → disappeared
+    _compacted(store, DAY1)
+
+    summary = rebuild_from_raw(store, window_days=None)
+
+    out = capsys.readouterr().out
+    assert summary.cold_gaps == 1
+    assert "状态写回丢了 1 个 id" in out
+    assert "acme/ds-3" in out
