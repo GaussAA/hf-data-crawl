@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from ..platform.store import DatasetStore
-    from .doctor import Finding
+    from .finding import Finding
 
 HEALTH_NAME = "health-history.jsonl"
 #: 保留最近多少次体检。每日两次（09:00 + 登录后）约合 250 天。
@@ -53,6 +53,9 @@ class HealthRecord:
     at: datetime
     total: int
     problems: tuple[str, ...]
+    #: 与 `problems` 一一对应的检查项标识。文案随时会改，按它计数才不会断代；
+    #: 2026-11-15 之前的旧记录没有这一项，读作空——那些轮次不参与连续计数。
+    codes: tuple[str, ...] = ()
     #: 这次体检是否在一份一致快照上跑；旧记录没有该字段，读作 True。
     snapshot: bool = True
 
@@ -86,6 +89,7 @@ def read(store: DatasetStore) -> list[HealthRecord]:
                     at=datetime.fromisoformat(str(payload["at"])),
                     total=int(payload.get("total", 0)),
                     problems=tuple(str(item) for item in payload.get("problems", [])),
+                    codes=tuple(str(item) for item in payload.get("codes", [])),
                     snapshot=bool(payload.get("snapshot", True)),
                 )
             )
@@ -109,8 +113,16 @@ def record(
     `WRITE_LOCK_NAME`），否则原子替换只保证文件完整、不保证不丢更新。
     """
     items = list(findings)
-    problems = tuple(item.text for item in items if item.problem)
-    entry = HealthRecord(at=now, total=len(items), problems=problems, snapshot=snapshot)
+    # 降级项不进流水：这次读数可能跨时点，它「是不是问题」还没定。记进去会让
+    # 「连续红了几轮」虚高，而这正是用来判断「要不要现在动手」的那个数。
+    live = [item for item in items if item.problem and not item.degraded]
+    entry = HealthRecord(
+        at=now,
+        total=len(items),
+        problems=tuple(item.text for item in live),
+        codes=tuple(item.code for item in live),
+        snapshot=snapshot,
+    )
 
     with exclusive(store.root, "health-write", WRITE_LOCK_WAIT, lock_name=WRITE_LOCK_NAME):
         history = [*read(store), entry][-HEALTH_KEEP:]
@@ -122,6 +134,7 @@ def record(
                         "at": item.at.isoformat(timespec="seconds"),
                         "total": item.total,
                         "problems": list(item.problems),
+                        "codes": list(item.codes),
                         "snapshot": item.snapshot,
                     },
                     ensure_ascii=False,
@@ -133,15 +146,19 @@ def record(
     return entry
 
 
-def streak(store: DatasetStore, keyword: str) -> int:
-    """某个关键词连续出现了几次（从最近一次往回数）。
+def streak(store: DatasetStore, code: str) -> int:
+    """某个检查项连续红了几轮（从最近一次往回数）。
 
-    典型用法是回答「断日连续几天了」：关键词在最近几行里连续命中即为连续，
-    中间有一行没命中就断。给不出结论时返回 0，而不是猜。
+    按 `code` 数，不按文案子串。原先的写法是 `any(keyword in text for text in
+    item.problems)`——文案里混进日期或数字就匹配不上（`"Raw 断日：2026-11-06 …"`
+    改一个字就断），而它断得**不报错**，只是从此永远返回 0。按检查项标识计数，
+    文案怎么改都不影响；`code` 与检查项一一对应，那才是「同一件事」的稳定身份。
+
+    给不出结论时返回 0，而不是猜。没有 `codes` 的旧记录不参与计数。
     """
     count = 0
     for item in reversed(read(store)):
-        if any(keyword in text for text in item.problems):
+        if code in item.codes:
             count += 1
         else:
             break

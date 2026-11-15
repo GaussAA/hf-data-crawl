@@ -180,9 +180,14 @@ def _doctor(store: DatasetStore, *, snapshot: bool, requests_root: Path | None =
         # `LockBusy` 必须在这里兜住——冒泡到 `run_doctor` 的 except 会把整次
         # 体检再跑一遍，那才是真正的灾难。
         print(f"[!] 体检历史写入失败：{error}")
+    if not snapshot:
+        print("[~] 本行读数可能跨时点（未拿到写锁），不计入退出码与告警")
     for item in findings:
-        print(f"{'[!]' if item.problem else '[ok]'} {item.text}")
-    return 1 if any(item.problem for item in findings) else 0
+        # 三态而不是两态：降级项保留原本的红/绿判断，只是这次不算数。
+        # 印成 `[ok]` 会让人以为「查过且通过」，那是在替读者做一个它没做的判断。
+        mark = "[~]" if item.degraded else ("[!]" if item.problem else "[ok]")
+        print(f"{mark} {item.text}")
+    return 1 if any(item.problem and not item.degraded for item in findings) else 0
 
 
 def run_doctor(store: DatasetStore, wait: float, *, requests_root: Path | None = None) -> int:

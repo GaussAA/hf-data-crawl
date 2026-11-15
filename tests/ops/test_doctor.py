@@ -623,7 +623,9 @@ def test_非快照模式降级跨表检查并报告锁状态(tmp_path: Path) -> 
 
     loose = diagnose(store, NOW, snapshot=False)
     downgraded = [item for item in loose if "层间勾稽" in item.text]
-    assert downgraded and all(not item.problem for item in downgraded)
+    # 降级不抹判断：`problem` 仍为 True，只是这次读数不算数。抹成 False 会让
+    # 「本来是红、因降级变黄」这件事从数据里消失，只剩字符串开头一个前缀可查。
+    assert downgraded and all(item.problem and item.degraded for item in downgraded)
     assert all(item.text.startswith("[非快照]") for item in downgraded)
     assert any("写锁" in item.text for item in loose)
 
@@ -1032,3 +1034,44 @@ def test_体检读导出物走_delivery_定义的位置(tmp_path: Path, monkeypa
 
     assert not artifact.problem
     assert "导出与底库一致" in artifact.text
+
+
+# ---------------------------------------------------------------- 结论的身份
+
+
+def test_每条体检结论都带检查项标识(tmp_path: Path) -> None:
+    """`code` 是告警去重与连续计数的唯一依据，缺一个就静默失效。
+
+    空 code 的结论照样进 ALERT.txt 与流水，看起来一切正常，只是永远数不到它
+    连续红了几轮。所以在编排处守住：不能有空的，也不能两项共用一个。
+    """
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+
+    findings = diagnose(store, NOW)
+    codes = [item.code for item in findings]
+
+    assert all(codes), f"有结论没贴 code：{[i.text for i in findings if not i.code]}"
+    assert len(set(codes)) == len(codes), "code 重复：连续计数会把两项混成一项"
+    assert {"collect_freshness", "field_freshness", "raw_gaps", "storage"} <= set(codes)
+
+
+def test_告警标注连续轮数(tmp_path: Path) -> None:
+    """「已经红到第几轮」是决定要不要现在动手的依据，得写进告警。
+
+    按 `code` 数而不是按文案子串：上一轮写「Raw 断日：11-05」、这一轮写
+    「Raw 断日：11-06」，子串匹配会得出「换了件事」，按 code 才知道是同一项。
+    """
+    from hf_data_crawl.ops import health
+
+    store = DatasetStore(tmp_path / "data")
+    health.record(store, [Finding(True, "Raw 断日：2026-11-05", code="raw_gaps")], NOW)
+
+    sync_alert(
+        store,
+        [Finding(True, "Raw 断日：2026-11-06", code="raw_gaps")],
+        NOW + timedelta(days=1),
+    )
+
+    body = (store.root / ALERT_NAME).read_text(encoding="utf-8")
+    assert "连续 2 轮" in body

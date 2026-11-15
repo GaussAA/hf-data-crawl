@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -34,6 +34,9 @@ from ..platform.retention import ARCHIVE_AFTER_DAYS, BACKUP_PRUNE_AFTER_DAYS, RE
 from ..platform.runs import COLLECT_COMPLETE_REASONS, read_runs
 from ..platform.store import DatasetStore
 from ..platform.tables import table
+from .finding import Finding
+from .finding import coded as _coded
+from .health import streak
 
 ALERT_NAME = "ALERT.txt"
 
@@ -81,16 +84,6 @@ CARD_BEHIND_ALERT_SHARE = 20.0
 
 #: 有界试跑（max_pages）与 dry_run 不是完成；collect 的完成态与 cli 共用一份枚举。
 _RECONCILE_DONE = frozenset({"end"})
-
-
-@dataclass(frozen=True)
-class Finding:
-    """一条体检结论。`problem` 为真才会让退出码非零、并写入告警文件。"""
-
-    problem: bool
-    text: str
-    #: 只有在一份一致快照上才有意义；非快照模式下降级为提示，不参与退出码。
-    snapshot_dependent: bool = False
 
 
 def _run_time(value: object) -> datetime | None:
@@ -947,8 +940,9 @@ def diagnose(
     """跑全部体检项。
 
     `snapshot=False` 表示调用方没拿到写锁：跨表对比（current / observations /
-    silver / 导出物 / 卡片）可能在写入中途读到瞬时缺行，这类结论降级为提示，
-    不参与退出码与告警文件；文件系统与单表检查照常判定。
+    silver / 导出物 / 卡片）可能在写入中途读到瞬时缺行，这类结论标 `degraded`
+    ——**保留原来的 `problem`**，只是不参与退出码与告警。消费者自己判
+    `problem and not degraded`：「它是不是问题」与「这次读数算不算数」是两件事。
 
     快照模式下 **不跑 `_lock_state`**：本次体检已经持有写锁，它内部会再次抢锁，
     自己和自己冲突。锁被占用只可能发生在非快照模式，那里才需要报告占用者。
@@ -956,33 +950,41 @@ def diagnose(
     now = now or datetime.now()
     runs = read_runs(store)
     findings = [
-        _freshness(runs, now, "collect", COLLECT_COMPLETE_REASONS, COLLECT_MAX_AGE, "日增量采集"),
-        _freshness(runs, now, "reconcile", _RECONCILE_DONE, RECONCILE_MAX_AGE, "全量对账"),
-        _catalog_staleness(store, now.date()),
-        _snapshot_dependent(_layer_reconcile(store)),
-        _raw_gaps(store, now.date()),
-        _derive_state(store),
-        _status_snapshot(store),
-        _snapshot_dependent(_artifact_freshness(store, now.date())),
-        _snapshot_dependent(_field_freshness(store, runs)),
-        _snapshot_dependent(_card_provenance(store, now.date())),
-        _raw_growth(store),
-        _cold_backlog(store, now.date()),
-        _archive_backlog(store, now.date()),
-        _storage(store),
-        _backup_backlog(store, now),
-        _probe_quality(runs),
-        _probe_degraded(runs),
-        _recent_failures(runs, now),
-        _stale_temp_files(store, now),
-        _request_self_contained(requests_root),
-        _spec_version_consistency(requests_root),
+        _coded(
+            "collect_freshness",
+            _freshness(
+                runs, now, "collect", COLLECT_COMPLETE_REASONS, COLLECT_MAX_AGE, "日增量采集"
+            ),
+        ),
+        _coded(
+            "reconcile_freshness",
+            _freshness(runs, now, "reconcile", _RECONCILE_DONE, RECONCILE_MAX_AGE, "全量对账"),
+        ),
+        _coded("catalog_staleness", _catalog_staleness(store, now.date())),
+        _coded("layer_reconcile", _snapshot_dependent(_layer_reconcile(store))),
+        _coded("raw_gaps", _raw_gaps(store, now.date())),
+        _coded("derive_state", _derive_state(store)),
+        _coded("status_snapshot", _status_snapshot(store)),
+        _coded("artifact_freshness", _snapshot_dependent(_artifact_freshness(store, now.date()))),
+        _coded("field_freshness", _snapshot_dependent(_field_freshness(store, runs))),
+        _coded("card_provenance", _snapshot_dependent(_card_provenance(store, now.date()))),
+        _coded("raw_growth", _raw_growth(store)),
+        _coded("cold_backlog", _cold_backlog(store, now.date())),
+        _coded("archive_backlog", _archive_backlog(store, now.date())),
+        _coded("storage", _storage(store)),
+        _coded("backup_backlog", _backup_backlog(store, now)),
+        _coded("probe_quality", _probe_quality(runs)),
+        _coded("probe_degraded", _probe_degraded(runs)),
+        _coded("recent_failures", _recent_failures(runs, now)),
+        _coded("temp_files", _stale_temp_files(store, now)),
+        _coded("request_self_contained", _request_self_contained(requests_root)),
+        _coded("spec_version", _spec_version_consistency(requests_root)),
     ]
     if snapshot:
         return findings
-    findings.append(_lock_state(store))
+    findings.append(_coded("lock_state", _lock_state(store)))
     return [
-        Finding(False, f"[非快照] {item.text}", snapshot_dependent=True)
+        replace(item, degraded=True, text=f"[非快照] {item.text}")
         if item.snapshot_dependent
         else item
         for item in findings
@@ -998,7 +1000,7 @@ def sync_alert(
     应重跑一次。没有问题时仍删文件——锁占用本身不是数据告警。
     """
     path = store.root / ALERT_NAME
-    problems = [item.text for item in findings if item.problem]
+    problems = [item for item in findings if item.problem and not item.degraded]
     if not problems:
         path.unlink(missing_ok=True)
         return
@@ -1006,7 +1008,11 @@ def sync_alert(
     if not snapshot:
         lines.append("[非快照] 写锁被占用，跨表读数可能跨时点；请在写命令结束后重跑 doctor")
     lines += [f"hf-data-crawl 体检发现 {len(problems)} 个问题（{now:%Y-%m-%d %H:%M}）：", ""]
-    lines += [f"- {text}" for text in problems]
+    for item in problems:
+        # 连续轮数按 `code` 数，不按文案子串：文案改一个字匹配就断，而「这条已经红到
+        # 第几轮」恰恰是决定要不要现在动手的依据。第一次红不标，免得每条都带个尾巴。
+        rounds = streak(store, item.code) if item.code else 0
+        lines.append(f"- {item.text}" + (f"（连续 {rounds + 1} 轮）" if rounds else ""))
     # 走原子写：两个 doctor 并发时 `path.write_text` 会先截断再写，读者可能
     # 看到半截告警。这里是全项目最后一个绕过 `platform.atomic` 的写点。
     write_text(path, "\n".join(lines) + "\n")

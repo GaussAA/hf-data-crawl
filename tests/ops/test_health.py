@@ -15,11 +15,15 @@ from hf_data_crawl.platform.store import DatasetStore
 NOW = datetime(2026, 11, 10, 12, 0, 0)
 
 
-def entries(*problems: str) -> list[Finding]:
-    """造一组结论：先若干「有问题」，最后一条正常项。"""
+def entries(*problems: str, code: str = "raw_gaps") -> list[Finding]:
+    """造一组结论：先若干「有问题」，最后一条正常项。
+
+    必须带 `code`：`streak` 现在按检查项标识数，不按文案子串。测试若还按文案造、
+    按文案数，就等于在测一条已经不存在的实现——它会一直绿，而真实现早已换掉。
+    """
     return [
-        *(Finding(True, text) for text in problems),
-        Finding(False, "某项正常"),
+        *(Finding(True, text, code=code) for text in problems),
+        Finding(False, "某项正常", code="storage"),
     ]
 
 
@@ -84,18 +88,36 @@ def test_没有流水时返回空(tmp_path: Path) -> None:
     store = DatasetStore(tmp_path / "data")
 
     assert health.read(store) == []
-    assert health.streak(store, "断日") == 0
+    assert health.streak(store, "raw_gaps") == 0
 
 
 def test_连续次数只数最近的一段(tmp_path: Path) -> None:
-    """「断日连续几天了」决定要不要动手，中间有一天没断就该归零。"""
+    """「断日连续几天了」决定要不要动手，中间有一天没断就该归零。
+
+    按检查项标识数，不按文案：中间那天文案里没有「断日」三个字也该归零，
+    而文案换成别的说法也不该让计数断掉。
+    """
     store = DatasetStore(tmp_path / "data")
     for offset, texts in enumerate(
         [("Raw 断日：11-05",), (), ("Raw 断日：11-07",), ("Raw 断日：11-08",)]
     ):
         health.record(store, entries(*texts), NOW + timedelta(days=offset))
 
-    assert health.streak(store, "断日") == 2
+    assert health.streak(store, "raw_gaps") == 2
+
+
+def test_连续次数不受文案改动影响(tmp_path: Path) -> None:
+    """同一检查项换了说法，仍该算作同一件事。
+
+    这是按 `code` 计数的全部理由：原先用子串匹配，文案里混进日期、或把
+    「Raw 断日」改成「Raw 缺日」，计数就静默归零——归零还不报错，只让人以为
+    「今天突然好了」。
+    """
+    store = DatasetStore(tmp_path / "data")
+    health.record(store, entries("Raw 断日：2026-11-05"), NOW)
+    health.record(store, entries("Raw 缺日（措辞已改）：2026-11-06"), NOW + timedelta(days=1))
+
+    assert health.streak(store, "raw_gaps") == 2
 
 
 def test_流水本身进体检而不算问题(tmp_path: Path) -> None:
