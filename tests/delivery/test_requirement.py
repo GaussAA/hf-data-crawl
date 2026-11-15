@@ -24,6 +24,7 @@ from hf_data_crawl.delivery.requirement import (
     directory_name,
     history_versions,
     load,
+    request_dirs,
     resolve_dir,
     skeleton,
     snapshot_history,
@@ -430,3 +431,21 @@ def test_历史快照按需求目录解析相对路径(tmp_path: Path) -> None:
     assert load(snapshot, base_dir=folder).fill is not None
     with pytest.raises(SpecError, match="输入表不存在|不是文件"):
         load(snapshot)
+
+
+def test_需求目录只认带_spec_的目录(tmp_path: Path) -> None:
+    """「哪些目录算一次需求」只有一条判据：里面有 `spec.yaml`。
+
+    这条判据原先散在 `ops.doctor` 的两处 glob 里，一处忘了排除 `.tmp-` 就
+    会把原子写的暂存目录当成一份需求，然后对着它报「方法缺失」——报的是
+    一个不存在的东西，而真正的需求被它挡在后面。
+    """
+    root = tmp_path / "requests"
+    keep = root / "REQ-0001-查清单"
+    keep.mkdir(parents=True)
+    (keep / "spec.yaml").write_text("id: REQ-0001\n", encoding="utf-8")
+    (root / ".tmp-9f2a").mkdir()
+    (root / "素材").mkdir()
+
+    assert [path.name for path in request_dirs(root)] == ["REQ-0001-查清单"]
+    assert request_dirs(tmp_path / "nope") == []

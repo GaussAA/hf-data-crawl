@@ -11,7 +11,15 @@ from ..platform.runs import Outcome
 from ..platform.store import DatasetStore
 from . import compare, specdiff
 from .backfill import FillError, header_change, header_of
-from .delivery import DeliveryBlocked, DeliveryResult, Preview, deliver, preview, run_due
+from .delivery import (
+    DeliveryBlocked,
+    DeliveryResult,
+    Preview,
+    deliver,
+    deliveries_of,
+    preview,
+    run_due,
+)
 from .method import METHOD_DIR, METHOD_DOC, METHOD_INDEX, problems
 from .method import sync as sync_method
 from .metrics import lookup
@@ -49,20 +57,6 @@ def run_export_wide(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     )
     print("  可重建产物：不参与状态更新，删掉后重跑本命令即可")
     return Outcome(summary)
-
-
-def deliveries_of(request_dir: Path) -> list[Path]:
-    """一次需求的交付目录，按名字升序——名字是时间戳，字典序即时间序。
-
-    以 `.` 开头的是原子写留下的 `.tmp-*` 暂存目录，它**不是**一次交付：算进台账
-    会让「once 已交付过」凭空成立，把真正需要的那份挡在门外。
-    """
-    base = request_dir / DELIVERIES_DIR
-    if not base.is_dir():
-        return []
-    return sorted(
-        path for path in base.iterdir() if path.is_dir() and not path.name.startswith(".")
-    )
 
 
 def criteria_text(spec: Spec) -> str:

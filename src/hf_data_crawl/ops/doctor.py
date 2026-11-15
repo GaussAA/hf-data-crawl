@@ -20,10 +20,12 @@ from pathlib import Path
 import polars as pl
 
 from ..acquire.reconcile import PROBE_DEGRADE_AFTER
-from ..delivery.delivery import method
+from ..acquire.sizes import stale_ids
+from ..delivery.delivery import deliveries_of, method
 from ..delivery.fields import DEFAULT_COLUMNS, contract_errors
-from ..delivery.requirement import DELIVERIES_DIR, SPEC_NAME, SpecError, version_conflict
+from ..delivery.requirement import SPEC_NAME, SpecError, request_dirs, version_conflict
 from ..delivery.requirement import load as load_spec
+from ..delivery.wide import export_path
 from ..pipeline import lineage, raw, state
 from ..pipeline.rebuild import discover_raw_dates, snapshot_health, snapshot_path
 from ..platform.atomic import write_text
@@ -328,13 +330,45 @@ def _layer_reconcile(store: DatasetStore) -> Finding:
 def _scan_frame(pattern: Path | str, columns: list[str]) -> pl.DataFrame | None:
     """只取需要的列（parquet 列裁剪），读失败返回 None。
 
-    富化表里 `carddata` 76 万行、`size` 112 万行，读全列会让体检多花十几秒；
-    而这里只需要 id 与日期。读失败不抛：体检不能因为一份产物坏掉而整体失败。
+    富化表里 `carddata` 78 万行、`size` 114 万行，而这里通常只要 id 与日期。
+    裁列省的是几十毫秒（2026-11-15 实测：读全列 0.10 / 0.18 秒），不是分钟级——
+    先前这里写着「读全列会让体检多花十几秒」，那是没实测的估计，已按实测改正。
+    读失败不抛：体检不能因为一份产物坏掉而整体失败。
     """
     try:
         return pl.scan_parquet(pattern).select(columns).collect()
     except (OSError, pl.exceptions.PolarsError):
         return None
+
+
+def _covered(frame: pl.DataFrame, current_ids: set[str]) -> int:
+    """表里有多少行真的落在底库内（交集口径，唯一算法）。
+
+    分子取交集而不是表内 id 总数：富化表留着已消失的库（卡片曾跟 `lastModified`
+    抓过、后来下架），直接数表内 id 会把它们也算成覆盖，覆盖率虚高。
+
+    2026-11-15 体检里「产物新鲜度」与「字段新鲜度」对同一份 `carddata` 报出
+    68% 与 68.3%：前者交集、后者只数 `n_unique`。数字不同不是精度差异，
+    是同一件事算了两遍、其中一遍算错。两处现都走这里，分母统一用
+    `len(current_ids)`——以后再有人加一处覆盖统计，也不会再长出第三个数字。
+    """
+    if frame.height == 0:
+        return 0
+    return len(set(frame["id"].to_list()) & current_ids)
+
+
+def _share_text(ratio: float) -> str:
+    """覆盖率的统一写法，全体检只此一种。
+
+    10% 以上取整、以下留一位：`files` 试点只有 1000 行（约 0.09%），取整会写成
+    「0%」，读起来像「一行都没有」，而它确实有、只是不足千分之一。
+
+    两条检查项曾经各写各的：「产物新鲜度」用 `.0f`、「字段新鲜度」用 `.1%`，
+    于是同一个 68.342% 在同一份体检里印成「68%」与「68.3%」。数字不同不只难看：
+    读者会以为其中一个错了，去查，查完发现两个都对——从此不再信这两个数。
+    """
+    percent = ratio * 100
+    return f"{percent:.1f}%" if percent < 10 else f"{percent:.0f}%"
 
 
 def _artifact_freshness(store: DatasetStore, today: date) -> Finding:
@@ -360,7 +394,7 @@ def _artifact_freshness(store: DatasetStore, today: date) -> Finding:
     problems: list[str] = []
     notes: list[str] = []
 
-    export = store.root / "exports" / "datasets.parquet"
+    export = export_path(store)
     if not export.exists():
         problems.append("宽表导出不存在，跑 export-wide")
     else:
@@ -399,11 +433,8 @@ def _artifact_freshness(store: DatasetStore, today: date) -> Finding:
         if frame is None or frame.height == 0:
             notes.append(f"{label}读取失败")
             continue
-        covered = len(set(frame["id"].to_list()) & current_ids)
-        share = covered / len(current_ids) * 100
-        # 覆盖率保留一位小数直到 10%：`files` 试点只有 1000 行，四舍五入成「0%」
-        # 会读成「一行都没有」，而它确实有 1000 行、只是不足千分之一。
-        share_text = f"{share:.1f}%" if share < 10 else f"{share:.0f}%"
+        covered = _covered(frame, current_ids)
+        share_text = _share_text(covered / len(current_ids))
         newest = frame["snapshot_date"].max()
         # `Series.max()` 的类型标注是宽联合（date / bytes / …），先收窄再用。
         if not isinstance(newest, date):
@@ -477,31 +508,25 @@ def _field_freshness(store: DatasetStore, runs: list[dict]) -> Finding:
     seen = current.filter(pl.col("last_seen_at") >= sweep).height
     share = seen / current.height
 
+    current_ids = set(current["id"].to_list())
+    total = len(current_ids)
+
     cards = store.read("carddata")
-    covered = cards["id"].n_unique() if cards.height else 0
+    covered = _covered(cards, current_ids)
     sizes = store.read("size")
-    stale = 0
+    covered_sizes = _covered(sizes, current_ids)
+    # 直接调 `fetch-sizes --changed` 用的那个函数，不在这里复刻一份：复制品与原件
+    # 分居两个切片，改了一边不会报错、不会变红，只会静默漂移。原先这里有一份逐字
+    # 抄来的 join——「同一判据三处实现」的中间那一份，正是最容易被改坏的那一份。
+    stale = stale_ids(current, sizes).height
     newest_size: date | None = None
     if sizes.height:
         newest_size = sizes.select(pl.col("snapshot_date").max()).item()
-        # 与 `fetch-sizes --changed` 同一口径：只算「上次真拿到了规模」的库。
-        # 把 unavailable 的算进来，这个数会永远清不零，人也就不再看了。
-        # 两张表都有 `status`，改名后再过滤——否则取到的是底库的在架状态，
-        # 判据恒不成立，这一项会假装永远是 0。
-        joined = current.join(
-            sizes.select("id", "snapshot_date", pl.col("status").alias("size_status")),
-            on="id",
-            how="inner",
-        )
-        stale = joined.filter(
-            (pl.col("size_status") == "ok")
-            & (pl.col("last_modified").dt.date() > pl.col("snapshot_date"))
-        ).height
 
     text = (
         f"字段新鲜度：列表字段最近一轮（{sweep}）覆盖 {share:.1%}（{seen}/{current.height}）"
-        f" · 卡片覆盖 {covered / current.height:.1%}（上游卡片本就不全）"
-        f" · 规模覆盖 {sizes.height / current.height:.1%}、最新 {newest_size or '无'}"
+        f" · 卡片覆盖 {_share_text(covered / total)}（上游卡片本就不全）"
+        f" · 规模覆盖 {_share_text(covered_sizes / total)}、最新 {newest_size or '无'}"
         f" · 规模待重取 {stale} 个"
     )
     if share < FIELD_SWEEP_SHARE:
@@ -860,15 +885,8 @@ def _request_self_contained(requests_root: Path | None) -> Finding:
 
     checked = 0
     bad: list[str] = []
-    for spec_path in sorted(requests_root.glob(f"*/{SPEC_NAME}")):
-        request_dir = spec_path.parent
-        base = request_dir / DELIVERIES_DIR
-        if not base.is_dir():
-            continue
-        delivered = [
-            path for path in base.iterdir() if path.is_dir() and not path.name.startswith(".")
-        ]
-        if not delivered:
+    for request_dir in request_dirs(requests_root):
+        if not deliveries_of(request_dir):
             continue
         checked += 1
         found = method.problems(request_dir)
@@ -897,13 +915,11 @@ def _spec_version_consistency(requests_root: Path | None) -> Finding:
 
     checked = 0
     bad: list[str] = []
-    for spec_path in sorted(requests_root.glob(f"*/{SPEC_NAME}")):
-        base = spec_path.parent / DELIVERIES_DIR
-        if not base.is_dir():
-            continue
-        if not any(path.is_dir() and not path.name.startswith(".") for path in base.iterdir()):
+    for request_dir in request_dirs(requests_root):
+        if not deliveries_of(request_dir):
             continue
         checked += 1
+        spec_path = request_dir / SPEC_NAME
         try:
             spec = load_spec(spec_path)
         except SpecError as error:

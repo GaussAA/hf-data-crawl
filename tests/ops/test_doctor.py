@@ -82,10 +82,15 @@ def put_ids(store: DatasetStore, name: str, day: date, ids: list[str]) -> None:
 
 
 def put_export(store: DatasetStore, ids: list[str]) -> None:
-    """造一份符合默认交付契约的宽表导出；体检比对 id 差集与列集。"""
-    from hf_data_crawl.delivery.fields import DEFAULT_COLUMNS
+    """造一份符合默认交付契约的宽表导出；体检比对 id 差集与列集。
 
-    target = store.root / "exports" / "datasets.parquet"
+    落点取 `delivery.export_path` 而不是自己拼 `root/exports`：夹具若自成一套，
+    「体检与导出写的是同一个地方」这条就测不出来了——两边各错一半也会通过。
+    """
+    from hf_data_crawl.delivery.fields import DEFAULT_COLUMNS
+    from hf_data_crawl.delivery.wide import export_path
+
+    target = export_path(store)
     target.parent.mkdir(parents=True, exist_ok=True)
     pl.DataFrame(
         {column: ids if column == "id" else [None] * len(ids) for column in DEFAULT_COLUMNS}
@@ -979,3 +984,51 @@ def test_告警写失败不阻断体检流水(tmp_path: Path, monkeypatch: Any) 
     commands._doctor(store, snapshot=True)
 
     assert len(read_health(store)) == 1
+
+
+# ---------------------------------------------------------------- 同一口径只有一份
+
+
+def test_卡片覆盖在两个检查项里报同一个数(tmp_path: Path) -> None:
+    """同一份 `carddata`，两个检查项不能各印一个数字。
+
+    2026-11-15 实测：同一份体检里「产物新鲜度」印 68%、「字段新鲜度」印 68.3%。
+    查下来分子其实相等（交集与 `n_unique` 差 0 个 id），是**格式**各写各的：
+    一处 `.0f`、一处 `.1%`。数字不同不只难看——读者会以为其中一个坏了，
+    查完发现两个都对，从此不再信这两个数。
+    """
+    store = DatasetStore(tmp_path / "data")
+    ids = [f"acme/ds-{index}" for index in range(10)]
+    put_current(store, NOW.date(), rows=10)
+    put_export(store, ids)
+    put_artifact(store, "carddata", ids[:3], NOW.date())
+    make_run(store, "reconcile", NOW)
+
+    findings = diagnose(store, NOW)
+    artifact = next(item for item in findings if item.text.startswith("产物新鲜度"))
+    field = next(item for item in findings if item.text.startswith("字段新鲜度"))
+
+    assert "卡片覆盖 30%" in artifact.text
+    assert "卡片覆盖 30%" in field.text
+
+
+def test_体检读导出物走_delivery_定义的位置(tmp_path: Path, monkeypatch: Any) -> None:
+    """导出位置只能有一个定义，体检必须跟着它走。
+
+    体检原先自己拼 `root/exports/datasets.parquet`。哪天有人改了
+    `wide.DEFAULT_RELATIVE`，体检就会报「宽表导出不存在，跑 export-wide」，
+    而重跑只会写到新位置——照这条提示做，永远修不好它指的病。
+    """
+    from hf_data_crawl.delivery import wide
+
+    monkeypatch.setattr(wide, "DEFAULT_RELATIVE", Path("exports") / "renamed.parquet")
+
+    store = DatasetStore(tmp_path / "data")
+    ids = [f"acme/ds-{index}" for index in range(3)]
+    put_current(store, NOW.date(), rows=3)
+    put_export(store, ids)
+
+    artifact = next(item for item in diagnose(store, NOW) if item.text.startswith("产物新鲜度"))
+
+    assert not artifact.problem
+    assert "导出与底库一致" in artifact.text

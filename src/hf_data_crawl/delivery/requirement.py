@@ -90,6 +90,19 @@ def resolve_dir(root: Path, request_id: str) -> Path:
     return hits[0]
 
 
+def request_dirs(root: Path) -> list[Path]:
+    """`root` 下所有需求目录，按名字升序。
+
+    判据只有一条：目录里有 `spec.yaml`。以 `.` 开头的是原子写留下的暂存目录；
+    没有 `spec.yaml` 的（素材、草稿、附件）也不算一次需求。这条判据原先散在
+    `ops/doctor` 的两处 glob 里，各写各的——一处改了另一处不知道，体检就会
+    对着一个不存在的需求报「方法缺失」。
+    """
+    if not root.is_dir():
+        return []
+    return sorted(path for path in root.iterdir() if path.is_dir() and (path / SPEC_NAME).is_file())
+
+
 #: 需求号的形状。四位起步，够用一千个需求；真要超了再放宽，届时会逼人正视编号。
 _ID_PATTERN = r"^REQ-\d{4,}$"
 

@@ -681,13 +681,26 @@ def _check_guard(spec: Spec, rows: int) -> None:
 # ---------------------------------------------------------------- 与上次比较
 
 
-def _last_delivery(request_dir: Path) -> Path | None:
+def deliveries_of(request_dir: Path) -> list[Path]:
+    """一次需求的交付目录，按名字升序——名字是时间戳，字典序即时间序。
+
+    以 `.` 开头的是原子写留下的 `.tmp-*` 暂存目录，它**不是**一次交付：算进台账
+    会让「once 已交付过」凭空成立，把真正需要的那份挡在门外。
+
+    这条判据只能有一份。台账（本函数）、体检（`ops.doctor`）、`request list` 都靠它
+    决定「哪些目录算一次交付」；三处各写一遍，迟早有一处把 `.tmp-` 算进去，而那种
+    错不会报错——只会在半年后有人问「这份数据什么时候交的」时，答出一个没交成的日子。
+    """
     base = request_dir / DELIVERIES_DIR
     if not base.is_dir():
-        return None
-    done = sorted(
+        return []
+    return sorted(
         path for path in base.iterdir() if path.is_dir() and not path.name.startswith(".")
     )
+
+
+def _last_delivery(request_dir: Path) -> Path | None:
+    done = deliveries_of(request_dir)
     return done[-1] if done else None
 
 

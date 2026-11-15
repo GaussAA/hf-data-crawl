@@ -63,7 +63,14 @@ class WideExportSummary:
     bytes: int
 
 
-def default_target(store: DatasetStore) -> Path:
+def export_path(store: DatasetStore) -> Path:
+    """宽表导出的默认落点。
+
+    这是「导出物在哪」的唯一答案：`export_wide` 用它决定写哪里，`ops` 用它决定
+    读哪里。曾经 `ops.doctor` 自己拼了一遍 `root / "exports" / "datasets.parquet"`，
+    两处各有一份；那天有人改了 `DEFAULT_RELATIVE`，体检就会报「导出不存在」并让人
+    去跑 `export-wide`，而重跑只会写到新位置——提示永远修不好它指的那个病。
+    """
     return store.root / DEFAULT_RELATIVE
 
 
@@ -88,7 +95,7 @@ def export_wide(store: DatasetStore, target: Path | None = None) -> WideExportSu
     行数），任一不符就抛 `WideExportMismatch` 并在 `finally` 里撤销——绝不让
     半截或错口径的文件顶替上一版。校验在替换**之前**做，是这里最关键的顺序。
     """
-    destination = Path(target) if target is not None else default_target(store)
+    destination = Path(target) if target is not None else export_path(store)
     _assert_inside(store.root, destination)
 
     catalog = GoldCatalog(store)
