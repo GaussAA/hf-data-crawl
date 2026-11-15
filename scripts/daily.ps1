@@ -89,6 +89,16 @@ foreach ($step in $steps) {
 
     Write-Summary "  [开始] $($step.Label)（$($step.Name)）"
     $code = Invoke-HfTask -Name $step.Name -Arguments $step.Arguments
+
+    # 采集是唯一「一次抖动就整天没有增量」的步骤：2026-11-15 03:10 实测撞上 TLS
+    # 断连（SSL UNEXPECTED_EOF），一分钟后对账却正常，属瞬时故障。故只给它一次
+    # 重试；仍失败就照旧记失败——重试治的是抖动，不该掩盖真故障。
+    if ($code -ne 0 -and $step.Name -eq "collect") {
+        Write-Summary "  [重试] $($step.Label)（$($step.Name)）：首次失败，2 分钟后重试一次"
+        Start-Sleep -Seconds 120
+        $code = Invoke-HfTask -Name $step.Name -Arguments $step.Arguments
+    }
+
     $codes[$step.Name] = $code
 
     if ($code -eq 0) {
