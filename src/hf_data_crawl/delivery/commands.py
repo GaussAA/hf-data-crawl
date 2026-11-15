@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import shutil
 from pathlib import Path
 
@@ -18,6 +17,7 @@ from .delivery import (
     deliver,
     deliveries_of,
     preview,
+    read_manifest,
     run_due,
 )
 from .method import METHOD_DIR, METHOD_DOC, METHOD_INDEX, problems
@@ -74,14 +74,15 @@ def criteria_text(spec: Spec) -> str:
 
 
 def manifest_summary(directory: Path) -> str:
-    """交付目录的一行摘要。读不到就留空——台账缺一份不该让 show 整体失败。"""
-    path = directory / MANIFEST_NAME
-    if not path.exists():
-        return "  （缺 manifest）"
-    try:
-        body = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return "  （manifest 读不出来）"
+    """交付目录的一行摘要。读不到就留空——台账缺一份不该让 show 整体失败。
+
+    「缺」与「坏」分开说：前者说明目录不是一次交付，后者说明这份档案坏了，
+    两种情形该做的处置不同。
+    """
+    body = read_manifest(directory)
+    if body is None:
+        note = "缺 manifest" if not (directory / MANIFEST_NAME).is_file() else "manifest 读不出来"
+        return f"  （{note}）"
     rows = (body.get("result") or {}).get("rows")
     status = (body.get("health") or {}).get("status", "?")
     return f"  {rows} 行 · {status}"

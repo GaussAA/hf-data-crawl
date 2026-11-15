@@ -832,3 +832,31 @@ def test_判读表换了子目录就算换了口径(tmp_path: Path) -> None:
     (in_subdir.parent / "judge" / "ov.json").write_text("{}", encoding="utf-8")
 
     assert spec_digest(root_level) != spec_digest(in_subdir)
+
+
+# ---------------------------------------------------------------- 档案的读法只有一处
+
+
+def test_台账把缺档案与坏档案分开说(tmp_path: Path) -> None:
+    """「缺 manifest」与「读不出来」引向两种不同的处置，不能折成一句话。
+
+    这条同时钉住读取只有一处：`manifest_summary` 与 `compare` 都走
+    `delivery.read_manifest`，文件名不再由各自拼。
+    """
+    from hf_data_crawl.delivery.commands import manifest_summary
+
+    missing = tmp_path / "20261101-120000"
+    missing.mkdir()
+    assert "缺 manifest" in manifest_summary(missing)
+
+    broken = tmp_path / "20261102-120000"
+    broken.mkdir()
+    (broken / MANIFEST_NAME).write_text("{不是 json", encoding="utf-8")
+    assert "读不出来" in manifest_summary(broken)
+
+    good = tmp_path / "20261103-120000"
+    good.mkdir()
+    (good / MANIFEST_NAME).write_text(
+        '{"result": {"rows": 42}, "health": {"status": "first"}}', encoding="utf-8"
+    )
+    assert "42 行" in manifest_summary(good)

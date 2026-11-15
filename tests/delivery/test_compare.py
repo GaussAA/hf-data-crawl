@@ -130,6 +130,29 @@ def test_缺产物要说清楚而不是空比(tmp_path: Path) -> None:
         compare_deliveries(left, right)
 
 
+def test_档案坏了与档案缺了分开报(tmp_path: Path) -> None:
+    """「不是一次交付」与「档案坏了」是两件事，人也该按不同办法处置。
+
+    判据与文件名都来自 `delivery.read_manifest`——compare 原先自己拼
+    `"manifest.json"`、自己抓异常，两处一旦分头演化，就会出现「文件明明在，
+    却被告知没有 manifest」。这条同时钉住文件名只有一处、两种失败不折叠。
+    """
+    left = make_delivery(tmp_path, "A", "query", ["data.parquet"])
+    pl.DataFrame({"id": ["a"], "downloads": [1]}).write_parquet(left / "data.parquet")
+    right = make_delivery(tmp_path, "B", "query", ["data.parquet"])
+    pl.DataFrame({"id": ["a"], "downloads": [1]}).write_parquet(right / "data.parquet")
+
+    # 文件在、内容坏：顶层不是对象。
+    (right / "manifest.json").write_text("[1, 2]", encoding="utf-8")
+    with pytest.raises(CompareError, match="读不出来或顶层不是对象"):
+        compare_deliveries(left, right)
+
+    # 文件根本不在：这个目录不是一次交付。
+    (right / "manifest.json").unlink()
+    with pytest.raises(CompareError, match="没有 manifest.json"):
+        compare_deliveries(left, right)
+
+
 def run_cli(tmp_path: Path, *argv: str) -> int:
     from hf_data_crawl.ops.cli import main
 

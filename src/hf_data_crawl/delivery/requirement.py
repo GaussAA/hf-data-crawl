@@ -2,8 +2,13 @@
 
 三层职责，只此一处
 ------------------
-1. **读**：YAML → `Spec`。校验全部在 `_validate` 里做一次，之后各层拿到的
-   `Spec` 一定是自洽的——不必在编译、执行、交付各处重复检查。
+1. **读**：YAML → `Spec`。词条是否存在、运算符与词条类型是否相容、值能不能落成
+   该类型的字面量，这三样都在 `_validate` 里查完，之后各层拿到的 `Spec` 一定是
+   自洽的——不必在编译、执行、交付各处重复检查。
+
+   为什么非要前移到受理：受理（`request new`）与执行（`request run`）是两次
+   独立的人工动作，中间可以隔很久。校验留在编译期，就会出现「今天建好了需求、
+   明天才被告知它根本跑不通」，而建的时候还打印了「已建需求」。
 2. **编译**：`criteria` → SQL。字段名只来自词表白名单，运算符只来自按类型定
    的白名单，值走转义。三者都不接受调用方直接拼字符串，所以「需求 SQL」不可能
    变成注入入口。
@@ -350,16 +355,32 @@ def _validate(spec: Spec, path: Path) -> None:
         raise SpecError(f"{path}: mode=criteria 时 criteria 不能为空（要手写 SQL 请写 mode: sql）")
     if spec.mode is Mode.SQL and not (spec.sql or "").strip():
         raise SpecError(f"{path}: mode=sql 时必须给 sql")
-    # 词条在这里查一次，而不是等编译：受理时就该发现「热度」不在词表里，
-    # 而不是等交付跑到一半。条件与排序分开遍历，两者的类型不同，混在一个
-    # 循环里只能推断成宽联合。
-    for term in [item.metric for item in (*spec.criteria,)] + [key.metric for key in spec.order_by]:
-        if term in PLAIN_COLUMNS:
+    # 词条、运算符、值的相容性都在这里查完，而不是等编译：受理时就该发现「热度」
+    # 不在词表里、文本列上写了 `>`、数字列给了「很多」，而不是等交付跑到一半才炸。
+    # 条件与排序分开遍历：排序没有运算符与取值，混在一个循环里只能推断成宽联合。
+    for item in spec.criteria:
+        if item.metric in PLAIN_COLUMNS:
             continue
+        metric = _metric_or_fail(item.metric, path)
+        _compatible(metric, item.op, f"{path}: ")
+        # 值的形态（数字列收到「很多」、时间列收到乱码）与运算符同属「这条条件
+        # 成不成立」，一并前移。`_literal` 本来就是纯函数，两处调用结果一致。
         try:
-            lookup(term)
-        except ValueError as error:
+            _literal(item.value, metric)
+        except SpecError as error:
             raise SpecError(f"{path}: {error}") from None
+    for key in spec.order_by:
+        if key.metric in PLAIN_COLUMNS:
+            continue
+        _metric_or_fail(key.metric, path)
+
+
+def _metric_or_fail(term: str, path: Path) -> Metric:
+    """词条存在性。`lookup` 报的是名字与候选清单，这里补上「哪份文件」。"""
+    try:
+        return lookup(term)
+    except ValueError as error:
+        raise SpecError(f"{path}: {error}") from None
 
 
 def _criterion(item: Any, path: Path) -> Criterion:
@@ -519,13 +540,27 @@ def compile_sql(spec: Spec) -> str:
 
 def _clause(item: Criterion) -> str:
     metric = lookup(item.metric)
-    op = _OPERATORS[metric.kind]
-    if item.op not in op:
-        raise SpecError(
-            f"条件「{item.metric}」是{_kind_note(metric.kind)}，只能用 {' '.join(sorted(op))}，"
-            f"不能用 {item.op!r}"
-        )
+    _compatible(metric, item.op)
     return f'"{metric.field}" {item.op} {_literal(item.value, metric)}'
+
+
+def _compatible(metric: Metric, op: str, where: str = "") -> str:
+    """运算符与词条类型是否相容；原样返回 `op` 便于链式使用。
+
+    受理（`_validate`）与编译（`_clause`）共用这一份判据。各写一遍时前一处很容易
+    漏——漏了就是「受理通过、编译才炸」：`request new` 会建出一份永远跑不通的需求，
+    还打印「已建需求」，直到 `request run` 才报错。
+
+    `where` 只是文案前缀（受理时带文件路径，编译时没有）。编译侧仍留着这次调用，
+    是给「绕过 `load` 直接构造 `Spec`」的调用方兜底；正常路径走不到。
+    """
+    allowed = _OPERATORS[metric.kind]
+    if op not in allowed:
+        raise SpecError(
+            f"{where}条件「{metric.term}」是{_kind_note(metric.kind)}，"
+            f"只能用 {' '.join(sorted(allowed))}，不能用 {op!r}"
+        )
+    return op
 
 
 def _kind_note(kind: MetricKind) -> str:

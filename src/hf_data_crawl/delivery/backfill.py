@@ -75,7 +75,7 @@ from openpyxl.styles import Alignment, Font
 from ..platform.atomic import replace
 from ..platform.store import DatasetStore
 from ..query.gold import GoldCatalog
-from .stamp import SourceStamp, stamp
+from .stamp import SourceStamp, file_stamp, stamp
 
 #: HF 的标签是英文枚举，回填进中文表要归一；词表外的新枚举原样保留，不硬猜。
 #: spec 里可用 `lexicon:` 追加，但追加项只对本份 spec 生效。
@@ -729,7 +729,13 @@ def run(
 
 
 def _digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    """产物字节的 sha256。
+
+    走 `stamp.file_stamp` 取同一份判据，不在这里另算一遍：同一份文件若有两套
+    指纹算法（一份原字节、一份抹 CRLF），两个数会写进档案的不同字段，而谁都
+    不会报错——只有比对时才发现「同一份东西，两处记的哈希不一样」。
+    """
+    return str(file_stamp(path)["sha256"])
 
 
 def _normalize_zip(path: Path, anchor: datetime) -> None:

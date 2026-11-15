@@ -204,6 +204,10 @@ def _pinned_inputs(request_dir: Path, spec: Spec) -> tuple[str, ...]:
     原先 `method.stamp` 写死 `overrides.json`：判读表放在子目录时档案一处都没
     钉住（「脚本 → 判读表 → 交付」那条链断在中间且不报错），而需求目录里恰好
     躺着一份没用上的同名文件时，又会把它记成这次交付的输入。两头都不对。
+
+    这里的 `is_file` 与 `method.stamp` 里那次**不是重复劳动**：此处是**阻断**
+    （受理时还在、现在没了，不能出土），那里是**跳过**（默认清单里的条目本来就
+    可能不存在，跳过是合法形态）。合成一处就得二选一，必然错一头。
     """
     fill = spec.fill
     if fill is None or not fill.overrides_relative:
@@ -711,10 +715,18 @@ def _last_delivery_name(request_dir: Path, *, exclude: str) -> str | None:
     return last.name
 
 
-def _read_manifest(directory: Path) -> dict[str, Any] | None:
-    path = directory / MANIFEST_NAME
+def read_manifest(directory: Path) -> dict[str, Any] | None:
+    """读一次交付的 `manifest.json`；读不出来返回 None。
+
+    三种失败（文件不在、JSON 坏了、顶层不是对象）一律折叠成 None——**怎么表达**
+    留给调用方：`_health` 记 `unknown`、`manifest_summary` 印一行、`compare` 抛
+    `CompareError`。折叠是因为「读」这件事本该只有一处，而表达方式本就各不相同。
+
+    本函数收拢的其实是两样东西：文件名与解析容错。原先 `compare` 自己拼
+    `"manifest.json"`，`commands` 又拼一次，谁改了文件名都不会通知另一方。
+    """
     try:
-        body = json.loads(path.read_text(encoding="utf-8"))
+        body = json.loads((directory / MANIFEST_NAME).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     return body if isinstance(body, dict) else None
@@ -733,7 +745,7 @@ def _health(request_dir: Path, spec: Spec, rows: int, header: tuple[str, ...] = 
     if last is None:
         return Health(status="first")
 
-    body = _read_manifest(last)
+    body = read_manifest(last)
     if body is None:
         return Health(
             status="unknown", note=f"上一次交付（{last.name}）的 manifest 读不出来，本次未比较"
@@ -1029,7 +1041,7 @@ def last_delivered_at(request_dir: Path) -> datetime | None:
     last = _last_delivery(request_dir)
     if last is None:
         return None
-    body = _read_manifest(last)
+    body = read_manifest(last)
     if body is None:
         return None
     raw = body.get("delivered_at")

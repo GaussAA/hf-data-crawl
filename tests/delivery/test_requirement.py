@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ import yaml
 from hf_data_crawl.delivery.fields import DEFAULT_COLUMNS, projection_sql
 from hf_data_crawl.delivery.requirement import (
     Cadence,
+    Criterion,
     Kind,
     Mode,
     SpecError,
@@ -197,16 +199,29 @@ def test_日期条件编成DATE字面量(tmp_path: Path) -> None:
     assert "DATE '2026-01-01'" in sql
 
 
-def test_数字条件给字符串报错(tmp_path: Path) -> None:
-    spec = load(write_spec(tmp_path, criteria=[{"metric": "下载量", "op": ">", "value": "很多"}]))
+def test_数字条件给字符串受理时就拒(tmp_path: Path) -> None:
+    """值类型不对说明「这条条件根本不成立」，该在受理时说，不是等交付跑到一半。
 
+    本文件开头就写着「不合法的 spec 在受理时就被拦下」，而它原先恰恰是反例：
+    `load` 放行、`compile_sql` 才炸，中间可以隔一天。
+    """
     with pytest.raises(SpecError, match="需要一?个?数字"):
-        compile_sql(spec)
+        load(write_spec(tmp_path, criteria=[{"metric": "下载量", "op": ">", "value": "很多"}]))
 
 
-def test_文本列上用大于号在编译期就被拒(tmp_path: Path) -> None:
+def test_文本列上用大于号在受理时就拒(tmp_path: Path) -> None:
     """DuckDB 允许文本比较，但那是字典序，几乎从来不是提问者要的。"""
-    spec = load(write_spec(tmp_path, criteria=[{"metric": "作者", "op": ">", "value": "a"}]))
+    with pytest.raises(SpecError, match="文本"):
+        load(write_spec(tmp_path, criteria=[{"metric": "作者", "op": ">", "value": "a"}]))
+
+
+def test_编译侧仍拦得住绕过受理的非法条件(tmp_path: Path) -> None:
+    """`_compatible` 在编译处也调一次，是给直接构造 `Spec` 的调用方兜底。
+
+    正常路径走不到那里（受理时已拦住），但只要有人手工拼一个 `Spec` 交给
+    `compile_sql`，就该在那儿被拒，而不是把 `作者 > 'a'` 编译进 SQL。
+    """
+    spec = replace(load(write_spec(tmp_path)), criteria=(Criterion("作者", ">", "a"),))
 
     with pytest.raises(SpecError, match="文本"):
         compile_sql(spec)

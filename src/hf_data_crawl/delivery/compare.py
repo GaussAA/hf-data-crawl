@@ -21,7 +21,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,6 +29,8 @@ import openpyxl
 import polars as pl
 
 from .backfill import FillError, parse_reference
+from .delivery import read_manifest
+from .requirement import MANIFEST_NAME
 
 #: 每列给出的样例条数。再多就成了又一份表，人不会看。
 SAMPLE_SIZE = 3
@@ -71,16 +72,18 @@ class Comparison:
 
 
 def _manifest(directory: Path) -> dict[str, Any]:
-    path = directory / "manifest.json"
-    if not path.is_file():
-        raise CompareError(f"{directory.name} 没有 manifest.json，不是一次交付")
-    try:
-        body = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise CompareError(f"{directory.name} 的 manifest 读不出来：{error}") from None
-    if not isinstance(body, dict):
-        raise CompareError(f"{directory.name} 的 manifest 顶层不是对象")
-    return body
+    """读交付的 manifest；「缺」与「坏」分开报，处置不同。
+
+    判据与文件名都来自 `delivery.read_manifest`——这里只负责把 None 翻译成带
+    目录名的 `CompareError`。原先自己拼 `"manifest.json"`，档案改名不会有谁
+    通知这个文件，比对会在一个「明明存在」的目录上报「没有 manifest」。
+    """
+    body = read_manifest(directory)
+    if body is not None:
+        return body
+    if not (directory / MANIFEST_NAME).is_file():
+        raise CompareError(f"{directory.name} 没有 {MANIFEST_NAME}，不是一次交付")
+    raise CompareError(f"{directory.name} 的 {MANIFEST_NAME} 读不出来或顶层不是对象")
 
 
 def compare_deliveries(left_dir: Path, right_dir: Path) -> Comparison:
