@@ -66,3 +66,29 @@ def test_工作区新出现的缓存目录必须登记() -> None:
     assert actual <= set(TOOL_CACHES.values()), (
         f"未登记的缓存目录：{sorted(actual - set(TOOL_CACHES.values()))}"
     )
+
+
+def test_交付档案与项目技能的白名单确实生效() -> None:
+    """两处「先排除整目录、再放行子项」最容易写错：目录没放行时文件白名单不起作用。
+
+    先前只有工具缓存目录有回归守护，而 `.gitignore` 里最脆的两条规则
+    （`**/deliveries/` 与 `.workbuddy/*`）恰恰无人看管。
+    """
+    cases = [
+        ("requests/REQ-9999-query-x/deliveries/20261115T000000/manifest.json", False),
+        ("requests/REQ-9999-query-x/deliveries/20261115T000000/README.md", False),
+        ("requests/REQ-9999-query-x/deliveries/20261115T000000/data.parquet", True),
+        (".workbuddy/skills/hf-request/SKILL.md", False),
+        (".workbuddy/memory/2026-11-15.md", True),
+    ]
+    for path, expected_ignored in cases:
+        result = subprocess.run(
+            ["git", "check-ignore", "-q", "--no-index", path],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert (result.returncode == 0) is expected_ignored, (
+            f"{path} 的忽略判定不符合白名单契约（ignored={result.returncode == 0}）"
+        )

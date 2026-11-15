@@ -1,6 +1,9 @@
 # 核心工具（ruff / mypy / pytest / 文档校验）一律走 uv 锁定的本地环境，
 # 版本与 uv.lock、GitHub Actions 完全一致；只有与项目依赖无关的文本检查
-# 才用远端 hook。这样「本地能过、CI 却挂」或「钩子版本悄悄漂移」无从发生。
+# 才用远端 hook，钩子版本不会悄悄漂移。
+# 但本地与 CI 并非「完全同一动作」：ruff / format 钩子带 --fix 会改写文件，
+# CI 只做只读检查，两者都覆盖全仓（`.`）。提交前跑一遍 `uv run ruff check .`
+# 与 `uv run ruff format --check .`，别指望钩子改完就必然过 CI。
 repos:
   - repo: local
     hooks:
