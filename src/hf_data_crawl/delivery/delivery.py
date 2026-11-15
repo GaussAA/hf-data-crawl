@@ -42,34 +42,19 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
-from datetime import date, datetime
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
-
-import duckdb
-import polars as pl
 
 from ..platform.atomic import replace
 from ..platform.store import DatasetStore
 from ..query.gold import GoldCatalog, GoldNotReady
-from . import backfill, method
-from .fields import (
-    COLUMN_NOTES,
-    CONTRACT_VERSION,
-    DEFAULT_COLUMNS,
-    DISPLAY_COLUMNS,
-    EXTENDED_FIELDS,
-    EXTENDED_NOTE,
-    GROUPS,
-    PAGE_FIELDS,
-    display_expr,
-)
-from .metrics import lookup
+from . import fill_exec, method, query_exec  # noqa: F401
+from .contract import EXECUTORS, DeliveryBlocked, Payload, RunContext
+from .header import header_change
 from .requirement import (
     DELIVERIES_DIR,
     MANIFEST_NAME,
@@ -77,45 +62,18 @@ from .requirement import (
     SPEC_NAME,
     Cadence,
     Kind,
-    Mode,
-    OutputFormat,
     Spec,
     SpecError,
-    compile_sql,
     resolve_dir,
     snapshot_history,
     spec_digest,
     version_conflict,
 )
 from .requirement import load as load_spec
-from .stamp import SourceMissing, SourceStamp, file_stamp, stamp
+from .stamp import SourceMissing, SourceStamp, stamp
 
 #: 交付目录名的时刻格式。到秒：同一分钟内跑两个需求是常态。
 _STAMP_FORMAT = "%Y%m%dT%H%M%S"
-
-
-class DeliveryBlocked(RuntimeError):
-    """按护栏不该交付（0 行、超上限、底库缺失、执行失败）。一律不落盘。"""
-
-
-@dataclass(frozen=True)
-class Payload:
-    """执行体的产出，也是**执行体与档案层之间唯一的契约**。
-
-    档案与 README 只认这个结构，不认「这次跑的是 SQL 还是回填」。它们交付的东西
-    不一样，可「交付这件事」是一样的——这正是两类需求能合成一套体系的原因。
-    """
-
-    rows: int
-    columns: tuple[str, ...]
-    #: 产物元数据：name / bytes / sha256。预演时为空。
-    files: list[dict[str, Any]] = field(default_factory=list)
-    #: 写进 manifest 顶层的形态特有口径（query 的 sql/criteria、backfill 的 fill）。
-    definition: dict[str, Any] = field(default_factory=dict)
-    #: 写进 README「口径」段的若干行（markdown）。
-    detail_lines: list[str] = field(default_factory=list)
-    #: 输入表的列名（回填形态有；查询形态没有）。档案据此比对「这次的表和上次一样吗」。
-    header: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -162,23 +120,6 @@ class Preview:
     rows: int
     columns: tuple[str, ...]
     lines: list[str]
-
-
-@dataclass(frozen=True)
-class RunContext:
-    """执行体拿到的全部上下文。执行体不自己开 catalog、不算指纹、不定目录。"""
-
-    store: DatasetStore
-    spec: Spec
-    staging: Path
-    catalog: GoldCatalog
-    source: SourceStamp
-    dry_run: bool = False
-
-
-#: 形态 → 执行体。**新形态只在这里加一行**，其余生命周期一律复用。
-Executor = Callable[[RunContext], Payload]
-EXECUTORS: dict[Kind, Executor] = {}
 
 
 def _stamp(store: DatasetStore) -> SourceStamp:
@@ -366,304 +307,27 @@ def _preview_lines(request_dir: Path, detail: list[str]) -> list[str]:
 
 
 def _execute(ctx: RunContext) -> Payload:
-    """按 kind 分派，并把执行体的失败统一翻译成 `DeliveryBlocked`。
+    """按 kind 分派，守住「有没有人登记过这种形态」。
 
-    翻译是给 `run-due` 用的：一份坏 spec 或打不开的输入表只该记一条失败，
-    不该让整批交付一起崩。编程错误（TypeError 之类）不在此列，要照常抛出来。
+    这里只捕 `OSError`（磁盘、权限这类与形态无关的失败）：各形态自己的失败语义由
+    各自的执行体翻译成 `DeliveryBlocked`。档案层一旦开始 `except` 某个形态的异常
+    类型，就又开始认识那个形态了——「只认 Payload」也就成了空话。
+
+    翻译成 `DeliveryBlocked` 是给 `run-due` 用的：一份坏 spec 或打不开的输入表只该
+    记一条失败，不该让整批交付一起崩。编程错误（TypeError 之类）不在此列，要照常
+    抛出来。
     """
     executor = EXECUTORS.get(ctx.spec.kind)
     if executor is None:
         raise DeliveryBlocked(f"{ctx.spec.id}: 未注册的执行体 kind={ctx.spec.kind.value}")
     try:
         return executor(ctx)
-    except (backfill.FillError, OSError) as error:
+    except OSError as error:
         raise DeliveryBlocked(f"{ctx.spec.id} 执行失败：{error}") from error
 
 
-# ---------------------------------------------------------------- 执行体：查询
-
-
-def _query_payload(ctx: RunContext) -> Payload:
-    frame = _query(ctx.spec, ctx.catalog)
-    definition = _query_definition(ctx.spec, frame.columns)
-    lines = _query_lines(ctx.spec)
-    if ctx.dry_run:
-        return Payload(
-            rows=frame.height,
-            columns=tuple(frame.columns),
-            definition=definition,
-            detail_lines=lines,
-        )
-    written = _write_data(ctx.staging, ctx.spec, frame)
-    return Payload(
-        rows=frame.height,
-        columns=tuple(frame.columns),
-        files=written,
-        definition=definition,
-        detail_lines=lines,
-    )
-
-
-def _query_definition(spec: Spec, result_columns: Sequence[str]) -> dict[str, Any]:
-    """查询形态的机器读口径。`criteria` 带定义，交出去后不必回来翻词表。
-
-    `mode: sql` 的列集由手写 SELECT 决定（`compile_sql` 原样透传，见该处注释）。
-    这里若照旧写 `source=default` 并钉上 `CONTRACT_VERSION`，档案就会声称按 31 列
-    默认契约投影、实际只有两列——下游照 projection 复原口径必然得出错误结论。
-    手写 SQL 只记真实列集，不冒充契约。
-    """
-    criteria = [
-        {
-            "metric": item.metric,
-            "field": lookup(item.metric).field,
-            "op": item.op,
-            "value": _jsonable(item.value),
-            "definition": lookup(item.metric).definition,
-        }
-        for item in spec.criteria
-    ]
-    if spec.mode is Mode.SQL:
-        return {
-            "sql": compile_sql(spec),
-            "projection": {"source": "sql", "columns": list(result_columns)},
-            "criteria": criteria,
-        }
-    using_default = not spec.output.columns
-    return {
-        "sql": compile_sql(spec),
-        "projection": {
-            "source": "default" if using_default else "spec",
-            "default_columns_version": CONTRACT_VERSION,
-            "columns": list(DEFAULT_COLUMNS) if using_default else list(spec.output.columns),
-        },
-        "criteria": criteria,
-    }
-
-
-def _query_lines(spec: Spec) -> list[str]:
-    lines: list[str] = []
-    if spec.mode is Mode.SQL:
-        lines += ["手写 SQL：", "", "```sql", (spec.sql or "").strip(), "```", ""]
-    else:
-        lines += ["| 词条 | 落成字段 | 条件 | 定义 |", "| --- | --- | --- | --- |"]
-        for item in spec.criteria:
-            metric = lookup(item.metric)
-            lines.append(
-                f"| {item.metric} | `{metric.field}` | {item.op} {item.value} | {metric.definition} |"
-            )
-        lines.append("")
-    if spec.output.format is not OutputFormat.PARQUET:
-        lines.append(
-            "CSV 里列表列以 `;` 连接成一格；`languages` / `task_categories` / "
-            "`size_categories` 另按页面形式展平（如 `ko` → `Korean`）。"
-            "要保留机器码与原始结构请用 parquet"
-        )
-    if not spec.output.columns and spec.mode is not Mode.SQL:
-        lines += [
-            "",
-            f"### 默认交付字段（契约 v{CONTRACT_VERSION}，共 {len(DEFAULT_COLUMNS)} 列）",
-            "",
-            "未指定 `output.columns`，按 `data/exports/datasets.parquet` 的字段契约投影；",
-            "该文件即默认参考底库，列序与此处完全一致。",
-            "",
-            "| 分组 | 字段 | 说明 |",
-            "| --- | --- | --- |",
-        ]
-        for group, columns in GROUPS:
-            for index, column in enumerate(columns):
-                label = group if index == 0 else ""
-                lines.append(f"| {label} | `{column}` | {COLUMN_NOTES[column]} |")
-        lines += [
-            "",
-            "### 详情页标签 ↔ 库列",
-            "",
-            "页面标签行与库里列名不同、值也多为机器码，按此表对照；",
-            "空值表示作者未在卡片里声明，不代表该数据集没有这一属性。",
-            "",
-            "| 页面 | 库列 | 值的显示形式 |",
-            "| --- | --- | --- |",
-        ]
-        for label, columns, note in PAGE_FIELDS:
-            refs = " / ".join(f"`{column}`" for column in columns)
-            lines.append(f"| {label} | {refs} | {note} |")
-        lines += [
-            "",
-            "### 扩展字段（不进默认面，按需取用）",
-            "",
-            EXTENDED_NOTE,
-            "",
-            "| 字段 | 定义 | 覆盖档 |",
-            "| --- | --- | --- |",
-        ]
-        for column, definition, tier in EXTENDED_FIELDS:
-            lines.append(f"| `{column}` | {definition} | {tier} |")
-        lines.append("")
-    return lines
-
-
-def _query(spec: Spec, catalog: GoldCatalog) -> pl.DataFrame:
-    sql = compile_sql(spec)
-    try:
-        return catalog.run(sql)
-    except duckdb.Error as error:
-        # 包一层：裸的 BinderException 看不出是哪条需求、哪条 SQL 出的问题。
-        raise DeliveryBlocked(f"{spec.id} 查询失败：{error}\nSQL：\n{sql}") from None
-
-
-# ---------------------------------------------------------------- 执行体：回填
-
-
-def _backfill_payload(ctx: RunContext) -> Payload:
-    fill = ctx.spec.fill
-    if fill is None:  # `_validate` 已挡住，这里只为把类型收窄
-        raise DeliveryBlocked(f"{ctx.spec.id}: kind=backfill 却没有 fill 段")
-    report = backfill.run(
-        ctx.store,
-        fill,
-        target_dir=ctx.staging,
-        request_id=ctx.spec.id,
-        title=ctx.spec.title,
-        catalog=ctx.catalog,
-        source=ctx.source,
-        dry_run=ctx.dry_run,
-    )
-    input_stamp = file_stamp(fill.source.path)
-    definition = _fill_definition(fill, report, input_stamp)
-    lines = _fill_lines(fill, report, ctx.dry_run, input_stamp)
-    return Payload(
-        rows=report.rows,
-        columns=report.columns(),
-        files=report.files,
-        definition=definition,
-        detail_lines=lines,
-        header=report.header,
-    )
-
-
-def _fill_definition(
-    fill: backfill.FillSpec, report: backfill.FillReport, input_stamp: dict[str, Any]
-) -> dict[str, Any]:
-    """回填形态的机器读口径：哪一列从哪来、这一轮实际写了多少。"""
-    return {
-        "fill": {
-            # 输入快照的相对路径与指纹：目录搬走后仍能回答「基于哪一版清单」。
-            # 表头单独记一份：只记 sha256 的话，换了一列确实对不上，可对不上在
-            # 哪一列没人知道；列名与顺序记下来，「字段不一样了」才可核对。
-            "input": {
-                "path": fill.source.relative,
-                **input_stamp,
-                "header": {
-                    "sha256": backfill.header_digest(report.header),
-                    "columns": list(report.header),
-                },
-            },
-            "source": {
-                "path": fill.source.relative,
-                "sheet": fill.source.sheet,
-                "header_row": fill.source.header_row,
-                "key_column": fill.source.key_column,
-            },
-            "output": fill.output_name,
-            # 与 `input.path` 同口径：记 spec 里的相对路径，不记 basename。
-            "overrides": fill.overrides_relative,
-            "overwrite": fill.overwrite,
-            "stamp_note": fill.stamp_note,
-            "columns": [
-                {
-                    "name": item.name,
-                    "kind": item.kind,
-                    "field": item.field,
-                    "template": item.template,
-                    "const": item.const,
-                    "reason": item.reason,
-                    "format": item.fmt,
-                }
-                for item in fill.columns
-            ],
-            "written": report.written(),
-            "tallies": {
-                name: {
-                    "written": item.written,
-                    "from_override": item.from_override,
-                    "kept": item.kept,
-                    "empty": item.empty,
-                }
-                for name, item in report.tallies.items()
-            },
-            "missing_ids": report.missing_ids,
-            "undeclared": report.undeclared,
-            "manual": [{"column": name, "reason": reason} for name, reason in report.manual],
-            "notes": [{"title": title, "text": text} for title, text in fill.notes],
-        }
-    }
-
-
-def _fill_lines(
-    fill: backfill.FillSpec,
-    report: backfill.FillReport,
-    dry_run: bool,
-    input_stamp: dict[str, Any],
-) -> list[str]:
-    """回填形态的人读口径：来源、规则、覆盖、以及「哪些是引擎故意没填」。"""
-    digest = str(input_stamp["sha256"])[:16]
-    lines = [
-        f"- 形态：按 URL 清单回填表格（`kind: backfill`）{' · 预演，未写盘' if dry_run else ''}",
-        f"- 输入快照：`{fill.source.relative}`（需求目录内，"
-        f"{input_stamp['bytes']:,} 字节，sha256 `{digest}…`）",
-        f"- 表结构：sheet {fill.source.sheet or '首个'}，"
-        f"表头第 {fill.source.header_row} 行，标识列 `{fill.source.key_column}`",
-        f"- 产物：`deliveries/<时刻>/{fill.output_name}`，只写在需求目录内；外部文件一律不动",
-        f"- 取值：只填空格{'（本份允许覆盖已有内容）' if fill.overwrite else ''}；"
-        "未命中底库的行整行留空；需要判读的列由 `overrides.json` 提供，引擎不猜",
-        f"- 声明 {len(fill.columns)} 列，本轮写入 {report.written()} 格，"
-        f"原有内容保留 {sum(item.kept for item in report.tallies.values())} 格，"
-        f"空 {sum(item.empty for item in report.tallies.values())} 格",
-        "",
-        "### 逐列规则",
-        "",
-        "| 列名 | 来源 | 写入 | 人工判读 | 保留 | 空 |",
-        "| --- | --- | --- | --- | --- | --- |",
-    ]
-    for item in fill.columns:
-        tally = report.tallies[item.name]
-        origin = {
-            "field": f"`{item.field}`"
-            + (f" · {item.fmt}" if item.fmt else "")
-            + (f" · 拼接 `{item.join}`" if item.join else ""),
-            "template": f"模板 `{item.template}`",
-            "const": f"常量 `{item.const}`",
-            "manual": f"人工判读：{item.reason}",
-        }[item.kind]
-        lines.append(
-            f"| {item.name} | {origin} | {tally.written} | {tally.from_override} "
-            f"| {tally.kept} | {tally.empty} |"
-        )
-    lines.append("")
-    if report.manual:
-        lines += ["### 需人工判读（引擎不猜）", ""]
-        lines += [f"- **{name}**：{reason}" for name, reason in report.manual]
-        lines.append("")
-    if report.missing_ids:
-        sample = "、".join(report.missing_ids[:8])
-        tail = "" if len(report.missing_ids) <= 8 else f" 等 {len(report.missing_ids)} 条"
-        lines += [f"### 未命中底库 {len(report.missing_ids)} 条", "", f"{sample}{tail}", ""]
-    if report.undeclared:
-        lines += [
-            "### 未声明的列（保持空白）",
-            "",
-            "、".join(report.undeclared[:20]),
-            "",
-        ]
-    if fill.notes:
-        lines += ["### 口径补充说明", ""]
-        lines += [f"- **{title}**：{text}" for title, text in fill.notes]
-        lines.append("")
-    if fill.stamp_note:
-        lines += [f"> 数据来源说明：{fill.stamp_note}", ""]
-    return lines
-
-
-EXECUTORS.update({Kind.QUERY: _query_payload, Kind.BACKFILL: _backfill_payload})
+# 执行体在各自模块末尾把自己写进 `EXECUTORS`：下面的 import 就是「点名」与登记
+# 两件事。档案层从此不必知道有哪几种形态，加一种也不用回来改这个文件。
 
 
 # ---------------------------------------------------------------- 护栏
@@ -797,7 +461,7 @@ def _header_note(body: dict[str, Any], header: tuple[str, ...]) -> str:
     old = tuple(str(name) for name in columns)
     if old == header:
         return ""
-    change = backfill.header_change(old, header)
+    change = header_change(old, header)
     parts: list[str] = []
     if change["added"]:
         parts.append("新增 " + "、".join(change["added"]))
@@ -821,59 +485,6 @@ def _reserve_dir(request_dir: Path, moment: datetime) -> Path:
         candidate = base / f"{stem}-{index}"
         index += 1
     return candidate
-
-
-def _write_data(directory: Path, spec: Spec, frame: pl.DataFrame) -> list[dict[str, Any]]:
-    """写数据文件并算校验和。返回每个文件的元数据，按写入顺序。"""
-    plans: list[tuple[str, str]] = []
-    if spec.output.format is OutputFormat.CSV:
-        plans.append(("data.csv", "csv"))
-    elif spec.output.format is OutputFormat.BOTH:
-        plans.extend([("data.parquet", "parquet"), ("data.csv", "csv")])
-    else:
-        plans.append(("data.parquet", "parquet"))
-
-    written: list[dict[str, Any]] = []
-    for name, kind in plans:
-        target = directory / name
-        if kind == "csv":
-            _flat_for_csv(frame).write_csv(target)
-        else:
-            frame.write_parquet(target)
-        payload = target.read_bytes()
-        written.append(
-            {
-                "name": name,
-                "bytes": len(payload),
-                "sha256": hashlib.sha256(payload).hexdigest(),
-            }
-        )
-    return written
-
-
-def _flat_for_csv(frame: pl.DataFrame) -> pl.DataFrame:
-    """CSV 不支持嵌套类型，列表列先拍平成 `;` 连接的字符串。
-
-    宽表里有十余个列表列（`tags`、`languages`、`plain_tags`…），不拍平的话
-    `write_csv` 直接抛 `CSV format does not support nested data`，一份 csv 都交不出去。
-    选择 `;` 而非 JSON 数组：CSV 是给人拿 Excel 打开的，`a;b` 比 `["a","b"]`
-    少一层引号转义，肉眼也认得出来。空列表留空串。
-
-    语言 / 任务 / 规模三列额外走 `fields.display_expr` 换成页面形式（CSV 是交付给
-    人读的）；parquet 与 SQL 结果仍保留机器码，便于筛算。映射用 Polars 原生表达式，
-    不走逐格 Python 回调——大表交付不能被展示层拖慢。
-    """
-    exprs: list[pl.Expr] = []
-    for name, dtype in frame.schema.items():
-        if isinstance(dtype, pl.List):
-            exprs.append(
-                display_expr(name)
-                if name in DISPLAY_COLUMNS
-                else pl.col(name).list.join(";").alias(name)
-            )
-        else:
-            exprs.append(pl.col(name))
-    return frame.select(exprs)
 
 
 def _manifest(
@@ -932,12 +543,6 @@ def _manifest(
         raise DeliveryBlocked(f"{spec.id}: 执行体口径与档案公共字段冲突：{sorted(overlap)}")
     manifest.update(payload.definition)
     return manifest
-
-
-def _jsonable(value: Any) -> Any:
-    if isinstance(value, date | datetime):
-        return value.isoformat()
-    return value
 
 
 def _readme(

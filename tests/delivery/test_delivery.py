@@ -265,7 +265,7 @@ def test_上次档案读不出来时如实说明而非假装正常(store: Datase
 
 def test_CSV列表列按页面形式展平() -> None:
     """CSV 给人读，语言/任务/规模换成人话；parquet 仍留机器码。"""
-    from hf_data_crawl.delivery.delivery import _flat_for_csv
+    from hf_data_crawl.delivery.query_exec import _flat_for_csv
 
     frame = pl.DataFrame(
         {
@@ -286,7 +286,7 @@ def test_CSV列表列按页面形式展平() -> None:
 
 def test_CSV展平区分空列表与未声明() -> None:
     """空列表是「声明了但没有值」，未声明是 NULL；CSV 里分别落成空串与空。"""
-    from hf_data_crawl.delivery.delivery import _flat_for_csv
+    from hf_data_crawl.delivery.query_exec import _flat_for_csv
 
     frame = pl.DataFrame({"tags": [["a", "b"], [], None]})
 

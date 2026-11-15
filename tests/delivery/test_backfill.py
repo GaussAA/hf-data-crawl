@@ -18,14 +18,13 @@ import pytest
 from hf_data_crawl.delivery.backfill import (
     FillError,
     FillSpec,
-    header_change,
-    header_digest,
     header_of,
     parse_reference,
     render,
     run,
 )
 from hf_data_crawl.delivery.delivery import SourceStamp
+from hf_data_crawl.delivery.header import header_change, header_digest
 from hf_data_crawl.delivery.requirement import SpecError
 from hf_data_crawl.delivery.requirement import load as load_request
 from hf_data_crawl.platform.store import DatasetStore

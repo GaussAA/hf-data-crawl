@@ -60,7 +60,6 @@ fill:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import zipfile
@@ -585,27 +584,6 @@ def header_of(path: Path, *, sheet: str | None = None, header_row: int = 1) -> t
     if name not in workbook.sheetnames:
         raise FillError(f"{path}: 没有 sheet {name!r}（现有 {workbook.sheetnames}）")
     return tuple(_column_index(workbook[name], header_row))
-
-
-def header_digest(columns: tuple[str, ...]) -> str:
-    """表头指纹：列名与顺序。加一列、删一列、换个次序，指纹都会变。"""
-    return hashlib.sha256("\n".join(columns).encode("utf-8")).hexdigest()
-
-
-def header_change(old: tuple[str, ...], new: tuple[str, ...]) -> dict[str, Any]:
-    """两份表头的差异：加列、减列、共同列是否挪了位。
-
-    不试图给出「最小移动序列」：人要的是「哪几列不一样」，不是「怎么挪最省」，
-    后者算得再准也没人按它搬。
-    """
-    old_set, new_set = set(old), set(new)
-    common_old = [name for name in old if name in new_set]
-    common_new = [name for name in new if name in old_set]
-    return {
-        "added": [name for name in new if name not in old_set],
-        "removed": [name for name in old if name not in new_set],
-        "reordered": common_old != common_new,
-    }
 
 
 def _data_rows(sheet: Any, key_column: int, header_row: int) -> list[int]:

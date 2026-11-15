@@ -175,3 +175,35 @@ def test_cross_slice_imports_use_public_names() -> None:
             if name.startswith("_") and not (name.startswith("__") and name.endswith("__")):
                 violations.append(f"{path.relative_to(SRC)}:{lineno} {mine} -> {module}.{name}")
     assert violations == [], "\n".join(violations)
+
+
+def test_档案层只认契约不认形态() -> None:
+    """`delivery/delivery.py` 只许看见契约，不许看见任何一种形态。
+
+    这条比「别 import 私有名」更严：连公开名也不行。`_execute` 曾经写着
+    `except backfill.FillError` —— 一行就足以把档案层与回填绑死，于是「加一种形态
+    只加一行注册」成了空话（另外两百行也得写进同一个文件）。现在档案层的全部形态
+    知识只有 `from . import fill_exec, query_exec` 这一句「点名」——它导进来只为
+    让执行体在各自模块末尾把自己写进 `EXECUTORS`，不从这里取任何名字。
+
+    契约（`contract.py`）反过来也不许 import 任何执行体，否则环会从另一头长回来。
+    """
+    executor_modules = {"backfill", "query_exec", "fill_exec"}
+    violations: list[str] = []
+
+    for name, forbidden in (
+        ("delivery/delivery.py", executor_modules),
+        ("delivery/contract.py", executor_modules | {"delivery"}),
+    ):
+        path = SRC / name
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom) or node.level != 1:
+                continue
+            module = node.module or ""
+            # `from . import fill_exec` 是登记，允许；`from .fill_exec import X` 不是。
+            if module in forbidden:
+                imported = ", ".join(alias.name for alias in node.names)
+                violations.append(f"{name}:{node.lineno} from .{module} import {imported}")
+
+    assert violations == [], "\n".join(violations)

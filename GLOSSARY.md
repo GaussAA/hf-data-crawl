@@ -1306,3 +1306,42 @@
     `is_file`，看着像重复，实为两件事——前者是**阻断**（受理时还在、现在没了，
     不能出土），后者是**跳过**（默认清单里的条目本来就可能不存在）。合成一处
     必须二选一，必然错一头。已写进 docstring，免得下一轮审视再当新问题提。
+
+83. **「加一行注册」这句承诺，先要问「另外两百行写哪儿」**（2026-11-15，D-3 落地）：
+    `EXECUTORS` 的注释一直写着「新形态只在这里加一行，其余生命周期一律复用」。话
+    没错，只是漏了后半句：**那两百行形态专有的东西，也得写进同一个文件**。
+
+    实测当时的分布：`delivery.py` 1,124 行，其中 212 行是查询与回填各自的「口径怎么
+    变成 SQL／表格」——`_query_definition` 34、`_query_lines` 59、`_fill_definition` 56、
+    `_fill_lines` 63。它们谈的全是 SQL、词表、表格与列规则，与「档案怎么落盘」无关。
+    更硬的一处是 `_execute` 里那句 `except backfill.FillError`——**一行就足够把档案层
+    和回填绑死**。所谓「档案层不认背后是 SQL 还是 Excel」，到此为止是句愿望。
+
+    修法不是「把代码搬到另一个文件」就算完（那只是把复杂度挪了个地方，删除测试通
+    不过）。真正要做的是把**两边都认的那几样**独立出来：
+
+    ```
+    执行体模块（query_exec / fill_exec） → contract.py → 档案层（delivery.py）
+    ```
+
+    `contract.py` 只装 `Payload` / `RunContext` / `EXECUTORS`。执行体在自己的模块末尾
+    写 `EXECUTORS[Kind.X] = payload`；档案层顶部 `from . import fill_exec, query_exec`
+    只是「点名」（导入即登记），不从那里取任何名字。`_execute` 只捕 `OSError`——各
+    形态自己的失败语义，由各自执行体翻译成 `DeliveryBlocked`（连 `FillError` 都不再
+    出现在档案层）。
+
+    结果：`delivery.py` 1,124 → 729 行；`query_exec` 235、`fill_exec` 177、`contract` 72。
+    总量略增（模块头与导入各写一份），但「加一种形态要动哪里」有了唯一答案。
+
+    同批把 `header_digest` / `header_change` 从 `backfill.py` 挪到 `delivery/header.py`：
+    它们是纯函数，只因「表头」最早出现在回填就住在那里，档案层为了比「这次的输入表
+    和上次一样吗」不得不 import 回填。文件名叫 backfill 的东西，不该管档案怎么比表头。
+
+    **一条判据（可复用的）**：「加一行就能扩展」这类说法，要能回答**「代码写在哪」**。
+    若答案是「还是写在原来那个文件里」，那它只是「入口加了一行」，不是扩展点。真正的
+    扩展点，是新代码有它自己的去处——而这份去处，必须是别人不必打开这个文件就能找到的。
+
+    **加了第六条架构规则守着它**：`delivery.py` 不许 `from .backfill/.query_exec/
+    .fill_exec import 任何名字`（`from . import fill_exec` 这种登记除外），`contract.py`
+    反过来也不许 import 执行体。写规则时先植入一行违规验证它会红——植入后确实报
+    `delivery/delivery.py:56 from .backfill import FillError`，撤掉即绿。

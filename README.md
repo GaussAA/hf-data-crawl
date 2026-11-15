@@ -520,13 +520,13 @@ platform < pipeline < {acquire, query} < delivery < ops
 | `pipeline/` | bronze → silver → observations → current、marker、lineage、recovery |
 | `acquire/` | 采集、对账、卡片、规模与文件清单；`hf/` 为其内部子包（API、传输、水位线） |
 | `query/` | Gold 视图与榜单 |
-| `delivery/` | 需求管理与交付：字段契约、回填、宽表导出、口径与产物比对 |
+| `delivery/` | 需求管理与交付：字段契约、回填、宽表导出、口径与产物比对。执行体各归其位（`query_exec` / `fill_exec`），档案层只认 `contract.Payload` |
 | `ops/` | 体检、归档、压缩、清理、文档生成，以及命令行入口 `ops/cli.py` |
 
 `acquire` 与 `query` 同档，互不依赖；`ops/cli.py` 是唯一的组合根，只调各切片公开的
-`run_*` 入口，不碰下划线开头的实现。这五条规则由 `tests/test_architecture.py` 强制：
+`run_*` 入口，不碰下划线开头的实现。这六条规则由 `tests/test_architecture.py` 强制：
 切片归位、只许下行、`platform` 不依赖他人、模块图无环（含延迟导入与 `TYPE_CHECKING`）、
-跨切片禁用私有名。
+跨切片禁用私有名、档案层与契约都不得认识具体的交付形态。
 
 ## 开发
 

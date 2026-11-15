@@ -9,7 +9,7 @@ from pathlib import Path
 from ..platform.runs import Outcome
 from ..platform.store import DatasetStore
 from . import compare, specdiff
-from .backfill import FillError, header_change, header_of
+from .backfill import FillError, header_of
 from .delivery import (
     DeliveryBlocked,
     DeliveryResult,
@@ -20,6 +20,7 @@ from .delivery import (
     read_manifest,
     run_due,
 )
+from .header import header_change
 from .method import METHOD_DIR, METHOD_DOC, METHOD_INDEX, problems
 from .method import sync as sync_method
 from .metrics import lookup
