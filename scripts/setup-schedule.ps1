@@ -9,6 +9,7 @@
                 顺序由 scripts\daily.ps1 保证，不由钟点猜（见下）。
     hf-compact  每日 00:30 压缩满 7 天的冷区 Raw（跨天去重成基线），原分块移入 backup。
     hf-sizes    每周日 06:00 补数据集规模（行数/列数），最慢的一步，增量可续。
+    hf-files    每周日 07:30 补下载量前 1000 名的文件清单（首屏，子集而非全量）。
     hf-archive  每周一 05:00 归档满 30 天的 Raw（去重小分块、冻结写入序），移入 backup。
 
     为什么把五个任务收成一条链（2026-11-09 实测）
@@ -49,6 +50,7 @@
 param(
     [string]$DailyTime = "03:10",
     [string]$SizesTime = "06:00",
+    [string]$FilesTime = "07:30",
     [string]$ArchiveTime = "05:00",
     [string]$CompactTime = "00:30",
     [switch]$Uninstall
@@ -64,7 +66,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 
 #: 现行任务。
-$taskNames = @("hf-daily", "hf-sizes", "hf-archive", "hf-compact")
+$taskNames = @("hf-daily", "hf-sizes", "hf-files", "hf-archive", "hf-compact")
 
 #: 2026-11-09 之前按钟点拆分的五个任务。升级时一并清掉：留着它们就会与链抢写锁，
 #: 且补跑依旧抢在彼此前面——正是这次要治的病。
@@ -94,6 +96,11 @@ $jobs = @(
     @{ Name = "hf-sizes"; Script = "sizes.ps1"; Hours = 4; CatchUp = $false
        LogonDelay = $null
        Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At $SizesTime)) },
+    # 文件清单排在规模之后一个半小时：规模那趟最慢可跑数小时，错开以免争锁。
+    # 它补的是下载量前 1000 名的首屏清单（子集），故归入周任务而非日链。
+    @{ Name = "hf-files"; Script = "files.ps1"; Hours = 1; CatchUp = $false
+       LogonDelay = $null
+       Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At $FilesTime)) },
     # 归档放周一，与周日那条错开一天，省得争锁。
     @{ Name = "hf-archive"; Script = "archive.ps1"; Hours = 2; CatchUp = $false
        LogonDelay = $null
@@ -157,10 +164,11 @@ foreach ($name in $legacyNames) {
 }
 
 Write-Host "已注册："
-Write-Host "  hf-daily      每日 $DailyTime + 登录后 3 分钟补跑：采集 → 派生 → 对账 → 导出 → 交付 → 体检"
+Write-Host "  hf-daily      每日 $DailyTime + 登录后 3 分钟补跑：采集 → 派生 → 对账 → 规模 → 导出 → 交付 → 体检"
 Write-Host "                （顺序由 scripts\daily.ps1 保证；错过则开机补跑整条链）"
 Write-Host "  hf-compact    每日 $CompactTime 压缩满 7 天的冷区 Raw（不补跑，次日接着压）"
 Write-Host "  hf-sizes      每周日 $SizesTime 补规模数据，增量合并、中断可续（不补跑）"
+Write-Host "  hf-files      每周日 $FilesTime 补下载量前 1000 名的文件清单（首屏子集，不补跑）"
 Write-Host "  hf-archive    每周一 $ArchiveTime 归档满 30 天的 Raw，原文件移入 backup（不补跑）"
 Write-Host "日志目录：$(Join-Path $root 'data\logs')　链条摘要：同上，文件名以 -daily.log 结尾"
 Write-Host "运行摘要：$(Join-Path $root 'data\runs')"
