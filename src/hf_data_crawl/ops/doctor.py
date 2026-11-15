@@ -381,6 +381,13 @@ def _scan_frame(pattern: Path | str, columns: list[str]) -> pl.DataFrame | None:
     裁列省的是几十毫秒（2026-11-15 实测：读全列 0.10 / 0.18 秒），不是分钟级——
     先前这里写着「读全列会让体检多花十几秒」，那是没实测的估计，已按实测改正。
     读失败不抛：体检不能因为一份产物坏掉而整体失败。
+
+    **什么时候该用 `store.read` 而不是这里**：`store.read` 会按表契约补齐缺列，
+    后加的列（如 `size.status`、`carddata.source_sha`）在旧分区里可能不存在，
+    直接 `scan_parquet(...).select([...])` 会抛错——这里的「读失败返回 None」
+    就会把「表是旧的」误报成「表不在了」。所以两套读法不是纪律不统一，是两种
+    用途：**列一定存在**（id / snapshot_date）用这里快，**需要对齐 schema**
+    用 `store.read`。C-1 审视时曾把这条记成摩擦，是误判，此处写明免得再被重提。
     """
     try:
         return pl.scan_parquet(pattern).select(columns).collect()
