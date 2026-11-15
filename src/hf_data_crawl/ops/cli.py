@@ -1,12 +1,15 @@
-"""命令行入口：collect / reconcile / build / query。
+"""命令行入口：收集 15 个子命令的参数并分派到各切片的公开处理函数。
 
-除 query（只读）外，每条命令都把运行摘要写入 runs/，失败也写并带原因。
+本模块是唯一的组合根：独占锁、派生崩溃恢复与运行台账都在这里统一施加。
+写命令与 report/docs 经 `_execute` 写 runs/（失败也写并带原因）；
+query、doctor 与 request 直接返回，不写台账。
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import traceback
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +33,7 @@ from ..delivery.commands import (
 from ..pipeline.commands import run_build
 from ..pipeline.recovery import check_and_recover
 from ..platform import (
+    ARCHIVE_AFTER_DAYS,
     BACKUP_PRUNE_AFTER_DAYS,
     REPLAY_WINDOW_DAYS,
     DatasetStore,
@@ -254,7 +258,18 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument(
         "--full",
         action="store_true",
-        help="清空全部派生层并按天重放 data/raw 里所有日期（冷区权威层已损坏时的逃生舱）",
+        help=(
+            "清空全部派生层并按天重放 data/raw 里所有日期（冷区权威层已损坏时的逃生舱）；"
+            "若已有日期被 compact 压入冷区则直接拒绝，见 --allow-cold-loss"
+        ),
+    )
+    build.add_argument(
+        "--allow-cold-loss",
+        action="store_true",
+        help=(
+            "明知冷区日期的 Raw 已不在主目录、其 silver/observations 无法重放，仍然全量重放。"
+            "不加这个开关时 --full 会拒绝执行，免得把冷区历史静默清零"
+        ),
     )
     build.add_argument(
         "--stale",
@@ -277,7 +292,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sizes = subparsers.add_parser("fetch-sizes", help="经 datasets-server 补规模与列数")
     sizes.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
-    sizes.add_argument("--top", type=int, default=20_000, help="按下载量取前多少名")
+    sizes.add_argument(
+        "--top",
+        type=int,
+        default=20_000,
+        help="按下载量取前多少名；0 表示全量（按 current 实际行数，随底库增长自动适配）",
+    )
     sizes.add_argument(
         "--changed",
         type=int,
@@ -353,7 +373,10 @@ def build_parser() -> argparse.ArgumentParser:
         "archive", help="归档早于 N 天的 Raw 分区：合并小分块并去重，原文件移入 backup/raw"
     )
     archive.add_argument(
-        "--older-than-days", type=int, default=30, help="只归档早于这么多天的日期（默认 30）"
+        "--older-than-days",
+        type=int,
+        default=ARCHIVE_AFTER_DAYS,
+        help=f"只归档早于这么多天的日期（默认 {ARCHIVE_AFTER_DAYS}）",
     )
     archive.add_argument("--date", default=None, help="只归档指定日期 YYYY-MM-DD（忽略天数门槛）")
 
@@ -421,8 +444,17 @@ def main(argv: list[str] | None = None, *, transport: Any = None) -> int:
 
     # 启动时自动检查和恢复未完成的派生
     # 只有写命令才做：恢复本身会改派生层，只读快照命令（report/docs）不应顺手写数据。
+    # 恢复会写 current / lineage / 各派生分区，必须与命令本体共用同一把锁——否则
+    # 两个写命令各自在锁外重放，后写静默盖掉先写（此前是全项目唯一绕过锁的写路径）。
+    # 这段在 `_execute` 之外，故 `LockBusy` 要自己兜住，不能让命令无痕崩溃。
     if args.command in WRITE_COMMANDS:
-        recovered = check_and_recover(store)
+        try:
+            with exclusive(store.root, "recovery", lock_wait):
+                recovered = check_and_recover(store)
+        except LockBusy:
+            # 别的写命令正持锁，它启动时已经做过恢复；本轮跳过即可。
+            recovered = []
+            print("[恢复] 另一个写命令正持有数据锁，本轮跳过启动恢复")
         if recovered:
             print(f"⚠️  检测到 {len(recovered)} 个未完成的派生，已自动恢复：{recovered}")
             print("   提示：残留派生层已清理；有 Raw 的日期已重新派生，无 Raw 的仅清理")
@@ -514,6 +546,11 @@ def _execute(
         reason = f"{type(error).__name__}: {error}"
         outcome = Outcome(payload={"error": reason}, code=1, reason=reason)
         print(f"{command} 失败：{reason}")
+        # catch-all 是台账一致性的需要，不等于可以吞掉现场：业务失败走的是
+        # Outcome(code=1) 正常返回，能到这里的多半是未预期异常（含编程错误）。
+        # 完整堆栈只进 stderr，由 scripts/_common.ps1 收进 logs/，不写进 runs/
+        # 的 payload——台账保持机读，不夹带本机路径。
+        traceback.print_exc()
 
     write_run(store, command, started, outcome)
     if outcome.failed and outcome.reason:

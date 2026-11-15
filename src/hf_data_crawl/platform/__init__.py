@@ -4,11 +4,11 @@
 - 数据目录入口 (DatasetStore)
 - 锁管理 (exclusive, LockBusy)
 - 运行记录 (Outcome, write_run)
-- 保留窗口常量 (BACKUP_PRUNE_AFTER_DAYS, REPLAY_WINDOW_DAYS)
+- 保留窗口常量 (ARCHIVE_AFTER_DAYS, BACKUP_PRUNE_AFTER_DAYS, REPLAY_WINDOW_DAYS)
 """
 
 from .lock import LockBusy, exclusive
-from .retention import BACKUP_PRUNE_AFTER_DAYS, REPLAY_WINDOW_DAYS
+from .retention import ARCHIVE_AFTER_DAYS, BACKUP_PRUNE_AFTER_DAYS, REPLAY_WINDOW_DAYS
 from .runs import Outcome, write_run
 from .store import DatasetStore
 
@@ -22,6 +22,7 @@ __all__ = [
     "Outcome",
     "write_run",
     # 常量
+    "ARCHIVE_AFTER_DAYS",
     "BACKUP_PRUNE_AFTER_DAYS",
     "REPLAY_WINDOW_DAYS",
 ]

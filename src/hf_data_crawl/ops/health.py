@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..platform.atomic import write_text
+from ..platform.lock import exclusive
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -37,6 +38,12 @@ if TYPE_CHECKING:
 HEALTH_NAME = "health-history.jsonl"
 #: 保留最近多少次体检。每日两次（09:00 + 登录后）约合 250 天。
 HEALTH_KEEP = 500
+
+#: 「读—修剪—整份重写」的互斥锁，与主数据锁分开。两个 doctor 并发时各读到
+#: 同一份历史、各写一行，后写者会静默抹掉先写者；而降级的 doctor 本就拿不到
+#: 主锁却仍要留痕（`snapshot=False` 也进流水），故不能用主锁来保护这一步。
+WRITE_LOCK_NAME = ".doctor-write.lock"
+WRITE_LOCK_WAIT = 2.0
 
 
 @dataclass(frozen=True)
@@ -98,29 +105,31 @@ def record(
 
     整份重写而非追加：文件只有几十 KB，而「读—修剪—原子替换」能保证任何时刻
     读到的都是一份完整可解析的流水；`open(..., "a")` 在断电时会留下半行，
-    下一次读取要为此容错到永远。
+    下一次读取要为此容错到永远。读—修剪—写三段必须整体互斥（见
+    `WRITE_LOCK_NAME`），否则原子替换只保证文件完整、不保证不丢更新。
     """
     items = list(findings)
     problems = tuple(item.text for item in items if item.problem)
     entry = HealthRecord(at=now, total=len(items), problems=problems, snapshot=snapshot)
 
-    history = [*read(store), entry][-HEALTH_KEEP:]
-    write_text(
-        store.state_dir / HEALTH_NAME,
-        "\n".join(
-            json.dumps(
-                {
-                    "at": item.at.isoformat(timespec="seconds"),
-                    "total": item.total,
-                    "problems": list(item.problems),
-                    "snapshot": item.snapshot,
-                },
-                ensure_ascii=False,
+    with exclusive(store.root, "health-write", WRITE_LOCK_WAIT, lock_name=WRITE_LOCK_NAME):
+        history = [*read(store), entry][-HEALTH_KEEP:]
+        write_text(
+            store.state_dir / HEALTH_NAME,
+            "\n".join(
+                json.dumps(
+                    {
+                        "at": item.at.isoformat(timespec="seconds"),
+                        "total": item.total,
+                        "problems": list(item.problems),
+                        "snapshot": item.snapshot,
+                    },
+                    ensure_ascii=False,
+                )
+                for item in history
             )
-            for item in history
+            + "\n",
         )
-        + "\n",
-    )
     return entry
 
 

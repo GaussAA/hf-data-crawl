@@ -206,3 +206,28 @@ def test_摘要中日期与路径被序列化为字符串(tmp_path: Path) -> Non
 
     assert isinstance(payload["dates"], list)
     assert isinstance(payload["dates"][0], str)
+
+
+def test_同秒并发写台账不互相覆盖(tmp_path: Path) -> None:
+    """两个写命令同秒启动：`path.exists()` 去重不原子，后写会静默盖掉先写。"""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime
+
+    from hf_data_crawl.platform.runs import Outcome, write_run
+
+    store = DatasetStore(tmp_path / "data")
+    same_second = datetime(2026, 11, 5, 0, 15, 0)
+    barrier = threading.Barrier(2)
+
+    def writer() -> None:
+        barrier.wait(timeout=5)
+        write_run(store, "build", same_second, Outcome({"who": threading.get_ident()}))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(writer) for _ in range(2)]
+        for future in futures:
+            future.result()
+
+    assert len(read_runs(store)) == 2
+    assert len(list((store.root / "runs").glob("*.json"))) == 2

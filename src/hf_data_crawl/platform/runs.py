@@ -13,7 +13,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .atomic import write_text
 from .store import DatasetStore
 
 #: runs/ 保留的最近运行记录条数。按目前每天十余条，500 条约一个多月；更早的
@@ -55,12 +54,6 @@ def write_run(
     runs_dir.mkdir(parents=True, exist_ok=True)
     stamp = started_at.strftime("%Y%m%dT%H%M%S")
     path = runs_dir / f"{stamp}-{command}.json"
-    # 同一秒内连跑两条会撞名，撞名就加序号——覆盖会导致上一轮摘要静默消失。
-    suffix = 1
-    while path.exists():
-        suffix += 1
-        path = runs_dir / f"{stamp}-{command}-{suffix}.json"
-
     body = {
         "command": command,
         # status 由 outcome 推出，不接受外部传入：可传的 status 一定有传错的那天。
@@ -72,7 +65,22 @@ def write_run(
         "finished_at": datetime.now().isoformat(timespec="microseconds"),
         "payload": _jsonable(outcome.payload),
     }
-    write_text(path, json.dumps(body, ensure_ascii=False, indent=2))
+    content = json.dumps(body, ensure_ascii=False, indent=2)
+
+    # 同一秒内连跑两条会撞名。旧写法先 `path.exists()` 再 `write_text`（内部
+    # `os.replace`）：两个进程同秒启动时双双判「不存在」，后写的那份静默盖掉
+    # 先写的，台账少一条而 `_collected_today` / 体检都看不出来。`x` 是原子的
+    # 独占创建，抢不到名字就换序号重试；几百字节一次写完、`read_runs` 对坏行
+    # 已有容错，故此处刻意不用会覆盖目标的 `os.replace`。
+    suffix = 1
+    while True:
+        try:
+            with path.open("x", encoding="utf-8", newline="\n") as handle:
+                handle.write(content)
+            break
+        except FileExistsError:
+            suffix += 1
+            path = runs_dir / f"{stamp}-{command}-{suffix}.json"
     # 清理时机：每写一条就检查一次上限。这里不做「超过很多再批量清」——
     # 一次多解析几百个小 JSON 的代价可以忽略，却能让目录大小始终有界。
     prune_runs(store, RUNS_KEEP)

@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from hf_data_crawl.pipeline import card, raw
+from hf_data_crawl.pipeline import card, raw, state
 from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.query.gold import GoldCatalog
@@ -304,3 +304,36 @@ def test_页面暴露完整交互契约(store: DatasetStore, tmp_path: Path) -> 
         "color-scheme:light",
     ):
         assert token in content, token
+
+
+def test_下载合计标注含多少非在架行(store: DatasetStore) -> None:
+    """合计是全表求和，含非在架行的冻结值。
+
+    不提示的话，那个数会被当成「今天全站的读数」；而它其中一部分停在几天前。
+    """
+    state.mark_status(store, {"acme/beta": "disappeared"})
+    reporter = Reporter(GoldCatalog(store))
+
+    content = reporter.render(top=10)
+
+    assert "含 1 行非在架" in content
+    assert "值停在上次见到的日期" in content
+
+
+def test_非在架行在榜里被标记且样式随页下发(store: DatasetStore) -> None:
+    """榜单 SQL 不带 status，标记得由渲染层按 id 补；只写标记不给样式等于没标。"""
+    state.mark_status(store, {"acme/beta": "disappeared"})
+
+    content = Reporter(GoldCatalog(store)).render(top=10)
+
+    assert '<tr class="frozen"' in content
+    assert 'title="非在架' in content
+    assert "tbody tr.frozen .id::after" in content
+
+
+def test_全部在架时不多话(store: DatasetStore) -> None:
+    """没有非在架行时不印提示、不打标记——天天喊等于没喊。"""
+    content = Reporter(GoldCatalog(store)).render(top=10)
+
+    assert 'class="frozen"' not in content
+    assert "行非在架" not in content

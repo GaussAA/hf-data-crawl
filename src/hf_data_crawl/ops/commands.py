@@ -168,11 +168,17 @@ def _doctor(store: DatasetStore, *, snapshot: bool, requests_root: Path | None =
     else:
         print("快照：不可用（写锁被占用，未取得锁）；跨表读数可能跨时点，跨表检查已降级")
     findings = diagnose(store, now, snapshot=snapshot, requests_root=requests_root)
-    sync_alert(store, findings, now, snapshot=snapshot)
+    try:
+        sync_alert(store, findings, now, snapshot=snapshot)
+    except OSError as error:
+        # 告警写不下不该连体检流水也不记：两者是独立产物。
+        print(f"[!] 告警文件写入失败：{error}")
     try:
         record_health(store, findings, now, snapshot=snapshot)
-    except OSError as error:
+    except (OSError, LockBusy) as error:
         # 记不下流水不该让体检本身变成失败：结论仍按 findings 判定。
+        # `LockBusy` 必须在这里兜住——冒泡到 `run_doctor` 的 except 会把整次
+        # 体检再跑一遍，那才是真正的灾难。
         print(f"[!] 体检历史写入失败：{error}")
     for item in findings:
         print(f"{'[!]' if item.problem else '[ok]'} {item.text}")

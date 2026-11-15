@@ -457,6 +457,39 @@ def test_query命令行对非只读语句返回失败(tmp_path: Path, capsys: An
     assert "安全限制" in capsys.readouterr().out
 
 
+def test_自定义SQL交付口径仍受单条SELECT约束(catalog: GoldCatalog, tmp_path: Path) -> None:
+    """`mode: sql` 是逃生舱，但编译层原样透传不等于绕过安全边界。
+
+    端到端钉死分工：requirement 不自行加过滤，GoldCatalog._guard 负责拦多语句；
+    两处都别「顺手补一刀」，否则边界被劈成两半、两边都不再可信。
+    """
+    import yaml
+
+    from hf_data_crawl.delivery.requirement import compile_sql, load
+    from hf_data_crawl.query.gold import UnsafeQuery
+
+    spec_path = tmp_path / "spec.yaml"
+    spec_path.write_text(
+        yaml.safe_dump(
+            {
+                "id": "REQ-9001",
+                "title": "手写 SQL",
+                "requester": "tester",
+                "version": 1,
+                "mode": "sql",
+                "sql": "SELECT 1; SELECT 2",
+            },
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    compiled = compile_sql(load(spec_path))
+
+    assert compiled == "SELECT 1; SELECT 2"
+    with pytest.raises(UnsafeQuery, match="安全限制"):
+        catalog.run(compiled)
+
+
 # ---------------------------------------------------------------- 文档契约
 
 

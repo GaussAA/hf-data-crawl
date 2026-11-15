@@ -102,6 +102,7 @@ h1{
 .meta{display:grid;grid-template-columns:repeat(2,minmax(128px,auto));gap:14px 30px;margin:4px 0 0}
 .meta dt{color:var(--ink-3);font-size:var(--fs-xs);letter-spacing:.06em}
 .meta dd{margin:3px 0 0;font-size:15px;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.meta dd small{display:block;margin-top:3px;font-size:var(--fs-xs);color:var(--ink-3);letter-spacing:0;font-variant-numeric:normal}
 
 .jump{display:flex;flex-wrap:wrap;gap:0;margin:0 0 18px;border-bottom:1px solid var(--rule)}
 .jump a{
@@ -243,6 +244,12 @@ td.rank::before{content:counter(row)}
 .id a:hover,.id a:focus-visible{color:var(--data-ink);border-bottom-color:var(--data)}
 .name{color:var(--ink-2)}
 .dim{color:var(--ink-3)}
+/* 非在架行：指标停在上次见到的日期，不是当前读数。标记由 CSS 生成，表格结构不变。 */
+tbody tr.frozen td{color:var(--ink-3)}
+tbody tr.frozen .id::after{
+  content:"非在架";margin-left:6px;padding:0 4px;border:1px solid var(--rule-strong);
+  border-radius:2px;font-size:9.5px;letter-spacing:.05em;white-space:nowrap;
+}
 .window{font-family:var(--font-mono);font-size:11.5px;color:var(--ink-2);white-space:nowrap}
 .share{
   width:150px;display:grid;grid-template-columns:minmax(40px,1fr) 46px;

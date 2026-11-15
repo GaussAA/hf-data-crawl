@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from hf_data_crawl.ops import health
 from hf_data_crawl.ops.doctor import Finding, diagnose
 from hf_data_crawl.ops.health import HEALTH_NAME, HealthRecord
@@ -126,3 +128,44 @@ def test_记录的是问题原文而不是序号(tmp_path: Path) -> None:
 
     assert health.read(store)[0].problems[0].startswith("层间勾稽")
     assert isinstance(health.read(store)[0], HealthRecord)
+
+
+def test_并发写流水不丢记录(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """两个 doctor 各读同一份旧历史、各写一行，后写者会静默抹掉先写者。"""
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    original_write = health.write_text
+
+    def slow_write(path: Path, content: str) -> None:
+        time.sleep(0.05)  # 放大「读过旧历史 → 写回」之间的窗口
+        original_write(path, content)
+
+    monkeypatch.setattr(health, "write_text", slow_write)
+    store = DatasetStore(tmp_path / "data")
+    barrier = threading.Barrier(2)
+
+    def writer(text: str) -> None:
+        barrier.wait(timeout=5)
+        health.record(store, entries(text), NOW)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(writer, text) for text in ("甲", "乙")]
+        for future in futures:
+            future.result()
+
+    problems = {item.problems[0] for item in health.read(store) if item.problems}
+    assert problems == {"甲", "乙"}
+
+
+def test_流水小锁不与主数据锁相争(tmp_path: Path) -> None:
+    """降级的 doctor 拿不到主锁也照常留痕；若误用主锁，这里会直接撞锁。"""
+    from hf_data_crawl.platform.lock import exclusive
+
+    store = DatasetStore(tmp_path / "data")
+
+    with exclusive(store.root, "collect"):
+        health.record(store, entries("甲"), NOW)
+
+    assert len(health.read(store)) == 1

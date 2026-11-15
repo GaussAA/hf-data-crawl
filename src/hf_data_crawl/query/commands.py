@@ -40,14 +40,24 @@ def run_query(args: argparse.Namespace, store: DatasetStore) -> int:
 
 
 def _warn_frozen_rows(frame: pl.DataFrame) -> None:
-    """结果带 status 且有非在架行时，明说这些行的值已冻结。
+    """结果含非在架行、或压根没投影 status 时，明说这些值不是现势值。
 
     不改数据、不过滤——用不用这些行是判断，该由人来做。但不说一声，那个「下载量
     28 万」会被当成今天的读数，而它可能停在四天前；改名后的旧 id 更是永远不再更新。
+
+    `--sql` 与自定义 `output.columns` 不投影 status 时，仍不凭 id 猜具体哪几行
+    失效（那要额外查一次底库），但「本次无法判断」必须说出口——否则这两条路
+    恰好绕开了唯一的口径护栏。
     """
     from ..platform.vocab import INACTIVE
 
     if "status" not in frame.columns:
+        if "id" in frame.columns:
+            print(
+                "注意：本次结果未包含 status 列，无法逐行判断现势性；"
+                "非在架（改名 / 下架 / 转私有）库的指标停在最后一次观测值，"
+                "在 SELECT 里带上 status 即可逐行提示。"
+            )
         return
     frozen = frame.filter(pl.col("status").is_in([status.value for status in INACTIVE]))
     if frozen.height == 0:

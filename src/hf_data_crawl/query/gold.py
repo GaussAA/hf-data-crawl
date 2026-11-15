@@ -344,6 +344,16 @@ class GoldCatalog:
         """整库概览：单行聚合，返回列名到值。"""
         return self.run(OVERVIEW_SQL).row(0, named=True)
 
+    def frozen_ids(self) -> set[str]:
+        """非在架 id 集合：这些行的指标停在上次见到的日期，不是当前读数。
+
+        榜单 SQL 不带 `status`——那是 `query --board` 的列契约，为一处展示加一列
+        会连带改掉命令行输出与宽表投影。改由此处取一次集合，渲染层按 id 判断；
+        量级是几百到几千行，相对整份报告可忽略。
+        """
+        frame = self.run("SELECT id FROM current WHERE status <> 'active'")
+        return {str(item) for item in frame["id"].to_list()}
+
     def rows(self, ids: Iterable[str]) -> dict[str, dict[str, Any]]:
         """按 id 取 `datasets` 整行；参数化 `IN`，不拼 SQL 字符串。
 

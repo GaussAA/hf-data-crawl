@@ -70,10 +70,10 @@ class LockBusy(RuntimeError):
     """另一个写命令正持有数据目录。"""
 
 
-def describe_holder(root: Path) -> str:
+def describe_holder(root: Path, lock_name: str = LOCK_NAME) -> str:
     """读出当前占用者的说明；读不到就如实说不知道。"""
     try:
-        with (root / LOCK_NAME).open("rb") as handle:
+        with (root / lock_name).open("rb") as handle:
             handle.seek(1)
             info = json.loads(handle.read().decode("utf-8"))
         return f"{info['command']}（pid {info['pid']}，{info['since']} 起）"
@@ -85,7 +85,7 @@ def describe_holder(root: Path) -> str:
 LOCK_POLL_SECONDS = 0.5
 
 
-def _open_lock_file(root: Path) -> IO[bytes] | None:
+def _open_lock_file(root: Path, lock_name: str = LOCK_NAME) -> IO[bytes] | None:
     """打开锁文件；拿不到写权限返回 None。
 
     Windows 上「别人持锁」并不必然阻止打开写句柄（临时目录里跨进程实测三种模式
@@ -99,21 +99,27 @@ def _open_lock_file(root: Path) -> IO[bytes] | None:
     磁盘故障仍会在 `mkdir`、写入或 `describe_holder` 处暴露，不会被这里永久吞掉。
     """
     try:
-        return (root / LOCK_NAME).open("a+b")
+        return (root / lock_name).open("a+b")
     except PermissionError:
         return None
 
 
 @contextlib.contextmanager
-def exclusive(root: Path, command: str, wait_seconds: float = 0.0) -> Iterator[None]:
+def exclusive(
+    root: Path, command: str, wait_seconds: float = 0.0, *, lock_name: str = LOCK_NAME
+) -> Iterator[None]:
     """持有数据目录的独占写锁；拿不到抛 `LockBusy`。
 
     `wait_seconds` 为 0（默认）时立刻失败，适合人工命令；计划任务给正数，
     撞上别的写命令时先等，等到就接着干。
+
+    `lock_name` 默认是主数据锁。体检流水这类「不碰权威层、但仍是读-改-写」
+    的产物可以用另一把独立的小锁：降级的 `doctor` 拿不到主锁也要留痕，
+    两个 doctor 之间仍必须互斥，却不该与采集/对账争同一把锁。
     """
     root.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + max(0.0, wait_seconds)
-    handle = _open_lock_file(root)
+    handle = _open_lock_file(root, lock_name)
     while True:
         if handle is not None:
             # 第 0 字节必须存在，作为被锁的那一格；占用者信息写在它后面。
@@ -126,9 +132,9 @@ def exclusive(root: Path, command: str, wait_seconds: float = 0.0) -> Iterator[N
             handle.close()
             handle = None
         if time.monotonic() >= deadline:
-            raise LockBusy(f"数据目录正被另一个写命令占用：{describe_holder(root)}")
+            raise LockBusy(f"数据目录正被另一个写命令占用：{describe_holder(root, lock_name)}")
         time.sleep(min(LOCK_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
-        handle = _open_lock_file(root)
+        handle = _open_lock_file(root, lock_name)
 
     try:
         info = json.dumps(

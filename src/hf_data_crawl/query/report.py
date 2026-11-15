@@ -212,7 +212,12 @@ def _cell(record: dict[str, Any], col: Column, value: object, totals: dict[str, 
     return f"<td>{_esc(value)}</td>"
 
 
-def _row(record: dict[str, Any], columns: list[Column], totals: dict[str, float]) -> str:
+def _row(
+    record: dict[str, Any],
+    columns: list[Column],
+    totals: dict[str, float],
+    frozen: frozenset[str] | set[str],
+) -> str:
     cells: list[str] = []
     haystack: list[str] = []
     for col in columns:
@@ -222,7 +227,15 @@ def _row(record: dict[str, Any], columns: list[Column], totals: dict[str, float]
             haystack.append(_window(record))
         cells.append(_cell(record, col, value, totals))
     search = _esc(" ".join(haystack).lower())
-    return f'<tr data-search="{search}">' + "".join(cells) + "</tr>"
+    # 非在架行的指标停在 `last_seen_at` 那天，读起来却和今天的读数长得一样。
+    # 标记走 CSS（`tr.frozen .id::after`），不往表格结构里塞单元格。
+    dataset_id = record.get("id")
+    mark = (
+        ' class="frozen" title="非在架：指标停在上次见到的日期，不是当前读数"'
+        if isinstance(dataset_id, str) and dataset_id in frozen
+        else ""
+    )
+    return f'<tr{mark} data-search="{search}">' + "".join(cells) + "</tr>"
 
 
 def _table(
@@ -234,8 +247,13 @@ def _table(
     cap_alt: str | None = None,
     measurable: bool = False,
     hidden: bool = False,
+    frozen: frozenset[str] | set[str] = frozenset(),
 ) -> str:
-    """渲染一张可筛选、可排序的表；占比的两个度量在渲染时一次算好。"""
+    """渲染一张可筛选、可排序的表；占比的两个度量在渲染时一次算好。
+
+    `frozen` 是本次报告要标记为非在架的 id 集合（榜单里没有 status 列，故由
+    调用方查一次传进来）。
+    """
     records = list(frame.iter_rows(named=True))
     share_fields = {
         name for col in columns if col.kind == "share" for name in (col.field, col.alt) if name
@@ -244,7 +262,7 @@ def _table(
         name: sum(_as_number(record.get(name)) for record in records) for name in share_fields
     }
     head = "".join(_head_cell(index, col, measurable) for index, col in enumerate(columns))
-    rows = "".join(_row(record, columns, totals) for record in records)
+    rows = "".join(_row(record, columns, totals, frozen) for record in records)
     if not rows:
         rows = (
             f'<tr data-empty><td colspan="{len(columns)}" class="dim">'
@@ -323,13 +341,18 @@ class Reporter:
         )
 
     @staticmethod
-    def _growth_html(growth: pl.DataFrame, overview: dict[str, Any]) -> str:
+    def _growth_html(
+        growth: pl.DataFrame,
+        overview: dict[str, Any],
+        frozen: frozenset[str] | set[str] = frozenset(),
+    ) -> str:
         if growth.height:
             return _table(
                 "growth",
                 growth,
                 _GROWTH_COLUMNS,
                 caption="起点与当前取自最近两个观测点；观测区间给出具体日期，跨度以天计。",
+                frozen=frozen,
             )
         return (
             '<p class="empty">暂无正增长可比：全库 <strong>'
@@ -351,12 +374,16 @@ class Reporter:
         growth = catalog.board("growth", top)
         volume = catalog.board("volume", top)
         modalities = catalog.board("modalities", top)
+        # 榜单 SQL 不带 status（那是 `query --board` 的列契约），故另取一次非在架
+        # id：渲染时只做标记，一个数字都不改——报告是「现势」，但历史不能重算。
+        frozen = catalog.frozen_ids()
 
         ranking_html = _table(
             "ranking",
             ranking,
             _RANKING_COLUMNS,
             caption=f"按 30 天下载排序的前 {top} 名；「累计」一列只是并列的另一口径，勿相加。",
+            frozen=frozen,
         )
         alltime_html = _table(
             "ranking-alltime",
@@ -364,6 +391,7 @@ class Reporter:
             _RANKING_COLUMNS,
             caption=f"按累计下载排序的前 {top} 名；与 30 天榜成员不同，是另一条 SQL。",
             hidden=True,
+            frozen=frozen,
         )
         modality_html = _table(
             "modalities",
@@ -393,13 +421,20 @@ class Reporter:
             _VOLUME_COLUMNS,
             caption="行数为 datasets-server 实测的 parquet 行数，内存为载入内存估算；"
             "与仓库字节 main_size 不是一回事。",
+            frozen=frozen,
         )
-        growth_html = self._growth_html(growth, overview)
+        growth_html = self._growth_html(growth, overview, frozen)
         state_html = self._state_html(overview)
 
         as_of = _esc(overview["as_of"])
         last_seen = _esc(overview["last_seen"])
         total_downloads = _num(overview["total_downloads"])
+        gone = _as_number(overview["gone"])
+        # 合计是全表求和，含非在架行；它们的 downloads 停在上次见到的日期。
+        # 不说一声，这个数会被当成「今天全站的读数」。
+        total_note = (
+            f"<small>含 {_num(gone)} 行非在架，其值停在上次见到的日期</small>" if gone else ""
+        )
         sized = _num(overview["sized"])
         volume_note = (
             f"已实测 {sized} 个数据集的规模（datasets-server /size）；"
@@ -423,7 +458,7 @@ class Reporter:
     <div><dt>观测截至</dt><dd>{as_of}</dd></div>
     <div><dt>最后扫描</dt><dd>{last_seen}</dd></div>
     <div><dt>每榜条数</dt><dd>Top {top}</dd></div>
-    <div><dt>30 天下载合计</dt><dd>{total_downloads}</dd></div>
+    <div><dt>30 天下载合计</dt><dd>{total_downloads}{total_note}</dd></div>
   </dl>
 </header>
 

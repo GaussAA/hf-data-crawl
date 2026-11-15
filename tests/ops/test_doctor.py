@@ -830,3 +830,150 @@ def test_全站扫描没扫完时字段新鲜度判红(tmp_path: Path) -> None:
 
     assert item.problem
     assert "没扫完" in item.text
+
+
+# ---------------------------------------------------------------- 失败覆盖的时间口径
+
+
+def test_后来成功覆盖失败按时间点而非字符串() -> None:
+    """成功 10:00:00Z 早于失败 10:00:00.5Z，不能算「已恢复」。
+
+    旧实现把两条 ISO 字符串直接比字典序，`Z`(90) 大于 `.`(46)，于是更早的
+    成功反而「大于」更晚的失败，失败被静默判为已覆盖——告警从此不再出现。
+    """
+    from hf_data_crawl.ops.doctor import _recent_failures
+
+    runs = [
+        {
+            "command": "collect",
+            "status": "failed",
+            "started_at": "2026-11-10T10:00:00.500000Z",
+            "reason": "断网",
+        },
+        {
+            "command": "collect",
+            "status": "success",
+            "started_at": "2026-11-10T10:00:00Z",
+        },
+    ]
+
+    finding = _recent_failures(runs, NOW)
+
+    assert finding.problem
+    assert "1 次未恢复" in finding.text
+
+
+def test_带时区的时间戳不会让体检崩溃() -> None:
+    """runs/ 写的是本地 naive 时间；外部注入的 Z 后缀不能让减法抛 TypeError。"""
+    from hf_data_crawl.ops.doctor import _recent_failures
+
+    runs = [
+        {"command": "collect", "status": "failed", "started_at": "2026-11-10T10:00:00Z"},
+        {"command": "collect", "status": "success", "started_at": "2026-11-10T11:00:00Z"},
+    ]
+
+    finding = _recent_failures(runs, NOW)
+
+    assert not finding.problem
+
+
+def write_snapshot(store: DatasetStore, body: str) -> None:
+    from hf_data_crawl.pipeline.rebuild import snapshot_path
+
+    path = snapshot_path(store)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+
+
+def test_无残留状态快照时体检正常(tmp_path: Path) -> None:
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+
+    finding = next(item for item in diagnose(store, NOW) if "状态快照" in item.text)
+
+    assert finding.problem is False
+    assert "无残留" in finding.text
+
+
+def test_残留状态快照要报出来(tmp_path: Path) -> None:
+    """快照只在重建进行中出现；留着会被下次重建当成「上次被打断」。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    write_snapshot(store, json.dumps({"acme/ds-1": "renamed"}))
+
+    finding = next(item for item in diagnose(store, NOW) if "状态快照" in item.text)
+
+    assert finding.problem
+    assert "残留 1 个" in finding.text
+    assert "先备份" in finding.text
+
+
+def test_损坏的状态快照要报出静默回退风险(tmp_path: Path) -> None:
+    """retain 把损坏归一为 None；不报，非在架状态丢了也没人知道。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    write_snapshot(store, "{半截")
+
+    finding = next(item for item in diagnose(store, NOW) if "状态快照" in item.text)
+
+    assert finding.problem
+    assert "读不出来" in finding.text
+    assert "静默回退" in finding.text
+    assert "别直接删" in finding.text
+
+
+def test_探测连续失败要单独报告(tmp_path: Path) -> None:
+    """与单轮失败占比分开报：成片限流与个别顽固是两件事。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    make_run(store, "reconcile", NOW, probe_probed=1000, probe_failed=5, probe_degraded=2)
+
+    finding = next(item for item in diagnose(store, NOW) if "探测顽固失败" in item.text)
+
+    assert finding.problem
+    assert "2 个库连续 3 轮" in finding.text
+    assert "probe_degraded" in finding.text
+
+
+def test_旧对账记录没有degraded字段不误报(tmp_path: Path) -> None:
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    make_run(store, "reconcile", NOW, probe_probed=1000, probe_failed=400)
+
+    finding = next(item for item in diagnose(store, NOW) if "探测顽固失败" in item.text)
+
+    assert finding.problem is False
+
+
+def test_告警文件走原子写(tmp_path: Path, monkeypatch: Any) -> None:
+    """`path.write_text` 会先截断再写，两个 doctor 并发时读者可能看到半截告警。"""
+    from hf_data_crawl.ops import doctor
+
+    store = DatasetStore(tmp_path / "data")
+    calls: list[Path] = []
+    original = doctor.write_text
+
+    def spy(path: Path, content: str) -> None:
+        calls.append(path)
+        original(path, content)
+
+    monkeypatch.setattr(doctor, "write_text", spy)
+
+    sync_alert(store, [Finding(True, "Raw 断日：2026-11-06")], NOW)
+
+    assert calls == [store.root / ALERT_NAME]
+
+
+def test_告警写失败不阻断体检流水(tmp_path: Path, monkeypatch: Any) -> None:
+    """告警与流水是独立产物；前者写不下不该让后者也一行都不留。"""
+    from hf_data_crawl.ops import commands
+
+    def broken(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("磁盘只读")
+
+    monkeypatch.setattr(commands, "sync_alert", broken)
+    store = DatasetStore(tmp_path / "data")
+
+    commands._doctor(store, snapshot=True)
+
+    assert len(read_health(store)) == 1

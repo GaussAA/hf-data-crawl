@@ -14,17 +14,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
 
+from ..acquire.reconcile import PROBE_DEGRADE_AFTER
 from ..delivery.delivery import method
 from ..delivery.fields import DEFAULT_COLUMNS, contract_errors
 from ..delivery.requirement import DELIVERIES_DIR, SPEC_NAME, SpecError, version_conflict
 from ..delivery.requirement import load as load_spec
 from ..pipeline import lineage, raw, state
-from ..pipeline.rebuild import discover_raw_dates
+from ..pipeline.rebuild import discover_raw_dates, snapshot_health, snapshot_path
+from ..platform.atomic import write_text
 from ..platform.lock import LOCK_NAME, LockBusy, describe_holder, exclusive
 from ..platform.retention import ARCHIVE_AFTER_DAYS, BACKUP_PRUNE_AFTER_DAYS, REPLAY_WINDOW_DAYS
 from ..platform.runs import COLLECT_COMPLETE_REASONS, read_runs
@@ -84,6 +86,27 @@ class Finding:
     snapshot_dependent: bool = False
 
 
+def _run_time(value: object) -> datetime | None:
+    """把 runs/ 里的时间戳统一成 naive UTC；坏值、空值返回 None。
+
+    `runs.write_run` 用 `datetime.now()` 写本地无时区时间，而外部注入或未来
+    版本可能带 `Z` / `+00:00`。混用两种形态做减法会抛 TypeError；更隐蔽的是
+    拿 ISO 字符串做字典序比较——精度或时区写法一变，「谁在谁之后」就反了。
+    """
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(UTC).replace(tzinfo=None)
+    return parsed
+
+
 def _last_success(runs: list[dict], command: str, done_reasons: frozenset[str]) -> datetime | None:
     latest: datetime | None = None
     for item in runs:
@@ -92,9 +115,8 @@ def _last_success(runs: list[dict], command: str, done_reasons: frozenset[str]) 
         payload = item.get("payload") or {}
         if payload.get("stopped_reason") not in done_reasons:
             continue
-        try:
-            finished = datetime.fromisoformat(str(item.get("finished_at")))
-        except ValueError:
+        finished = _run_time(item.get("finished_at"))
+        if finished is None:
             continue
         if latest is None or finished > latest:
             latest = finished
@@ -112,7 +134,7 @@ def _freshness(
     last = _last_success(runs, command, done_reasons)
     if last is None:
         return Finding(True, f"{label}：从未成功完成过")
-    age = now - last
+    age = (_run_time(now) or now) - last
     hours = age.total_seconds() / 3600
     if age > max_age:
         return Finding(True, f"{label}：已 {hours:.0f} 小时没有成功完成（上次 {last:%m-%d %H:%M}）")
@@ -622,13 +644,35 @@ def _backup_backlog(store: DatasetStore, now: datetime) -> Finding:
     )
 
 
-def _probe_quality(runs: list[dict]) -> Finding:
-    """最近一轮对账的探测质量。
+def _status_snapshot(store: DatasetStore) -> Finding:
+    """状态留存快照：存在即异常，损坏会让非在架状态静默失去凭证。
 
-    探测失败落成 `unknown`，处置是「先别动」——不报错，只是状态原地不动。配额紧
-    的时候，一批早已下架的库会长期挂着 `active`，而界面上看不出任何异常。这条把
-    它变成可数的结论：探了多少、失败多少、还有多少顺延。
+    `doctor` 只读，不做自动修复（Q10 原议的 `--fix-snapshot`）：坏文件是重建
+    被打断的唯一现场证据，删掉等于销毁证据，也修不回已经清空的 state。这里
+    只把「静默回退」变成可见告警，并给出分情况的处置指引。
     """
+    health = snapshot_health(store)
+    path = snapshot_path(store).as_posix()
+    if health.kind == "absent":
+        return Finding(False, "状态快照：无残留（重建写回后已清理）")
+    if health.kind == "corrupt":
+        return Finding(
+            True,
+            f"状态快照：{path} 读不出来（{health.error}）；retain 会静默回退读 current，"
+            "若 state 已被清空则非在架状态永久丢失——先备份该文件，核对 current 与"
+            "reports/reconcile-*.csv 的非在架记录后人工重建，别直接删",
+        )
+    invalid = f"，另有 {health.invalid_count} 个词表外的值会被丢弃" if health.invalid_count else ""
+    return Finding(
+        True,
+        f"状态快照：{path} 残留 {health.valid_count} 个非在架状态{invalid}"
+        "（重建写回成功后必须删除）；先备份并确认无 build 在跑——current 已空就跑"
+        " hf-data-crawl build 完成写回，current 仍完整则人工比对后移走，别让旧快照盖掉新状态",
+    )
+
+
+def _latest_probe_payload(runs: list[dict]) -> dict | None:
+    """最近一轮带探测计数的对账摘要；升级前的旧记录没有这些字段，不据以下结论。"""
     latest: dict | None = None
     for item in runs:
         if item.get("command") != "reconcile":
@@ -636,6 +680,17 @@ def _probe_quality(runs: list[dict]) -> Finding:
         payload = item.get("payload")
         if isinstance(payload, dict) and "probe_probed" in payload:
             latest = payload
+    return latest
+
+
+def _probe_quality(runs: list[dict]) -> Finding:
+    """最近一轮对账的探测质量。
+
+    探测失败落成 `unknown`，处置是「先别动」——不报错，只是状态原地不动。配额紧
+    的时候，一批早已下架的库会长期挂着 `active`，而界面上看不出任何异常。这条把
+    它变成可数的结论：探了多少、失败多少、还有多少顺延。
+    """
+    latest = _latest_probe_payload(runs)
     if latest is None:
         return Finding(False, "探测复核：尚无带计数的对账记录（升级后首轮才有）")
 
@@ -654,6 +709,27 @@ def _probe_quality(runs: list[dict]) -> Finding:
             "失败即「先别动」，这些库的状态会停在旧值——检查配额与重试退避",
         )
     return Finding(False, f"探测复核：本轮探 {probed:,} 个、失败 {failed:,}{tail}")
+
+
+def _probe_degraded(runs: list[dict]) -> Finding:
+    """连续多轮判不出来的库要单独点名，不能混在单轮失败占比里被稀释。
+
+    单轮失败可能只是限流，下轮优先再探就会好；连续 `PROBE_DEGRADE_AFTER` 轮
+    仍无结论，说明该库的状态已长期停在旧值，需要人去核对上游或配额。与
+    `_probe_quality` 分开报，是为了让「成片失败」与「个别顽固」各自可见。
+    """
+    latest = _latest_probe_payload(runs)
+    if latest is None:
+        return Finding(False, "探测顽固失败：尚无带计数的对账记录")
+    count = int(latest.get("probe_degraded") or 0)
+    if count == 0:
+        return Finding(False, "探测顽固失败：无连续失败项")
+    return Finding(
+        True,
+        f"探测顽固失败：{count} 个库连续 {PROBE_DEGRADE_AFTER} 轮拿不到结论，"
+        "状态一直停在旧值；见 reports/reconcile-*.csv 的 probe_degraded 行，"
+        "核对配额/令牌与该库上游状态",
+    )
 
 
 def _stale_temp_files(store: DatasetStore, now: datetime) -> Finding:
@@ -680,22 +756,29 @@ def _recent_failures(runs: list[dict], now: datetime) -> Finding:
     同一命令失败后又成功了（例如对账断网后重跑），问题已经解决，再报只会让
     告警文件长期有效而失去信号价值。
     """
-    last_success: dict[str, str] = {}
+    reference = _run_time(now) or datetime.now()
+    last_success: dict[str, datetime] = {}
     for item in runs:
-        if item.get("status") == "success":
-            last_success[str(item.get("command"))] = str(item.get("started_at") or "")
+        if item.get("status") != "success":
+            continue
+        stamp = _run_time(item.get("started_at"))
+        if stamp is None:
+            continue
+        command = str(item.get("command"))
+        if command not in last_success or stamp > last_success[command]:
+            last_success[command] = stamp
 
     failed = []
     for item in runs:
         if item.get("status") != "failed":
             continue
-        try:
-            started = datetime.fromisoformat(str(item.get("started_at")))
-        except ValueError:
+        started = _run_time(item.get("started_at"))
+        if started is None:
             continue
-        if now - started > FAILURE_WINDOW:
+        if reference - started > FAILURE_WINDOW:
             continue
-        if last_success.get(str(item.get("command")), "") > str(item.get("started_at")):
+        success = last_success.get(str(item.get("command")))
+        if success is not None and success > started:
             continue
         failed.append(item)
     if failed:
@@ -826,6 +909,7 @@ def diagnose(
         _snapshot_dependent(_layer_reconcile(store)),
         _raw_gaps(store, now.date()),
         _derive_state(store),
+        _status_snapshot(store),
         _snapshot_dependent(_artifact_freshness(store, now.date())),
         _snapshot_dependent(_field_freshness(store, now.date())),
         _snapshot_dependent(_card_provenance(store, now.date())),
@@ -835,6 +919,7 @@ def diagnose(
         _storage(store),
         _backup_backlog(store, now),
         _probe_quality(runs),
+        _probe_degraded(runs),
         _recent_failures(runs, now),
         _stale_temp_files(store, now),
         _request_self_contained(requests_root),
@@ -869,5 +954,6 @@ def sync_alert(
         lines.append("[非快照] 写锁被占用，跨表读数可能跨时点；请在写命令结束后重跑 doctor")
     lines += [f"hf-data-crawl 体检发现 {len(problems)} 个问题（{now:%Y-%m-%d %H:%M}）：", ""]
     lines += [f"- {text}" for text in problems]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # 走原子写：两个 doctor 并发时 `path.write_text` 会先截断再写，读者可能
+    # 看到半截告警。这里是全项目最后一个绕过 `platform.atomic` 的写点。
+    write_text(path, "\n".join(lines) + "\n")
