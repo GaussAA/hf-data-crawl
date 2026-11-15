@@ -1,0 +1,96 @@
+{
+  "request_id": "REQ-0003",
+  "title": "Benchmark 数据集普查与分档",
+  "requester": "大帅",
+  "kind": "query",
+  "spec_version": 2,
+  "spec_sha256": "ddf9e9d47f4882d8b160f4d95267e4bbe086b296b504f46e6ce82c4f4bba87fa",
+  "delivered_at": "2026-11-15T18:46:17+08:00",
+  "source": {
+    "current_md5": "894eada4e8b6294b475b702c57e9e230",
+    "current_rows": 1139517,
+    "newest_snapshot_date": "2026-11-15"
+  },
+  "result": {
+    "rows": 1139517,
+    "columns": [
+      "id",
+      "url",
+      "判定档",
+      "证据类型",
+      "证据",
+      "置信度",
+      "任务分类",
+      "语言",
+      "实测行数",
+      "划分",
+      "含训练划分",
+      "下载量30天",
+      "累计下载量",
+      "作者",
+      "状态"
+    ],
+    "files": [
+      {
+        "name": "data.parquet",
+        "bytes": 48421000,
+        "sha256": "7e813941775623ec35872afed9da2e5be36ee589830204552ee0b6ad350896d4"
+      }
+    ]
+  },
+  "health": {
+    "status": "ok",
+    "baseline_rows": 1139517,
+    "delta_pct": null,
+    "delta_abs": null,
+    "supersedes": 1,
+    "note": "口径已从 v1 改到 v2，行数变化不计入标疑",
+    "header_note": ""
+  },
+  "previous": "20261115T183945",
+  "method": {
+    "doc": {
+      "path": "method/METHOD.md",
+      "sha256": "d385217ea7c6bbe3819bd4f89618f6c3aaab6649de46f0f67780738f16c73537"
+    },
+    "index": {
+      "path": "method/method.json",
+      "sha256": "58004bf9d27ad29b110bdb070f1bee6d586efc75704c4a7b4cf03a81aee85a0d"
+    },
+    "scripts": [
+      {
+        "name": "recall_check.py",
+        "purpose": "用本需求 spec 里那条 SQL 跑一遍，检查 12 个公认榜单是否落在 L1/L2；落进 U 即说明口径失效，退出码 1。防止「改了名录或阈值、查询照样成功、MMLU 却静默变成证据不足」这类无声退化。",
+        "sha256": "274ad4a6b2803da09af9416857c50496141ae798acf16b716773a40e381e7293"
+      }
+    ],
+    "inputs": {},
+    "env": {
+      "package": "0.1.0",
+      "contract_version": 5,
+      "commit": "5933a80113827f316806deca183adb207ac2a47a"
+    }
+  },
+  "sql": "WITH split_span AS (\n    SELECT id,\n           string_agg(DISTINCT lower(split), ', ' ORDER BY lower(split)) AS splits\n    FROM card_config\n    WHERE split IS NOT NULL\n    GROUP BY id\n),\nbase AS (\n    SELECT d.id,\n           d.url,\n           d.author,\n           d.status,\n           d.downloads,\n           d.downloads_all_time,\n           d.task_categories,\n           d.languages,\n           d.server_num_rows,\n           regexp_replace(coalesce(d.pretty_name, ''), '\\s+', ' ', 'g') AS pretty,\n           regexp_replace(coalesce(d.description, ''), '\\s+', ' ', 'g') AS descr,\n           coalesce(sp.splits, '') AS splits,\n           list_filter(d.tags, lambda t: lower(t) = 'benchmark') AS t_plain,\n           list_filter(d.tags, lambda t: starts_with(lower(t), 'benchmark:')) AS t_ns\n    FROM datasets AS d\n    LEFT JOIN split_span AS sp ON sp.id = d.id\n),\nmarked AS (\n    SELECT *,\n           list_contains(string_split(splits, ', '), 'test') AS has_test,\n           list_contains(string_split(splits, ', '), 'train') AS has_train,\n           regexp_extract(\n               lower(id) || ' ' || lower(pretty),\n               '(^|[/_.\\- ])(arc-challenge|arc-easy|lambada-openai|super-glue|natural-questions|livecodebench|bigcodebench|arena-hard|alpacaeval|seed-bench|video-mme|tau-bench|math-500|mathvista|commonsenseqa|narrativeqa|truthfulqa|winogrande|openbookqa|swe-bench|mt-bench|longbench|osworld|mmbench|hotpotqa|humaneval|hellaswag|agieval|c-mteb|super_glue|tabfact|agentbench|webarena|hendrycks|docvqa|textvqa|cmmlu|c-eval|ceval|chartqa|gpqa|mmlu-pro|mmmu|lambada|mteb|beir|gpqa|musr|qasper|musique|spider|coqa|glue|squad_v2|squad|bbh|mbpp|ifeval|asdiv|svamp|ruler|gaia|piqa|siqa|anli|drop|rte|gsm8k|aime|mmlu|arc)([/_.\\- ]|$)',\n               2\n           ) AS roster_hit,\n           (lower(pretty) LIKE '%bench%'\n            OR lower(descr) LIKE '%benchmark%'\n            OR lower(descr) LIKE '%leaderboard%') AS text_hit\n    FROM base\n),\ntiered AS (\n    SELECT *,\n           CASE\n               WHEN len(t_plain) > 0 OR len(t_ns) > 0 THEN 'L1'\n               WHEN roster_hit IS NOT NULL AND roster_hit <> '' THEN 'L2'\n               WHEN text_hit THEN 'L3'\n               WHEN has_test AND server_num_rows IS NOT NULL AND server_num_rows < 500000 THEN 'L4'\n               ELSE 'U'\n           END AS tier\n    FROM marked\n)\nSELECT\n    id,\n    url,\n    tier AS 判定档,\n    CASE tier\n        WHEN 'L1' THEN 'tag'\n        WHEN 'L2' THEN 'roster'\n        WHEN 'L3' THEN 'text'\n        WHEN 'L4' THEN 'shape'\n        ELSE 'none'\n    END AS 证据类型,\n    CASE tier\n        WHEN 'L1' THEN CASE\n            WHEN len(t_plain) > 0 AND len(t_ns) > 0\n                THEN 'tag:benchmark | ' || array_to_string(t_ns, ' | ')\n            WHEN len(t_plain) > 0 THEN 'tag:benchmark'\n            ELSE 'tag:' || array_to_string(t_ns, ' | ')\n        END\n        WHEN 'L2' THEN 'roster:' || roster_hit\n        WHEN 'L3' THEN CASE\n            WHEN position('benchmark' IN lower(descr)) > 0\n                THEN 'desc:' || substr(descr, greatest(1, position('benchmark' IN lower(descr)) - 24), 64)\n            WHEN position('leaderboard' IN lower(descr)) > 0\n                THEN 'desc:' || substr(descr, greatest(1, position('leaderboard' IN lower(descr)) - 24), 64)\n            ELSE 'name:' || substr(pretty, 1, 64)\n        END\n        WHEN 'L4' THEN 'split:test rows=' || coalesce(cast(server_num_rows AS VARCHAR), '?')\n        ELSE 'no-evidence'\n    END AS 证据,\n    CASE tier\n        WHEN 'L1' THEN 'high'\n        WHEN 'L2' THEN 'high'\n        WHEN 'L3' THEN 'medium'\n        WHEN 'L4' THEN 'low'\n        ELSE 'unjudged'\n    END AS 置信度,\n    task_categories AS 任务分类,\n    languages AS 语言,\n    server_num_rows AS 实测行数,\n    splits AS 划分,\n    has_train AS 含训练划分,\n    downloads AS 下载量30天,\n    downloads_all_time AS 累计下载量,\n    author AS 作者,\n    status AS 状态\nFROM tiered\nORDER BY tier ASC, downloads_all_time DESC NULLS LAST, id ASC",
+  "projection": {
+    "source": "sql",
+    "columns": [
+      "id",
+      "url",
+      "判定档",
+      "证据类型",
+      "证据",
+      "置信度",
+      "任务分类",
+      "语言",
+      "实测行数",
+      "划分",
+      "含训练划分",
+      "下载量30天",
+      "累计下载量",
+      "作者",
+      "状态"
+    ]
+  },
+  "criteria": []
+}

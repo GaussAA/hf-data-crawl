@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "updated_at": "2026-11-15T18:39:27+08:00",
+  "scripts": [
+    {
+      "name": "recall_check.py",
+      "purpose": "用本需求 spec 里那条 SQL 跑一遍，检查 12 个公认榜单是否落在 L1/L2；落进 U 即说明口径失效，退出码 1。防止「改了名录或阈值、查询照样成功、MMLU 却静默变成证据不足」这类无声退化。",
+      "run": "uv run python requests/REQ-0003-query-Benchmark-数据集普查与分档/method/scripts/recall_check.py（仓库根目录执行；只读底库，不改任何文件）",
+      "inputs": [
+        "spec.yaml 的 sql 字段",
+        "data/state/current.parquet 及其派生视图"
+      ],
+      "outputs": [
+        "标准输出：每个标杆的档位与本轮总行数；退出码 0/1"
+      ],
+      "sha256": "274ad4a6b2803da09af9416857c50496141ae798acf16b716773a40e381e7293"
+    }
+  ]
+}

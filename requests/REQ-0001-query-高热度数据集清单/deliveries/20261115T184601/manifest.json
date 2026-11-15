@@ -1,0 +1,138 @@
+{
+  "request_id": "REQ-0001",
+  "title": "高热度数据集清单",
+  "requester": "张三",
+  "kind": "query",
+  "spec_version": 2,
+  "spec_sha256": "a618951306d6b173299da5903906173261690b12bbba04163d7e95a3aa3f6614",
+  "delivered_at": "2026-11-15T18:46:01+08:00",
+  "source": {
+    "current_md5": "894eada4e8b6294b475b702c57e9e230",
+    "current_rows": 1139517,
+    "newest_snapshot_date": "2026-11-15"
+  },
+  "result": {
+    "rows": 24,
+    "columns": [
+      "id",
+      "url",
+      "author",
+      "created_at",
+      "last_modified",
+      "description",
+      "downloads",
+      "downloads_all_time",
+      "likes",
+      "status",
+      "gated",
+      "license_name",
+      "licenses",
+      "languages",
+      "modalities",
+      "task_categories",
+      "formats",
+      "libraries",
+      "tags",
+      "plain_tags",
+      "pretty_name",
+      "multilinguality",
+      "arxiv_ids",
+      "source_datasets",
+      "task_ids",
+      "size_categories",
+      "server_num_rows",
+      "server_num_columns",
+      "server_config_count",
+      "main_size",
+      "server_num_bytes_parquet"
+    ],
+    "files": [
+      {
+        "name": "data.parquet",
+        "bytes": 26537,
+        "sha256": "b579da1f55f393702c1ace7fe79f5657957cc343672b1d9a119e784cacd3f15d"
+      }
+    ]
+  },
+  "health": {
+    "status": "ok",
+    "baseline_rows": 23,
+    "delta_pct": null,
+    "delta_abs": null,
+    "supersedes": 1,
+    "note": "口径已从 v1 改到 v2，行数变化不计入标疑",
+    "header_note": ""
+  },
+  "previous": "20261108T152943",
+  "method": {
+    "doc": {
+      "path": "method/METHOD.md",
+      "sha256": "7025c9b9daabf763aa97c736bbcd3e5f867477060b668be3b0a3760af8971a65"
+    },
+    "index": {
+      "path": "method/method.json",
+      "sha256": "0cc21bd5aaeb614c199647144f210ce2799a4d7088458db2818c9e8080c37a16"
+    },
+    "scripts": [],
+    "inputs": {},
+    "env": {
+      "package": "0.1.0",
+      "contract_version": 5,
+      "commit": "5933a80113827f316806deca183adb207ac2a47a"
+    }
+  },
+  "sql": "SELECT \"id\", \"url\", \"author\", \"created_at\", \"last_modified\", \"description\", \"downloads\", \"downloads_all_time\", \"likes\", \"status\", \"gated\", \"license_name\", \"licenses\", CASE WHEN coalesce(array_length(\"languages\"), 0) > 0 THEN \"languages\" ELSE \"card_languages\" END AS \"languages\", \"modalities\", CASE WHEN coalesce(array_length(\"task_categories\"), 0) > 0 THEN \"task_categories\" ELSE \"card_task_categories\" END AS \"task_categories\", \"formats\", \"libraries\", \"tags\", CASE WHEN coalesce(array_length(\"plain_tags\"), 0) > 0 THEN \"plain_tags\" ELSE \"card_tags\" END AS \"plain_tags\", \"pretty_name\", \"multilinguality\", \"arxiv_ids\", \"source_datasets\", \"task_ids\", CASE WHEN coalesce(array_length(\"size_categories\"), 0) > 0 THEN \"size_categories\" ELSE \"card_size_categories\" END AS \"size_categories\", \"server_num_rows\", \"server_num_columns\", \"server_config_count\", \"main_size\", \"server_num_bytes_parquet\"\nFROM datasets\nWHERE \"downloads\" > 1000\n  AND \"likes\" > 1000\nORDER BY \"downloads\" DESC, \"id\" ASC",
+  "projection": {
+    "source": "default",
+    "default_columns_version": 5,
+    "columns": [
+      "id",
+      "url",
+      "author",
+      "created_at",
+      "last_modified",
+      "description",
+      "downloads",
+      "downloads_all_time",
+      "likes",
+      "status",
+      "gated",
+      "license_name",
+      "licenses",
+      "languages",
+      "modalities",
+      "task_categories",
+      "formats",
+      "libraries",
+      "tags",
+      "plain_tags",
+      "pretty_name",
+      "multilinguality",
+      "arxiv_ids",
+      "source_datasets",
+      "task_ids",
+      "size_categories",
+      "server_num_rows",
+      "server_num_columns",
+      "server_config_count",
+      "main_size",
+      "server_num_bytes_parquet"
+    ]
+  },
+  "criteria": [
+    {
+      "metric": "下载量",
+      "field": "downloads",
+      "op": ">",
+      "value": 1000,
+      "definition": "近 30 天下载量，不是累计值。想用累计值请写「累计下载量」"
+    },
+    {
+      "metric": "点赞数",
+      "field": "likes",
+      "op": ">",
+      "value": 1000,
+      "definition": "点赞总数"
+    }
+  ]
+}

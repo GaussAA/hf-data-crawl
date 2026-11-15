@@ -1,0 +1,160 @@
+# 需求 REQ-0003：Benchmark 数据集普查与分档
+#
+# 这份文件是「口径」——需求到底要什么，全写在这里。
+# 改动它必须同时把 version 加一：交付档案会钉住当时的版本号，
+# 否则同一份需求的两份交付会显得「口径没变却行数大变」。
+#
+# v2（2026-11-15，大帅）：交付节奏 once → manual。所有需求一律人工触发，不设固定周期；
+# 分层口径与 SQL 一字未动，重交一次只是让档案记下新节奏（同一版底库下产物 sha 应相同）。
+id: REQ-0003
+title: Benchmark 数据集普查与分档
+requester: 大帅
+purpose: "训练数据污染治理：查出全库里哪些数据集属评测榜单，召回优先，按证据分档供人工复核"
+version: 2
+
+# 交付节奏：manual。本仓所有需求都不设固定周期，由大帅点名才跑；manual 不做
+# 「已交付即跳过」的判断，想跑几次跑几次，引擎永不自行排期。
+cadence: manual
+
+kind: query
+
+# ---------------------------------------------------------------- 口径怎么来的
+#
+# HF 没有「是不是 benchmark」这个字段。实测三种直觉信号全都靠不住：
+#   · tags 含字面 `benchmark`——9.6k 行，但 MMLU / HellaSwag / HumanEval / SWE-bench
+#     这四类公认榜单一个都没有该标签（12 个标杆里漏 9 个）；
+#   · tags 含 `benchmark:*`（HF 官方评测命名空间）——只剩 65 行，精度高、覆盖窄；
+#   · 描述匹配 `benchmark`——32.6k 行，可全库六成（684,864 行）描述为空，
+#     文本证据天然缺失，且 wikitext、dclm 这类训练语料也会提到 benchmark 一词。
+#
+# 所以本需求不产出「是/否」，而产出**证据分档**：每一行标明它凭什么被算作/被怀疑
+# 是评测数据集，以及凭据有多硬。治理场景要的是「宁可多剔、但每一条可复核」，
+# 分档正是把「复核成本」也交代清楚。
+#
+#   L1 tag     数据集自己（或 HF 官方）打了 benchmark 标签 —— 作者自证
+#   L2 roster  id / 标题命中公认榜单名录（mmlu、hellaswag、swe-bench …）—— 名实相符
+#   L3 text    描述或标题自述 benchmark / leaderboard —— 文中有据
+#   L4 shape   有 test 划分且规模 < 50 万行 —— 长得像评测集，最弱
+#   U  none    三条都查不出 —— 「不知道」，不等于「不是」
+#
+# 12 个公认标杆（MMLU、GSM8K、HellaSwag、ARC、TruthfulQA、GPQA、MMLU-Pro、
+# HumanEval、MATH-500、AIME_2024、SWE-bench、lukaemon/mmlu）在 L1+L2 下的召回为 12/12。
+# 只有 L1 时是 3/12——这正是必须加 L2 名录档的原因。
+#
+# 交付覆盖全库 1,139,517 行，一行不落：治理时拿任何 id 来查都有答案，
+# 「表里没有」与「不是 benchmark」绝不会混为一谈。U 档占六成，立此存照。
+mode: sql
+sql: |
+  WITH split_span AS (
+      SELECT id,
+             string_agg(DISTINCT lower(split), ', ' ORDER BY lower(split)) AS splits
+      FROM card_config
+      WHERE split IS NOT NULL
+      GROUP BY id
+  ),
+  base AS (
+      SELECT d.id,
+             d.url,
+             d.author,
+             d.status,
+             d.downloads,
+             d.downloads_all_time,
+             d.task_categories,
+             d.languages,
+             d.server_num_rows,
+             regexp_replace(coalesce(d.pretty_name, ''), '\s+', ' ', 'g') AS pretty,
+             regexp_replace(coalesce(d.description, ''), '\s+', ' ', 'g') AS descr,
+             coalesce(sp.splits, '') AS splits,
+             list_filter(d.tags, lambda t: lower(t) = 'benchmark') AS t_plain,
+             list_filter(d.tags, lambda t: starts_with(lower(t), 'benchmark:')) AS t_ns
+      FROM datasets AS d
+      LEFT JOIN split_span AS sp ON sp.id = d.id
+  ),
+  marked AS (
+      SELECT *,
+             list_contains(string_split(splits, ', '), 'test') AS has_test,
+             list_contains(string_split(splits, ', '), 'train') AS has_train,
+             regexp_extract(
+                 lower(id) || ' ' || lower(pretty),
+                 '(^|[/_.\- ])(arc-challenge|arc-easy|lambada-openai|super-glue|natural-questions|livecodebench|bigcodebench|arena-hard|alpacaeval|seed-bench|video-mme|tau-bench|math-500|mathvista|commonsenseqa|narrativeqa|truthfulqa|winogrande|openbookqa|swe-bench|mt-bench|longbench|osworld|mmbench|hotpotqa|humaneval|hellaswag|agieval|c-mteb|super_glue|tabfact|agentbench|webarena|hendrycks|docvqa|textvqa|cmmlu|c-eval|ceval|chartqa|gpqa|mmlu-pro|mmmu|lambada|mteb|beir|gpqa|musr|qasper|musique|spider|coqa|glue|squad_v2|squad|bbh|mbpp|ifeval|asdiv|svamp|ruler|gaia|piqa|siqa|anli|drop|rte|gsm8k|aime|mmlu|arc)([/_.\- ]|$)',
+                 2
+             ) AS roster_hit,
+             (lower(pretty) LIKE '%bench%'
+              OR lower(descr) LIKE '%benchmark%'
+              OR lower(descr) LIKE '%leaderboard%') AS text_hit
+      FROM base
+  ),
+  tiered AS (
+      SELECT *,
+             CASE
+                 WHEN len(t_plain) > 0 OR len(t_ns) > 0 THEN 'L1'
+                 WHEN roster_hit IS NOT NULL AND roster_hit <> '' THEN 'L2'
+                 WHEN text_hit THEN 'L3'
+                 WHEN has_test AND server_num_rows IS NOT NULL AND server_num_rows < 500000 THEN 'L4'
+                 ELSE 'U'
+             END AS tier
+      FROM marked
+  )
+  SELECT
+      id,
+      url,
+      tier AS 判定档,
+      CASE tier
+          WHEN 'L1' THEN 'tag'
+          WHEN 'L2' THEN 'roster'
+          WHEN 'L3' THEN 'text'
+          WHEN 'L4' THEN 'shape'
+          ELSE 'none'
+      END AS 证据类型,
+      CASE tier
+          WHEN 'L1' THEN CASE
+              WHEN len(t_plain) > 0 AND len(t_ns) > 0
+                  THEN 'tag:benchmark | ' || array_to_string(t_ns, ' | ')
+              WHEN len(t_plain) > 0 THEN 'tag:benchmark'
+              ELSE 'tag:' || array_to_string(t_ns, ' | ')
+          END
+          WHEN 'L2' THEN 'roster:' || roster_hit
+          WHEN 'L3' THEN CASE
+              WHEN position('benchmark' IN lower(descr)) > 0
+                  THEN 'desc:' || substr(descr, greatest(1, position('benchmark' IN lower(descr)) - 24), 64)
+              WHEN position('leaderboard' IN lower(descr)) > 0
+                  THEN 'desc:' || substr(descr, greatest(1, position('leaderboard' IN lower(descr)) - 24), 64)
+              ELSE 'name:' || substr(pretty, 1, 64)
+          END
+          WHEN 'L4' THEN 'split:test rows=' || coalesce(cast(server_num_rows AS VARCHAR), '?')
+          ELSE 'no-evidence'
+      END AS 证据,
+      CASE tier
+          WHEN 'L1' THEN 'high'
+          WHEN 'L2' THEN 'high'
+          WHEN 'L3' THEN 'medium'
+          WHEN 'L4' THEN 'low'
+          ELSE 'unjudged'
+      END AS 置信度,
+      task_categories AS 任务分类,
+      languages AS 语言,
+      server_num_rows AS 实测行数,
+      splits AS 划分,
+      has_train AS 含训练划分,
+      downloads AS 下载量30天,
+      downloads_all_time AS 累计下载量,
+      author AS 作者,
+      status AS 状态
+  FROM tiered
+  ORDER BY tier ASC, downloads_all_time DESC NULLS LAST, id ASC
+
+# 行序在 SQL 里钉死（tier、累计下载量、id），不用 order_by：mode=sql 时 order_by 不参与编译。
+# 交付只出 parquet：CSV 会把 LIST 列展平成 `a;b;c`，且全量百万行 CSV 无谓放大。
+output:
+  format: parquet
+
+# 护栏按「全库普查」定：底库 114 万行，上限留一成余量。
+# 行数掉到 100 万以下说明 datasets 视图或 card_config 关联出了问题，宁可不交。
+guard:
+  min_rows: 1000000
+  max_rows: 1250000
+
+# 首次交付，无历史可比。
+alert:
+  row_delta_pct: 5
+  row_delta_abs: 50000

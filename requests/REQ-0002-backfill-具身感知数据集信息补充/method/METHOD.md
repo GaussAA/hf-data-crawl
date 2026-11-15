@@ -65,6 +65,12 @@
 - 代码：`hf-data-crawl` 版本与提交号，见同份 manifest 的 `method.env`
 - 依赖：`openpyxl`（读表）、`pyyaml`（读口径）、`hf_data_crawl.delivery.backfill.parse_reference`（URL 归一，复用引擎而不另写正则）
 
+## 变更记录
+
+- **v2（2026-11-15）**：交付节奏 `once` → `manual`。只换节奏字段，填表口径与判读
+  （`overrides.json`）一字未动。为什么换：本仓需求一律由人点名触发，不设固定周期；
+  `manual` 不设「已交付即跳过」的门槛，人工随时可再出一次，引擎不自行排期。
+
 ## 已知边界
 
 - **README 会变**。判读基于抓取当时那一版 README，HF 上改了就无法逐字复现同一判断；

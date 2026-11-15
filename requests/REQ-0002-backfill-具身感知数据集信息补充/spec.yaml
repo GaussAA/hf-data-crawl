@@ -4,12 +4,15 @@
 # 改口径必须把 version 加一：交付档案会钉住当时的版本号。
 # 预演：hf-data-crawl request run REQ-0002 --dry-run
 # 正式交付：hf-data-crawl request run REQ-0002
+#
+# v2（2026-11-15，大帅）：交付节奏 once → manual。所有需求一律人工触发，不设固定周期；
+# 填表口径与产物没动，重交一次只是让档案记下新节奏。
 id: REQ-0002
 title: 具身感知数据集信息补充
 requester: 大帅
 purpose: "按约定口径补全对方给的 40 列信息表，机械的归引擎、判断的归人"
-version: 1
-cadence: once
+version: 2
+cadence: manual
 kind: backfill
 
 # 护栏与标疑对所有形态同义：这里的 rows 是输入表的数据行数。
