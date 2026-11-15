@@ -45,6 +45,12 @@ uv run hf-data-crawl build        # 重放近 7 天的 Raw，重建热区派生�
 uv run hf-data-crawl build --full # 清空派生层并按全部 Raw 重放（逃生舱）
 ```
 
+`--full` 的前提是**全部 Raw 都在 `data/raw`**。冷区日期的分块已被 `compact` 移去
+`data/backup/raw/`，那些日期的 silver / observations 一旦清空就补不回来，所以只要
+存在这种日期，`--full` 会直接拒绝并在文案里给出两条路：改用默认窗口 / `--stale`，
+或先把 `backup/raw/dt=<日期>/` 搬回主目录再跑。确认接受这批历史丢失时才加
+`--allow-cold-loss`——放行后仍会印出「冷区 N 天未参与重放」。
+
 ### 4. Watermark 异常
 
 **症状**：collect 过早停止
@@ -73,8 +79,11 @@ uv run hf-data-crawl collect --pages-without-new 5
 ## 诊断工具
 
 ### 查看运行记录
+`runs/` 按 `<时间戳>-<命令>.json` 命名（不是 `collect-*.json`），结构与字段见
+[监控指标](MONITORING.md) 的「台账速查」。
+
 ```bash
-cat data/runs/collect-*.json | tail -n 5
+cat "$(ls -t data/runs/*-collect*.json | head -1)"
 ```
 
 ### 查看当前状态
@@ -111,7 +120,7 @@ uv run hf-data-crawl archive --date 2026-11-07
 分块归为 `legacy`，沿用旧分片名。排障时看文件名第二段即可认出「这批是谁扫的」，
 不同来源互不合并。
 
-**冷区压缩**（每周计划任务自动执行；也可手动）：
+**冷区压缩**（`hf-compact` 每日 00:30 自动执行；也可手动）：
 ```bash
 uv run hf-data-crawl compact                       # 默认压缩超过 7 天的日期
 uv run hf-data-crawl compact --date 2026-10-01    # 只压指定日期
@@ -153,8 +162,8 @@ Remove-Item -Recurse "data\backup\raw\dt=$day"
 
 ## 维护建议
 
-- **每日**：检查 collect 是否成功
-- **每周**：reconcile 全量对账；compact 自动压缩满 7 天的冷区 Raw，archive 可对单日做同天去重；确认无误后清理 backup
-- **每月**：运行 `build`（默认只重放近 7 天热区）核对派生层；需要整体重算时用 `build --full`
+- **每日**：检查 `hf-daily` 单链是否跑完（`collect → build --stale → reconcile → fetch-sizes --changed → export-wide → request run-due → prune → doctor`）；`hf-compact` 00:30 压缩满 7 天的冷区 Raw
+- **每周**：`hf-sizes` 周日 06:00 全量补规模；`hf-archive` 周一 05:00 对单日做同天去重；确认无误后清理 backup
+- **每月**：运行 `build`（默认只重放近 7 天热区）核对派生层；需要整体重算时，**先确认 `data/raw/dt=` 覆盖了全部采过的日期**（含冷区）再跑 `build --full`——冷区未复原时它会拒绝执行，硬要跑只能加 `--allow-cold-loss`，而那等于承认这批历史不要了
 - **`exports/` 不在恢复范围内**：单文件宽表是可重建投影，损坏或过期时重跑 `hf-data-crawl export-wide` 即可，不需要备份，也不能作为重建其它层的依据
 - **`enrich/size.parquet` 与 `enrich/files.parquet` 是 NETWORK 表**：`build` / `compact` 不会重建它们，丢了只能分别重跑 `fetch-sizes` / `fetch-files`；`files.truncated=true` 只说明当次取了一页 tree，不是全库真值，必要时用 `--max-pages` 重补

@@ -36,6 +36,12 @@
 改为每日（底库行龄实测证明周节奏会让长尾长期拿旧值），以 [GLOSSARY](../GLOSSARY.md)
 #43 为准；历史档案按上一段的约定不改写。
 
+**交付档案同理**：`requests/REQ-0001-*` 的 `manifest.json` 由早期引擎生成
+（`SELECT *`、72 列宽视图全列，且没有 `kind` / `spec_sha256` / `method` 段），
+与现行 31 列默认字段契约（见 [GLOSSARY](../GLOSSARY.md) #62–#66）不同版。
+它是历史留痕、不是可照抄的模板；新需求以项目级 skill `hf-request` 与
+`request new` 生成的骨架为准。
+
 ## Agent 协作
 
 - [domain.md](agents/domain.md) — 领域边界

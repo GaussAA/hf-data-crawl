@@ -26,7 +26,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 |---|---|---|
 | `collect` | 日增量：按 `lastModified` 倒序扫到水位线 | 是 |
 | `enrich` | 按下载量取头部，补抓 `cardData`（标签、config/split 明细、行数列数） | 是 |
-| `fetch-sizes` | 经 datasets-server 补规模与列数（`num_rows` / `num_columns_max`）；`--changed N` 只重取内容已变的库 | 是 |
+| `fetch-sizes` | 经 datasets-server 补规模与列数（`num_rows` / `num_columns_max`）；`--changed N` 只重取内容已变的库，`--top 0` 表示全量（按 `current` 实际行数，不写死常量） | 是 |
 | `fetch-files` | 按下载量取头部，经 `/tree/main` 补文件清单汇总（试点：top 1000，每库默认 1 页） | 是 |
 | `reconcile` | 全量对账：按 `createdAt` 稳定序扫全站，产出新增/删除/转私有/改名/sha 变更 | 是 |
 | `build` | 重建派生层：默认只重放近 7 天热区，`--stale` 只修派生滞后的日子及其后，`--full` 全量重放 | 否 |
@@ -36,7 +36,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `doctor` | 体检：调度新鲜度、底库行龄、层间勾稽、派生凭证、产物新鲜度、断日与残留文件；异常写 `ALERT.txt` 并追加体检流水 | 否 |
 | `archive` | 归档早于 N 天的 Raw 分区：合并小分块并去重，先验证 Bronze 逐行相等，原文件移入 `backup/raw/` | 否 |
 | `compact` | 压缩冷区 Raw：跨天去重成一份基线，原分块移入 `backup/raw/` 不删除 | 否 |
-| `prune` | 清理备份：把 `backup/` 里超过 7 天的分片真正删掉，释放磁盘（只动 `backup/`） | 是 |
+| `prune` | 清理备份：把 `backup/` 里超过 7 天的分片真正删掉，释放磁盘（只动 `backup/`） | 否 |
 | `docs` | 生成 `docs/DATA.md`：data 目录结构、各文件作用、全部字段含义 | 否 |
 | `export-wide` | 把 `datasets` 宽视图导出成单文件 parquet（zstd 压缩；可重建，不参与状态更新） | 否 |
 
@@ -72,7 +72,7 @@ hf-data-crawl request      run-due                  # 只跑到期的（计划�
 
 全局参数 `--data-dir` 需放在子命令之前，默认取 `HF_DATA_DIR`，否则 `./data`。
 
-写命令（`collect` / `reconcile` / `build` / `enrich` / `fetch-sizes` / `fetch-files` / `archive` / `compact` / `prune` / `export-wide`）执行期间持有 `data/.lock` 的独占锁，同一时刻只能跑一个；拿不到锁会失败并在 `runs/` 留记录。进程被杀后系统自动释放，不会留下死锁。`report` 与 `query` 不加锁。
+锁分三档（见 `src/hf_data_crawl/ops/cli.py`）：**写命令**（`collect` / `reconcile` / `build` / `enrich` / `fetch-sizes` / `fetch-files` / `archive` / `compact` / `prune` / `export-wide`）执行期间持有 `data/.lock` 的独占锁，同一时刻只能跑一个；拿不到锁会失败并在 `runs/` 留记录，进程被杀后系统自动释放，不会留下死锁。**`report` / `docs` 不改数据，但要同时读多张表**，故与写命令共用同一把独占锁以保证一致快照（默认等锁 60 秒）。**`fetch-sizes` 例外**：全量抓取耗时可达数小时，只在「并入正式表」时自排短锁，否则会饿死当天的 `collect`。`doctor` 等锁 2 秒，拿不到就降级为非快照；只有 `query` 完全不加锁。
 
 **默认交付底库**：`current` 只保留 19 列状态标量，语义字段分散在 `silver` / `carddata` / `size`。`export-wide` 按 `delivery/fields.py` 的**默认交付字段契约**把 `gold.datasets` 视图裁成 31 列，写成 `data/exports/datasets.parquet`——只留与数据集有关、有用且必要的画像字段（标识、描述、热度、许可、语言、模态、任务、数据类型、标签、补充画像、学术关联、规模、大小），把水印、抓取状态、卡片凭证与九成空的补抓列排除在外。v2 补回详情页 `Tags`；**v3 曾把 13 个多值列压成 `;` 字符串**以绕开预览器读不了 LIST 的缺陷，该缺陷已在上游 `vscode-office` 修好（PR #27），**v5 遂撤销压平、恢复 LIST 原值**，导出物与视图从此同构、可直接 `list_contains` 精确筛；**v4 克制新增 5 列**：`pretty_name` / `multilinguality` / `arxiv_ids` / `source_datasets` / `task_ids`。
 
@@ -98,6 +98,8 @@ hf-data-crawl request      run-due                  # 只跑到期的（计划�
 **两个下载口径不可混用**：`downloads` 是近 30 天，`downloads_all_time` 是历史累计，各自只按自己的指标排名。`ranking` 与 `ranking_alltime` 必须是两条独立 SQL——若把 30 天头部那几行改按累计重排，得到的只是「30 天头部里的累计排序」，与真正的累计榜成员不同。
 
 增速取「最近两个观测点」而非固定 7 日窗口：日增量只扫最新更新的万把条，全站指标靠周对账刷新，固定窗口在周节奏下取不到两点。
+
+**报告页会标出非在架行**：`disappeared` / `restricted` / `renamed` 的指标停在 `last_seen_at` 那天，榜里的这些行带「非在架」角标，首屏「30 天下载合计」也会注明其中含多少行非在架。数值一个不改——那是既有统计口径；只是不让冻结值冒充今日读数。
 
 ## 数据布局
 
@@ -142,7 +144,10 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
   `backup/raw/`、不删除**。写基线前后逐个 id 校验胜出者，不等即撤销。
 
 `build --full` 保留旧的全量重放；冷区权威层若已损坏（观测流水或当前态为空），
-默认 `build` 会自动回退全量。`doctor` 把 `cold/raw/manifest.json` 里已压缩的
+默认 `build` 会自动回退全量。**`--full` 的前提是全部 Raw 都在 `data/raw`**：冷区
+日期的分块早已被 `compact` 移去 `backup/raw/`，那些日期的历史清空后补不回来，故
+检测到这类日期时 `--full` 直接拒绝（`--allow-cold-loss` 可显式放行，recovery 回退
+则只告警不拒）。`doctor` 把 `cold/raw/manifest.json` 里已压缩的
 日期算作「有观测」，避免压缩后误报断日；并在冷区未压缩、规模超阈值、备份
 超过 7 天未清理时写 `ALERT.txt`。
 
@@ -493,7 +498,9 @@ md5 却每次不同，「这次和上次一样吗」只能靠人肉比对。
 人工判读来的」记进 `manifest.json` 的 `fill.tallies` 与 README 的逐列规则表。**判读规程**
 （哪几列必须人判、每列的判据是什么、README 与 splits 怎么核）写在 `method/METHOD.md`，
 判读表本身则由 `method/scripts/` 里的自检脚本复验——结论和得出它的规则放在同一个目录里，
-下次换人或换模型接手，照着做就行。
+下次换人或换模型接手，照着做就行。判读表也可以放进子目录（`fill.overrides: judge/ov.json`），
+档案记的是 spec 里写的**相对路径**，`method.inputs` 按同一路径钉 sha256：记 basename 会让
+`judge/ov.json` 与 `ov.json` 在档案里长得一模一样，挪一次文件等于换了输入却看不出来。
 
 输入快照连同 spec、overrides、history 与历次交付一起构成封闭单元；`manifest.json` 的
 `fill.input` 记着它的相对路径、字节数与 sha256。要换一张新表，把文件放进 `input/`、
