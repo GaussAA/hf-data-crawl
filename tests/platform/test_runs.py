@@ -245,3 +245,22 @@ def test_台账写不进去也不让命令失败(tmp_path: Path) -> None:
     (store.root / "runs").write_text("占位：让 mkdir 失败", encoding="utf-8")
 
     assert write_run(store, "build", datetime(2026, 11, 5), Outcome()) is None
+
+
+def test_台账里的绝对路径被脱敏(tmp_path: Path) -> None:
+    """异常消息带完整路径时，台账不该原样写进去。
+
+    `cli.py` 里「台账保持机读，不夹带本机路径」那句原先只在注释里，而
+    `FileNotFoundError` 这类异常消息照旧把 `C:\\WorkSpace\\...` 写进了 runs/。
+    """
+    store = DatasetStore(tmp_path / "data")
+    store.root.mkdir(parents=True)
+    leaked = f"FileNotFoundError: {store.root.resolve()}/state/x.parquet"
+    outcome = Outcome(payload={}, code=1, reason=leaked)
+
+    path = write_run(store, "build", datetime(2026, 11, 16, 12, 0), outcome)
+
+    assert path is not None
+    reason = json.loads(path.read_text(encoding="utf-8"))["reason"]
+    assert str(store.root.resolve()) not in reason
+    assert "<data>/state/x.parquet" in reason

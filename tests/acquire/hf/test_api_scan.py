@@ -16,6 +16,7 @@ from hf_data_crawl.acquire.hf.api import (
     HfDatasetApi,
     HfResponse,
     TransportError,
+    _parse_rate_limit,
 )
 from hf_data_crawl.acquire.hf.checkpoint import MemoryCheckpoint
 
@@ -197,6 +198,17 @@ def test_重试耗尽时错误消息带最后一次状态码() -> None:
 
     with pytest.raises(RuntimeError, match="HTTP 503"):
         list(api.scan(sort="createdAt"))
+
+
+def test_RateLimit头格式抖动不中断扫描() -> None:
+    """`t=41.5`（实测出现过的小数秒）与空值 `r=` 曾让 `int()` 抛 ValueError。
+
+    一个响应头的格式抖动不该比配额本身更有杀伤力——它会整轮扫描作废。
+    """
+    assert _parse_rate_limit({"RateLimit": '"api";r=400;t=180'}) == (400, 180)
+    assert _parse_rate_limit({"RateLimit": '"api";r=;t=41.5'}) == (None, 41)
+    assert _parse_rate_limit({"RateLimit": '"api";r=abc'}) == (None, None)
+    assert _parse_rate_limit({}) == (None, None)
 
 
 def test_配额将尽时先等待再取下一页() -> None:

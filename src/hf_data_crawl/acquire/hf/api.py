@@ -168,10 +168,16 @@ def _parse_rate_limit(headers: Mapping[str, str]) -> tuple[int | None, int | Non
     reset_in: int | None = None
     for segment in raw.split(";"):
         segment = segment.strip()
-        if segment.startswith("r="):
-            remaining = int(segment[2:])
-        elif segment.startswith("t="):
-            reset_in = int(segment[2:])
+        # `int()` 直接抛：`t=41.5`（实测出现过的小数秒）与空值 `r=` 都会让整轮
+        # 扫描作废——一个响应头的格式抖动不该比配额本身更有杀伤力。解析失败就
+        # 让该字段留 None，退避回落到指数，不中断扫描。
+        try:
+            if segment.startswith("r="):
+                remaining = int(float(segment[2:]))
+            elif segment.startswith("t="):
+                reset_in = int(float(segment[2:]))
+        except ValueError:
+            continue
     return remaining, reset_in
 
 

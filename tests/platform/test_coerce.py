@@ -83,6 +83,16 @@ def test_布尔转小写文本() -> None:
     assert as_text(False) == "false"
 
 
+def test_结构化值转成可复现的JSON() -> None:
+    """上游偶尔把嵌套结构塞进标量字段。
+
+    `str()` 会给出 Python repr（单引号、顺序随插入），既不可读也不可复现；直接
+    丢成 None 又是「猜」。JSON + 排序键是唯一既保结构又可复现的写法。
+    """
+    assert as_text({"b": 1, "a": "x"}) == '{"a":"x","b":1}'
+    assert as_text({}) is None
+
+
 def test_缺失留空() -> None:
     assert as_text(None) is None
 
