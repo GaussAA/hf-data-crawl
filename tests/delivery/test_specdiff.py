@@ -10,10 +10,11 @@ from pathlib import Path
 from typing import Any
 
 import openpyxl
+import pytest
 import yaml
 
 from hf_data_crawl.delivery import specdiff
-from hf_data_crawl.delivery.requirement import Spec, load
+from hf_data_crawl.delivery.requirement import Spec, SpecError, load
 
 
 def make(tmp_path: Path, name: str, **overrides: Any) -> Spec:
@@ -44,6 +45,9 @@ def fill_body(tmp_path: Path, **overrides: Any) -> dict[str, Any]:
     """一份最小回填口径。输入表由 make() 放进各自的需求目录，这里只写相对路径。"""
     body: dict[str, Any] = {
         "kind": "backfill",
+        # 回填按 URL 清单逐条补，不筛条件；`make()` 的默认 body 带一条 criteria，
+        # 不清掉会被 `_validate` 拒绝——那条校验正是 2026-11-16 审计补的。
+        "criteria": [],
         "fill": {
             "source": {"path": "input/清单.xlsx", "header_row": 1, "key_column": "URL"},
             "output": {"name": "已补全.xlsx"},
@@ -148,3 +152,38 @@ def test_长文本截断且换行压平() -> None:
     assert "\n" not in text
     assert text.endswith("…")
     assert len(text) <= specdiff._CELL_LIMIT
+
+
+def test_纯列名不能作筛选条件(tmp_path: Path) -> None:
+    """`id`/`url` 只供 order_by 与 output.columns 使用。
+
+    放行它们作条件时，`compile_sql` 会在 `lookup` 处抛 `UnknownMetric`，而该异常
+    逃出 `DeliveryBlocked`，`request run-due` 会整批中断。
+    """
+    with pytest.raises(SpecError, match="纯列名"):
+        make(tmp_path, "a", criteria=[{"metric": "id", "op": "=", "value": "acme/x"}])
+
+
+def test_SQL模式下criteria必须删掉(tmp_path: Path) -> None:
+    """SQL 模式下 criteria 不参与编译，却照样进 `spec_digest`。
+
+    留着它会让 manifest 看起来筛过、实际没有。
+    """
+    with pytest.raises(SpecError, match="criteria 不生效"):
+        make(
+            tmp_path,
+            "a",
+            mode="sql",
+            sql="SELECT id FROM datasets",
+            criteria=[{"metric": "下载量", "op": ">", "value": 1000}],
+        )
+
+
+def test_回填不接受筛选条件(tmp_path: Path) -> None:
+    """回填按输入表的 URL 清单逐条补，范围不是筛出来的。"""
+    with pytest.raises(SpecError, match="不支持 criteria"):
+        make(
+            tmp_path,
+            "a",
+            **fill_body(tmp_path, criteria=[{"metric": "下载量", "op": ">", "value": 1}]),
+        )
