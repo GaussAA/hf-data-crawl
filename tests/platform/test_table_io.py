@@ -7,8 +7,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 import pytest
@@ -16,7 +17,12 @@ import pytest
 from hf_data_crawl.platform import tables
 from hf_data_crawl.platform.atomic import write_parquet
 from hf_data_crawl.platform.store import DatasetStore
-from hf_data_crawl.platform.tables import CARD_CONFIGS_SCHEMA, OBSERVATIONS_SCHEMA, SIZE_SCHEMA
+from hf_data_crawl.platform.tables import (
+    CARD_CONFIGS_SCHEMA,
+    OBSERVATIONS_SCHEMA,
+    SIZE_SCHEMA,
+    TIMESTAMP,
+)
 
 DAY1 = date(2026, 11, 1)
 DAY2 = date(2026, 11, 2)
@@ -211,3 +217,26 @@ def test_明细表复合去重且卡片删掉的config不残留(store: DatasetSt
     }
     assert total == 2
     assert rows == {("acme/a", "default", "train"): 12, ("acme/b", "default", "train"): 7}
+
+
+def test_时间单位不一致的分区也能读(tmp_path: Path) -> None:
+    """ms 与 us 混在一起时 `vertical_relaxed` 会抛 SchemaError，整表打不开。
+
+    `_align_frame` 原本只补缺列、不碰类型：一个毫秒精度或 tz-naive 的分区就能让
+    `read_all` 抛错，表现为「加了列之后整个库打不开」。只对时间列按 schema cast，
+    其余类型不碰——静默把浮点截成整数比读不出来更坏。
+    """
+    from hf_data_crawl.platform.store import _align_frame
+
+    mixed = pl.DataFrame(
+        {
+            "id": ["acme/a"],
+            "created_at": pl.Series([datetime(2026, 11, 1)], dtype=pl.Datetime("ms")),
+        }
+    )
+    schema: dict[str, Any] = {"id": pl.Utf8, "created_at": TIMESTAMP}
+
+    aligned = _align_frame(mixed, schema)
+
+    assert aligned.schema["created_at"] == TIMESTAMP
+    assert aligned["created_at"].item() == datetime(2026, 11, 1, tzinfo=UTC)

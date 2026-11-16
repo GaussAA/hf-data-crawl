@@ -133,6 +133,23 @@ def _written(created: list[Path]) -> tuple[dict[str, str], int]:
     return winner, total
 
 
+def _write_manifest(store: DatasetStore, dates: set[date], baselines: list[Path]) -> None:
+    """把「哪些日期已压缩」写进清单。
+
+    在 `compact` 里被调用两次：搬移**之前**先登记（理由见那里），搬完之后再写
+    一次让 `updated_at` 反映真正完成的时刻。两次写的是同一批日期与基线。
+    """
+    payload = {
+        "compressed_dates": sorted(day.isoformat() for day in dates),
+        "baselines": [path.name for path in baselines],
+        "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+    write_bytes(
+        manifest_path(store),
+        json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
+    )
+
+
 def compact(store: DatasetStore, days: list[date]) -> CompactResult | None:
     """把若干冷区日期与已有基线合并成一份新基线；无源文件返回 None。"""
     if not days:
@@ -208,6 +225,16 @@ def compact(store: DatasetStore, days: list[date]) -> CompactResult | None:
                 path.unlink(missing_ok=True)
         raise
 
+    # 先把这些日期登记进清单，**再**搬文件。
+    #
+    # 搬移过程中被杀（Windows 上有读句柄就会让 `shutil.move` 失败）时，这些日期
+    # 既不在 `raw/` 也不在清单，`observed_days` 会把它们当成「从未采集」：14 天
+    # 窗口内报假断日，`build --full` 的 `cold_gap_days` 也看不见它们——逃生舱
+    # 静默失效。先登记就只剩另一种偏差：登记了但没搬完，下次 `compact` 会重新
+    # 处理（CLI 用 `discover_raw_dates` 选日期，不排除已登记的），多压一遍无害。
+    manifest_dates = read_compressed_dates(store) | set(days)
+    _write_manifest(store, manifest_dates, created)
+
     # 校验通过后才动原文件：旧基线进 backup/cold，源分块进 backup/raw/dt=。
     stale = old_baselines - set(created)
     backup_cold = store.root / "backup" / "cold"
@@ -228,16 +255,8 @@ def compact(store: DatasetStore, days: list[date]) -> CompactResult | None:
         if partition.exists() and not any(partition.iterdir()):
             partition.rmdir()
 
-    manifest_dates = read_compressed_dates(store) | set(days)
-    payload = {
-        "compressed_dates": sorted(day.isoformat() for day in manifest_dates),
-        "baselines": [path.name for path in created],
-        "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
-    }
-    write_bytes(
-        manifest_path(store),
-        json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
-    )
+    # 搬完再写一次：让 `updated_at` 反映真正完成的那一刻。
+    _write_manifest(store, manifest_dates, created)
 
     return CompactResult(
         dates=tuple(sorted(set(days))),

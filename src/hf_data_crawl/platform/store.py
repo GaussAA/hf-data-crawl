@@ -120,4 +120,15 @@ def _align_frame(frame: pl.DataFrame, schema: dict[str, PolarsType]) -> pl.DataF
             [pl.lit(None, dtype=schema[name]).alias(name) for name in missing]
         )
     extra = [name for name in frame.columns if name not in schema]
-    return frame.drop(extra).select(list(schema))
+    frame = frame.drop(extra).select(list(schema))
+    # 时间列的单位/时区可能因写入方版本不同而不一致（ms vs us、naive vs UTC）。
+    # `concat(how="vertical_relaxed")` 对 datetime **不做**超类型推断，会直接抛
+    # `SchemaError: failed to determine supertype of datetime[us, UTC] and datetime[ms]`
+    # ——表现为「加了列之后整个库打不开」，而 `_align_frame` 原本只补列不碰类型。
+    #
+    # 只对时间列按 schema 显式 cast：其余类型不碰，静默把浮点截成整数或把字符串
+    # 猜成数字，比读不出来更坏。
+    for name, kind in schema.items():
+        if isinstance(kind, pl.Datetime) and frame.schema[name] != kind:
+            frame = frame.with_columns(pl.col(name).cast(kind))
+    return frame

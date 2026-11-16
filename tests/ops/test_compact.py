@@ -239,3 +239,25 @@ def test_compact命令端到端可用(tmp_path: Path) -> None:
     assert raw.batch_files(store, day) == []
     assert list((store.root / "cold" / "raw").glob("baseline-*.json.gz"))
     assert read_compressed_dates(store) == {day}
+
+
+def test_搬移失败时日期已登记不报假断日(
+    store: DatasetStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """搬移过程中被杀（Windows 上有读句柄就会失败）时，日期必须已经在清单里。
+
+    否则它们既不在 `raw/` 也不在清单，`observed_days` 会把它们当成从未采集：
+    14 天窗口内报假断日，`build --full` 的 `cold_gap_days` 也看不见——逃生舱
+    静默失效。反过来（登记了但没搬完）只是下次 compact 重压一遍。
+    """
+
+    def boom(*args: Any, **kwargs: Any) -> None:
+        raise OSError("模拟搬移失败")
+
+    monkeypatch.setattr(compact_module.shutil, "move", boom)
+
+    with pytest.raises(OSError):
+        compact(store, COLD)
+
+    assert set(COLD) <= read_compressed_dates(store)
+    assert all(raw.partition_dir(store, day).exists() for day in COLD), "文件没搬走"

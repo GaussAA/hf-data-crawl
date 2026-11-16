@@ -60,7 +60,7 @@ def test_改阈值只报那一处(tmp_path: Path) -> None:
 
     changes = specdiff.compare(old, new)
 
-    assert [item.path for item in changes] == ["criteria[下载量].value"]
+    assert [item.path for item in changes] == ["criteria[下载量 > #0].value"]
     assert changes[0].old == 1000
     assert changes[0].new == 800
 
@@ -80,10 +80,39 @@ def test_插一条条件不会牵连原有条件(tmp_path: Path) -> None:
     changes = specdiff.compare(old, new)
 
     assert [item.path for item in changes] == [
-        "criteria[点赞数].op",
-        "criteria[点赞数].value",
+        "criteria[点赞数 > #0].op",
+        "criteria[点赞数 > #0].value",
     ]
     assert changes[0].old is specdiff._MISSING
+
+
+def test_同词条的第二条条件被删也要报(tmp_path: Path) -> None:
+    """区间筛选是常见写法：`下载量 > 100` 且 `下载量 < 1000`。
+
+    只用 metric 作键时后一条会覆盖前一条，于是删掉一条 `request diff` 会打印
+    「口径未变」——而唯一能发现它的 spec_digest 不在这条路径上显示。
+    """
+    old = make(
+        tmp_path,
+        "a",
+        criteria=[
+            {"metric": "下载量", "op": ">", "value": 100},
+            {"metric": "下载量", "op": "<", "value": 1000},
+        ],
+    )
+    new = make(
+        tmp_path,
+        "b",
+        criteria=[{"metric": "下载量", "op": "<", "value": 1000}],
+    )
+
+    changes = specdiff.compare(old, new)
+
+    assert [item.path for item in changes] == [
+        "criteria[下载量 > #0].op",
+        "criteria[下载量 > #0].value",
+    ], "删掉的第一条必须报出来，且第二条不能被牵连"
+    assert all(item.new is specdiff._MISSING for item in changes)
 
 
 def test_改一列的取值方式只报那一列(tmp_path: Path) -> None:
