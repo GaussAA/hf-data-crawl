@@ -134,6 +134,11 @@ def _request_compare(root: Path, args: argparse.Namespace) -> int:
         return 1
 
     done = deliveries_of(request_dir)
+    # 只给一侧时原先落到 else 分支、静默改比最近两次：用户以为在看 A→B，实际看的
+    # 是 C→D。要么两个都给，要么都不给。
+    if bool(args.left) != bool(args.right):
+        print("失败：两个交付号要么都给，要么都不给（不给就比最近两次）")
+        return 1
     if args.left and args.right:
         left, right = args.left, args.right
     elif len(done) < 2:

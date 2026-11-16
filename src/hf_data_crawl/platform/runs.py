@@ -44,6 +44,24 @@ class Outcome:
         return self.code != 0
 
 
+def _scrub(reason: str | None, root: Path) -> str | None:
+    """台账落盘前把本机绝对路径换成占位。
+
+    `reason` 直接来自异常消息，而 `FileNotFoundError` 这类会带上完整路径
+    （`C:\\WorkSpace\\...\\data\\state\\current.parquet`）。台账是机读面，也是
+    排障时会被贴进 issue 的东西，本机路径对它没有信息量——`cli.py` 里那句
+    「台账保持机读，不夹带本机路径」说的就是这件事，但只在注释里，异常消息照旧
+    原样写了进去。
+    """
+    if not reason:
+        return reason
+    for needle in (str(root.resolve()), str(root)):
+        # 太短的相对名（如 `data`）换成占位会误伤正常词句，只替换真正的绝对路径。
+        if len(needle) > 8 and needle in reason:
+            reason = reason.replace(needle, "<data>")
+    return reason
+
+
 def write_run(
     store: DatasetStore,
     command: str,
@@ -62,7 +80,7 @@ def write_run(
         "command": command,
         # status 由 outcome 推出，不接受外部传入：可传的 status 一定有传错的那天。
         "status": "failed" if outcome.failed else "success",
-        "reason": outcome.reason,
+        "reason": _scrub(outcome.reason, store.root),
         # 精度到微秒：同一秒内连跑两轮时，秒级时间戳无法区分先后，
         # 而「连续两轮对比」正是靠这个顺序成立的。
         "started_at": started_at.isoformat(timespec="microseconds"),

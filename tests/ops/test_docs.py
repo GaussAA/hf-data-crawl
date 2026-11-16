@@ -27,6 +27,23 @@ def doc(tmp_path: Path) -> str:
     return render(tmp_path / "data", STAMP)
 
 
+def test_仓库里的文档也是最新的() -> None:
+    """原先这里只比 `render()` 与 `TABLES`——文档在仓库里过不过期都不会红。
+
+    `docs/DATA.md` 是生成物，有人改了 schema 却忘记跑 `hf-data-crawl docs` 时，
+    上面那几条测试照样全绿，因为它们的 `doc` 是当场重新渲染的。这条直接读仓库里
+    那份：只比结构（表路径、逻辑名、列名），不比随数据变化的数字。
+    """
+    root = Path(__file__).resolve().parents[2]
+    committed = (root / "docs" / "DATA.md").read_text(encoding="utf-8")
+    for name, spec in TABLES.items():
+        assert f"逻辑名：`{name}`" in committed, f"{name} 没进仓库文档，跑 docs 重新生成"
+        for column in spec.schema:
+            assert f"| `{column}` |" in committed, (
+                f"{name}.{column} 没进仓库文档，跑 docs 重新生成"
+            )
+
+
 def test_每张表都出现在文档里(doc: str) -> None:
     for name, spec in TABLES.items():
         assert f"`{spec.path}`" in doc, f"{name} 的路径没进文档"

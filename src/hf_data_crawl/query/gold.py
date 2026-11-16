@@ -38,6 +38,10 @@ _VIEW_RENAMES: dict[str, dict[str, str]] = {
         "num_bytes_original": "server_num_bytes_original",
         "num_bytes_parquet": "server_num_bytes_parquet",
         "configs": "server_configs",
+        # `size.status` 是 `ok` / `unavailable` / 空（只说这次规模抓取成功与否），
+        # 不限定就会被 `current.status`（active/disappeared/...）撞掉。`files` 早先
+        # 修过同一处却漏了 `size`——一个坑两处，说明改名必须跟这张表一起登记。
+        "status": "size_status",
     },
     # files.status 与 current.status 是两回事：前者只说这次文件清单补采成功与否。
     # files.formats 是扩展名计数，与 silver.formats（标签维度）同名不同义。

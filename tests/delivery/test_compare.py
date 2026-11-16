@@ -114,6 +114,23 @@ def test_回填型按标识列对齐且链接归一(tmp_path: Path) -> None:
     assert stage.samples[0][2] == "后训练"
 
 
+def test_标识列归一后重复要报错(tmp_path: Path) -> None:
+    """完整链接与 `作者/名称` 指向同一个库，两行都在时后写会覆盖前写。
+
+    覆盖丢的是一整行数据，而 `left_rows` 按字典长度报——两边都不对且无信号。
+    """
+    left = make_delivery(tmp_path, "A", "backfill", ["已补全.xlsx"], **backfill_body())
+    write_book(
+        left / "已补全.xlsx",
+        [("https://huggingface.co/datasets/acme/ds-1", "10", ""), ("acme/ds-1", "20", "")],
+    )
+    right = make_delivery(tmp_path, "B", "backfill", ["已补全.xlsx"], **backfill_body())
+    write_book(right / "已补全.xlsx", [("acme/ds-1", "10", "")])
+
+    with pytest.raises(CompareError, match="归一后出现重复"):
+        compare_deliveries(left, right)
+
+
 def test_形态不同直接拒绝(tmp_path: Path) -> None:
     left = make_delivery(tmp_path, "A", "query", ["data.parquet"])
     right = make_delivery(tmp_path, "B", "backfill", ["已补全.xlsx"], **backfill_body())
@@ -192,6 +209,18 @@ def test_compare只有一次交付时说清没有可比对象(
 
     assert run_cli(tmp_path, "request", "compare", "REQ-0001") == 1
     assert "没有可比对象" in capsys.readouterr().out
+
+
+def test_只给一侧交付号要报错(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """原先只给一侧会静默落到「比最近两次」——用户以为看 A→B，实际看的是 C→D。"""
+    folder = seed(tmp_path, "A", "B")
+    for name, value in (("A", 1), ("B", 5)):
+        path = make_delivery(folder / "deliveries", name, "query", ["data.parquet"])
+        pl.DataFrame({"id": ["a"], "downloads": [value]}).write_parquet(path / "data.parquet")
+
+    assert run_cli(tmp_path, "request", "compare", "REQ-0001", "A") == 1
+
+    assert "要么都给" in capsys.readouterr().out
 
 
 def test_空值与空列表不算改动但一侧有值才算(tmp_path: Path) -> None:

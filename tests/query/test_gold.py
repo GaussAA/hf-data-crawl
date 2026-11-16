@@ -215,6 +215,18 @@ def test_规模口径带server前缀以免与卡片口径混淆(catalog: GoldCat
     assert "card_num_rows" in columns, "卡片口径的行数应同时存在，两者含义不同"
 
 
+def test_规模抓取状态不与库状态撞名(catalog: GoldCatalog) -> None:
+    """`size.status` 是 ok/unavailable，`current.status` 是 active/disappeared。
+
+    两列同名时先到先得，`size` 那列被静默丢弃，于是按 `status = 'ok'` 过滤会
+    命中库状态而不是抓取状态——查出来是空也不报错。`files` 早先修过同一处。
+    """
+    columns = set(catalog.run("SELECT * FROM datasets LIMIT 0").columns)
+
+    assert "size_status" in columns
+    assert "files_status" in columns
+
+
 def test_重名列以实际数据为准取current的那一份(catalog: GoldCatalog) -> None:
     """status 在 current 与 size 里都有，视图里必须是 current 的。"""
     row = catalog.run("SELECT status FROM datasets LIMIT 1").row(0, named=True)

@@ -251,6 +251,14 @@ def _cells(directory: Path, body: dict[str, Any]) -> tuple[dict[str, dict[str, s
         key = _identifier(sheet.cell(row=row, column=key_index + 1).value)
         if not key:
             continue
+        # 归一化会把 `https://huggingface.co/datasets/a/b` 与 `a/b` 压成同一个键。
+        # 静默后写覆盖前写时，丢掉的是一整行数据，而 `left_rows` 是按字典长度报的
+        # ——报 100 行、实际 101 行，两边都不对，且没有任何信号。宁可报错让人看表。
+        if key in rows:
+            raise CompareError(
+                f"{directory.name} 的标识列归一后出现重复：{key!r}"
+                f"（第 {row} 行与前面某行指向同一个库，可能是两种 URL 写法）"
+            )
         rows[key] = {
             name: _text(sheet.cell(row=row, column=index + 1).value)
             for index, name in enumerate(header)

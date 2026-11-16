@@ -60,7 +60,7 @@ $steps = @(
     # 与周日那次全量轮替分工——全量补缺，这步保鲜。
     @{ Name = "sizes"; Label = "规模随变化刷新"; Requires = @("reconcile"); Report = $false
         Arguments = @("--lock-wait", "900", "fetch-sizes", "--changed", "8000") },
-    @{ Name = "export"; Label = "导出宽表"; Requires = @("build", "reconcile"); Report = $false
+    @{ Name = "export"; Label = "导出宽表"; Requires = @("build", "reconcile", "sizes"); Report = $false
         Arguments = @("--lock-wait", "900", "export-wide") },
     @{ Name = "deliver"; Label = "到期需求交付"; Requires = @("build", "reconcile"); Report = $false
         Arguments = @("--lock-wait", "900", "request", "run-due") },

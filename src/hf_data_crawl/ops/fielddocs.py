@@ -112,15 +112,18 @@ FIELD_DOCS: dict[str, dict[str, str]] = {
         "data_files": "该 split 由哪些文件构成（JSON 数组，可能是通配符）",
     },
     "size": {
-        "status": "`ok` 拿到数据 / `unavailable` 上游没有这份数据 / `error` 临时失败",
-        "num_rows": "datasets-server **实测**行数，与 `card_num_rows` 是两个口径",
-        "estimated_num_rows": "上游给出的估算行数（未做精确统计时才有）",
-        "num_bytes_original": "原始文件字节数",
-        "num_bytes_parquet": "转成 parquet 后的字节数",
-        "num_bytes_memory": "载入内存后的估算占用",
-        "config_count": "上游报告的 config 个数",
-        "num_columns_max": "各 config 中列数的最大值",
-        "configs": "各 config 的明细（JSON 文本）",
+        "status": "`ok` 拿到数据 / `unavailable` 上游没有这份数据 / `error` 临时失败；"
+        "宽视图里改名为 `size_status`，否则会被 `current.status` 撞掉",
+        "num_rows": "datasets-server **实测**行数，与 `card_num_rows` 是两个口径；"
+        "宽视图里改名为 `server_num_rows`，以免两个口径并排时分不清",
+        "estimated_num_rows": "上游给出的估算行数（未做精确统计时才有）；"
+        "宽视图里改名为 `server_estimated_rows`",
+        "num_bytes_original": "原始文件字节数；宽视图里改名为 `server_num_bytes_original`",
+        "num_bytes_parquet": "转成 parquet 后的字节数；宽视图里改名为 `server_num_bytes_parquet`",
+        "num_bytes_memory": "载入内存后的估算占用；宽视图里改名为 `server_num_bytes_memory`",
+        "config_count": "上游报告的 config 个数；宽视图里改名为 `server_config_count`",
+        "num_columns_max": "各 config 中列数的最大值；宽视图里改名为 `server_num_columns`",
+        "configs": "各 config 的明细（JSON 文本）；宽视图里改名为 `server_configs`",
         "snapshot_date": "最近一次成功补抓的日期",
         "fetched_at": (
             "这一行被抓取的**时刻**。只有日期会漏判「同日二次变更」："

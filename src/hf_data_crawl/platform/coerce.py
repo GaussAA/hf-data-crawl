@@ -66,6 +66,14 @@ def as_text(value: Any) -> str | None:
         parts = [str(item).strip() for item in value if item is not None]
         parts = [part for part in parts if part]
         return ",".join(parts) if parts else None
+    if isinstance(value, dict):
+        # 上游偶尔把结构化值塞进标量字段（卡片 YAML 可以嵌套）。`str()` 给出的是
+        # Python repr——单引号、顺序随插入，既不可读也不可复现；而这条规则的铁律
+        # 是「取不到就留 None，绝不猜」，直接把结构丢掉等于猜。JSON + 排序键是
+        # 唯一既保结构又可复现的写法。
+        if not value:
+            return None
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     text = str(value).strip()
     return text or None
 

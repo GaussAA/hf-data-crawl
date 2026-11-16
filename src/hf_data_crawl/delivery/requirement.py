@@ -350,17 +350,36 @@ def _validate(spec: Spec, path: Path) -> None:
         # 回填的护栏在口径体里（输出文件名、必填列）；criteria / order_by 对它无意义。
         if spec.fill is None:
             raise SpecError(f"{path}: kind=backfill 时必须有 fill 段")
+        if spec.criteria or spec.order_by:
+            # 静默忽略等于骗人：受理时说「收到」，交付时却不按它筛。而 `spec_digest`
+            # 把整份口径都算进去，于是这个从不生效的字段还会让版本号看起来变了。
+            raise SpecError(
+                f"{path}: kind=backfill 不支持 criteria / order_by"
+                "——回填按输入表的 URL 清单逐条补，范围由 input/ 决定，不是筛出来的"
+            )
         return
     if spec.mode is Mode.CRITERIA and not spec.criteria:
         raise SpecError(f"{path}: mode=criteria 时 criteria 不能为空（要手写 SQL 请写 mode: sql）")
     if spec.mode is Mode.SQL and not (spec.sql or "").strip():
         raise SpecError(f"{path}: mode=sql 时必须给 sql")
+    if spec.mode is Mode.SQL and spec.criteria:
+        # 同上：SQL 模式下 criteria 不参与编译，却照样进了 `spec_digest`。
+        raise SpecError(
+            f"{path}: mode=sql 时 criteria 不生效（条件写在 SQL 里），请删掉"
+            "——留着它只会让 manifest 看起来筛过、实际没有"
+        )
     # 词条、运算符、值的相容性都在这里查完，而不是等编译：受理时就该发现「热度」
     # 不在词表里、文本列上写了 `>`、数字列给了「很多」，而不是等交付跑到一半才炸。
     # 条件与排序分开遍历：排序没有运算符与取值，混在一个循环里只能推断成宽联合。
     for item in spec.criteria:
         if item.metric in PLAIN_COLUMNS:
-            continue
+            # 这两个只供 `order_by` / `output.columns` 使用（见 PLAIN_COLUMNS 的注释）。
+            # 放行它们作条件，`compile_sql` 会在 `lookup` 处抛 `UnknownMetric`——
+            # 该异常逃出 `DeliveryBlocked`，`request run-due` 会整批中断。
+            raise SpecError(
+                f"{path}: `{item.metric}` 是纯列名，不能作筛选条件"
+                "（按作者或前缀筛请用 `来源` 词条，或改用 mode: sql）"
+            )
         metric = _metric_or_fail(item.metric, path)
         _compatible(metric, item.op, f"{path}: ")
         # 值的形态（数字列收到「很多」、时间列收到乱码）与运算符同属「这条条件
