@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlparse
 
+import orjson
+
 from .checkpoint import Checkpoint
 
 DEFAULT_BASE_URL = "https://huggingface.co/api/datasets"
@@ -277,7 +279,7 @@ class HfDatasetApi:
         pages = 0
         while True:
             response = self._request(params)
-            payload = json.loads(response.body.decode("utf-8"))
+            payload = orjson.loads(response.body)
             records, skipped = self._valid_records(payload)
             next_cursor = _parse_next_cursor(_header(response.headers, "Link"))
             remaining, reset_in = _parse_rate_limit(response.headers)
@@ -321,7 +323,7 @@ class HfDatasetApi:
         if response.status != 200:
             return None
         try:
-            payload = json.loads(response.body.decode("utf-8"))
+            payload = orjson.loads(response.body)
         except (UnicodeDecodeError, json.JSONDecodeError):
             return None
         return payload if isinstance(payload, dict) else None
@@ -351,7 +353,7 @@ class HfDatasetApi:
         if response.status != 200:
             return Probe(status=response.status)
         try:
-            payload = json.loads(response.body.decode("utf-8"))
+            payload = orjson.loads(response.body)
         except (UnicodeDecodeError, json.JSONDecodeError):
             return Probe(status=response.status)
         resolved = payload.get("id") if isinstance(payload, dict) else None

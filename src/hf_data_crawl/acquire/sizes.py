@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+import orjson
 import polars as pl
 
 from ..platform.atomic import write_parquet
@@ -122,7 +123,7 @@ class HfSizeApi:
 
 def _success(dataset_id: str, snapshot_date: date, body: bytes) -> SizeResult:
     try:
-        payload = json.loads(body.decode("utf-8"))
+        payload = orjson.loads(body)
     except (UnicodeDecodeError, json.JSONDecodeError):
         return _failure(dataset_id, "error")
     size = payload.get("size") if isinstance(payload, dict) else None

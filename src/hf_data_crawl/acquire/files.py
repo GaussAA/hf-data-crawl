@@ -46,6 +46,7 @@ from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+import orjson
 import polars as pl
 
 from ..platform.coerce import as_int
@@ -110,7 +111,7 @@ def next_cursor(headers: Mapping[str, str]) -> str | None:
 def parse_tree(body: bytes) -> list[dict[str, Any]] | None:
     """解析一页 tree。空列表是合法的空仓库，只有形态不对才返回 None。"""
     try:
-        payload = json.loads(body.decode("utf-8"))
+        payload = orjson.loads(body)
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None
     if not isinstance(payload, list):
