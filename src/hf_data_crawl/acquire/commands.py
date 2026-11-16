@@ -14,6 +14,7 @@ from ..platform.lock import exclusive
 from ..platform.presets import get_preset
 from ..platform.runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs
 from ..platform.store import DatasetStore
+from .batch import STALL_HEARTBEAT_SECONDS
 from .collect import Collector, CollectSummary
 from .enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
 from .files import FileFetcher, FileSummary, HfFilesApi
@@ -246,6 +247,7 @@ def run_fetch_sizes(
         api=HfSizeApi(transport=_open_transport(transport)),
         workers=args.workers,
         progress=_progress_line,
+        heartbeat=_stall_line,
     )
     writer = StagingWriter(store, snapshot)
     candidates = ordered["id"].to_list()
@@ -304,6 +306,7 @@ def run_fetch_files(
         ),
         workers=args.workers,
         progress=lambda done, total: _progress_line(done, total, "补齐文件清单"),
+        heartbeat=lambda done, total: _stall_line(done, total, "补齐文件清单"),
     )
     summary, frame = fetcher.run(
         snapshot,
@@ -335,6 +338,19 @@ def _progress_line(done: int, total: int, label: str = "补齐规模") -> None:
         print(f"  {label} {done}/{total}（{tail(done, total)}%）", flush=True)
         return
     print(f"\r  {label} {done}/{total}（{tail(done, total)}%）", end="", flush=True)
+
+
+def _stall_line(done: int, total: int, label: str = "补齐规模") -> None:
+    """一条都没完成的这段时间，也得说一声。
+
+    它没法替人判断是「大表解析慢」还是「请求挂死了」，但沉默是最坏的一种：
+    2026-11-16 那次，日志停在初始一行整整一个半小时，与「老老实实跑得慢」看不出
+    任何分别，只能靠比对文件时间才发觉它早就不动了。
+    """
+    print(
+        f"  {label} {done}/{total}：{STALL_HEARTBEAT_SECONDS:.0f} 秒内无一条完成，仍在等待",
+        flush=True,
+    )
 
 
 def _print_collect(summary: CollectSummary) -> None:

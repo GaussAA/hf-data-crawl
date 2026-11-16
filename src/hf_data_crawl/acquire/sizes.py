@@ -189,10 +189,12 @@ class SizeFetcher:
         *,
         workers: int = 16,
         progress: Callable[[int, int], None] | None = None,
+        heartbeat: Callable[[int, int], None] | None = None,
     ) -> None:
         self._api = api
         self._workers = max(1, workers)
         self._progress = progress
+        self._heartbeat = heartbeat
 
     def run(
         self,
@@ -227,6 +229,7 @@ class SizeFetcher:
             flush=flush,
             flush_every=flush_every,
             progress=self._progress,
+            heartbeat=self._heartbeat,
         )
         ok = sum(1 for result in results if result.status == "ok")
         unavailable = sum(1 for result in results if result.status == "unavailable")
