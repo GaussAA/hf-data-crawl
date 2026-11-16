@@ -1,43 +1,29 @@
-# Issue tracker: Local Markdown
+# Issue tracker：本地 Markdown
 
-Issues and specs for this repo live as markdown files in `.scratch/`.
+Issue 与规格是 `.scratch/<feature>/` 下的 Markdown。`.scratch/` 不入库（见 `.gitignore`），
+它是工作现场，不是交付物。
 
-## Conventions
+## 约定
 
-- One feature per directory: `.scratch/<feature-slug>/`
-- The spec is `.scratch/<feature-slug>/spec.md`
-- Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`, never a single combined tickets file
-- Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
-- Comments and conversation history append to the bottom of the file under a `## Comments` heading
+- 一个特性一个目录：`.scratch/<feature-slug>/`
+- 规格：`.scratch/<feature-slug>/spec.md`
+- 实现票据：一票一文件，`.scratch/<feature-slug>/issues/<NN>-<slug>.md`，从 `01` 编号，
+  不合成为一张总表
+- 状态：文件顶部一行 `Status:`，取值 `needs-triage` / `needs-info` / `ready-for-agent` /
+  `ready-for-human` / `wontfix`
+- 对话与结论追加在文件末尾的 `## Comments` 下
 
-## When a skill says "publish to the issue tracker"
+## 领取与完成
 
-Create a new file under `.scratch/<feature-slug>/` (creating the directory if needed).
+- 一个票据一次只由一个人处理；开头与结论都落在文件里，不靠口头交接。
+- 完成后在文件里写结论与证据（命令、输出、commit），再改 `Status`。
+- 一个票据只回答一个问题；范围变大就拆票，编号免费。
 
-## When a skill says "fetch the relevant ticket"
+## 归档
 
-Read the file at the referenced path. The user will normally pass the path or the issue number directly.
+v1.0 的切片清单与 PRD 是**历史档案**，不是活台账。两者编号互相引用，删一份会让另一份的
+编号失去参照；它们按原样保留，不随后续重构改写。索引在 [docs 索引](../README.md)：
 
-## Wayfinding operations
-
-Used by `/wayfinder`. The **map** is a file with one **child** file per ticket.
-
-- **Map**: `.scratch/<effort>/map.md` (the Notes / Decisions-so-far / Fog body).
-- **Child ticket**: `.scratch/<effort>/issues/NN-<slug>.md`, numbered from `01`, with the question in the body. A `Type:` line records the ticket type (`research`/`prototype`/`grilling`/`task`); a `Status:` line records `claimed`/`resolved`.
-- **Blocking**: a `Blocked by: NN, NN` line near the top. A ticket is unblocked when every file it lists is `resolved`.
-- **Frontier**: scan `.scratch/<effort>/issues/` for files that are open, unblocked, and unclaimed; first by number wins.
-- **Claim**: set `Status: claimed` and save before any work.
-- **Resolve**: append the answer under an `## Answer` heading, set `Status: resolved`, then append a context pointer (gist + link) to the map's Decisions-so-far in `map.md`.
-
-## Legacy
-
-The v1.0 combined slice list and the PRD behind it are kept as **historical
-archives**, not as the live tracker. Both are indexed from the
-[docs index](../README.md):
-
-- [docs/ISSUES.md](../ISSUES.md) — S1–S8 slices, four rounds of remediation notes
-  and two incident post-mortems.
-- [docs/PRD-hf-data-crawl-v1.0.md](../PRD-hf-data-crawl-v1.0.md) — the 20 user
-  stories behind the slices' "覆盖故事" numbers.
-
-New tickets still go under `.scratch/`; the archives are read-only records.
+- [docs/ISSUES.md](../ISSUES.md) — S1–S8 切片、四轮整改、两次事故复盘
+- [docs/PRD-hf-data-crawl-v1.0.md](../PRD-hf-data-crawl-v1.0.md) — 切片「覆盖故事」编号
+  对应的 20 条 User Stories
