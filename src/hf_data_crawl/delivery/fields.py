@@ -82,6 +82,7 @@ from __future__ import annotations
 
 import polars as pl
 
+from ..platform.tables import PolarsType
 from ..query.gold import wide_column_names
 
 #: 契约版本。增删字段、改列序、改列类型都要加一；只改说明文字不必。
@@ -172,6 +173,73 @@ COLUMN_NOTES: dict[str, str] = {
     "main_size": "仓库主分支字节数（页面 Total file size 的机器值），十进制换算 MB 请除以 1e6",
     "server_num_bytes_parquet": "datasets-server 转成 parquet 后的字节数，是数据文件体积而非仓库体积",
 }
+
+#: 每列**类型族**。契约原先只声明列名，于是「列名没变、类型变了」没有绊线：
+#: 2026 年那轮 `tags` 从 VARCHAR 改回 LIST（契约 v3→v5）正是这种变更，而
+#: `doctor` 与 `export_wide` 三处勾稽都只比列名元组，全绿。
+#:
+#: 存「族」而不是精确 dtype，是因为时间列在 duckdb / parquet / polars 之间的
+#: 时区与精度表示并不统一（`Datetime(us)` vs `Datetime(us, "UTC")`），逐位比较
+#: 会天天假红。族只有四种，抓的正是 VARCHAR ↔ LIST、整数 ↔ 浮点这类真变更。
+COLUMN_TYPES: dict[str, str] = {
+    # 标识与文本
+    "id": "text",
+    "url": "text",
+    "author": "text",
+    "description": "text",
+    "status": "text",
+    "gated": "text",
+    "license_name": "text",
+    "pretty_name": "text",
+    # 时间
+    "created_at": "time",
+    "last_modified": "time",
+    # 数值
+    "downloads": "number",
+    "downloads_all_time": "number",
+    "likes": "number",
+    "server_num_rows": "number",
+    "server_num_columns": "number",
+    "server_config_count": "number",
+    "main_size": "number",
+    "server_num_bytes_parquet": "number",
+    # 多值列：`;` 拼平的 VARCHAR 曾经出现过（v3），是对「预览器读不了 LIST」的
+    # 妥协；上游修好后 v5 撤销。这条声明就是为了让那种回退必须先改这里。
+    "licenses": "list",
+    "languages": "list",
+    "modalities": "list",
+    "task_categories": "list",
+    "formats": "list",
+    "libraries": "list",
+    "size_categories": "list",
+    "tags": "list",
+    "plain_tags": "list",
+    "multilinguality": "list",
+    "arxiv_ids": "list",
+    "source_datasets": "list",
+    "task_ids": "list",
+}
+
+
+def type_family(dtype: PolarsType) -> str:
+    """把 polars 类型折成契约用的四种族。不认识的返回类型本身，便于比对时点破。
+
+    空列（`pl.Null`）返回 `unknown`：它只出现在**手工构造的空表**里，真实导出物的
+    列类型由视图决定，不会是 Null。比对时把 unknown 当通配，否则夹具里的空表会让
+    「列类型不符」天天假红。
+    """
+    if dtype == pl.Null:
+        return "unknown"
+    if dtype == pl.Utf8 or dtype == pl.String:
+        return "text"
+    if isinstance(dtype, pl.List):
+        return "list"
+    if dtype in (pl.Date, pl.Datetime):
+        return "time"
+    if dtype == pl.Boolean or dtype.is_numeric():
+        return "number"
+    return str(dtype)
+
 
 #: 详情页标签行 → 库列 → 值的显示形式。交付 README 照抄，回答「页面那一项在哪一列」。
 #: 一行可以对应多列（Tags 既有原样全量，也有拆出的自定义标签）。
@@ -360,6 +428,12 @@ def contract_errors() -> list[str]:
     missing_notes = [column for column in DEFAULT_COLUMNS if column not in COLUMN_NOTES]
     if missing_notes:
         problems.append(f"这些列缺中文说明：{missing_notes}")
+    missing_types = [column for column in DEFAULT_COLUMNS if column not in COLUMN_TYPES]
+    if missing_types:
+        problems.append(f"这些列缺类型声明：{missing_types}")
+    extra_types = sorted(set(COLUMN_TYPES) - set(DEFAULT_COLUMNS))
+    if extra_types:
+        problems.append(f"类型声明里有契约之外的列：{extra_types}")
     extra_notes = sorted(set(COLUMN_NOTES) - set(DEFAULT_COLUMNS))
     if extra_notes:
         problems.append(f"说明里有契约之外的列：{extra_notes}")

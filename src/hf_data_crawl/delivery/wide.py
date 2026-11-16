@@ -42,7 +42,14 @@ import polars as pl
 
 from ..platform.store import DatasetStore
 from ..query.gold import GoldCatalog, wide_column_names
-from .fields import DEFAULT_COLUMNS, FALLBACKS, contract_errors, projection_sql
+from .fields import (
+    COLUMN_TYPES,
+    DEFAULT_COLUMNS,
+    FALLBACKS,
+    contract_errors,
+    projection_sql,
+    type_family,
+)
 
 #: 默认产物路径，相对 `store.root`。放在 `exports/` 而非登记表管理的目录，
 #: 是为了让「它不是一张表」在目录结构上一眼可见。
@@ -137,6 +144,21 @@ def export_wide(store: DatasetStore, target: Path | None = None) -> WideExportSu
             raise WideExportMismatch(
                 f"导出文件列与默认交付契约不一致：缺 {sorted(set(DEFAULT_COLUMNS) - set(actual))}，"
                 f"多 {sorted(set(actual) - set(DEFAULT_COLUMNS))}"
+            )
+
+        # 列名对了还不够：`tags` 从 VARCHAR 改回 LIST 那次，列名一个没变。
+        # 契约现在声明了类型族，导出物必须与它一致——不一致说明「改了类型却没同步
+        # 契约」（也就没升 CONTRACT_VERSION），这正是 2026 年那轮变更漏掉的一步。
+        schema = frame.collect_schema()
+        wrong_types = [
+            (name, type_family(schema[name]), COLUMN_TYPES[name])
+            for name in DEFAULT_COLUMNS
+            if type_family(schema[name]) not in (COLUMN_TYPES[name], "unknown")
+        ]
+        if wrong_types:
+            raise WideExportMismatch(
+                f"导出列类型与默认交付契约不一致（列名、类型族、契约族）：{wrong_types}；"
+                "改列类型须同步 COLUMN_TYPES 并升 CONTRACT_VERSION"
             )
 
         rows = int(frame.select(pl.len()).collect().item())

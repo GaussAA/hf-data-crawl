@@ -11,6 +11,7 @@ import polars as pl
 
 from hf_data_crawl.delivery.fields import (
     COLUMN_NOTES,
+    COLUMN_TYPES,
     CONTRACT_VERSION,
     DEFAULT_COLUMNS,
     DISPLAY_COLUMNS,
@@ -23,6 +24,7 @@ from hf_data_crawl.delivery.fields import (
     display_expr,
     display_value,
     projection_sql,
+    type_family,
 )
 from hf_data_crawl.query.gold import wide_column_names
 
@@ -260,3 +262,32 @@ def test_扩展清单与默认面不重叠且列都存在() -> None:
 def test_扩展说明写明按需取用方式() -> None:
     assert "output.columns" in EXTENDED_NOTE
     assert "gold.datasets" in EXTENDED_NOTE
+
+
+def test_每列都有类型声明且不越界() -> None:
+    """契约原先只声明列名，于是「列名没变、类型变了」没有绊线。
+
+    `tags` 从 VARCHAR 改回 LIST（契约 v3→v5）正是这种变更：doctor 与
+    export_wide 三处勾稽全都只比列名元组。
+    """
+    assert not [column for column in DEFAULT_COLUMNS if column not in COLUMN_TYPES]
+    assert not sorted(set(COLUMN_TYPES) - set(DEFAULT_COLUMNS))
+
+
+def test_类型族只认常量与未知() -> None:
+    assert type_family(pl.Utf8) == "text"
+    assert type_family(pl.List(pl.Utf8)) == "list"
+    assert type_family(pl.Int64) == "number"
+    assert type_family(pl.Datetime("us")) == "time"
+    # 空列只出现在手工构造的空表里；当通配，避免夹具天天假红。
+    assert type_family(pl.Null) == "unknown"
+
+
+def test_列表列的类型声明不会退化成文本() -> None:
+    """v3 曾把 13 个多值列压成 `;` 字符串以绕开预览器缺陷，v5 撤销。
+
+    契约里的族声明是那道回退的绊线：谁要把 `tags` 改回 `text`，得先改这里。
+    """
+    multi = [name for name, family in COLUMN_TYPES.items() if family == "list"]
+    assert "tags" in multi and "plain_tags" in multi
+    assert COLUMN_TYPES["tags"] == "list"

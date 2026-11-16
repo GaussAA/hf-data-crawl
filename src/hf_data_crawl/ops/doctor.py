@@ -22,7 +22,7 @@ import polars as pl
 from ..acquire.reconcile import PROBE_DEGRADE_AFTER
 from ..acquire.sizes import stale_ids
 from ..delivery.delivery import deliveries_of, method
-from ..delivery.fields import DEFAULT_COLUMNS, contract_errors
+from ..delivery.fields import COLUMN_TYPES, DEFAULT_COLUMNS, contract_errors, type_family
 from ..delivery.requirement import SPEC_NAME, SpecError, request_dirs, version_conflict
 from ..delivery.requirement import load as load_spec
 from ..delivery.wide import export_path
@@ -471,11 +471,26 @@ def _artifact_freshness(ctx: RunContext) -> Finding:
 
             # 列集勾稽：这份文件是「默认交付字段」的物化，列被手改或仍是旧版
             # 72 列时，查询交付按新契约投列、文件却按旧口径，两者就漂移了。
-            columns = tuple(pl.scan_parquet(export.as_posix()).collect_schema().names())
+            schema = pl.scan_parquet(export.as_posix()).collect_schema()
+            columns = tuple(schema.names())
+            # 列名对了还不够：类型族变了（`tags` 从 VARCHAR 改回 LIST 那种）说明
+            # 这份导出是按旧口径写的，同一个列名在两边给出不同的值语义。
+            wrong_types = [
+                (name, type_family(schema[name]), COLUMN_TYPES[name])
+                for name in DEFAULT_COLUMNS
+                if name in schema
+                and COLUMN_TYPES.get(name) not in (None, type_family(schema[name]))
+                and type_family(schema[name]) != "unknown"
+            ]
             if columns != DEFAULT_COLUMNS:
                 problems.append(
                     f"宽表导出列集与默认交付契约不一致（{len(columns)} vs "
                     f"{len(DEFAULT_COLUMNS)} 列），跑 export-wide 重建"
+                )
+            elif wrong_types:
+                problems.append(
+                    f"宽表导出列类型与默认交付契约不一致（列名、实际族、契约族）："
+                    f"{wrong_types}，跑 export-wide 重建"
                 )
             else:
                 notes.append(f"导出列集与默认交付契约一致（{len(columns)} 列）")
