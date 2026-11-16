@@ -187,7 +187,15 @@ class Collector:
             if stale:
                 return "watermark_timestamp"
 
-            # 传统 watermark：连续 N 页无新 id（保留作为后备）
+            # 传统 watermark：连续 N 页无新 id（保留作为后备）。
+            #
+            # 但**没有基线时这条不成立**：它靠「本页 id 都认识」判断已到边界，而
+            # 首轮 `known` 来自现有 `current`（全站 id 都认识），`fresh` 恒为 0，
+            # 三页后就会把水位线钉在「最新 3000 条的最老时间」上——之后每轮增量
+            # 只覆盖最新几条，而中间那段永远不会被「按 lastModified 倒序」扫到。
+            # 首轮交给末页收尾（`end`）：那是首次建库的正常成本，不是可省的等待。
+            if baseline_time is None:
+                return None
             streak = 0 if fresh else streak + 1
             return "watermark_no_new" if streak >= threshold else None
 
