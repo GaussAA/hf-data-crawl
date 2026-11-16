@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import gzip
 import json
 from datetime import date
 from pathlib import Path
@@ -41,7 +40,7 @@ def write_archive(store: DatasetStore, snapshot_date: date, label: str) -> Path:
     partition.mkdir(parents=True, exist_ok=True)
     path = partition / f"{label}-archive-000001-abcd1234.json.gz"
     payload = {"meta": {"archived": True}, "records": [record(1)]}
-    path.write_bytes(gzip.compress(json.dumps(payload).encode("utf-8")))
+    path.write_bytes(raw.pack(json.dumps(payload).encode("utf-8")))
     return path
 
 

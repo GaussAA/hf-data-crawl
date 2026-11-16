@@ -52,8 +52,8 @@ def record(index: int, *, main_size: int | None = None) -> dict[str, Any]:
 def payloads(store: DatasetStore) -> list[dict[str, Any]]:
     partition = store.raw_dir / f"dt={DAY.isoformat()}"
     found = []
-    for path in sorted(partition.glob("*.json.gz")):
-        found.append(json.loads(gzip.decompress(path.read_bytes()).decode("utf-8")))
+    for path in sorted(partition.glob(f"*{raw.SUFFIX}")):
+        found.append(json.loads(raw.unpack(path.read_bytes(), name=path.name).decode("utf-8")))
     return found
 
 
@@ -144,8 +144,8 @@ def test_胜出者由写入时刻决定而不是文件修改时间(store: Datase
 
     # 把「时刻较晚」的那份改成文件系统上最早，旧实现会被骗到。
     partition = store.raw_dir / f"dt={DAY.isoformat()}"
-    for path in partition.glob("*.json.gz"):
-        data = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+    for path in partition.glob(f"*{raw.SUFFIX}"):
+        data = json.loads(raw.unpack(path.read_bytes(), name=path.name).decode("utf-8"))
         stamp = data["meta"]["written_at"]
         when = time.time() + (100 if stamp.startswith("2026-11-04T09") else -100)
         os.utime(path, (when, when))
@@ -200,7 +200,7 @@ def test_复制raw目录后重建结果完全一致(tmp_path: Path) -> None:
     shutil.copytree(source.raw_dir, target.raw_dir)
     # 复制会保留 mtime，故意全部打乱，模拟解压归档/换机迁移后的状态。
     now = time.time()
-    for offset, path in enumerate(sorted(target.raw_dir.rglob("*.json.gz"))):
+    for offset, path in enumerate(sorted(target.raw_dir.rglob(f"*{raw.SUFFIX}"))):
         os.utime(path, (now + offset, now + offset))
 
     bronze.build(target, DAY)

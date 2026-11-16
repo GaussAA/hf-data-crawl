@@ -12,7 +12,6 @@
 
 from __future__ import annotations
 
-import gzip
 import json
 from datetime import date
 from pathlib import Path
@@ -43,7 +42,7 @@ def store(tmp_path: Path) -> DatasetStore:
 
 
 def payload(path: Path) -> dict[str, Any]:
-    return json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+    return json.loads(raw.unpack(path.read_bytes(), name=path.name).decode("utf-8"))
 
 
 def spec(**overrides: Any) -> ScanSpec:
@@ -138,10 +137,12 @@ def test_四种文件名形态都能解析() -> None:
 
 
 def test_legacy分片名保持旧格式() -> None:
-    assert raw.archive_name("part", 3, "deadbeef") == "part-archive-000003-deadbeef.json.gz"
+    """legacy 不带来源段。后缀用 `raw.SUFFIX` 拼接：这里要守的是命名结构，
+    不是某一种压缩格式——把后缀写死，换格式时这条测试会假红一次。"""
+    assert raw.archive_name("part", 3, "deadbeef") == f"part-archive-000003-deadbeef{raw.SUFFIX}"
     assert (
         raw.archive_name("part", 3, "deadbeef", "lean_lastModified")
-        == "part-lean_lastModified-archive-000003-deadbeef.json.gz"
+        == f"part-lean_lastModified-archive-000003-deadbeef{raw.SUFFIX}"
     )
 
 

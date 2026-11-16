@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import gzip
 import hashlib
 import json
 import shutil
@@ -73,8 +72,10 @@ def test_归档日参与重放且与全量结果一致(store: DatasetStore) -> N
     partition = raw.partition_dir(store, archive_day)
     partition.mkdir(parents=True)
     payload = {"meta": {}, "records": [record(1, 300), record(2, 50)]}
-    (partition / "part-archive-000001-abcd1234.json.gz").write_bytes(
-        gzip.compress(json.dumps(payload).encode("utf-8"))
+    # 文件名交给 raw.archive_name 生成：后缀随 raw 层走，内容的压缩方式也随它走，
+    # 手写字面量迟早与其中一头脱节（这里就脱过一次）。
+    (partition / raw.archive_name("part", 1, "abcd1234")).write_bytes(
+        raw.pack(json.dumps(payload).encode("utf-8"))
     )
 
     assert discover_raw_dates(store) == [DAY1, DAY2, archive_day]

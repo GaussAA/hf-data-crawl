@@ -147,14 +147,15 @@ def test_验证失败时撤销新分片且原文件不动(
         created = original(directory, label, paths)
         if label == "part" and created:
             # 故意丢掉分片里的记录，让归档前后的 Bronze 对不上
-            import gzip
             import json
 
-            payload = json.loads(gzip.decompress(created[0].read_bytes()).decode("utf-8"))
+            payload = json.loads(
+                raw.unpack(created[0].read_bytes(), name=created[0].name).decode("utf-8")
+            )
             payload["records"] = payload["records"][:1]
             payload["groups"] = payload["groups"][:1]
             payload["groups"][0]["count"] = 1
-            created[0].write_bytes(gzip.compress(json.dumps(payload).encode("utf-8")))
+            created[0].write_bytes(raw.pack(json.dumps(payload).encode("utf-8")))
         return created
 
     monkeypatch.setattr(archive, "_archive_label", corrupt)

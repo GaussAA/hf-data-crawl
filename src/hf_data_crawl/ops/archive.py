@@ -32,7 +32,6 @@ id，定出每个 id 最后一次出现的位置；第二遍逐块重读，只�
 
 from __future__ import annotations
 
-import gzip
 import hashlib
 import json
 import os
@@ -141,7 +140,7 @@ def _write_shard(
     digest = hashlib.sha256(body).hexdigest()[:8]
     path = directory / raw.archive_name(label, index, digest, source)
     if not path.exists():
-        write_bytes(path, gzip.compress(body))
+        write_bytes(path, raw.pack(body))
     return path
 
 

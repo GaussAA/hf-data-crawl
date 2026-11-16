@@ -4,11 +4,14 @@ Raw 是唯一不可重算的一层，其余各层都由它派生。这里只做�
 哪个标签对应哪种派生（`part` / `top` → Bronze，`card` → 卡片表）也在此约定，
 写入方与读取方都引用这里的常量，而不是各写一份字面量。
 
-文件名是「类别 + 命名空间 + 页码 + 内容摘要」：`part-lean_lastModified-000001-xxxx.json.gz`。
+文件名是「类别 + 命名空间 + 页码 + 内容摘要」：`part-lean_lastModified-000001-xxxx.json.zst`。
 命名空间由 `ScanSpec` 用 mode + sort 派生——同一天里日增量、顶部刷新、全量对账、
 卡片补齐各有独立页码空间，归档后仍能认出「这批是谁扫的」，不再共用
 `part-000001` 这个模糊身份。旧格式（`part-000001-xxxx.json.gz`）与旧归档分片
 一律按 `legacy` 兼容读取，不改写任何历史文件。
+
+压缩从 gzip 换成 zstd 是在 2026-11-16 做的（见 `SUFFIX` 处实测数）。历史分块保持
+`.json.gz` 原样不碰：文件名参与 `lineage` 指纹，重写一次就等于宣告那天派生作废。
 """
 
 from __future__ import annotations
@@ -21,6 +24,8 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
+
+import zstandard
 
 from ..platform import retention
 from ..platform.atomic import write_bytes
@@ -36,6 +41,38 @@ BRONZE_LABELS = frozenset({"part", "top"})
 #: 命名空间引入之前写入的历史分块（含旧归档分片）。
 LEGACY_SOURCE = "legacy"
 
+#: 新分块的后缀。压缩用 zstd 而不是 gzip，两个原因都可测：
+#: 一页 1090 KB 的响应，gzip 默认 level 9 要压 61 ms、zstd level 3 只要 4.7 ms，
+#: 而体积还小 5%（281 KB vs 295 KB）；解压一端 zstd 1.2 ms、gzip 4.6 ms。
+#: 每天落 1000 多个分块，写这一端就差 60 秒上下。
+SUFFIX = ".json.zst"
+#: 历史分块的后缀（gzip）。**只读不改**：改后缀会让 `lineage` 的文件名指纹变掉，
+#: 进而把已派生的日期全部判成「落后」。存量文件原样留着，指纹才不动。
+LEGACY_SUFFIX = ".json.gz"
+#: 读取时要认的全部后缀，新在前。
+SUFFIXES = (SUFFIX, LEGACY_SUFFIX)
+
+#: 压缩级别取 3：实测已与 level 1 相差不到 2 ms，体积却小 12%，是这条曲线上的拐点。
+_LEVEL = 3
+_COMPRESSOR = zstandard.ZstdCompressor(level=_LEVEL)
+_DECOMPRESSOR = zstandard.ZstdDecompressor()
+
+
+def pack(body: bytes) -> bytes:
+    """把一页响应压成落盘字节。写入端**只此一处**，归档与冷区基线也调它。"""
+    return _COMPRESSOR.compress(body)
+
+
+def unpack(data: bytes, *, name: str) -> bytes:
+    """按文件名后缀解压：新分块 zstd，历史分块 gzip。
+
+    判据取文件名而不是试解压：试错会在「压缩数据恰好长得像另一种格式」时给出
+    荒谬的错误，而文件名是我们自己写的，本来就知道答案。
+    """
+    if name.endswith(LEGACY_SUFFIX):
+        return gzip.decompress(data)
+    return _DECOMPRESSOR.decompress(data)
+
 
 def source_slug(mode: str, sort: str) -> str:
     """把一轮扫描的 (mode, sort) 折成稳定、不含连字符的文件名段。
@@ -45,9 +82,22 @@ def source_slug(mode: str, sort: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]+", "_", f"{mode}_{sort}").strip("_")
 
 
-def batch_pattern(label: str | None = None) -> str:
-    """某类批次的文件通配；不给标签则匹配当日全部批次。"""
-    return f"{label}-*.json.gz" if label else "*.json.gz"
+def batch_patterns(label: str | None = None) -> list[str]:
+    """某类批次的文件通配；不给标签则匹配当日全部批次。
+
+    返回新旧两种后缀各一条——`Path.glob` 一次只吃一个模式，而一天里可能同时躺着
+    历史 gz 分块与新 zst 分块（切换当天必然如此）。
+    """
+    head = f"{label}-*" if label else "*"
+    return [f"{head}{suffix}" for suffix in SUFFIXES]
+
+
+def strip_suffix(name: str) -> str:
+    """去掉分块的压缩后缀（新 zst 或历史 gz），供按连字符解析文件名。"""
+    for suffix in SUFFIXES:
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
 
 
 class Batch(NamedTuple):
@@ -120,11 +170,11 @@ def write(
     target_dir = partition_dir(store, snapshot_date)
     target_dir.mkdir(parents=True, exist_ok=True)
     source_part = f"{source}-" if source else ""
-    path = target_dir / f"{label}-{source_part}{page_index:06d}-{digest}.json.gz"
+    path = target_dir / f"{label}-{source_part}{page_index:06d}-{digest}{SUFFIX}"
     if path.exists():
         return path
 
-    write_bytes(path, gzip.compress(body))
+    write_bytes(path, pack(body))
     return path
 
 
@@ -135,7 +185,7 @@ def batch_files(
     partition = partition_dir(store, snapshot_date)
     if not partition.exists():
         return []
-    return sorted(partition.glob(batch_pattern(label)))
+    return sorted(path for pattern in batch_patterns(label) for path in partition.glob(pattern))
 
 
 def bronze_files(store: DatasetStore, snapshot_date: date) -> list[Path]:
@@ -170,7 +220,7 @@ def is_archive(path: Path) -> bool:
 def archive_name(label: str, index: int, digest: str, source: str = LEGACY_SOURCE) -> str:
     """分片名保留命名空间；legacy 沿用旧格式，历史分片无需改名。"""
     head = f"{label}-" if source == LEGACY_SOURCE else f"{label}-{source}-"
-    return f"{head}archive-{index:06d}-{digest}.json.gz"
+    return f"{head}archive-{index:06d}-{digest}{SUFFIX}"
 
 
 def label_of(path: Path) -> str:
@@ -188,7 +238,7 @@ def source_of(path: Path) -> str:
     - `part-archive-000001-xxxx`               → legacy
     - `part-lean_lastModified-archive-000001-…`→ lean_lastModified
     """
-    parts = path.name.removesuffix(".json.gz").split("-")
+    parts = strip_suffix(path.name).split("-")
     if len(parts) >= 3 and parts[1] == "archive":
         return LEGACY_SOURCE
     if len(parts) >= 4 and (parts[2] == "archive" or parts[2].isdigit()):
@@ -212,7 +262,7 @@ def load_batches(path: Path) -> list[Batch]:
     与来源文件名按段记在 `groups` 里**，这里按段切回多个 Batch——合并不改变任何
     一条记录的胜负。
     """
-    payload = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+    payload = json.loads(unpack(path.read_bytes(), name=path.name).decode("utf-8"))
     records = payload.get("records", [])
     groups = payload.get("groups")
     if isinstance(groups, list):
@@ -265,7 +315,7 @@ class RawDay:
     """某一天在 Raw 主目录里的形态。
 
     此前「哪天有 Raw、哪天可重放」有三套答案：`rebuild.discover_raw_dates`
-    只看目录里有没有任意 `*.json.gz`，`marker.has_raw` 只认 `part` / `top`，
+    只看目录里有没有任意分块，`marker.has_raw` 只认 `part` / `top`，
     `doctor._raw_gaps` 又自行并上冷区清单。恢复、重建、体检对同一天可能给出
     不同结论。这个模型把它们收成一处。
 
@@ -314,7 +364,7 @@ def describe_day(store: DatasetStore, snapshot_date: date) -> RawDay:
 def observed_days(store: DatasetStore) -> list[RawDay]:
     """全部「采过」的日期：主目录有分块的日期 ∪ 冷区清单，按日期升序。
 
-    只认至少有一个 `*.json.gz` 的目录，空 `dt=` 目录不算——沿用
+    只认至少有一个分块文件的目录，空 `dt=` 目录不算——沿用
     `rebuild.discover_raw_dates` 的既有判据。
     """
     compressed = retention.read_compressed_dates(store)
@@ -328,7 +378,7 @@ def observed_days(store: DatasetStore) -> list[RawDay]:
             except ValueError:
                 # 不符合命名的目录不参与判定，跳过总比整轮失败强。
                 continue
-            if not any(path.glob("*.json.gz")):
+            if not [item for pattern in batch_patterns() for item in path.glob(pattern)]:
                 continue
             days[snapshot_date] = _describe(store, snapshot_date, compressed)
     for snapshot_date in compressed:

@@ -16,7 +16,7 @@ from hf_data_crawl.acquire.collect import CHECKPOINT_FILENAME, WATERMARK_FILENAM
 from hf_data_crawl.acquire.hf.api import HfDatasetApi, HfResponse, Transport
 from hf_data_crawl.acquire.hf.checkpoint import FileCheckpoint
 from hf_data_crawl.acquire.hf.watermark import WatermarkCheckpoint
-from hf_data_crawl.pipeline import state
+from hf_data_crawl.pipeline import raw, state
 from hf_data_crawl.platform.store import DatasetStore
 
 DAY1 = date(2026, 11, 1)
@@ -240,7 +240,7 @@ def test_顶部刷新按条数换算页数并单独落盘(store: DatasetStore) -
 
     assert summary.top_pages == 3  # ceil(5 / 2)
     assert summary.refreshed == 3
-    assert len(list(store.raw_dir.rglob("top-*.json.gz"))) == 3
+    assert len(list(store.raw_dir.rglob(f"top-*{raw.SUFFIX}"))) == 3
     assert state.read_current(store).height == 5
 
 
@@ -329,7 +329,7 @@ def test_有水位线时卡片随增量抓且不进bronze(store: DatasetStore) -
     # 卡片批次不进 Bronze 去重池：两页同为 b/ds-0、b/ds-1，bronze 仍是 2 行。
     assert summary.bronze_rows == 2
     assert store.read("carddata").height == 2
-    names = [p.name for p in (store.raw_dir / f"dt={DAY2.isoformat()}").glob("*.json.gz")]
+    names = [p.name for p in (store.raw_dir / f"dt={DAY2.isoformat()}").glob(f"*{raw.SUFFIX}")]
     assert any(name.startswith("card-") for name in names)
 
 

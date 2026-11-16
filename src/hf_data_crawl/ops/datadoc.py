@@ -35,8 +35,9 @@ _LABEL_KINDS: dict[str, tuple[str, str]] = {
 }
 
 #: 由 raw 分块构成、不是登记表的东西。文档里单列一节说明它们的作用。
+#: 通配不写后缀：新分块是 `.json.zst`、历史分块是 `.json.gz`，两者并存。
 RAW_KINDS: tuple[tuple[str, str, str], ...] = tuple(
-    (f"{label}-*.json.gz", *_LABEL_KINDS[label]) for label in [*sorted(BRONZE_LABELS), CARD_LABEL]
+    (f"{label}-*", *_LABEL_KINDS[label]) for label in [*sorted(BRONZE_LABELS), CARD_LABEL]
 )
 
 #: 各表的粒度与它和 current 的关系。第七节据此逐行生成，行数实时计算。
@@ -324,7 +325,8 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "其余各层删掉都能从 Raw 重推；Raw 丢了就真的没有了。所以它既是最该保护的，",
         "也是唯一需要「整理策略」的——一次全量对账就要写下两千多个小文件。",
         "",
-        "**四种分块**（文件名 `<类别>-<来源>-<页号>-<摘要>.json.gz`）：",
+        "**四种分块**（文件名 `<类别>-<来源>-<页号>-<摘要>.json.zst`；2026-11-16 之前的分块"
+        "是 `.json.gz`，仍可照读）：",
         "",
         "| 前缀 | 批次 | 派生去向 |",
         "| --- | --- | --- |",
