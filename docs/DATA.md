@@ -1,6 +1,6 @@
 # data 目录说明
 
-> 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-16 16:37，**请勿手工编辑**。
+> 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-16 19:52，**请勿手工编辑**。
 > 表结构与行数由代码和实际文件算出；字段含义维护在 `src/hf_data_crawl/ops/fielddocs.py`。
 > 改完代码后重新生成即可，`tests/ops/test_docs.py` 会在忘记生成时报错。
 
@@ -27,17 +27,17 @@ flowchart TD
 
 ```
 data/
-├── raw/dt=YYYY-MM-DD/          # 原始响应：热区原样，7 天后压缩移出（当前 1,143 个文件 · 161.2 MB）
+├── raw/dt=YYYY-MM-DD/          # 原始响应：热区原样，7 天后压缩移出（当前 2,410 个文件 · 350.6 MB）
 ├── cold/raw/                   # 冷区基线（跨天去重）+ manifest.json
 ├── backup/raw/dt=YYYY-MM-DD/   # 归档/压缩移出的原分块，人工确认后清理
-├── bronze/dt=YYYY-MM-DD/       # 标量快照，只保留最新一天（当前 1 个文件 · 293.3 MB）
-├── silver/dt=YYYY-MM-DD/       # 属性变更流水（当前 1 个文件 · 143.8 MB）
-├── state/                      # 当前态与观测流水（当前 6 个文件 · 102.6 MB）
+├── bronze/dt=YYYY-MM-DD/       # 标量快照，只保留最新一天（当前 1 个文件 · 291.9 MB）
+├── silver/dt=YYYY-MM-DD/       # 属性变更流水（当前 1 个文件 · 142.7 MB）
+├── state/                      # 当前态与观测流水（当前 6 个文件 · 102.5 MB）
 ├── enrich/                     # 卡片与规模（当前 空）
 ├── meta/                       # 重建中断时留存的状态快照（当前 1 个文件 · 42 B）
 ├── reports/                    # 对账清单与榜单页（当前 2 个文件 · 50.5 MB）
-├── runs/                       # 每轮运行摘要（当前 8 个文件 · 7.2 KB）
-├── exports/                    # 宽表导出（可重建，当前 1 个文件 · 104.6 MB）
+├── runs/                       # 每轮运行摘要（当前 17 个文件 · 10.8 KB）
+├── exports/                    # 宽表导出（可重建，当前 1 个文件 · 104.8 MB）
 └── logs/                       # 计划任务日志（按轮命名，最近 200 个）
 ```
 
@@ -54,7 +54,7 @@ DuckDB / Spark / Athena 都能零配置把它当列读出来；表内另有 `sna
 - 逻辑名：`bronze`
 - 来源：由 `raw/` 派生，可随时重建
 - 分区：按 `snapshot_date` 分目录，`dt=` 后即日期
-- 现状：1 个分区 · 1,132,547 行 · 293.3 MB
+- 现状：1 个分区 · 1,133,011 行 · 291.9 MB
 
 **它回答什么** —— 把 Raw 里的 JSON 摊平成列，回答「某一天的某个库长什么样」。
 
@@ -91,7 +91,7 @@ DuckDB / Spark / Athena 都能零配置把它当列读出来；表内另有 `sna
 - 逻辑名：`silver`
 - 来源：由 `raw/` 派生，可随时重建
 - 分区：按 `snapshot_date` 分目录，`dt=` 后即日期
-- 现状：1 个分区 · 1,132,547 行 · 143.8 MB
+- 现状：1 个分区 · 1,133,011 行 · 142.7 MB
 
 **它回答什么** —— 属性变更流水：一个库只在「首次出现」或「属性变了」时追加一行。
 
@@ -139,7 +139,7 @@ DuckDB / Spark / Athena 都能零配置把它当列读出来；表内另有 `sna
 - 逻辑名：`current`
 - 来源：运行态，由派生过程维护
 - 分区：单文件，不分区
-- 现状：1,132,547 行 · 70.4 MB
+- 现状：1,133,011 行 · 70.5 MB
 
 **它回答什么** —— 每库一行最新态，是整个项目的查询入口。
 
@@ -174,7 +174,7 @@ DuckDB / Spark / Athena 都能零配置把它当列读出来；表内另有 `sna
 - 逻辑名：`observations`
 - 来源：运行态，由派生过程维护
 - 分区：按 `snapshot_date` 分目录，`dt=` 后即日期
-- 现状：1 个分区 · 1,132,547 行 · 32.2 MB
+- 现状：1 个分区 · 1,133,011 行 · 32.0 MB
 
 **它回答什么** —— 指标变化才追加一行，回答「什么时候涨了多少」。增速榜全靠它。
 
@@ -277,15 +277,15 @@ DuckDB / Spark / Athena 都能零配置把它当列读出来；表内另有 `sna
 | `url` | 字符串 | 数据集页面地址，形如 `https://huggingface.co/datasets/作者/名称`；由 `id` 拼出，可直接点开 |
 | `snapshot_date` | 日期 | 最近一次成功补抓的日期 |
 | `fetched_at` | 日期时间(UTC) | 这一行被抓取的**时刻**。只有日期会漏判「同日二次变更」：`last_modified` 与 `snapshot_date` 的日期相等时，判据永远不成立，该行也就永远停在旧值。加列之前的旧行为空，判据回退成该日零点 |
-| `status` | 字符串 | `ok` 拿到数据 / `unavailable` 上游没有这份数据 / `error` 临时失败 |
-| `num_rows` | 整数 | datasets-server **实测**行数，与 `card_num_rows` 是两个口径 |
-| `estimated_num_rows` | 整数 | 上游给出的估算行数（未做精确统计时才有） |
-| `num_bytes_original` | 整数 | 原始文件字节数 |
-| `num_bytes_parquet` | 整数 | 转成 parquet 后的字节数 |
-| `num_bytes_memory` | 整数 | 载入内存后的估算占用 |
-| `config_count` | 整数 | 上游报告的 config 个数 |
-| `num_columns_max` | 整数 | 各 config 中列数的最大值 |
-| `configs` | 字符串 | 各 config 的明细（JSON 文本） |
+| `status` | 字符串 | `ok` 拿到数据 / `unavailable` 上游没有这份数据 / `error` 临时失败；宽视图里改名为 `size_status`，否则会被 `current.status` 撞掉 |
+| `num_rows` | 整数 | datasets-server **实测**行数，与 `card_num_rows` 是两个口径；宽视图里改名为 `server_num_rows`，以免两个口径并排时分不清 |
+| `estimated_num_rows` | 整数 | 上游给出的估算行数（未做精确统计时才有）；宽视图里改名为 `server_estimated_rows` |
+| `num_bytes_original` | 整数 | 原始文件字节数；宽视图里改名为 `server_num_bytes_original` |
+| `num_bytes_parquet` | 整数 | 转成 parquet 后的字节数；宽视图里改名为 `server_num_bytes_parquet` |
+| `num_bytes_memory` | 整数 | 载入内存后的估算占用；宽视图里改名为 `server_num_bytes_memory` |
+| `config_count` | 整数 | 上游报告的 config 个数；宽视图里改名为 `server_config_count` |
+| `num_columns_max` | 整数 | 各 config 中列数的最大值；宽视图里改名为 `server_num_columns` |
+| `configs` | 字符串 | 各 config 的明细（JSON 文本）；宽视图里改名为 `server_configs` |
 
 ### `enrich/files.parquet`
 
@@ -485,15 +485,15 @@ mtime 一复制就变，靠它排序会让「Raw 是唯一事实来源」名不�
 
 ## 七、各表行数为什么不一样
 
-`current` 的 1,132,547 行是全站数据集总数。看到别的表「只有几万或十几万」时，
+`current` 的 1,133,011 行是全站数据集总数。看到别的表「只有几万或十几万」时，
 先看它是**什么粒度**——不是缺数据，是每行代表的不是同一个东西：
 
 | 表 | 行数 | 粒度 | 与 `current` 的关系 |
 | --- | --- | --- | --- |
-| `current` | 1,132,547 | 一个数据集一行 | **基准**——全站数据集总数 |
-| `silver` | 1,132,547 | 一次属性变更一行 | **多对一**：改过几次就有几行，比基准多 |
-| `observations` | 1,132,547 | 一次指标变化一行 | **多对一**：指标变过才追加 |
-| `bronze` | 1,132,547 | 某天扫到的一条记录 | **子集**：只留最新一天，历史由 `raw` 重算 |
+| `current` | 1,133,011 | 一个数据集一行 | **基准**——全站数据集总数 |
+| `silver` | 1,133,011 | 一次属性变更一行 | **多对一**：改过几次就有几行，比基准多 |
+| `observations` | 1,133,011 | 一次指标变化一行 | **多对一**：指标变过才追加 |
+| `bronze` | 1,133,011 | 某天扫到的一条记录 | **子集**：只留最新一天，历史由 `raw` 重算 |
 | `carddata` | 0 | 一个数据集一行 | **子集**：按下载量取头部补齐；长尾多数没有卡片 |
 | `card_configs` | 0 | 一个 config/split 一行 | **展开**：卡片里的 config 逐条拆开 |
 | `size` | 0 | 一个数据集一行 | **全量**：每库一条，其中约七成有实测行数 |

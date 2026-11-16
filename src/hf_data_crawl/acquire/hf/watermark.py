@@ -122,13 +122,17 @@ def _is_reasonable_timestamp(timestamp: str) -> bool:
 class WatermarkCheckpoint:
     """游标与水位线各自持久化，互不推断对方的生命周期。
 
-    每页两者都要落盘：只存游标不存水线，续跑会从旧游标起步却拿新水线判断，
-    上半段已扫过的数据会被再扫一次。但「一起保存」不等于「一起清除」——
-    旧实现把 `cursor=None` 同时当作「一轮完成、清掉水位线」的信号，而
-    collect 完成态恰好调 save(None)，首轮每页的 cursor 本就是 None，
-    于是水位线永远写不进或刚写完就被删，下轮 is_stale() 恒为 False，
-    时间戳机制形同虚设。今拆成三个入口：save 管游标、
-    save_watermark 管水线、finish 管完成。
+    **两者写入时机不同**：游标记「扫到哪一页」，中途被杀要能续上，所以每页保存；
+    水线记「已确认覆盖到哪一刻」，只有走到末页或越过旧边界才成立——中途保存等于
+    把一个还没扫完的边界当成已完成，下一轮会从这里往后扫，中间那段永远补不回来。
+    故 `collect` 只在完成态调 `save_watermark`。
+
+    旧实现把 `cursor=None` 同时当作「一轮完成、清掉水位线」的信号，而 collect
+    完成态恰好调 save(None)，首轮每页的 cursor 本就是 None，于是水位线永远写不进
+    或刚写完就被删，下轮 `is_stale()` 恒为 False，时间戳机制形同虚设。今拆成三个
+    入口：`save` 管游标、`save_watermark` 管水线、`finish` 管完成。
+
+    原文写的是「每页两者都要落盘」，与代码相反；照着改会把水线提前写出去。
     """
 
     def __init__(self, checkpoint: Checkpoint, watermark_path: Path) -> None:
