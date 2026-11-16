@@ -25,7 +25,9 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync
+        # `--locked` 而不是裸 sync：pyproject 改了而 uv.lock 没重生成时，裸 sync 会
+        # 就地重写 lock 并继续绿，「版本由 uv.lock 锁定」这条承诺当场失效。
+        run: uv sync --locked
 
       - name: Run tests
         run: uv run pytest --tb=short -v
@@ -53,7 +55,7 @@ jobs:
         run: uv python install 3.13
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --locked
 
       - name: Check formatting
         run: uv run ruff format --check .
@@ -61,12 +63,44 @@ jobs:
       - name: Run linter
         run: uv run ruff check .
 
+  types:
+    name: Type check (pyright)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      # mypy 覆盖 src + tests，pyright 补 src 的交叉检查。版本由 uv.lock 钉住；
+      # 钉了却不跑等于没有，且下次升级时没人知道它会不会红。
+      - name: Run pyright
+        run: uv run pyright
+
   docs:
     name: Check documentation
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        # 与 test / lint 同一个解释器：用 runner 自带的 python3（3.12）跑校验器，
+        # 等于在测一个本项目并不支持的版本，本地能过而 CI 挂（或反之）时更难查。
+        run: uv sync --locked
 
       - name: Check markdown files
         run: |
@@ -78,4 +112,4 @@ jobs:
           test -f docs/operations/MONITORING.md
 
       - name: Check for broken links
-        run: python3 scripts/check_docs_links.py
+        run: uv run python scripts/check_docs_links.py
