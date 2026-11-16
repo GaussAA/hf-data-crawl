@@ -29,6 +29,7 @@ import os
 import sys
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import IO
@@ -70,15 +71,42 @@ class LockBusy(RuntimeError):
     """另一个写命令正持有数据目录。"""
 
 
-def describe_holder(root: Path, lock_name: str = LOCK_NAME) -> str:
-    """读出当前占用者的说明；读不到就如实说不知道。"""
+@dataclass(frozen=True)
+class Holder:
+    """当前占用写锁的命令。`since` 是本地时间（写入时用的 `datetime.now()`）。"""
+
+    command: str
+    pid: int
+    since: datetime
+
+
+def read_holder(root: Path, lock_name: str = LOCK_NAME) -> Holder | None:
+    """读当前占用者；文件不存在、没有占用或信息不可读一律返回 None。
+
+    单独成函数是为了让「占用多久了」这个问题有地方可问：`describe_holder` 只给
+    人读的一句话，而体检要拿 `since` 与当前时刻比——占用几分钟是正常，占用几小时
+    说明那轮命令卡死了。原先只有字符串，于是这项检查永远只能报「谁占着」，无法
+    判断该不该红。
+    """
     try:
         with (root / lock_name).open("rb") as handle:
             handle.seek(1)
-            info = json.loads(handle.read().decode("utf-8"))
-        return f"{info['command']}（pid {info['pid']}，{info['since']} 起）"
-    except (OSError, ValueError, KeyError):
+            payload = json.loads(handle.read().decode("utf-8"))
+        return Holder(
+            command=str(payload["command"]),
+            pid=int(payload["pid"]),
+            since=datetime.fromisoformat(str(payload["since"])),
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def describe_holder(root: Path, lock_name: str = LOCK_NAME) -> str:
+    """读出当前占用者的说明；读不到就如实说不知道。"""
+    holder = read_holder(root, lock_name)
+    if holder is None:
         return "未知（占用者信息不可读）"
+    return f"{holder.command}（pid {holder.pid}，{holder.since} 起）"
 
 
 #: 等锁时的轮询间隔（秒）。太短空耗 CPU，太长让计划任务白等。
@@ -123,14 +151,25 @@ def exclusive(
     while True:
         if handle is not None:
             # 第 0 字节必须存在，作为被锁的那一格；占用者信息写在它后面。
-            handle.seek(0, os.SEEK_END)
-            if handle.tell() == 0:
-                handle.write(b"\0")
-                handle.flush()
-            if _try_lock(handle):
-                break
-            handle.close()
-            handle = None
+            #
+            # 但「写这一格」本身不是原子的：两个并发调用者会同时看到空文件、
+            # 同时走到 flush，先拿到区域锁的那个会让后者抛 PermissionError
+            # （Windows 实测，2026-11-16 由并发写体检流水的用例抓到）。写不进去
+            # 就当作「被占用」：关掉句柄、走与拿不到锁相同的等待路径，而不是让
+            # 一次正常的并发写以异常收场。
+            try:
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+            except OSError:
+                handle.close()
+                handle = None
+            else:
+                if _try_lock(handle):
+                    break
+                handle.close()
+                handle = None
         if time.monotonic() >= deadline:
             raise LockBusy(f"数据目录正被另一个写命令占用：{describe_holder(root, lock_name)}")
         time.sleep(min(LOCK_POLL_SECONDS, max(0.0, deadline - time.monotonic())))

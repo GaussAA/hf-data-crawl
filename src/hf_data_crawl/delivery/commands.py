@@ -47,11 +47,22 @@ from .requirement import load as load_spec
 
 
 def run_export_wide(args: argparse.Namespace, store: DatasetStore) -> Outcome:
-    """导出宽表。失败由 `_execute` 统一记进 runs/，不留半截文件。"""
-    from .wide import export_wide
+    """导出宽表。失败由 `_execute` 统一记进 runs/，不留半截文件。
+
+    「可预期的失败」在这里就地转成 `Outcome(code=1)`，不打堆栈：空库与写错
+    `--out` 都是输入状态问题，人能照提示修；堆栈只留给真正的意外。原先它们
+    会穿透到 `_execute` 的 catch-all，用户看到的是一段 traceback 而不是
+    「先跑 collect」或「输出必须在数据目录内」。
+    """
+    from ..query.gold import GoldNotReady
+    from .wide import WideExportMismatch, WideExportPath, export_wide
 
     target = Path(args.out) if args.out else None
-    summary = export_wide(store, target)
+    try:
+        summary = export_wide(store, target)
+    except (GoldNotReady, WideExportMismatch, WideExportPath) as error:
+        print(str(error))
+        return Outcome({"error": str(error)}, code=1, reason=str(error))
     print(
         f"宽表已导出：{summary.path}（{summary.columns} 列 · "
         f"{summary.rows:,} 行 · {summary.bytes / 1e6:.1f}MB）"

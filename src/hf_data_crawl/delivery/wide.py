@@ -53,6 +53,15 @@ class WideExportMismatch(RuntimeError):
     """导出结果不满足契约（视图列、静态清单、行数三者对不上），已撤销临时文件。"""
 
 
+class WideExportPath(ValueError):
+    """导出目标越出了数据目录。
+
+    单独一个类型是为了让命令层把它转成一句能照做的失败，而不是把堆栈摊给人看：
+    这是**输入写错了**，不是程序坏了。`ValueError` 本身太宽，捕获它会连同真正的
+    编程错误一起吞掉。
+    """
+
+
 @dataclass(frozen=True)
 class WideExportSummary:
     """一次导出的结果，供运行摘要使用。"""
@@ -77,7 +86,7 @@ def export_path(store: DatasetStore) -> Path:
 def _assert_inside(root: Path, target: Path) -> None:
     """目标必须落在数据目录内；用 resolve 消掉 `..` 与符号链接再判。"""
     if not target.resolve().is_relative_to(root.resolve()):
-        raise ValueError(f"导出目标必须在数据目录内：{target}（数据目录 {root}）")
+        raise WideExportPath(f"导出目标必须在数据目录内：{target}（数据目录 {root}）")
 
 
 def _current_rows(store: DatasetStore) -> int:

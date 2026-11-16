@@ -29,7 +29,7 @@ from ..delivery.wide import export_path
 from ..pipeline import lineage, raw, state
 from ..pipeline.rebuild import discover_raw_dates, snapshot_health, snapshot_path
 from ..platform.atomic import write_text
-from ..platform.lock import LOCK_NAME, LockBusy, describe_holder, exclusive
+from ..platform.lock import read_holder
 from ..platform.retention import (
     ARCHIVE_AFTER_DAYS,
     BACKUP_KEEP_DAYS,
@@ -514,15 +514,23 @@ def _artifact_freshness(ctx: RunContext) -> Finding:
 
 
 def _last_sweep_date(runs: list[dict]) -> date | None:
-    """最近一次成功全站对账的快照日；没跑过则 None。
+    """最近一次**完整**全站对账的快照日；没跑完或没跑过则 None。
 
     快照日是「那轮本该覆盖到的那一天」，比 `finished_at` 稳：续跑、跨零点、
     补跑都不会让它漂。取不到就退回完成时刻的日期。
+
+    必须同时看 `stopped_reason`：`reconcile --max-pages N` 的退出码是 0、状态是
+    success，但它只扫了前 N 页。只认 `status` 会让半轮的 snapshot_date 顶替真正的
+    全量轮，成为 `_field_freshness` 的基准——覆盖率随之失真（假红「没扫完」，或把
+    此前的全量轮挡在基准之外）。同一判据在 `_freshness` 里已用 `_RECONCILE_DONE`，
+    这里原先漏了。
     """
     for item in reversed(runs):
         if item.get("command") != "reconcile" or item.get("status") != "success":
             continue
         payload = item.get("payload") or {}
+        if payload.get("stopped_reason") not in _RECONCILE_DONE:
+            continue
         raw = payload.get("snapshot_date")
         if raw:
             try:
@@ -925,16 +933,33 @@ def _recent_failures(ctx: RunContext) -> Finding:
     return Finding(False, "近 7 天没有未恢复的失败运行")
 
 
+#: 写锁被占用多久才算异常。正常的一轮 `reconcile` 约 30 分钟，`fetch-sizes` 全量
+#: 可达 3 小时——但那个命令只在并表时短暂持锁。这里要抓的是「命令卡死、锁不放」：
+#: 2026-11-13 实测过一次卡住的对账持锁，当时只有在终端露一行。
+LOCK_ALERT_AFTER_MINUTES = 120
+
+
 def _lock_state(ctx: RunContext) -> Finding:
-    store = ctx.store
-    if not (store.root / LOCK_NAME).exists():
+    """写锁被占用本身不是问题，占用太久才是。
+
+    这项只在拿不到主锁时才会被调用，原先两个分支都返回绿——于是「谁占着」永远
+    进不了 `ALERT.txt`，一个挂死几小时的进程只能靠人恰好看见终端。判据取占用
+    时长：正常的一轮对账约 30 分钟，超过 `LOCK_ALERT_AFTER_MINUTES` 说明它没有
+    在正常推进。
+    """
+    holder = read_holder(ctx.store.root)
+    if holder is None:
         return Finding(False, "写锁：空闲")
-    try:
-        with exclusive(store.root, "doctor"):
-            pass
-    except LockBusy:
-        return Finding(False, f"写锁：占用中（{describe_holder(store.root)}）")
-    return Finding(False, "写锁：空闲")
+    held = ctx.now - holder.since
+    minutes = int(max(0.0, held.total_seconds()) // 60)
+    text = f"写锁：{holder.command}（pid {holder.pid}）已持有 {minutes} 分钟"
+    if minutes < LOCK_ALERT_AFTER_MINUTES:
+        return Finding(False, text)
+    return Finding(
+        True,
+        text + f"，超过 {LOCK_ALERT_AFTER_MINUTES} 分钟仍未释放；"
+        "该进程可能卡死——确认它在跑什么，必要时结束进程后重跑（被杀会由系统释放锁）",
+    )
 
 
 def _snapshot_dependent(finding: Finding) -> Finding:

@@ -542,10 +542,17 @@ def _execute(
                 outcome = action()
         else:
             outcome = action()
+    except LockBusy as error:
+        # 锁被占用是**预期状态**，不是程序错误：不打堆栈，也不该与真正的崩溃
+        # 长一个样。计划任务里它意味着「另一个写命令还在跑」，人要读的是谁占着、
+        # 该等还是该查，而不是一段 traceback。
+        # reason 仍带 `LockBusy: ` 前缀：台账是机读面，类型名让「锁冲突」与
+        # 「真崩溃」在 `doctor._recent_failures` 里能分开统计。
+        reason = f"{type(error).__name__}: {error}"
+        outcome = Outcome(payload={"error": reason}, code=1, reason=reason)
     except Exception as error:
         reason = f"{type(error).__name__}: {error}"
         outcome = Outcome(payload={"error": reason}, code=1, reason=reason)
-        print(f"{command} 失败：{reason}")
         # catch-all 是台账一致性的需要，不等于可以吞掉现场：业务失败走的是
         # Outcome(code=1) 正常返回，能到这里的多半是未预期异常（含编程错误）。
         # 完整堆栈只进 stderr，由 scripts/_common.ps1 收进 logs/，不写进 runs/
@@ -553,6 +560,8 @@ def _execute(
         traceback.print_exc()
 
     write_run(store, command, started, outcome)
+    # 失败只在这里说一次。原先 except 分支也打印一句，同一条原因出现两遍
+    # （「失败：…」+「未完成：…」），而两处措辞还不一样。
     if outcome.failed and outcome.reason:
         print(f"{command} 未完成：{outcome.reason}")
     return outcome.code

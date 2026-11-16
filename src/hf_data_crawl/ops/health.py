@@ -155,6 +155,11 @@ def streak(store: DatasetStore, code: str) -> int:
     days = 0
     last_day: date | None = None
     for item in reversed(read(store)):
+        if not item.snapshot:
+            # 降级轮（没拿到写锁）不写任何 code——它既不证明红、也不证明恢复。
+            # 直接往下走会把「撞了一次写锁」当成「告警消失了」，连续天数当场归零，
+            # `sync_alert` 的「已连续 N 天」后缀随之消失，看着像刚坏。
+            continue
         if code not in item.codes:
             break
         day = item.at.date()
