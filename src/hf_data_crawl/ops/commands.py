@@ -6,9 +6,9 @@ import argparse
 from datetime import date, datetime
 from pathlib import Path
 
-from ..pipeline.lineage import restamp
+from ..pipeline.lineage import STALE, compare, restamp
 from ..platform.lock import LockBusy, exclusive
-from ..platform.retention import BACKUP_PRUNE_AFTER_DAYS
+from ..platform.retention import BACKUP_KEEP_DAYS
 from ..platform.runs import Outcome
 from ..platform.store import DatasetStore
 from .doctor import diagnose, sync_alert
@@ -31,6 +31,10 @@ def run_archive(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     done: list[dict[str, object]] = []
     failures: list[str] = []
     for day in days:
+        # 「本来是否已经落后」必须在归档之前判：归档本身会改写 Raw 的指纹
+        # （分块换名、合并），此后 compare 永远看到不一致，分不出「这次改写造成的」
+        # 与「改写之前就落后的」。
+        stale_before = next((item.state for item in compare(store, [day])), None) == STALE
         try:
             result = archive_day(store, day)
         except ArchiveMismatch as error:
@@ -42,7 +46,18 @@ def run_archive(args: argparse.Namespace, store: DatasetStore) -> Outcome:
         # 归档在移走原件之前校验过「前后 Bronze 逐行相等」，派生结果仍然有效，
         # 只是 Raw 分块换了一批文件名与 mtime。不刷新指纹，下轮体检会把这次
         # 等价改写报成「派生滞后」——假警报比漏报更能训练人忽略告警。
-        restamp(store, day)
+        #
+        # 但「归档无损」证明不了「派生有效」：验证的两边素材都取自同一批 Raw，
+        # 它只说明这次改写没动数据。若该日在归档**之前**就已经 STALE（Raw 变过而
+        # 派生没跟上），刷新指纹等于把唯一能证明它落后的证据销毁掉——doctor 从此
+        # 对该日永久报绿，`build --stale` 也不会再选中它。故只在现状为 OK 时刷新。
+        if stale_before:
+            print(
+                f"  [!] {day} 归档前已派生滞后（Raw 指纹与戳记不符），不刷新戳记；"
+                "先 build --stale 重派生，再归档"
+            )
+        else:
+            restamp(store, day)
         done.append(
             {
                 "date": day.isoformat(),
@@ -115,7 +130,7 @@ def run_prune(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     targets = plan(store)
     before = total_size(store)
     if not targets:
-        print(f"备份没有需要清理的分区（阈值 {BACKUP_PRUNE_AFTER_DAYS} 天）：{before / 1e6:.1f} MB")
+        print(f"备份没有需要清理的分区（阈值 {BACKUP_KEEP_DAYS} 天）：{before / 1e6:.1f} MB")
         return Outcome({"removed": [], "freed": 0, "backup_mb": round(before / 1e6, 1)})
 
     reclaimable = sum(item.bytes for item in targets)

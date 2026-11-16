@@ -154,9 +154,13 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 **销毁单独成一步（`prune`，2026-11-09 起）**：搬运与销毁分开——`compact` /
 `archive` 只移不删，`prune` 才删，且只动 `data/backup/`。理由很直白：
 「永不删除」等于把磁盘交给时间，每天约 330 MB 原始分块进 backup，一年上百 GB，
-而它们早已被冷区基线（按 id 去重、体量恒定）取代。阈值与 `compact` 共用
-`platform.retention.BACKUP_PRUNE_AFTER_DAYS`（7 天），按**目录名**判龄而不是 mtime
-（同步盘会整体改掉 mtime）。`prune --dry-run` 只算不删；`doctor` 的「存储」一项
+而它们早已被冷区基线（按 id 去重、体量恒定）取代。阈值取
+`platform.retention.BACKUP_KEEP_DAYS`（14 天 = 想保留的 7 天 + `compact` 的 7 天窗口），
+按**目录名**判龄而不是 mtime（同步盘会整体改掉 mtime）。为什么不是 7 天：目录名记的是
+**数据日期**，而 `compact` 只压早于 `today-7` 的分区——一份备份落地那一刻就已经 8 天旧，
+判龄若也取 7 天，00:30 刚搬进 `backup/raw/` 的分区会被 03:10 的 `prune` 当晚删掉，
+备份实际只活 2.6 小时（2026-11-16 实测 `--dry-run` 命中 `dt=<today-8>`）。
+`prune --dry-run` 只算不删；`doctor` 的「存储」一项
 把 data 总量摊成 raw / cold / backup / reports / 其余，谁在长一眼可见。
 
 

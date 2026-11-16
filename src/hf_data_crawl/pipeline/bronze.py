@@ -20,7 +20,15 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
-from ..platform.coerce import as_bool, as_datetime, as_float, as_int, as_json, as_text
+from ..platform.coerce import (
+    as_bool,
+    as_datetime,
+    as_float,
+    as_int,
+    as_json,
+    as_list,
+    as_text,
+)
 from ..platform.tables import BRONZE_SCHEMA, table, url_for
 from . import raw
 
@@ -57,7 +65,10 @@ def to_row(record: Any, snapshot_date: date, page_file: str) -> dict[str, Any] |
         "main_size": as_int(record.get("mainSize")),
         "xet_enabled": as_bool(record.get("xetEnabled")),
         "resource_group": as_json(record.get("resourceGroup")),
-        "tags": [str(tag) for tag in tags] if isinstance(tags, list) else [],
+        # 走 `as_list` 而不是手写 isinstance 判断：上游可能把标签序列化成字符串，
+        # 而 `[...] if isinstance(tags, list) else []` 会把它静默当成「没有标签」，
+        # 16 个标签维度一次性变空，silver 还把这批空值当属性变更写进流水。
+        "tags": as_list(tags) or [],
         "description": as_text(record.get("description")),
         "raw": json.dumps(record, ensure_ascii=False, sort_keys=True),
         "page_file": page_file,

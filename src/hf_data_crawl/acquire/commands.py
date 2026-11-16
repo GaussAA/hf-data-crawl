@@ -26,6 +26,7 @@ from .sizes import (
     SizeSummary,
     StagingWriter,
     clear_staged,
+    protect_ok_rows,
     read_staged,
     stale_ids,
     tail,
@@ -259,7 +260,8 @@ def run_fetch_sizes(
     with exclusive(store.root, "fetch-sizes:merge", lock_wait):
         merged, paths = read_staged(store)
         if merged.height:
-            store.upsert("size", merged)
+            # 整行替换的下手对象是「已经拿到数字」的行：一次瞬时 500 不该把它抹空。
+            store.upsert("size", protect_ok_rows(store.read("size"), merged))
         clear_staged(store, paths)
 
     _print_sizes(summary, store.read("size").height)

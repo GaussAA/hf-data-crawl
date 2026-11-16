@@ -122,6 +122,11 @@ FIELD_DOCS: dict[str, dict[str, str]] = {
         "num_columns_max": "各 config 中列数的最大值",
         "configs": "各 config 的明细（JSON 文本）",
         "snapshot_date": "最近一次成功补抓的日期",
+        "fetched_at": (
+            "这一行被抓取的**时刻**。只有日期会漏判「同日二次变更」："
+            "`last_modified` 与 `snapshot_date` 的日期相等时，判据永远不成立，"
+            "该行也就永远停在旧值。加列之前的旧行为空，判据回退成该日零点"
+        ),
     },
     "files": {
         "status": "`ok` 拿到文件树 / `unavailable` 仓库不可访问 / `error` 临时失败",

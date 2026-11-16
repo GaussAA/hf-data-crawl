@@ -30,7 +30,11 @@ from ..pipeline import lineage, raw, state
 from ..pipeline.rebuild import discover_raw_dates, snapshot_health, snapshot_path
 from ..platform.atomic import write_text
 from ..platform.lock import LOCK_NAME, LockBusy, describe_holder, exclusive
-from ..platform.retention import ARCHIVE_AFTER_DAYS, BACKUP_PRUNE_AFTER_DAYS, REPLAY_WINDOW_DAYS
+from ..platform.retention import (
+    ARCHIVE_AFTER_DAYS,
+    BACKUP_KEEP_DAYS,
+    REPLAY_WINDOW_DAYS,
+)
 from ..platform.runs import COLLECT_COMPLETE_REASONS, read_runs
 from ..platform.store import DatasetStore
 from ..platform.tables import table
@@ -757,14 +761,14 @@ def _backup_backlog(ctx: RunContext) -> Finding:
 
     targets = plan_prune(store, now=now)
     if not targets:
-        return Finding(False, f"备份清理：无超过 {BACKUP_PRUNE_AFTER_DAYS} 天的待清理对象")
+        return Finding(False, f"备份清理：无超过 {BACKUP_KEEP_DAYS} 天的待清理对象")
 
     shown = "、".join(item.path.name.removeprefix("dt=") for item in targets[:5])
     reclaimable = sum(item.bytes for item in targets) / 1e6
     kinds = "、".join(sorted({item.kind for item in targets}))
     return Finding(
         True,
-        f"{kinds} 有 {len(targets)} 处超过 {BACKUP_PRUNE_AFTER_DAYS} 天未清理（{shown}），"
+        f"{kinds} 有 {len(targets)} 处超过 {BACKUP_KEEP_DAYS} 天未清理（{shown}），"
         f"可释放约 {reclaimable:.1f} MB；跑 hf-data-crawl prune",
     )
 

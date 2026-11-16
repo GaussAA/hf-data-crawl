@@ -38,6 +38,18 @@ ARCHIVE_AFTER_DAYS = 30
 #: 归档/压缩只移不删；backup 超过这些天未人工清理，磁盘就没有真正释放。
 BACKUP_PRUNE_AFTER_DAYS = 7
 
+#: `prune` 实际使用的**判龄阈值**。
+#:
+#: 为什么不是 `BACKUP_PRUNE_AFTER_DAYS` 本身：备份目录名记的是「数据日期」而不是
+#: 「搬入日期」，而 `compact` 只压早于 `today - REPLAY_WINDOW_DAYS` 的分区——一份
+#: 备份落地那一刻，它的数据日期就已经有 8 天了。若清理阈值也取 7，同一晚 00:30
+#: 刚搬进 `backup/raw/` 的分区会被 03:10 的 `prune` 立刻删掉，备份的实际寿命只有
+#: 2.6 小时，「留出回滚余量」名存实亡（2026-11-16 审计实测）。
+#:
+#: 判龄阈值 = 想保留的天数 + `compact` 的窗口。两处共用这一个常量：`prune.plan`
+#: 的默认值，与 `doctor._backup_backlog` 的文案都从它取。
+BACKUP_KEEP_DAYS = BACKUP_PRUNE_AFTER_DAYS + REPLAY_WINDOW_DAYS
+
 COLD_SUBDIR = ("cold", "raw")
 BACKUP_SUBDIR = ("backup", "raw")
 MANIFEST_NAME = "manifest.json"

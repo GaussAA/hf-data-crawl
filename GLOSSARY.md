@@ -1366,3 +1366,37 @@
     **一条通则**：见到「同一概念两套实现」，先问「这是两类对象被同一个名字盖住了，
     还是同一类对象写了两遍」。前者要改名或加说明，后者才该合并。**把前一种当后一种
     处理，会得到一个对谁都不准的算法。**
+
+85. **备份保留期 = 想保留的天数 + compact 的窗口**（2026-11-16 审计）：`prune` 按目录名
+    判龄，而目录名记的是**数据日期**。`compact` 只压早于 `today - REPLAY_WINDOW_DAYS` 的
+    分区，所以一份备份落地那一刻数据日期就已经 8 天旧。判龄若也取 7 天，00:30 刚搬进
+    `backup/raw/dt=<today-8>` 的分区会被 03:10 的 `prune` 当晚删掉——备份实际只活 2.6 小时，
+    `build --full` 的回滚依据名存实亡。实测 `prune --dry-run` 直接命中当晚搬入的那一天。
+    故 `retention.BACKUP_KEEP_DAYS = BACKUP_PRUNE_AFTER_DAYS + REPLAY_WINDOW_DAYS`，
+    `prune.plan` 与 `doctor._backup_backlog` 共用它。**判据与对象的时间基准差一天，
+    效果就等于归零。**
+86. **规模表记抓取时刻，陈旧判据比时刻不比日期**（2026-11-16 审计）：旧判据
+    `last_modified.date() > snapshot_date` 两侧都是不动点——库在「被抓取的那一天」又改
+    一次时两个日期恒相等，`>` 永不成立；而该行只有判据成立才会被重抓，也就不会产生新的
+    `snapshot_date`，于是永久停在旧值，连体检的「规模待重取」都看不见（判据与
+    `fetch-sizes --changed` 同源）。故 `SIZE_SCHEMA` 增 `fetched_at`，判据改
+    `last_modified > coalesce(fetched_at, 该日零点)`；旧行没有该列，回退到零点，升级后
+    第一轮会把「最后改动日 == 抓取日」的库补抓一次。
+    **另一半是覆盖语义**：一次瞬时 500 落在 `UNAVAILABLE_STATUS` 里，而 `upsert` 的替换键
+    是整行——那条全 null 的 `unavailable` 行会把旧值抹空。`protect_ok_rows` 因此让
+    「不可用」不覆盖「已拿到」，旧行原样保留：`snapshot_date` 诚实地表示「这个值是哪天
+    取得的」，而不是「哪天问过」。
+87. **外部列表字段一律走 `coerce.as_list`，不手写 isinstance**（2026-11-16 审计）：
+    `bronze.to_row` 曾写 `[str(t) for t in tags] if isinstance(tags, list) else []`。
+    上游把 `tags` 序列化成字符串时整列静默变空，而 16 个标签维度全部由它拆出——silver 还会
+    把这批空值当「属性变更」写进流水，之后即使上游改回来也要再写一轮。`as_list` 正是为这种
+    形态存在的（标量包成单元素列表），绕开它等于把「取不到留 None，绝不猜」在最有价值的
+    字段上作废。
+88. **`restamp` 只刷新「本来就一致」的日子**（2026-11-16 审计）：`archive` 的验证是
+    「当前 Raw 的旧文件 vs 新分片」，两边同源——它只证明归档无损，不证明
+    silver/observations/current 是照这版 Raw 算的。若该日在归档**之前**就已 STALE，刷新
+    指纹等于销毁唯一能证明它落后的证据：`doctor._derive_state` 从此对该日永久报绿，
+    `build --stale` 也不会再选中它。故 `run_archive` 在搬移**之前**取一次
+    `lineage.compare`（搬完再查永远不一致，分不出「这次改写造成的」与「本来落后」），
+    已 STALE 就跳过 `restamp` 并打印处置指引。**用 A 无损证明 B 有效，是最难查的那类
+    判据替换。**

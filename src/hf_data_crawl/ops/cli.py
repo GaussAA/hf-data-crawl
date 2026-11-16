@@ -34,7 +34,7 @@ from ..pipeline.commands import run_build
 from ..pipeline.recovery import check_and_recover
 from ..platform import (
     ARCHIVE_AFTER_DAYS,
-    BACKUP_PRUNE_AFTER_DAYS,
+    BACKUP_KEEP_DAYS,
     REPLAY_WINDOW_DAYS,
     DatasetStore,
     LockBusy,
@@ -399,7 +399,7 @@ def build_parser() -> argparse.ArgumentParser:
     pruning.add_argument(
         "--dry-run",
         action="store_true",
-        help=f"只算不删：列出会清理哪些、能释放多少（阈值 {BACKUP_PRUNE_AFTER_DAYS} 天）",
+        help=f"只算不删：列出会清理哪些、能释放多少（阈值 {BACKUP_KEEP_DAYS} 天）",
     )
 
     report = subparsers.add_parser("report", help="生成静态榜单页（不联网）")

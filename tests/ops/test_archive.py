@@ -178,3 +178,51 @@ def test_cli指定日期会无视天数门槛(store: DatasetStore) -> None:
 
     assert code == 0
     assert all(raw.is_archive(path) for path in raw.batch_files(store, DAY))
+
+
+def test_派生滞后时归档不刷新戳记(store: DatasetStore) -> None:
+    """restamp 只该刷新「本来就一致」的日子。
+
+    该日若已经 STALE，说明 Raw 变过而派生没跟上。归档的验证是「Raw 的旧文件 vs
+    新分片」，两边同源——它只证明归档无损，不证明 silver/observations/current 是
+    照这版 Raw 算的。此时把指纹刷成新值，等于销毁唯一能证明派生落后的证据，
+    doctor 会从此对该日永久报绿，`build --stale` 也永远不会再选中它。
+    """
+    from hf_data_crawl.pipeline import lineage
+    from hf_data_crawl.pipeline.derive import derive_day
+
+    derive_day(store, DAY)  # 派生并写下戳记
+    stale_source = lineage.read(store)[DAY].source
+
+    # 改写 Raw：多一页，指纹变；派生没跟上 → STALE
+    raw.write(
+        store,
+        snapshot_date=DAY,
+        page_index=99,
+        records=[record(7, downloads=1)],
+        meta={},
+        written_at="2026-11-03T09:00:00.000000+00:00",
+    )
+    assert [item.state for item in lineage.compare(store, [DAY])] == [lineage.STALE]
+
+    code = main(["--data-dir", str(store.root), "archive", "--date", DAY.isoformat()])
+
+    assert code == 0
+    assert lineage.read(store)[DAY].source == stale_source
+
+
+def test_派生一致时归档仍刷新戳记(store: DatasetStore) -> None:
+    """收紧判据不能把正常路径一起关掉：等价改写后仍要刷新，否则体检天天假警报。"""
+    from hf_data_crawl.pipeline import lineage
+    from hf_data_crawl.pipeline.derive import derive_day
+
+    derive_day(store, DAY)
+    before = lineage.read(store)[DAY]
+
+    code = main(["--data-dir", str(store.root), "archive", "--date", DAY.isoformat()])
+
+    assert code == 0
+    after = lineage.read(store)[DAY]
+    assert after.source != before.source, "分片换了名字，指纹本应变"
+    assert after.bronze_rows == before.bronze_rows, "没重派生，行数不该动"
+    assert [item.state for item in lineage.compare(store, [DAY])] == [lineage.OK]
