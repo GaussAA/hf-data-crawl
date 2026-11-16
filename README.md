@@ -25,7 +25,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | 命令 | 作用 | 联网 |
 |---|---|---|
 | `collect` | 日增量：按 `lastModified` 倒序扫到水位线 | 是 |
-| `enrich` | 按下载量取头部，补抓 `cardData`（标签、config/split 明细、行数列数） | 是 |
+| `enrich` | 按下载量取头部补抓 `cardData`（标签、config/split 明细、行数列数）；`--ids a,b,c` 按需补（上限 200） | 是 |
 | `fetch-sizes` | 经 datasets-server 补规模与列数（`num_rows` / `num_columns_max`）；`--changed N` 只重取内容已变的库，`--top 0` 表示全量（按 `current` 实际行数，不写死常量） | 是 |
 | `fetch-files` | 按下载量取头部，经 `/tree/main` 补文件清单汇总（试点：top 1000，每库默认 1 页） | 是 |
 | `reconcile` | 全量对账：按 `createdAt` 稳定序扫全站，产出新增/删除/转私有/改名/sha 变更 | 是 |
@@ -43,8 +43,8 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 常用参数：
 
 ```bash
-hf-data-crawl collect      [--date YYYY-MM-DD] [--limit 1000] [--max-pages N] [--pages-without-new 3] [--refresh-top 20000] [--cards] [--card-pages 200] [--dry-run]
-hf-data-crawl enrich       [--date YYYY-MM-DD] [--top 20000] [--limit 1000]
+hf-data-crawl collect      [--date YYYY-MM-DD] [--limit 1000] [--max-pages N] [--pages-without-new 3] [--preset NAME] [--refresh-top 20000] [--cards] [--card-pages 200] [--skip-if-done] [--dry-run]
+hf-data-crawl enrich       [--date YYYY-MM-DD] [--top 20000] [--ids a,b,c] [--limit 1000]
 hf-data-crawl fetch-sizes  [--date YYYY-MM-DD] [--top 20000] [--changed N] [--workers 16] [--retry-unavailable]
 hf-data-crawl fetch-files  [--date YYYY-MM-DD] [--top 1000] [--workers 8] [--retry-unavailable] [--timeout 30] [--max-retries 1] [--max-pages 1] [--refresh-truncated]
 hf-data-crawl reconcile    [--date YYYY-MM-DD] [--limit 1000] [--max-pages N] [--probe-limit 2000]
@@ -70,15 +70,31 @@ hf-data-crawl request      run-due                  # 只跑到期的（计划�
 `--kind backfill` 时 `--source` 必填：该文件会被复制进 `<需求目录>/input/`，原件不动，
 此后需求不再依赖外部路径。目录名按 `REQ-xxxx-<kind>-<标题短名>` 自动生成，命令仍只用编号。
 
-全局参数 `--data-dir` 需放在子命令之前，默认取 `HF_DATA_DIR`，否则 `./data`。
+全局参数 `--data-dir` / `--requests-dir` / `--lock-wait` 需放在子命令之前；前两者默认取
+`HF_DATA_DIR` / `HF_REQUESTS_DIR`，否则 `./data` 与 `./requests`。
 
 锁分三档（见 `src/hf_data_crawl/ops/cli.py`）：**写命令**（`collect` / `reconcile` / `build` / `enrich` / `fetch-sizes` / `fetch-files` / `archive` / `compact` / `prune` / `export-wide`）执行期间持有 `data/.lock` 的独占锁，同一时刻只能跑一个；拿不到锁会失败并在 `runs/` 留记录，进程被杀后系统自动释放，不会留下死锁。**`report` / `docs` 不改数据，但要同时读多张表**，故与写命令共用同一把独占锁以保证一致快照（默认等锁 60 秒）。**`fetch-sizes` 例外**：全量抓取耗时可达数小时，只在「并入正式表」时自排短锁，否则会饿死当天的 `collect`。`doctor` 等锁 2 秒，拿不到就降级为非快照；只有 `query` 完全不加锁。
 
-**默认交付底库**：`current` 只保留 19 列状态标量，语义字段分散在 `silver` / `carddata` / `size`。`export-wide` 按 `delivery/fields.py` 的**默认交付字段契约**把 `gold.datasets` 视图裁成 31 列，写成 `data/exports/datasets.parquet`——只留与数据集有关、有用且必要的画像字段（标识、描述、热度、许可、语言、模态、任务、数据类型、标签、补充画像、学术关联、规模、大小），把水印、抓取状态、卡片凭证与九成空的补抓列排除在外。v2 补回详情页 `Tags`；**v3 曾把 13 个多值列压成 `;` 字符串**以绕开预览器读不了 LIST 的缺陷，该缺陷已在上游 `vscode-office` 修好（PR #27），**v5 遂撤销压平、恢复 LIST 原值**，导出物与视图从此同构、可直接 `list_contains` 精确筛；**v4 克制新增 5 列**：`pretty_name` / `multilinguality` / `arxiv_ids` / `source_datasets` / `task_ids`。
+**默认交付底库**：`current` 只留状态标量，语义字段分散在 `silver` / `carddata` / `size`。
+`export-wide` 按 `delivery/fields.py` 的**默认交付字段契约**把 `gold.datasets` 视图裁成
+默认列集（当前 31 列），写成 `data/exports/datasets.parquet`——只留与数据集有关、有用且
+必要的画像字段（标识、描述、热度、许可、语言、模态、任务、数据类型、标签、补充画像、
+学术关联、规模、大小），把水印、抓取状态、卡片凭证与九成空的补抓列排除在外。
+多值列就是 LIST 原值（与视图同构，可直接 `list_contains` 精确筛）；只有 CSV 交付这一层
+才展平并把机器码换成页面文字。契约的增删与 v3 压平、v5 撤销的来龙去脉见
+GLOSSARY #62–#66，版本号在 `delivery/fields.py` 的 `CONTRACT_VERSION`。
 
-`regions` 实测 100% 有值但 **99.94% 是 HF 自动推断的 `us`**，故不进默认面；它与 DOI、引用、项目主页等共 19 个字段登记在 `EXTENDED_FIELDS`，需要时写 `output.columns: [id, regions, ...]` 点名即可投列——**默认面管「不指定时给什么」，不是「总共有什么」**。完整清单见 [docs/DATA.md](docs/DATA.md) 第八节。这份文件也是**数据集筛选需求未指定 `output.columns` 时的默认投影**；不登记为表、不参与状态更新，视图本身仍保留全部 72 列。四处共用一份定义，详见 [GLOSSARY](GLOSSARY.md) #62–#65。
+`regions` 实测 100% 有值但 **99.94% 是 HF 自动推断的 `us`**，故不进默认面；它与 DOI、引用、项目主页等扩展字段一起登记在 `EXTENDED_FIELDS`，需要时写 `output.columns: [id, regions, ...]` 点名即可投列——**默认面管「不指定时给什么」，不是「总共有什么」**。完整清单见 [docs/DATA.md](docs/DATA.md) 第八节。这份文件也是**数据集筛选需求未指定 `output.columns` 时的默认投影**；不登记为表、不参与状态更新，视图本身仍保留全部列。四处共用一份定义，详见 [GLOSSARY](GLOSSARY.md) #62–#66。
 
-**文件清单补采（试点）**：列表接口请求也不返回 `siblings`（见 [docs/DATA.md](docs/DATA.md) 第九节）；单库详情虽返回，但下载量头部实测 13-25 MB / 44-76 s，按头部补会反复超时。`fetch-files` 改走 `/tree/main?recursive=true&expand=false`：每页固定 1000 条、约 110-230 KB / 0.4-0.7 s。由 `hf-files` 任务每周日 07:30 补下载量前 1000 名（`scripts\files.ps1`），体检给它 10 天的年龄红线——漏跑一次不喊，连丢一周才说明停了。默认每库只取第一页，有后续页时标 `truncated=true`——此时 `file_count` / `total_bytes` / `file_formats` / `has_readme` 都只是**这一页的下限**，不是全库真值；要完整清单须显式加大 `--max-pages`。结果落 `enrich/files.parquet`（`Origin.NETWORK`，重建不清），自动进入 `datasets` 宽视图。断点续跑、失败分类、写锁与边跑边落库与 `fetch-sizes` 共用 `acquire.batch.collect_rows` 骨架；临时失败不入库、下轮自然重试。这是按头部补的**子集**，别拿它算全站分布。匿名配额实测 500 请求 / 300 秒固定窗口，跑满 1000 需分批；429 会按响应头 `Retry-After` 退避，仍不够时临时失败不落库、下次重跑本命令由断点续跑接力。带 `HF_TOKEN` 可提到 **1000 请求 / 300 秒**（实测），写进仓库根 `.env` 即可，命令自动读取且**不覆盖**已 export 的值；令牌只在本机文件里，值绝不进日志与 `runs/`。已标 `truncated` 的行默认被断点续跑跳过，想补成完整清单须显式 `--refresh-truncated --max-pages N`：它只重抓截断行、完整行照旧跳过；`--max-pages` 仍为 1 时命令直接失败，因为一页上限下重抓只是把截断重新确认一遍。
+**文件清单补采（试点）**：列表接口不返回 `siblings`（见 [docs/DATA.md](docs/DATA.md) 第九节），
+单库详情按头部补又会反复超时，故 `fetch-files` 改走 `/tree/main?recursive=true&expand=false`：
+每页固定 1000 条、约 110–230 KB / 0.4–0.7 s。`hf-files` 每周日 07:30 补下载量前 1000 名，
+体检给 10 天年龄红线——漏跑一次不喊，连丢一周才说明停了。默认每库只取第一页，有后续页时
+标 `truncated=true`：此时 `file_count` / `total_bytes` / `file_formats` / `has_readme`
+都只是**这一页的下限**，要完整清单须显式加大 `--max-pages`；`--refresh-truncated` 只重抓
+截断行，且 `--max-pages` 仍为 1 时会直接失败。结果落 `enrich/files.parquet`
+（`Origin.NETWORK`，重建不清），自动进入宽视图。这是按头部补的**子集**，别拿它算全站分布。
+凭据、配额与断点续跑的细节见 GLOSSARY #34–#36。
 
 内置榜单（`query.gold.BOARDS` 是唯一真相源：`query --board` 的候选项由它自动生成，`report` 页面复用同一批口径）：
 
@@ -105,16 +121,16 @@ hf-data-crawl request      run-due                  # 只跑到期的（计划�
 
 ```
 data/
-├── raw/dt=YYYY-MM-DD/<类别>-<来源>-<页号>-<摘要>.json.gz  # 原始响应：热区原样，30 天后归档为分片
+├── raw/dt=YYYY-MM-DD/<类别>-<来源>-<页号>-<摘要>.json.gz  # 原始响应：热区原样；满 7 天由 compact 压入 cold
 ├── cold/raw/                                         # 冷区基线（跨天去重）与 manifest.json
-├── backup/raw/dt=YYYY-MM-DD/                         # 归档/压缩移出的原分块，人工确认后清理
+├── backup/raw/dt=YYYY-MM-DD/                         # 归档/压缩移出的原分块，确认后由 prune 清理
 ├── bronze/dt=YYYY-MM-DD/bronze.parquet                # 一行一条，含 raw 列；只保留最新一天，旧分区可由 raw 重建
 ├── silver/dt=YYYY-MM-DD/silver.parquet                # 属性变更流水：新增或属性变了才追加；标签已拆 16 类维度，不含指标
 ├── state/
 │   ├── current.parquet                                # 每库一行最新态
 │   └── observations/dt=YYYY-MM-DD/obs.parquet         # 指标变化流水
 ├── enrich/
-│   ├── carddata.parquet                               # 卡片宽表（22 列）
+│   ├── carddata.parquet                               # 卡片宽表
 │   ├── card_configs.parquet                           # config/split 明细
 │   └── size.parquet                                   # 行数/列数/内存（datasets-server）
 ├── meta/failed-status.json                            # 仅重建进行中存在；成功后删除，残留说明上次被打断
@@ -154,156 +170,57 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 **销毁单独成一步（`prune`，2026-11-09 起）**：搬运与销毁分开——`compact` /
 `archive` 只移不删，`prune` 才删，且只动 `data/backup/`。理由很直白：
 「永不删除」等于把磁盘交给时间，每天约 330 MB 原始分块进 backup，一年上百 GB，
-而它们早已被冷区基线（按 id 去重、体量恒定）取代。阈值取
-`platform.retention.BACKUP_KEEP_DAYS`（14 天 = 想保留的 7 天 + `compact` 的 7 天窗口），
-按**目录名**判龄而不是 mtime（同步盘会整体改掉 mtime）。为什么不是 7 天：目录名记的是
-**数据日期**，而 `compact` 只压早于 `today-7` 的分区——一份备份落地那一刻就已经 8 天旧，
-判龄若也取 7 天，00:30 刚搬进 `backup/raw/` 的分区会被 03:10 的 `prune` 当晚删掉，
-备份实际只活 2.6 小时（2026-11-16 实测 `--dry-run` 命中 `dt=<today-8>`）。
-`prune --dry-run` 只算不删；`doctor` 的「存储」一项
+而它们早已被冷区基线（按 id 去重、体量恒定）取代。阈值与 `compact` 共用
+`platform.retention.BACKUP_PRUNE_AFTER_DAYS`（7 天），按**目录名**判龄而不是 mtime
+（同步盘会整体改掉 mtime）。`prune --dry-run` 只算不删；`doctor` 的「存储」一项
 把 data 总量摊成 raw / cold / backup / reports / 其余，谁在长一眼可见。
 
 
 每张表的身份（路径、schema、来源）统一登记在 `platform/tables.py`，读写、视图、重建清理都从它取，不在各处各自硬编码。
 
-## 设计要点
+## 关键机制
 
-- **两档采样**：日增量走 lean 档（不含 `cardData`，16 字段约 980 B/条）；`cardData` 只在需要时单独取。实测 full 档约 6 KB/条，全站日拉会白白多传数倍字节。补齐 `private`/`disabled`/`mainSize` 只让 lean 档从 923 涨到 980 B/条（+6.2%）。
-- **一轮扫描的时序只有一处**：`acquire.hf.scan.ScanRun` 管「翻页 → 落盘 → 存游标 → 判停止」，日增量、顶部刷新、全量对账、卡片补齐只提供策略。两条不变量在此一层：游标必须在写盘后、任何停止判断前保存（否则续跑重抓上一页）；页数上限由本层判定而非交给生成器（生成器到限时静默 return，说不出停止原因）。
-- **排序必须显式**：不传 `sort` 时 HF 的游标基于 `trendingScore`，会随时间漂移，翻页必漏。全量用 `createdAt`（不可变），增量用 `lastModified`。
-- **写入序落在 Raw 里**：`write_raw` 把 `written_at`（UTC、微秒）记进 payload 的 `meta`，Bronze 去重按它排序；文件名摘要、mtime、`label` 的字母序一概不作数。mtime 一复制就变，靠它排序会让「Raw 是唯一事实来源」名不副实——同一批数据在另一台机器上可能推出不同的 Bronze，且不报错。摘要不含 `written_at`，否则同内容重写会不断产生新文件。
-- **水位线以时间戳为边界，但异常值必须先滤**：实测存在 2028 年的 `lastModified`，单调性假设会失效；过滤规则与「连续 N 页无新 id」后备见下文「数据一致性保障 §1」。
-- **下架判定只在扫完时做**：`reconcile` 用 `--max-pages` 有界跑时不会标记下架，否则未扫到的部分会被整片误判。
-- **派生层可重建**：`build` 只读 Raw，断网即可回填。派生规则变更后一条命令重算历史。
-- **顶部池刷新**：`collect --refresh-top 20000` 在增量之后按 `sort=downloads` 补扫前 2 万名。日增量只覆盖「最近更新的万把条」，若不补这一趟，增速榜长期只有零星读数。成本约 20 页。
-- **`downloads` 非实时**：实测同一集相隔 9 小时读数完全相同，故增速必须跨日观测；同日重复扫描不产生新读数。
-- **卡片只能按榜单或按变化集补**：单库详情即使带 `blobs=false` 仍达 1.17MB（含 `siblings`），逐条补不可行；列表接口只能 sort + 翻页，**不接受 id 过滤**，所以「先算出哪些 sha 变了再去抓」这条路走不通。两条可行的路各管一段：
+每项机制只在一个地方实现；改动前先看对应的决策记录，那里写着为什么是它、以及被否掉的方案。
 
-  - `enrich` 走列表接口带 `expand[]=cardData` 取下载量前 N 名，2 万条约 22 秒；实测前 2 万名中约 68% 带卡片。它补的是**从没抓过的头部**——sha 多年不变的库永远不会进入增量范围，只能靠这一趟覆盖。
-  - `collect --cards` 跟着日增量走：sha 变必然伴随一次 commit，`lastModified` 必变，而日增量本来就按它排序，所以「今天变过的库」现成就在手里，重翻同一批页、多带 `cardData` 即可。约 22 页 / +17 分钟 / raw 每日 +15MB。首轮没有水位线时不跑——那时没有「变化」可言，抓全站是 6.7GB、14 小时的一次性补齐，不该混进日常增量。
+| 机制 | 它保证什么 | 代码 | 决策 |
+|---|---|---|---|
+| 时间戳水位线 | 跨日增量不漏采；未来 7 天外的异常 `lastModified` 先过滤 | `acquire/hf/watermark.py` | GLOSSARY #6、#27 |
+| 一轮扫描的时序 | 翻页 → 落盘 → 页钩子 → 存游标 → 判停止，只实现一次 | `acquire/hf/scan.py` | GLOSSARY #20 |
+| 写入序 | `written_at` 记进 Raw，Bronze 去重按它排序；mtime 与文件名不作数 | `pipeline/raw.py` | GLOSSARY #17 |
+| 派生原子性 | 标记文件 + 启动恢复；恢复是**从该日起后缀重放**，不是只重算那一天 | `pipeline/marker.py`、`pipeline/recovery.py` | GLOSSARY #28、#78 |
+| 派生凭据 | 每日 Raw 指纹落 `state/lineage.json`；指纹不符即 `build --stale` | `pipeline/lineage.py` | GLOSSARY #44 |
+| 同日帧 | 卡片补抓批次经 `day_frame` 补位，Bronze 分区仍纯净 | `pipeline/bronze.py` | GLOSSARY #45 |
+| 层间勾稽 | `current` ↔ `observations` ↔ `silver`、导出与 current 逐 id 对齐 | `ops/doctor.py` | GLOSSARY #48、#76 |
+| 失效状态 | 404 删除 / 401 转私有 / 307 改名分开记；探测被限流时轮转 | `acquire/reconcile.py` | GLOSSARY #15、#72–#73 |
+| 默认交付字段 | 31 列契约只由 `delivery/fields.py` 定义，导出与查询都从它投影 | `delivery/fields.py` | GLOSSARY #62–#66 |
 
-  卡片表落 `enrich/carddata.parquet`，`datasets` 视图已左连其字段。表里记 `source_sha`（抓这张卡时的仓库版本），拿它跟 `sha`（仓库当前）对照就能判断卡片是否落后——`snapshot_date` 只说什么时候抓的，不说内容对应哪一版。`doctor` 的「卡片凭证」一项报的就是这个比例，只看最近 3 天活跃的库（长尾几百万年不动，卡片本就该保持原样）。
-- **`expand[]` 是白名单裁剪，不是增补**（2026-11-04 踩过的坑）：传了它就只返回列出的字段，连默认响应里本就有的 `private` / `disabled` 都会被裁掉。此前 `LEAN_EXPAND` 没请求 `private`，而 Bronze 已声明该列，结果 111.5 万行整列为空且管线照常报成功。现由 `tests/pipeline/test_schema_contract.py` 把「表结构的列」与「请求的字段」钉成唯一真相源，另有 16 项断言防止再次漂移。
-- **卡片抽取看 `dataset_info`**：它带每个 config 的 `dataset_size` / `download_size` / `features`（列名+dtype）/ `splits`（`num_examples`），是整条管线里唯一能回答「多少行、多少列」的来源。宽表抽 22 列，另落 `card_configs.parquet`（一行一个 config/split，实测 13,651 张卡展开 142,552 行）。
+**恢复不是「只重算那一天」**：单日重放会把 `current` 覆盖成那天的值，等于把当前态整体回退；
+`pipeline.recovery` 一律走 `replay_suffix`。手工排障步骤见
+[RECOVERY.md](docs/operations/RECOVERY.md)。
 
-## 数据一致性保障
+**派生的边界**：默认只重放近 7 天；冷区靠 `silver` / `observations` / `current` 的权威层，
+Raw 原块由 `compact` 移入 `backup/`（只移不删）。`build --full` 的前提是所有 Raw 都还在
+`data/raw`，冷区被搬走时它会直接拒绝——细节见 GLOSSARY #31、#78。
 
-系统实施了以下机制确保数据一致性：
-
-### 1. 基于时间戳的 Watermark（2026-11-07）
-
-**问题**：旧机制基于"连续 N 页无新 id"，在跨日运行时存在漏采风险。
-
-**解决方案**：
-- 持久化上次运行的最新 `lastModified` 时间戳
-- 只有当"连续 N 页的最老 lastModified 仍晚于水位线"时，才认为到达边界
-- 过滤"当前时间 + 7 天"之后的异常值（实测有 2028 年的时间戳）
-- **完成态只清游标、不清水线**（2026-11-07 补）：`WatermarkCheckpoint` 曾把
-  `cursor=None` 同时当作清线信号，而正常完成恰好调 `save(None)`、首轮每页的
-  `cursor` 本就是 None，水线写不进或刚写就被删，下轮 `is_stale()` 恒 False。
-  今拆为 `save`（游标）/ `save_watermark`（水线）/ `finish`（完成）三个入口，
-  由 `tests/acquire/test_collect.py` 的跨轮用例守护。
-
-**效果**：漏采风险降低 90%+
-
-### 2. 派生原子性保护（2026-11-07）
-
-**问题**：派生过程崩溃会导致部分文件已更新、部分未更新。
-
-**解决方案**：
-- 开始派生前写标记文件 `state/marker-YYYY-MM-DD.marker`（含开始时间戳）
-- 派生成功后删除标记
-- 启动时自动检查：标记超过 10 分钟 → 清掉该日残留的派生层 → **从该日起后缀重放**，
-  而不是只重算那一天。只算一天会让 `current` 整体回退到崩溃时刻的状态——比不修更坏
-  （见 `pipeline/recovery.py` 的 `_rederive`）
-
-**效果**：派生不一致风险降低 80%+，启动时会显示恢复信息
-
-**2026-11-08 补**：原子替换本身在 Windows 上也会失败——Defender 实时扫描会在文件
-刚写完时短暂持有句柄，`os.replace` 随即报 WinError 5（实测 `reconcile` 第 10 分钟
-替换 checkpoint 失败，整轮 30 分钟作废）。`platform.atomic.replace` 现对 `PermissionError`
-退避重试三次（20/60/180ms），其余异常立即抛出。详见 GLOSSARY #47。
-
-### 3. 派生凭据：Raw 被改过，就得证明派生跟上了（2026-11-08）
-
-**问题**：Raw 可以被 `archive` 重分片、被 `compact` 移走、被补采追加、被手工修数据。
-重写之后派生层**不会自己更新**——`derive_day` 只在 `collect` / `enrich` / `build` 里跑。
-于是存在一种没有任何报错的坏状态：Raw 是新的、bronze / silver / observations 是旧的。
-从文件时间上也看不出来（派生文件常常比 Raw 更晚，因为别的日子刚跑过）。
-
-**解决方案**：
-
-- 每派生一天，在 `state/lineage.json` 落一条戳记：当日 Raw 分块的指纹
-  （文件名 + 字节数 + mtime 的 sha256，**含 `card-*` 补抓批次**，因为补位会经它写进
-  当前态）、派生时刻、bronze / silver / observations 三层行数。
-- `doctor` 逐日比对：指纹不符 = **派生滞后**；没有戳记 = **派生无凭证**。两者都
-  直接给出 `build --stale`。
-- `build --stale` 只重放「最早出问题那天 → 最新日」的**后缀**，不是只修那一天。
-  Silver 的「变了才追加」要拿前一日当锚点，Observations 同理，而 Current 是拿当日帧
-  覆盖同名 id——中间缺任何一天都会拿错锚点，且当前态回退。这条约束由
-  `pipeline.rebuild.replay_suffix` 单独实现，调用方不自己拼日期。
-- `archive` 是**已校验的等价改写**（移走原件前验过 Bronze 逐行相等），跑完调
-  `pipeline.lineage.restamp` 只刷新指纹、不重派生。不刷新的话下轮体检会把等价改写报成滞后
-  ——假警报会训练人忽略告警。
-
-**效果**：把「派生是不是最新」从人的记忆变成一份可读的凭证。机制上线首轮会把
-无凭证的日子全量重放一次建立基线，此后只有真被改过的日子才会被点名。
-
-### 4. 补位同源：属性层、当前态、观测看同一份当日帧（2026-11-08）
-
-**问题**：`pipeline.bronze.build` 只读 `part` / `top`（当日扫描），只在补抓批次 `card-*` 里
-出现的库不进 Bronze——这是有意的，混进去会让 Bronze 行数随补抓节奏膨胀 45%
-（实测 233 万→338 万），而真正只缺 203 个库。但补位此前**只做在状态层**：
-`current` 与 `observations` 有这批库，`silver` 没有。
-
-**解决方案**：补位提到 `pipeline.bronze.day_frame`——按 id 补空位（已在扫描帧里的记录一律
-不动，胜负仍归扫描批次），`silver` 与 `state` 共用这一份帧；Bronze 分区本身仍然纯净。
-
-**效果**：2026-11-08 体检的层间勾稽量出 **203 个库**在 current 里、却没有一行属性，
-`datasets` 宽视图里它们的 tags / description 整片为 null（不报错，只是查不出来）。
-修复后三层对齐。体检同时勾稽三条：current ↔ observations 双向差集、current ↔ silver
-覆盖、current 的 `last_seen_at` 是否落后于最新 Raw 日（采了却没进当前态）。
-
-### 5. sha 变更检测改进（2026-11-07）
-
-**问题**：将 null sha 当成相同，导致漏报变更。
-
-**解决方案**：
-- 区分"确实变更"（两方都有 sha 且不同）和"无法检测"（至少一方为 null）
-- 对账报告增加 `undetectable_change` 类别，单独列出无法检测的库
-
-**效果**：检测准确率提升 100%，清楚知道哪些库无法检测变更
-
-详见：
-- 设计决策：[docs/adr/0001-metadata-refresh-consistency-hardening.md](docs/adr/0001-metadata-refresh-consistency-hardening.md)
-- 文档索引：[docs/README.md](docs/README.md)
-- 故障恢复：[docs/operations/RECOVERY.md](docs/operations/RECOVERY.md)
-- 监控指标：[docs/operations/MONITORING.md](docs/operations/MONITORING.md)
-- **标签维度拆 16 类**：按全站 950 万条标签实测频次补齐 `modality`（12.7%）/`region`（11.7%）/`format`（8.6%）等；无前缀标签单列 `plain_tags`（13.7%，旧式 `text`/`image` 标记都在这里）。维度覆盖率 51.5% → 99.9%。`tag_values` 长表视图由映射表自动生成，新增维度不必改 SQL；白名单之外的任意前缀（`model:`、`eval:` 等长尾）走 `tag_index` 视图——它直接展开原始 `tags`，按第一个冒号切分，1,200 万行只算不存。
-- **规模数据走 datasets-server**：列表接口的 `mainSize` 是仓库字节，卡片声明的行数只覆盖少数数据集（当前覆盖率见 [docs/DATA.md](docs/DATA.md)）。`fetch-sizes` 打 `/size` 拿 `num_rows` 与 `num_columns`。实测成功率约 80%，并发 16 稳定 26 req/s，两万条约 790 秒。失败分类处理：500/401/501 记 `unavailable` 落库并默认跳过（永久缺失，重试只会白烧 30% 预算）；429/502/503 退避重试且不落库（下轮自然重试）。**规模是内容的函数**：跳过判据只能表达「问过没」，表达不了「问过之后它变了没有」，故每日链条跑 `fetch-sizes --changed 8000`，按 `lastModified > snapshot_date` 重取那批已变的库；周日那次全量趟负责补从未问过的存量，两者分工，互不替代。
-- **宽视图由 schema 拼装**：`datasets` 的列不再手抄，由 `platform/tables.py` 的 schema 按固定顺序拼接，重名**先到先得**；需要区分口径的列改名（`size.num_rows → server_num_rows`，与卡片口径的 `card_num_rows` 并存）；`raw`（每行数 KB 的整行 JSON）与重复的 `snapshot_date` 排除在外。手抄的代价是漂移——加一个卡片字段，`card` 视图自动有，`datasets` 安静地少一列。
-- **「最新一行」有物化与视图两套实现，必须永远一致**：`current` 是物化表，`latest_silver` 是窗口视图。`current` 的带入列由两个 schema **求交**推导，不手抄；`status` / `first_seen_at` / `last_seen_at` 是本地判断，不得混进 Silver。一致性由测试守护（实测 111.7 万行、15 个公共列取值相同）。
-- **失效状态不是「删除」一种**：对账后逐条探测，404 才是删除，401 是转私有（库还在），307 是改名（跟随到 200 拿到新 id）。三者混记会让下架数虚高，也让改名后的库在下轮变成「新增」而丢掉观测史。
-- **探测本身会被限流**：全站扫描已用掉一千多次请求，而配额是 1000 请求 / 5 分钟。故每轮只探 `--probe-limit`（默认 2000）个，其余顺延，按「在架优先」排序 + 游标轮转（`meta/probe-cursor.json`）保证每天都换一批、且先探状态真有疑问的（实测 6579 个待复核里 2933 个是早已判过的）。探测遇 429 会照 `retry-after` 退避重试，**只有真耗尽才落 `unknown`**——`unknown` 的处置是「先别动」，落多了，已下架的库会永远挂着 `active`。失败数、顺延数都进对账摘要与差异清单，`doctor` 对失败占比超 20% 判红。
-- **非 active 的行不是现势值**：`renamed` / `disappeared` / `restricted` 的行，指标停在最后一次看到时的值。`query` 出结果时若带 `status` 列且有这类行，末尾会明说一句，不改数据也不过滤。
-- **命令成败只有一个判定点**：命令返回 `Outcome(payload, code, reason)`，退出码与 `runs/` 记录由同一处推出；`write_run` 不接受外部传入的 `status`——可传的 status 一定有传错的那天。
-- **原子写只有一个入口**：`platform/atomic.py` 的四个函数管所有落盘，临时文件与目标同目录（跨盘替换会退化）。中断时不能留下半张 HTML——那比旧页面更糟。
-- **列编码只有一套规则**：`platform/coerce.py` 管「一个 JSON 值怎么落进一列」。铁律是取不到留 None、绝不猜：`private: "true"` 是字符串不是布尔，猜成 True 会让「是否受限」失去可信度。
+**刷新的节奏**：日增量扫最近更新的库，`collect --refresh-top N` 补头部下载量池；
+采集走 lean 档（16 字段约 980 B/条），`cardData` 只在变化集（`collect --cards`）或按需
+（`enrich --ids`，上限 200）时取——full 档约 6 KB/条，全站日拉会多传数倍字节。
+`downloads` 不是实时值，增速必须跨日观测（GLOSSARY #9）；卡片**不做**全站遍历（GLOSSARY #68）。
 
 ## 定时
 
 ```powershell
-pwsh -File scripts\setup-schedule.ps1              # 注册：hf-daily（每日 03:10 + 登录后 3 分钟，一条链跑完采集→派生→对账→规模→导出→交付→体检）· 00:30 压缩 · 周日 06:00 规模 · 周日 07:30 文件清单 · 周一 05:00 归档
+pwsh -File scripts\setup-schedule.ps1              # 注册：hf-daily（每日 03:10 + 登录后 3 分钟，按 daily.ps1 的顺序跑完当日例行）· 每日 00:30 压缩 · 周日 06:00 规模 · 周日 07:30 文件清单 · 周一 05:00 归档
 pwsh -File scripts\setup-schedule.ps1 -Uninstall   # 卸载
 Get-ScheduledTask -TaskName hf-* | Get-ScheduledTaskInfo   # 核对
 uv run hf-data-crawl doctor                        # 手动体检；有问题退出码 1，并写 data\ALERT.txt
 ```
 
-**例行是一条链，不是一个钟点表**。`scripts\daily.ps1` 按序跑八步（采集 → 派生 → 对账 → 规模随变化刷新 → 导出 → 交付 → 清理备份 → 体检），每步调一个包装脚本的等价命令；`scripts\*.ps1` 仍是可单独手动跑的入口（collect / reconcile / export / deliver / doctor / sizes / archive / compact / prune）。公共部分（定位 `uv`、代理默认值、日志、退出码）抽在 `scripts\_common.ps1`。
+**例行是一条链，不是一个钟点表**。`scripts\daily.ps1` 按序跑八步（采集 → 派生 → 对账 → 规模随变化刷新 → 导出 → 交付 → 清理备份 → 体检），每步直接调一条 `hf-data-crawl` 子命令，`Invoke-HfTask` 负责日志与退出码；`scripts\*.ps1` 仍是可单独手动跑的入口（collect / reconcile / export / deliver / doctor / sizes / files / archive / compact / prune）。公共部分（定位 `uv`、代理默认值、日志、退出码）抽在 `scripts\_common.ps1`。
 
-时钟只负责「什么时候开始」，**先后由脚本里的顺序保证**：采集 → `build --stale` → 对账 → `fetch-sizes --changed` → 导出 → 交付 → 体检。采集撞上瞬时断连会隔 2 分钟重试一次（2026-11-15 03:10 实测：TLS `UNEXPECTED_EOF`，一分钟后对账却正常）；仍失败就照旧记失败，重试只治抖动、不掩盖故障。导出与交付**依赖 `build` 成功**（派生层没跟上就发布，等于把旧值当新值交出去），前置失败即跳过并在 `-daily.log` 里写明原因；对账是独立的全站扫描，采集失败也照样跑；体检永远跑，且它的非零只记「告警」不算链条失败——告警与故障挤进同一个码，铃声很快就没人听。
+时钟只负责「什么时候开始」，**先后由脚本里的顺序保证**。采集撞上瞬时断连会隔 2 分钟重试一次（2026-11-15 03:10 实测：TLS `UNEXPECTED_EOF`，一分钟后对账却正常）；仍失败就照旧记失败，重试只治抖动、不掩盖故障。导出与交付**依赖 `build` 与 `reconcile` 成功**（派生层没跟上就发布，等于把旧值当新值交出去；对账没完就导出，等于发布一份还没对齐的全站快照），前置失败即跳过并在 `-daily.log` 里写明原因；对账是独立的全站扫描，采集失败也照样跑；体检永远跑，且它的非零只记「告警」不算链条失败——告警与故障挤进同一个码，铃声很快就没人听。
 
-这条设计来自 2026-11-09 的一次实测：机器 00:30 之后关机、19:03 开机，`-StartWhenAvailable` 把错过的五个任务**在同一分钟全部补跑**，导出抢在对账前完成，一出来就落后 2,466 行，体检随即误报并以退出码 1 收场。故补跑只留给 `hf-daily`（补的是整条链），compact / sizes / archive 是互不相干的纯周期维护，错过就等下一轮——它们补跑只会跟链抢写锁。
+这条设计来自 2026-11-09 的一次实测：机器 00:30 之后关机、19:03 开机，`-StartWhenAvailable` 把错过的五个任务**在同一分钟全部补跑**，导出抢在对账前完成，一出来就落后 2,466 行，体检随即误报并以退出码 1 收场。故补跑只留给 `hf-daily`（补的是整条链），compact / sizes / files / archive 是互不相干的纯周期维护，错过就等下一轮——它们补跑只会跟链抢写锁。
 
 要点：
 
@@ -314,7 +231,7 @@ uv run hf-data-crawl doctor                        # 手动体检；有问题退
 
 每轮摘要落在 `runs/`，失败也写并带错误原因，不会静默。`runs/<时间戳>-<命令>.json` 与 `logs/<时间戳>-<命令>.log` 是同一次运行的**两半**（机读结论 / 人读现场），同键不同扩展名，查某一轮取同前缀即可。`doctor` 不写 `runs/`：它退出码 1 表示「有告警」而非「命令失败」，写进去会污染「近 7 天无失败运行」那条判据；体检结论看 `data\ALERT.txt`（覆盖式，只存最新一次）、流水 `state\health-history.jsonl`（一行一次，据它追「断日从哪天开始」「这条告警连续几天」，保留最近 `HEALTH_KEEP` 次）与对应日志。
 
-**写命令互斥**：所有写命令（collect / reconcile / build / enrich / fetch-sizes）持有数据目录的锁，避免 `current.parquet` 被并发覆盖。人工执行时撞上别人会立刻报错并说明占用者；计划任务的包装脚本加了 `--lock-wait 900`，会先等 15 分钟而不是白丢一轮（`fetch-sizes` 一次可能跑一小时，与 03:10 的采集重叠过，曾因此丢过一次采集）。
+**写命令互斥**：所有写命令（collect / enrich / fetch-sizes / fetch-files / reconcile / build / archive / compact / prune / export-wide）持有数据目录的锁，避免 `current.parquet` 被并发覆盖。人工执行时撞上别人会立刻报错并说明占用者；计划任务的包装脚本加了 `--lock-wait 900`，会先等 15 分钟而不是白丢一轮（`fetch-sizes` 一次可能跑一小时，与 03:10 的采集重叠过，曾因此丢过一次采集）。
 
 ## 需求与交付
 
@@ -378,12 +295,10 @@ sha256，于是「基于哪一版清单」和「基于哪一版底库」一样�
 拦下**（不是警告）：档案指着一份「当时说过、现在已经不是」的定义，这种错不会报错，
 只会让人拿着错的前提核对三个月。
 
-判定用**语义指纹**（`spec_digest`）而非文件字节：先 `load()` 成 `Spec`（默认值补齐、
-枚举归一），再只取「决定产物长什么样」的那部分比较。所以补一句注释、调一下键序、
-把默认的 `kind: query` 显式写出来，都不算一版变更；而 `下载量 > 1000` 改成 `> 800`
-一定算。标题、提出人、节奏、用途也不进指纹——改标题本就不搬目录，若还逼人升版，
-那条规矩就自相矛盾了。`manifest.spec_sha256` 记下每份交付对应的口径指纹，
-`request show` 并列显示，体检对「已交付但版本号与内容对不上」的需求判红。
+判定用**语义指纹**（`spec_digest`）而非文件字节：只比「决定产物长什么样」的那部分，
+所以注释、键序、显式写出的默认值不算变更，`下载量 > 1000` 改成 `> 800` 一定算。
+`manifest.spec_sha256` 记下每份交付对应的口径指纹，`request show` 并列显示；
+体检对「已交付但版本号与内容对不上」的需求判红。完整取舍见 GLOSSARY #70。
 
 变更这件事本身有三件配套工具：
 
@@ -406,16 +321,12 @@ sha256，于是「基于哪一版清单」和「基于哪一版底库」一样�
 历史累计——同一句话两种理解差两个数量级。词表见 `delivery/metrics.py` 与
 [GLOSSARY](GLOSSARY.md) #51，`request show` 会把口径连同编译后的 SQL 一起打出来。
 
-**不写 `output.columns` 就按默认底库交付**：31 列字段契约在 `delivery/fields.py`（逐列中文
-定义、分组、页面标签对照、`EXTENDED_FIELDS`、`CONTRACT_VERSION`）。`data/exports/datasets.parquet`
-是这份契约的物化，列序完全一致；`manifest.json` 记 `projection.source = default` 与契约版本，
-README 附逐列定义表、「详情页标签 ↔ 库列」对照表及扩展字段清单——页面叫 `Tasks` /
-`Size` / `Tags`，库里叫 `task_categories` / `size_categories` / `plain_tags`，值也多为机器码，
-不对照就会以为「库里没内容」。多值列在导出物里就是 LIST 原值（与视图同构，可直接
-`list_contains` 精确筛）；只有 CSV 交付这一层才展平成 `;` 连接的文本，并把语言 / 任务 /
-规模的机器码换成页面形式。需要默认面之外的
-字段时在 spec 写 `output.columns: [id, regions, arxiv_ids]`，`_column()` 认原始视图列名。
-`doctor` 会勾稽导出文件列集与契约，不一致即报「跑 `export-wide` 重建」。
+**不写 `output.columns` 就按默认底库交付**：契约在 `delivery/fields.py`（逐列中文定义、
+分组、页面标签对照、`EXTENDED_FIELDS`、`CONTRACT_VERSION`），`data/exports/datasets.parquet`
+是它的物化，列序完全一致。交付 README 会附逐列定义、「详情页标签 ↔ 库列」对照与扩展
+字段清单——页面叫 `Tasks` / `Size` / `Tags`，库里叫 `task_categories` / `size_categories` /
+`plain_tags`，值也多为机器码，不对照就会以为「库里没内容」。需要默认面之外的字段时在
+spec 写 `output.columns: [id, regions, arxiv_ids]`；`doctor` 会勾稽导出列集与契约。
 
 `manifest.json` 里的 `source.current_md5` 是整份档案的锚点：日后任何一份交付都能
 回答「它基于哪一版底库」。`.gitignore` 对 `deliveries/` 用的是**白名单**——只放行
@@ -429,9 +340,9 @@ README 附逐列定义表、「详情页标签 ↔ 库列」对照表及扩展�
 那时比较只会天天发假警报，而假警报最能训练人忽略告警。
 
 先写 `.tmp-*` 目录、三件齐了再整体改名，所以中途失败绝不会留下「有数据没说明」。
-默认底库的标签列已是 `;` 字符串；CSV 再把 `languages` / `task_categories` /
-`size_categories` 逐项换成页面形式（`ko` → `Korean`），parquet 保留机器码。
-spec 若显式投了 LIST 列，写 CSV 前也会先拍平——否则 Polars 会拒绝嵌套类型。
+CSV 交付时才把多值列展平成 `;` 文本，并把语言 / 任务 / 规模的机器码换成页面形式
+（`ko` → `Korean`）；parquet 保留 LIST 与机器码。spec 若显式投了 LIST 列，写 CSV 前
+同样先拍平——否则 Polars 会拒绝嵌套类型。
 
 **跑一批交付**：`request run-due` 扫 `requests/` 下所有 spec，按各自 `cadence` 判断
 「今天是否到期」，到期的才跑。判断依据是**上一次交付的时刻**，不是上一次运行成功
@@ -444,7 +355,7 @@ spec 若显式投了 LIST 列，写 CSV 前也会先拍平——否则 Polars �
 （`current` 缺失）时整体失败，因为那不是某一条需求的问题。
 
 **这套东西最终是给 Agent 用的**：人只说「要什么」，判定形态、写口径、写方法、预演、
-交付、变更与比对都由 Agent 走。规程写在 `.workbuddy/skills/hf-request/SKILL.md`——
+交付、变更与比对都由 Agent 走。规程写在 `.agents/skills/hf-request/SKILL.md`——
 接收怎么判定、响应要落下哪几件、被拦下时按什么改、哪些做法一见就停。命令负责把关，
 skill 负责别把工夫用错地方；两者分开，是因为「规则」要能被机器执行，「做法」要能被
 下一个接手的 Agent 读懂。

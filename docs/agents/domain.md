@@ -1,33 +1,25 @@
-# Domain Docs
+# 领域文档怎么用
 
-How the engineering skills should consume this repo's domain documentation when exploring the codebase.
+本仓库是单一上下文：领域词与不变量在 [GLOSSARY.md](../../GLOSSARY.md)，决策记录在
+[docs/adr/](../adr/)。
 
-## Before exploring, read these
+## 动手前
 
-- **`GLOSSARY.md`** at the repo root.
-- **`docs/adr/`**: read ADRs that touch the area you're about to work in.
+- 读你要碰的那块术语与不变量。词表条目自带「不是什么」，先看它，避免自造同义词。
+- 读涉及该区域的 ADR。ADR 是决策**当时**的样子；若代码已经走远，以词表的后续条目为准。
 
-If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and `/improve-codebase-architecture`) creates them lazily when terms or decisions actually get resolved.
+## 输出时
 
-## File structure
+- 概念一律用词表里的词；词表明确说「不是什么」的同义词不要用。
+- 需要新词时先判断是不是真缺（可能已有词）；真缺就加进 GLOSSARY 再用。
+- 你的结论与 ADR 冲突时，明写「与 ADR-xxxx 冲突，因为……」，不要静默覆盖。
 
-Single-context repo:
+## 结构
 
 ```
-/
-├── GLOSSARY.md
-├── docs/adr/
-└── src/
+GLOSSARY.md      # 词表 + 编号决策（编号只增不改）
+docs/adr/        # 决策记录，不改写历史
+src/             # 代码
 ```
 
-## Use the glossary's vocabulary
-
-When your output names a domain concept (in an issue title, a refactor proposal, a hypothesis, a test name), use the term as defined in `GLOSSARY.md`. Don't drift to synonyms the glossary explicitly avoids.
-
-If the concept you need isn't in the glossary yet, that's a signal: either you're inventing language the project doesn't use (reconsider) or there's a real gap (note it for `/domain-modeling`).
-
-## Flag ADR conflicts
-
-If your output contradicts an existing ADR, surface it explicitly rather than silently overriding:
-
-> _Contradicts ADR-0007 (event-sourced orders), but worth reopening because…_
+文档不替代码记账：行数、列数、检查项数量这类事实以代码为准，文档只写判据与指向。

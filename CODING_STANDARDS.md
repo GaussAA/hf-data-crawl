@@ -34,18 +34,16 @@
 
 ## 测试命名
 
-函数名用中文描述**被测行为**，docstring 补一句「为什么这个行为值得守」：
+函数名用中文，能当一句话读；docstring 也用中文：
 
 ```python
-def test_只清超过保留期的分区() -> None:
-    """判龄判错会删掉刚备份的分区——回滚依据没了。"""
+def test_档案层只认契约不认形态() -> None:
+    """测试档案层不 import 具体执行体。"""
+    # ...
 ```
 
-**为什么不再要求英文标识符**：本文件原先写「函数名是标识符（ASCII），docstring 是
-文档」，但 2026-11-16 审计实测 946 个测试函数里 930 个是中文名（`test_合理时间戳`
-这类），规则事实上已作废——而 Review 清单第一条就是它，于是每次提交都亮一次红灯，
-红灯多了就没人看。中文名还让 `pytest -k 保留期` 能按业务词筛，比拼音或缩写好用。
-规则跟现状一致才有约束力。（`tests/pipeline/test_bronze.py` 等新文件沿用中文名。）
+这是仓库现状，不要另立一套「英文函数名」的规则——两个名字并存时，Review 只会去检查
+不成立的那一条。
 
 ---
 
@@ -54,15 +52,16 @@ def test_只清超过保留期的分区() -> None:
 多文件操作使用标记文件保护原子性：
 
 ```python
-mark_operation(store, date)  # 写标记
+write_marker(store, date)  # 开始前写标记
 try:
     update_files()
-    clear_operation(store, date)  # 删除标记
+    clear_marker(store, date)  # 成功后删除
 except Exception:
-    raise  # 保留标记供下次恢复
+    raise  # 失败保留标记，由启动恢复接手
 ```
 
-启动时检查并恢复。见 `pipeline/marker.py` 和 ADR-0001。
+启动恢复见 `pipeline/recovery.py` 的 `check_and_recover`，恢复是**后缀重放**而不是
+只重算那一天；原理见 GLOSSARY #28、#78。
 
 ---
 
@@ -71,33 +70,32 @@ except Exception:
 外部 API 数据必须验证合理性，过滤异常值：
 
 ```python
-def _is_reasonable(value):
-    # 检查范围、格式、时间戳等
-    if is_anomaly(value):
-        return False
-    return True
+def _is_reasonable_timestamp(value: str) -> bool:
+    # 过滤未来 7 天以外的异常值
+    ...
 ```
 
-见 `acquire/hf/watermark.py` 的时间戳过滤（过滤未来 7 天以外的异常值）。
+见 `acquire/hf/watermark.py` 的时间戳过滤。取不到就留 None，绝不猜；编码规则只有
+`platform/coerce.py` 一套。
 
 ---
 
 ## 新增术语
 
-新术语先入 `GLOSSARY.md` 再使用：
+新术语先入 `GLOSSARY.md` 再使用；引用时写词条名，编号只用来在文档间指路：
 
 ```python
 def foo():
-    """做 XXX（见 GLOSSARY #30）。"""
+    """做 XXX（口径见 GLOSSARY「Expand 白名单」）。"""
 ```
 
 ---
 
 ## 派生顺序
 
-派生层有硬性依赖，必须按顺序：bronze → silver → observations → current
-
-**不要**改变顺序或并行执行。见 GLOSSARY #4。
+派生层有硬性依赖，必须按顺序：bronze → silver → observations → current。
+顺序定义在 `pipeline/derive.py`，由 `tests/pipeline/test_derive.py` 守护；不改变顺序，
+也不并行执行。
 
 ---
 
@@ -136,11 +134,12 @@ TLS 断连。）
 - **Review Agent**：审查 diff，强制本文档标准（上下文压力小）
 
 **Review 清单**：
-- [ ] 测试函数名是否用英文
+- [ ] 测试函数名与 docstring 是否用中文（跟着仓库现状，不另立规则）
 - [ ] 新术语是否已在 GLOSSARY 定义
 - [ ] 派生顺序是否正确
 - [ ] 异常值是否已过滤
 - [ ] 新判据是否配了「能打红」的反例测试
 - [ ] 跨表 join 的通用列名（`status` / `snapshot_date`）是否已改名
+- [ ] 文档是否只写判据与指向，没有手抄列数 / 行数 / 检查项数量
 
 机械检查（代码格式、导入排序、测试通过）已由自动化工具完成，**不需要**在 Review 中重复。

@@ -1,17 +1,21 @@
 """校验仓库内 Markdown 的文档引用，防止文档漂移。
 
-检查两类引用：
+检查三类问题：
 
 1. Markdown 内联链接 ``[...](target)``，按所在文件目录解析；
-2. 行内代码里**带仓库前缀**的路径，如 `` `docs/ISSUES.md` ``，按仓库根解析。
+2. 行内代码里**带仓库前缀**的路径，如 `` `docs/ISSUES.md` ``，按仓库根解析；
+3. ``GLOSSARY #nn`` 引用必须指向真实条目，且词表编号不得重号、不得断号。
 
 第二类曾经是盲区：文档的 Legacy 段用反引号引用 `` `docs/ISSUES.md` ``，
 文件被删后引用悬空，而只查内联链接的校验器与 CI 依旧全绿。裸文件名、
 数据布局示例、``.scratch/<slug>/spec.md`` 这类模板占位符不视为路径，
 否则会产生大量误报。
 
+第三类针对引用键：编号是跨文档的稳定键，重号会让两个读者落到不同决策上，
+而两处都读得通。词表内部另有 ``#17`` 这类裸引用，同样在检查范围内。
+
 CI 的 ``Check documentation`` 与 pre-commit 共用这一入口；判定标准是目标
-文件真的存在，而不是把文件名打印一遍。纯标准库实现，不依赖项目环境。
+文件真的存在、引用真的落地，而不是把名字打印一遍。纯标准库实现，不依赖项目环境。
 
 用法::
 
@@ -33,18 +37,42 @@ _CODE_PATH = re.compile(r"`([^`\n]+)`")
 #: 围栏代码块边界；块内的示例路径不是真引用，跳过以免误报。
 _FENCE = re.compile(r"^\s*(?:```|~~~)")
 #: 不参与扫描的目录：产物、依赖、缓存与工作区内部记录。
-_EXCLUDED = {".git", ".venv", "node_modules", "data", "__pycache__", ".workbuddy", "build", "dist"}
+#: `.agents/skills` 是跟仓库走的项目技能，仍要参与校验；只跳过
+#: `.agents/worktrees`（DSH 的工作树副本，每个都是一份完整 checkout）。
+_EXCLUDED = {
+    ".git",
+    ".venv",
+    "node_modules",
+    "data",
+    "__pycache__",
+    "build",
+    "dist",
+}
+#: `.agents/` 下唯一要跳过的子树；其余（尤其 skills）仍是仓库文档。
+_WORKTREE_PARTS = (".agents", "worktrees")
 #: 写在行内代码里、且以这些前缀开头的路径，按仓库根解析。
 _REPO_PREFIXES = ("docs/", "scripts/", "src/", "tests/", ".github/")
 #: 路径里出现空白、占位符或通配符，说明是命令片段/模板而非单一路径。
 _NOT_A_PATH = re.compile(r"[\s<>{}*?$]")
+#: GLOSSARY 的条目行：`1. **...`。
+_GLOSSARY_ENTRY = re.compile(r"^(\d+)\.\s", re.MULTILINE)
+#: 引用键：`#74` 或范围 `#62–#66` / `#62-66`。
+_GLOSSARY_REF = re.compile(r"#(\d+)(?:\s*[–—-]\s*#?(\d+))?")
+#: 外部 PR 编号长得像引用键，但不是——`PR #27` 不该被当成词表条目。
+_PR_REF = re.compile(r"\bPR\s*#\d+")
 
 
 def markdown_files(root: Path) -> list[Path]:
     """仓库内需要检查的 Markdown 文件，按路径稳定排序。"""
-    return sorted(
-        path for path in root.rglob("*.md") if not (_EXCLUDED & set(path.relative_to(root).parts))
-    )
+    files: list[Path] = []
+    for path in root.rglob("*.md"):
+        relative = path.relative_to(root)
+        if _EXCLUDED & set(relative.parts):
+            continue
+        if relative.parts[:2] == _WORKTREE_PARTS:
+            continue
+        files.append(path)
+    return sorted(files)
 
 
 def _scanned_lines(text: str) -> Iterator[str]:
@@ -122,6 +150,76 @@ def broken_references(root: Path) -> list[str]:
     return problems
 
 
+def _scanned_numbered(text: str) -> Iterator[tuple[int, str]]:
+    """逐行产出 (行号, 文本)，跳过围栏代码块。"""
+    in_fence = False
+    for number, line in enumerate(text.splitlines(), 1):
+        if _FENCE.match(line):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            yield number, line
+
+
+def glossary_entries(text: str) -> list[int]:
+    """按出现顺序取词表编号。"""
+    return [int(match.group(1)) for match in _GLOSSARY_ENTRY.finditer(text)]
+
+
+def _glossary_refs(line: str) -> Iterator[tuple[int, int]]:
+    """取一行里的编号引用，返回 (起, 止)；单号时止 == 起。"""
+    for match in _GLOSSARY_REF.finditer(line):
+        start = int(match.group(1))
+        end = int(match.group(2)) if match.group(2) else start
+        yield start, end
+
+
+def glossary_problems(root: Path) -> list[str]:
+    """检查词表编号与引用键，返回 ``文件:行号: 问题`` 清单。"""
+    path = root / "GLOSSARY.md"
+    if not path.is_file():
+        return []
+    text = path.read_text(encoding="utf-8", errors="replace")
+    entries = glossary_entries(text)
+    known = set(entries)
+    problems: list[str] = []
+
+    for number in sorted(known):
+        count = entries.count(number)
+        if count > 1:
+            problems.append(f"GLOSSARY.md: 编号 {number} 出现 {count} 次")
+    expected = set(range(1, len(entries) + 1))
+    missing = sorted(expected - known)
+    extra = sorted(known - expected)
+    if missing:
+        problems.append(f"GLOSSARY.md: 缺号 {', '.join(map(str, missing))}")
+    if extra:
+        problems.append(f"GLOSSARY.md: 编号超出连续范围 {', '.join(map(str, extra))}")
+
+    def check(target: Path, line_number: int, after: str) -> None:
+        relative = target.relative_to(root)
+        for start, end in _glossary_refs(after):
+            for number in (start, end):
+                if number not in known:
+                    problems.append(f"{relative}:{line_number}: GLOSSARY #{number} 不存在")
+            if start > end:
+                problems.append(f"{relative}:{line_number}: 引用范围 #{start}–{end} 顺序反了")
+
+    # 词表内部用裸 `#nn` 引用；`PR #27` 不是引用键，先摘掉。
+    for number, line in _scanned_numbered(text):
+        check(path, number, _PR_REF.sub("PR", line))
+    # 其他文档：同一行里出现 GLOSSARY 后，其后的 `#nn` 视为词表引用。
+    for target in markdown_files(root):
+        if target == path:
+            continue
+        body = target.read_text(encoding="utf-8", errors="replace")
+        for number, line in _scanned_numbered(body):
+            if "GLOSSARY" in line:
+                tail = _PR_REF.sub("PR", line.split("GLOSSARY", 1)[1])
+                check(target, number, tail)
+    return problems
+
+
 def _force_utf8_output() -> None:
     """把标准输出固定为 UTF-8。
 
@@ -154,6 +252,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     problems = broken_references(root)
+    problems.extend(glossary_problems(root))
     if problems:
         print(f"发现 {len(problems)} 条失效文档引用：", file=sys.stderr)
         for item in problems:

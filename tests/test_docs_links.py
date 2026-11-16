@@ -1,9 +1,9 @@
 """文档引用校验器自身的回归测试。
 
-钉住四件事：内联链接与行内代码路径的断链都必须被检出并报出位置；有效引用
-不能误报；v1.0 需求→切片追溯链不得被静默删除；非 UTF-8 控制台（Windows
-runner 的 cp1252）不能让「通过」变成崩溃。否则校验器很容易退化成「只打印
-文件名」的假检查。
+钉住五件事：内联链接与行内代码路径的断链都必须被检出并报出位置；有效引用
+不能误报；v1.0 需求→切片追溯链不得被静默删除；GLOSSARY 的重号与悬空引用键
+不能通过；非 UTF-8 控制台（Windows runner 的 cp1252）不能让「通过」变成崩溃。
+否则校验器很容易退化成「只打印文件名」的假检查。
 """
 
 from __future__ import annotations
@@ -129,3 +129,76 @@ def test_cp1252_控制台下仍能输出正确结论() -> None:
     assert result.returncode == 0, result.stderr
     assert "UnicodeEncodeError" not in result.stderr
     assert "0 条断链" in result.stdout
+
+
+def test_GLOSSARY重号必须被检出(tmp_path: Path) -> None:
+    """重号会让两个读者落到不同条目上，而两处都读得通。"""
+    (tmp_path / "GLOSSARY.md").write_text(
+        "# GLOSSARY\n\n1. 甲。\n2. 乙。\n2. 丙。\n", encoding="utf-8"
+    )
+    (tmp_path / "AGENTS.md").write_text("见 GLOSSARY #2。\n", encoding="utf-8")
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 1
+    assert "编号 2" in result.stderr
+
+
+def test_GLOSSARY悬空引用键必须被检出(tmp_path: Path) -> None:
+    """引用键指不到条目就是断链，不能因为「像编号」就放过。"""
+    (tmp_path / "GLOSSARY.md").write_text("# GLOSSARY\n\n1. 甲。\n2. 乙。\n", encoding="utf-8")
+    note = tmp_path / "AGENTS.md"
+    note.write_text("见 GLOSSARY #9。\n", encoding="utf-8")
+
+    broken = _run(tmp_path)
+    assert broken.returncode == 1
+    assert "GLOSSARY #9 不存在" in broken.stderr
+
+    note.write_text("见 GLOSSARY #2。\n", encoding="utf-8")
+    fixed = _run(tmp_path)
+    assert fixed.returncode == 0, fixed.stderr
+
+
+def test_GLOSSARY内部的裸引用也要校验(tmp_path: Path) -> None:
+    """词表正文里的 `#17` 是同一套引用键，不能只查外部的 `GLOSSARY #17`。"""
+    (tmp_path / "GLOSSARY.md").write_text(
+        "# GLOSSARY\n\n1. 甲（见 #2）。\n2. 乙。\n3. 丙（见 #9）。\n", encoding="utf-8"
+    )
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 1
+    assert "GLOSSARY #9 不存在" in result.stderr
+
+
+def test_PR编号不是词表引用键(tmp_path: Path) -> None:
+    """`PR #27` 与词表编号长得一样，但它指的是外部合并请求。"""
+    (tmp_path / "GLOSSARY.md").write_text(
+        "# GLOSSARY\n\n1. 甲（PR #99）。\n2. 乙。\n", encoding="utf-8"
+    )
+    (tmp_path / "AGENTS.md").write_text("见 GLOSSARY #2，PR #99。\n", encoding="utf-8")
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_worktree副本跳过但项目技能仍参与校验(tmp_path: Path) -> None:
+    """`.agents/worktrees` 是完整 checkout，`.agents/skills` 是仓库文档。"""
+    worktree = tmp_path / ".agents" / "worktrees" / "wt"
+    worktree.mkdir(parents=True)
+    (worktree / "README.md").write_text("[坏](missing.md)\n", encoding="utf-8")
+
+    skill_dir = tmp_path / ".agents" / "skills" / "demo"
+    skill_dir.mkdir(parents=True)
+    skill = skill_dir / "SKILL.md"
+    skill.write_text("[坏](missing.md)\n", encoding="utf-8")
+
+    broken = _run(tmp_path)
+    assert broken.returncode == 1
+    assert "SKILL.md" in broken.stderr
+    assert "worktrees" not in broken.stderr
+
+    skill.write_text("# OK\n", encoding="utf-8")
+    fixed = _run(tmp_path)
+    assert fixed.returncode == 0, fixed.stderr

@@ -1,76 +1,51 @@
-## Agent skills
+# hf-data-crawl — Agent 导航
 
-### Issue tracker
+HF 公开数据集的元信息底库：采集 → Raw → Bronze → Silver / 观测 → 当前态 → Gold 视图，
+另有「需求 → 交付档案」一条交付链。不下载数据集文件。
 
-Issues are local markdown files under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
+## 项目形状（改代码前必读）
 
-### Triage labels
-
-Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`), recorded as the `Status:` line. See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Single-context: one `GLOSSARY.md` at the repo root plus `docs/adr/`. See `docs/agents/domain.md`.
-
-## Architecture navigation
-
-### Data flow
-Complete pipeline (collect → derive → query) is in [DATA.md](docs/DATA.md).
-
-### Slices and the dependency rule
-
-`src/hf_data_crawl/` is one package of six vertical slices, ordered
+`src/hf_data_crawl/` 是一个包、六个垂直切片，依赖只能单向下行：
 
 ```
 platform < pipeline < {acquire, query} < delivery < ops
 ```
 
-`acquire/hf` is a sub-package of `acquire`, not a slice. A module may import only strictly lower-ranked slices or its own; `acquire` and `query` share a rank and must not import each other. Cut along "who the data flows through", never along file type: `platform` is lock/atomic-write/store/vocab/runs, `pipeline` is bronze → silver → observations → current, `acquire` is scanning and probing, `query` is Gold views, `delivery` is requests and archives, `ops` is doctor/archive/compact/prune/docs and the CLI.
+- 切片按「数据流经谁」划分，不按文件类型：`platform` 锁 / 原子写 / 存储 / 词表 / 运行台账；
+  `pipeline` 派生；`acquire` 扫描与探测；`query` Gold 视图；`delivery` 需求与档案；
+  `ops` 体检 / 归档 / 清理 / 文档生成 / CLI。
+- `acquire/hf` 是 `acquire` 的子包，不是切片；`acquire` 与 `query` 同档、互不依赖。
+- `ops/cli.py` 是唯一组合根：只调各切片公开的 `run_*`，不碰下划线开头的实现。
+- 派生顺序固定 bronze → silver → observations → current，由 `pipeline/derive.py` 定义。
+- `tests/test_architecture.py` 强制以上规则，含函数内导入与 `TYPE_CHECKING` 块。
 
-`tests/test_architecture.py` enforces four rules: every module lives in a registered slice (the package root holds nothing but `__init__`/`__main__`), imports only go downwards, `platform` imports no other slice, and the module graph is acyclic — counting imports inside functions and `TYPE_CHECKING` blocks, since a lazy import hides a cycle just as well. A fifth rule forbids importing an underscore-prefixed name across a slice boundary: each slice exposes public entries (`run_collect`, `run_build`, `run_request_run`, …) and `ops/cli.py` is the only composition root. Bumping a private handler's name across slices breaks the CLI at import time with an error that points nowhere near the change. See GLOSSARY #75.
+## 按任务找文档
 
-### Derive order
-`pipeline/derive.py` defines strict order: bronze → silver → observations → current.
-Must preserve this order. See GLOSSARY #4.
+| 你要动 | 先读 | 它回答 |
+|---|---|---|
+| 采集 / 对账 / 探测 | GLOSSARY #5–#6、#10、#15、#17、#20、#27、#29–#30、#68、#72–#73 | 排序与异常值、扫描时序、来源命名、状态判定、探测限流 |
+| 派生 / 重建 / 恢复 / 留存 | GLOSSARY #18–#19、#28、#31、#44–#45、#47、#78；`docs/operations/RECOVERY.md` | 标记文件、后缀重放、派生凭据、冷热分层与回滚 |
+| 体检 / 告警 | GLOSSARY #74、#76、#81–#84；`docs/operations/MONITORING.md` | 判据基准（快照日而非日历）、Finding 的身份、连续天数 |
+| 调度 / 日志 | `scripts/daily.ps1`（顺序的唯一来源）、GLOSSARY #67、#77 | 为什么是一条链、哪些任务不补跑、重试边界 |
+| 交付 / 需求 | `.agents/skills/hf-request/SKILL.md`、GLOSSARY #51–#58、#69–#71、#79、#85–#87 | 受理 → 口径 → 方法 → 预演 → 交付 → 变更 |
+| 字段 / 数据形状 | `docs/DATA.md`（生成物）、GLOSSARY #62–#66、`delivery/fields.py` | 表结构、字段含义、默认交付契约 |
+| 架构决策 / 术语 | `docs/adr/`、GLOSSARY #75、`docs/agents/domain.md` | 当时的取舍与事故；术语怎么用 |
+| 提 issue / 写规格 | `docs/agents/issue-tracker.md` | `.scratch/<feature>/` 的目录与 Status 约定 |
 
-### Key invariants
-All domain terms and invariants are in [GLOSSARY.md](GLOSSARY.md).
-Add new terms there first before using them.
+术语一律以 [GLOSSARY.md](GLOSSARY.md) 为准，新词先入表再用。引用编号是稳定键
+（`GLOSSARY #74`），只增不改；`python scripts/check_docs_links.py` 会校验它指向的真有条目。
 
-### Consistency mechanisms
-- Watermark: `acquire/hf/watermark.py` (timestamp-based, filters anomalies)
-- Derive atomicity: `pipeline/marker.py` (marker-file primitives) + `pipeline/recovery.py` (`check_and_recover`: clears the stale day, then replays the suffix, never a single day; split out so `recovery → rebuild → derive → marker` stays one-way)
-- Derive provenance: `pipeline/lineage.py` (per-day Raw fingerprint; staleness detection + `build --stale`)
-- Layer reconcile: `ops.doctor._layer_reconcile` (current ↔ observations ↔ silver, plus last_seen_at vs newest Raw)
-- Artifact freshness: `ops.doctor._artifact_freshness` (exports must match current id-for-id; enrich tables only report coverage)
-- Check context: `ops.doctor.RunContext` + `_context()` — one read of `current`, one reference moment, one place that answers "what did this pass look at". Every check function takes `(ctx)`; before this they took `(store, today)`, `(runs, now)` or `(requests_root)` in mixed orders, so "which tables did it read" meant opening five function bodies and "which clock is this age measured against" meant reading 18 lines of `diagnose`. Reading `current` costs 0.08 s (measured), so this was never about speed — the four duplicate reads saved 0.3 s and cost a question nobody could answer. Adding a check now means writing the verdict only. `ctx.today` exists for "how old is this table" and must **not** be used for freshness — the chain runs at 03:10, so calendar-day checks are red every night before then; freshness uses the last successful reconcile's snapshot date.
-- Field freshness: `ops.doctor._field_freshness` answers "is a cycle enough?" per field class — list fields by the share of `current.last_seen_at` at or after the **last successful reconcile's snapshot date** (red below 90%, meaning that sweep did not finish; never compare against calendar today — the chain runs at 03:10, so a calendar-day check is falsely red every night between 00:00 and then), card coverage (68% is upstream: 30/30 sampled no-card datasets also have no `cardData` on HF), size coverage plus a `stale` count. Sizes track content, not just "asked once": `fetch-sizes --changed N` re-fetches rows where `lastModified > snapshot_date` and the last status was `ok`; `unavailable` rows are upstream-permanent and are retried only by the weekly full pass with `--retry-unavailable`. Beware both tables carry `status` — rename before filtering or the predicate silently matches the library status instead. `files` refreshes weekly (Sunday 07:30, top-1000 first page — a subset, not a full inventory) and gets a 10-day age limit (`TABLE_MAX_AGE_DAYS`) so one missed run is not noise but a lost week is. **One coverage number, one implementation**: `_covered()` (intersection with `current`) is the only numerator and `_share_text()` (≥10% rounds to an integer, below that keeps one decimal — `files` is at 0.09% and would otherwise read as "0%") the only formatting. The two checks used to print 68% and 68.3% for the same table because each formatted its own way; the numerators happened to agree, which is exactly why nobody caught it. `_field_freshness` calls `acquire.sizes.stale_ids()` instead of re-implementing the join, so `fetch-sizes --changed` and the doctor cannot disagree about what "stale" means. Export location comes from `delivery.wide.export_path()`, never a hand-built path — a hard-coded copy reports "export missing, run export-wide" even after someone moves it, and following that advice never fixes it. See GLOSSARY #76 and #89.
-- Card provenance: `ops.doctor._card_provenance` (`carddata.source_sha` vs `current.sha`, active libs only)
-- Change-set cards: `acquire.enrich.scan_changed_cards` (same `lastModified` watermark as collect; writes `card-*`, never Bronze)
-- Single day frame: `pipeline.bronze.day_frame` (Bronze partition + card-batch supplements; shared by `silver` and `state`)
-- Health history: `ops/health.py` (per-run findings log; `runs/` records command outcome, not alerts). Each record carries `codes` next to `problems`, and `streak(store, code)` counts consecutive red **days** — by code, never by substring (a substring match dies silently the moment the wording changes; putting the date into `Raw 断日：2026-11-06` was enough, and a counter stuck at 0 looks exactly like "it fixed itself"), and **deduplicated by calendar date, never by run count** (`doctor` runs several times a day while you are fixing something; counting runs turns one red day into "red for six rounds"). `sync_alert` uses `red_days()` to fold the current run in and appends `（已连续 N 天）` from the second day on.
-- Finding: `ops/finding.py` — `problem` (is it real), `text` (for humans), `code` (for programs), `degraded` (this reading does not count). `degraded` keeps the original `problem` rather than blanking it: "is it a problem" and "is this reading trustworthy" are two facts, and collapsing them into one boolean loses the first. Consumers test `problem and not degraded`; the terminal prints `[~]` for those lines. It lives outside `doctor.py` because `health` needs the type, and `doctor → health` plus `health → doctor` is a cycle the architecture test counts even through `TYPE_CHECKING` — a lazily imported cycle is still a cycle when you have to read both files to break it.
-- Probe health: `acquire.hf.api._fetch` is the single retry path shared by scan and `probe` — 429/5xx back off by `retry-after`, transport errors re-raise once retries are exhausted, and only a genuine exhaustion becomes `unknown` ("don't touch"). `probe` used to call transport directly, so a rate-limited probe silently froze a dataset's status forever. Each reconcile probes at most `PROBE_DAILY_LIMIT` (2000) of the `missing` set and defers the rest, rotating through **active-first** order (status from the session baseline) via `meta/probe-cursor.json`: already-inactive rows are probed last, so the daily quota goes to the ids whose state is actually in doubt — measured 6579 pending of which 2933 were long-settled. The cursor carries `PROBE_ORDER_VERSION`; bump it whenever the sort key changes, otherwise an old offset slices into a different sequence. `ReconcileSummary` carries `probe_probed` / `probe_failed` / `probe_deferred`, the report gets a `probe` row, and `ops.doctor._probe_quality` flags a failure share above `PROBE_FAIL_SHARE`. Rows whose `status` is not `active` hold the last-seen values — `query` warns about them instead of pretending they are current, and a `renamed` old id is frozen for good (HF still serves it, the list scan no longer sees it). See GLOSSARY #72.
-- Requirements: `delivery/requirement.py` (one spec per `REQ-xxxx`; `kind` selects the executor; `directory_name()` / `resolve_dir()` / `request_dirs()` for semantic folders) + `delivery/delivery.py` (dispatch through `EXECUTORS`, unified `Payload` → three-part archive, drift marking, `deliveries_of()` as the single "what counts as a delivery" predicate, `read_manifest()` as the single manifest reader) + `delivery/contract.py` (`Payload` / `RunContext` / `EXECUTORS` — the only thing both sides know) + `delivery/stamp.py` (bottom-library stamp + input snapshot stamp, kept out of the import cycle). A spec is fully validated in `_validate()` — term exists, operator fits the metric's kind, value lands as that kind's literal. All three must be rejected at accept time: `request new` and `request run` are separate human actions that can be a day apart, and a spec that only fails at compile time means you built something that never could have run and were told "created". See GLOSSARY #82.
-- Backfill executor: `delivery/backfill.py` (`kind: backfill`; URL list → filled workbook; mechanical in engine, judgment in `overrides.json`; never edits the source file)
-- Unified lifecycle: every form of delivery shares `requests/`, `request run/run-due`, `history/`, `deliveries/`. Add a new form by writing one module that ends with `EXECUTORS[Kind.X] = payload` and importing it in `delivery.py` — never a new directory, command, or ledger, and never more code inside `delivery.py`. See GLOSSARY #57 and #83.
-- Self-contained folders: `requests/REQ-xxxx-<kind>-<title>/` holds `spec.yaml`, `method/`, `input/`, `overrides.json`, `history/`, `deliveries/`. `request new --source` copies the external file into `input/` once; absolute paths, `..` escapes and `copy_to` are rejected at load time, products never leave the folder. `manifest.fill.input` records the snapshot's relative path + sha256. See GLOSSARY #58.
-- Process is part of self-containment: `delivery/method.py` owns `method/METHOD.md` (steps, criteria, machine-vs-human split), `method/method.json` (per-script purpose/run/sha256) and `method/scripts/` (the scripts that actually ran). `deliver()` refuses to ship when the method is missing, still the skeleton (`<!-- 待填：`), lacks a `## 步骤` section, has unregistered scripts, or a sha256 mismatch — no `deliveries/` directory is even created. `request new` scaffolds the draft; `request method <id> [--check]` rescans and re-fingerprints but never invents a script's purpose. Paths in the index must stay relative (absolute or `..` is rejected). Environment is pinned, not copied: `manifest.method.env` records package version, `CONTRACT_VERSION` and commit, so a code change can be caught instead of silently changing the method. `doctor` flags only requests that already delivered. See GLOSSARY #69.
-- Spec versioning: `version` is not decoration. `history/vN.yaml` is the snapshot of the version that actually shipped and `manifest.spec_version` points at it, so a reused number silently rewrites history. `version_conflict()` compares the current spec with `history/v<current>.yaml` by **semantic digest**: `spec_digest` loads the file into a `Spec` (defaults filled, enums normalised) and hashes only what decides the product — kind/mode/sql/criteria/order_by/output/guard/alert/fill, with the input referenced by its relative path so the digest survives moving the folder. Comments, key order, an explicit default such as `kind: query`, and title/requester/cadence changes do not count; `下载量 > 1000` → `> 800` does. A reused number raises `DeliveryBlocked` and `doctor` flags it for delivered requests; `manifest.spec_sha256` records the digest. Historical snapshots must be loaded with `base_dir=<request dir>` — they live under `history/`, where `input/…` would otherwise resolve to `history/input/…`. The three follow-ups (input versioning, `request diff`, `request compare`) shipped on 2026-11-09 — see the next bullet and GLOSSARY #71 for the implemented design; GLOSSARY #70 keeps the original decisions.
-- Change tooling: `request input <id> --add <file>` copies a new table into `input/v<n>/`, leaves the old snapshot untouched (overwriting it would break every earlier manifest's `fill.input.sha256`), and reports header drift plus declared-but-missing columns — it never edits the spec, because changing `fill.source.path` is a calibration change and needs a version bump. `request diff <id> [vA vB]` compares two historical specs (criteria aligned by `metric`, fill columns by name, so inserting a condition does not make every later row look changed; non-product fields reported separately). `request compare <id> [A B]` diffs two deliveries — query by `id`, backfill by the key column with links normalised to `owner/name`; it reports added/removed rows, per-column changed cells with samples, and column-set differences instead of silently intersecting. `manifest.fill.input.header` records ordered column names plus a digest; a changed header is surfaced in README but never blocks. See GLOSSARY #71.
-- Agent workflow: `.workbuddy/skills/hf-request/SKILL.md` is the project skill for intake → response → delivery → change, with `references/blocks.md` mapping every rejection message to its fix. Commands enforce the hard rules; the skill governs method. Do not let them blur — enforcement in prose is a suggestion, method in code is a straitjacket.
-- Default delivery fields: `delivery/fields.py` is the single contract (`DEFAULT_COLUMNS`, `COLUMN_NOTES`, `PAGE_FIELDS`, `FALLBACKS`, `CONTRACT_VERSION`). `export-wide` writes `data/exports/datasets.parquet` with exactly those 31 columns; `compile_sql` projects them when `output.columns` is empty — never `SELECT *`; `doctor` reconciles the export schema with the contract. Do not read the parquet schema at query time (the export can lag behind `current`). `FALLBACKS` fills four tag columns from `card_*` in the default projection only — the 72-column view keeps both sources separate for tracing. `PAGE_FIELDS` maps HF detail-page labels to column names; `display_expr` renders machine codes as page text in CSV while parquet keeps raw values. Multi-value columns are exported as real LIST values, structurally identical to the view (v3's `;`-joined VARCHAR workaround was reverted in v5 once its upstream cause — a previewer reading `COL.LIST.ELEMENT` as a column name — was fixed; do not reintroduce flattening for tooling reasons, fix the tool). `EXTENDED_FIELDS` lists 19 more semantic fields available via `output.columns` but deliberately outside the default surface; `regions` is excluded because 99.94% is the auto-inferred `us`. Never add low-coverage columns back to the default face just because they exist. Bump `CONTRACT_VERSION` when the list or column types change. See GLOSSARY #62-#66.
-- Scheduling: `scripts/daily.ps1` is the only catch-up unit — it runs collect → `build --stale` → reconcile → export → deliver → doctor in a fixed order, and only `hf-daily` keeps `-StartWhenAvailable`. Dependency is expressed by script order, never by clock time: on 2026-11-09 a boot at 19:03 made Windows replay five missed tasks in the same minute, so export finished before reconcile and published a stale projection. `hf-compact` / `hf-sizes` / `hf-archive` stay independent and deliberately do not catch up (they would only fight the chain for the write lock). Doctor's non-zero inside the chain means "alerts", not failure. See GLOSSARY #67.
-- Storage lifecycle: `compact` / `archive` **move only, never delete**; deletion is a separate command `prune` that touches nothing outside `data/backup/` and ages partitions by directory name (not mtime — sync tools rewrite it). The age threshold is `platform.retention.BACKUP_KEEP_DAYS` = desired retention + the compact window: backup directory names carry the *data* date, and `compact` only moves partitions older than `today-7`, so a freshly moved backup is already 8 days old — using the 7-day threshold made the same night's `prune` delete what `compact` had moved in at 00:30 (measured 2026-11-16). Cold baselines are deduped per id, so their size is roughly constant; the unbounded layer was backup. Doctor's 「存储」 line breaks data size into raw / cold / backup / reports / rest.
-- Card refresh: the only automatic path is `collect --cards` (changed set, ~8k/day). Full card sweeps cost ~1127 pages / 6.7 GB / 14 hours and the long tail's `cardData` is empirically empty, so do **not** schedule one; use `enrich --ids a,b,c` (cap 200) to fill the few datasets a delivery actually needs. Missing card fields are mostly source sparsity, not staleness. See GLOSSARY #68.
-- See [ADR-0001](docs/adr/0001-metadata-refresh-consistency-hardening.md) for design decisions.
+## 硬规则
 
-### Test naming
-Test functions use **Chinese names that describe the behaviour**, with a Chinese docstring saying *why* that behaviour is worth guarding:
+- **生成物不手改**：`docs/DATA.md` 由 `hf-data-crawl docs` 生成；字段含义改
+  `ops/fielddocs.py` 后重新生成。
+- **一份事实只写一处**：`docs/README.md` 的「谁拥有什么」表说明每类事实该落在哪份文件；
+  改文档前先查表，别在 README 里复述词表。
+- **提交前**：`uv run pytest -q` 与 `python scripts/check_docs_links.py`。
+- **测试名与 docstring 用中文**，沿用现状；机械规则见 `CODING_STANDARDS.md`。
+  文档里写「一定 / 必然」时，先问有没有一条能打红的测试。
 
-```python
-def test_只清超过保留期的分区() -> None:
-    """判龄判错会删掉刚备份的分区——回滚依据没了。"""
-```
+## 历史档案
 
-The earlier rule asked for ASCII identifiers ("function names are identifiers, docstrings are documentation"). The 2026-11-16 audit measured 930 of 946 test functions using Chinese names, so the rule was already void — and since it was the first item on the review checklist, it lit a red light on nearly every commit. Chinese names also make `pytest -k 保留期` usable as a business-level filter.
+`docs/PRD-hf-data-crawl-v1.0.md` 与 `docs/ISSUES.md` 是 v1.0 的追溯记录，**不改写**；
+当前待办只看 `docs/TODO.md`。
