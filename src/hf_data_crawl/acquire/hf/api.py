@@ -223,6 +223,10 @@ class HfDatasetApi:
         self._max_retries = max_retries
         self._low_quota_threshold = low_quota_threshold
         self._retry_base_delay = retry_base_delay
+        #: 重试耗尽时最后一次见到的失败，供错误消息带上。没有它，
+        #: `持续限流或不可用` 分不清 429 与 5xx，而两者的处置完全不同
+        #: （等配额 vs 等上游恢复）——2026-11-16 排障时只能靠手动重放请求才确认。
+        self._last_failure: str | None = None
 
     def scan(
         self,
@@ -353,7 +357,8 @@ class HfDatasetApi:
     def _request(self, params: dict[str, Any]) -> HfResponse:
         response = self._fetch(self._base_url, dict(params), {"Accept": "application/json"})
         if response is None:
-            raise RuntimeError("HF 接口持续限流或不可用，重试已耗尽")
+            detail = self._last_failure or "未知"
+            raise RuntimeError(f"HF 接口持续限流或不可用（最后一次：{detail}），重试已耗尽")
         if response.status == 200:
             return response
         raise RuntimeError(f"HF 接口返回 {response.status}: {response.body[:200]!r}")
@@ -383,6 +388,7 @@ class HfDatasetApi:
             if response.status not in RETRYABLE_STATUS:
                 return response
             if attempt >= self._max_retries:
+                self._last_failure = f"HTTP {response.status}"
                 return None
             self._sleeper(self._retry_delay(response, attempt))
             attempt += 1
