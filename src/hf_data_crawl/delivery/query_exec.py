@@ -20,6 +20,7 @@ from typing import Any
 import duckdb
 import polars as pl
 
+from ..platform import atomic
 from ..query.gold import GoldCatalog
 from .contract import EXECUTORS, DeliveryBlocked, Payload, RunContext
 from .fields import (
@@ -181,10 +182,12 @@ def write_data(directory: Path, spec: Spec, frame: pl.DataFrame) -> list[dict[st
     written: list[dict[str, Any]] = []
     for name, kind in plans:
         target = directory / name
+        # 原子写：交付产物是给人取走的文件，中断留下半截 parquet/csv 时对方会当成
+        # 「这次交付的内容」读进去。`platform.atomic` 一直在，只是这里绕开了它。
         if kind == "csv":
-            _flat_for_csv(frame).write_csv(target)
+            atomic.write_csv(_flat_for_csv(frame), target)
         else:
-            frame.write_parquet(target)
+            atomic.write_parquet(frame, target)
         # 与回填产物、输入快照走同一份判据（`stamp.file_stamp`：原字节 + sha256）。
         # 这里曾内联一遍 sha256——同一份字节若有两套算法，两个数会写进档案的不同
         # 字段，谁都不会报错，只有比对时才发现「同一份东西，两处记的不一样」。

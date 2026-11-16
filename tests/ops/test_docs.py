@@ -39,9 +39,7 @@ def test_仓库里的文档也是最新的() -> None:
     for name, spec in TABLES.items():
         assert f"逻辑名：`{name}`" in committed, f"{name} 没进仓库文档，跑 docs 重新生成"
         for column in spec.schema:
-            assert f"| `{column}` |" in committed, (
-                f"{name}.{column} 没进仓库文档，跑 docs 重新生成"
-            )
+            assert f"| `{column}` |" in committed, f"{name}.{column} 没进仓库文档，跑 docs 重新生成"
 
 
 def test_每张表都出现在文档里(doc: str) -> None:
