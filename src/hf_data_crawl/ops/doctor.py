@@ -375,7 +375,10 @@ def _layer_reconcile(ctx: RunContext) -> Finding:
     if problems:
         return Finding(True, "层间勾稽：" + "；".join(problems))
     detail = "，".join(notes)
-    return Finding(False, f"层间勾稽：current {len(current_ids)} 个 id 与各层一致（{detail}）")
+    # 说清比的是什么。这条只比 **id 集合**：同名 id 在两层的 13 个标量列是否一致，
+    # 它不看。原先写「与各层一致」会让人以为值也对过，而唯一的值比对在
+    # `tests/query/test_gold.py` 的一个 4 行夹具里——那种保证不该由体检来暗示。
+    return Finding(False, f"层间勾稽：current {len(current_ids)} 个 id 集合与各层一致（{detail}）")
 
 
 def _scan_frame(pattern: Path | str, columns: list[str]) -> pl.DataFrame | None:
@@ -889,13 +892,23 @@ def _probe_degraded(ctx: RunContext) -> Finding:
 
 def _stale_temp_files(ctx: RunContext) -> Finding:
     store, now = ctx.store, ctx.now
-    stale = [
-        path
-        for path in store.root.rglob("*.tmp")
-        if now - datetime.fromtimestamp(path.stat().st_mtime) > TMP_STALE_AFTER
-    ]
-    if stale:
-        return Finding(True, f"残留临时文件 {len(stale)} 个（写入中途被打断），例：{stale[0]}")
+
+    def stale(path: Path) -> bool:
+        try:
+            return now - datetime.fromtimestamp(path.stat().st_mtime) > TMP_STALE_AFTER
+        except OSError:
+            return False
+
+    found = [path for path in store.root.rglob("*.tmp") if stale(path)]
+    # 交付暂存目录用 `.tmp-` 前缀（先写目录、三件齐了再整体改名），中断时留在
+    # `requests/*/deliveries/` 下。原先只扫 `data/`，那批残留永远不会被点名——
+    # 而它正是「有数据没说明」的半成品，比 `data/` 下的 `.tmp` 更该被看见。
+    if ctx.requests_root is not None and ctx.requests_root.is_dir():
+        found += [
+            path for path in ctx.requests_root.rglob(".tmp-*") if path.is_dir() and stale(path)
+        ]
+    if found:
+        return Finding(True, f"残留临时文件 {len(found)} 个（写入中途被打断），例：{found[0]}")
     return Finding(False, "没有残留的临时文件")
 
 

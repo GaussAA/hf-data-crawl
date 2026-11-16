@@ -539,10 +539,11 @@ def test_探测超预算就收工_剩余顺延(store: DatasetStore) -> None:
 
 
 def test_探测失败不消费轮转额度(store: DatasetStore) -> None:
-    """unknown 不落状态；游标按「成功判定数」前进，失败项下轮仍在队首。
+    """unknown 不落状态；游标按「连续成功前缀」前进，失败项下轮仍在队首。
 
-    旧实现按 `probed`（含失败）推进游标，于是一个 429 的库要等一整个轮转
-    周期才再被看到——「先别动」被悄悄变成了「一直没看」。
+    旧实现按成功**总数**前进，而批次是 [失败, 成功] 时总数是 1——游标前进 1，
+    恰好把队首那个失败项推了过去。它没落任何状态，又被游标跳过，等于永久隐身。
+    断言必须是 0：游标停在失败项上，下一轮先重试它。
     """
     import json
 
@@ -560,7 +561,7 @@ def test_探测失败不消费轮转额度(store: DatasetStore) -> None:
 
     assert (probed, failed, len(verdicts), deferred) == (2, 1, 1, 2)
     cursor = json.loads(probe_cursor_path(store).read_text(encoding="utf-8"))
-    assert cursor["offset"] == 1, "失败项不能消费轮转额度"
+    assert cursor["offset"] == 0, "队首是失败项时游标不能动，否则它会被永久跳过"
 
 
 def test_全部判定成功时游标照常前进(store: DatasetStore) -> None:

@@ -332,12 +332,23 @@ class Reconciler:
             key for key, value in failures.items() if value >= PROBE_DEGRADE_AFTER
         )
 
-        # 游标只前进「成功判定」的部分：超预算没探的仍留在队首，下一轮先探它们。
-        # 探测失败（unknown）的库没有落任何状态，若也计入游标，它们要等一整个
-        # 轮转周期才再被看一次——「先别动」就成了「一直没看」。`probed` 仍表示
-        # 本轮发出的探测数，供摘要与体检使用，两者语义不混。
+        # 游标只前进「从队首起**连续成功**」的数量。
+        #
+        # 按成功**总数**前进会在混合批次里出错：批次是 [失败, 失败, 成功, 成功]
+        # 时 settled=2，游标前进 2，恰好把那两个失败项推了过去——它们没落任何
+        # 状态，又被游标跳过，等于永久隐身。按「连续成功前缀」时失败项留在队首，
+        # 下一轮先重试它（2026-11-13 那次事故定下的：429 的库不能被推过游标）。
+        #
+        # 代价是连续失败时游标不动、队尾要等。由 `failures` 兜底：同一 id 连败到
+        # `PROBE_DEGRADE_AFTER` 后进 `_probe_degraded`，体检点名要人处理——不会
+        # 无声地一直重试一批永远探不通的库。
+        prefix = 0
+        for dataset_id in batch[:probed]:
+            if dataset_id not in settled_ids:
+                break
+            prefix += 1
         if total:
-            self._write_probe_cursor((start + settled) % total, failures)
+            self._write_probe_cursor((start + prefix) % total, failures)
         return verdicts, probed, failed, len(missing) - probed
 
     def _probe_batch(
