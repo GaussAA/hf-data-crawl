@@ -140,12 +140,16 @@ def apply(store: DatasetStore, targets: tuple[PruneTarget, ...]) -> PruneReport:
     就可能指向 `data/raw`。宁可少删，不可错删。
     """
     root = _backup_root(store).resolve()
-    freed = 0
-    removed: list[PruneTarget] = []
+    # 先全部校验、再全部删。混着做的时候，第 N 个路径越界会让前 N-1 个已经删掉，
+    # 而异常只说「拒绝清理」，调用方无从知道删到了哪一步——报告里的数字也会是空的。
     for target in targets:
         resolved = target.path.resolve()
         if not resolved.is_relative_to(root):
             raise ValueError(f"拒绝清理 backup 之外的路径：{resolved}")
+
+    freed = 0
+    removed: list[PruneTarget] = []
+    for target in targets:
         if target.path.is_dir():
             shutil.rmtree(target.path)
         else:

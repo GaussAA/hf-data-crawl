@@ -8,7 +8,7 @@ from datetime import date
 
 import polars as pl
 
-from ..pipeline import state
+from ..pipeline import rebuild, state
 from ..platform.env import load_env_file
 from ..platform.lock import exclusive
 from ..platform.presets import get_preset
@@ -125,6 +125,18 @@ def run_collect(
         dry_run=args.dry_run,
     )
     _print_collect(summary)
+    # 补跑过去日期时，`collector.run` 只派生了那一天，而 `current` 是「最新一行
+    # 的物化」——把它写成那天的值等于整体回退，卡片表还会被旧批次整行覆盖。
+    # 补完必须把后缀重放到最新（`replay_suffix` 是重放集合唯一合法的构造方式），
+    # 否则「补了一天数据」的代价是「底库退回那一天」。
+    if not args.dry_run and summary.snapshot_date < date.today():
+        days = rebuild.replay_suffix(store, summary.snapshot_date)
+        if len(days) > 1:
+            print(
+                f"补跑 {summary.snapshot_date} 后重放后缀 {len(days)} 天，把底库带回最新"
+                "（单日派生会把 current 写成那天的状态）"
+            )
+            rebuild.rebuild_from_raw(store, days=days)
     return Outcome(summary)
 
 

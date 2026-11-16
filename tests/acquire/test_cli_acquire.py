@@ -284,3 +284,51 @@ def test_合并拿不到锁时保留分片供下轮继续(root: Path) -> None:
     assert transport.calls == []
     assert store.read("size").height == 1
     assert staged_shards(store) == []
+
+
+def test_补跑过去日期后后缀重放把底库带回最新(root: Path) -> None:
+    """`collect --date 过去` 只派生那一天，而 `current` 是「最新一行的物化」。
+
+    不重放后缀的话，`current` 的标量列会整体退回那天，卡片表还会被旧批次整行
+    覆盖——「补了一天数据」的代价变成「底库退回那一天」。
+    """
+    store = DatasetStore(root)
+    first, later = date(2026, 11, 4), date(2026, 11, 5)
+    raw.write(
+        store,
+        snapshot_date=first,
+        page_index=1,
+        records=[record(1)],
+        meta={},
+        written_at="2026-11-04T00:00:00.000000+00:00",
+    )
+    derive_day(store, first)
+    newer = {**record(1), "downloads": 999}
+    raw.write(
+        store,
+        snapshot_date=later,
+        page_index=1,
+        records=[newer],
+        meta={},
+        written_at="2026-11-05T00:00:00.000000+00:00",
+    )
+    derive_day(store, later)
+
+    def downloads() -> int:
+        frame = state.read_current(store)
+        return int(frame.filter(pl.col("id") == "acme/ds-1")["downloads"].item())
+
+    assert downloads() == 999
+
+    code = run(
+        root,
+        "collect",
+        "--date",
+        first.isoformat(),
+        "--refresh-top",
+        "0",
+        transport=PagedTransport([[record(1)]]),
+    )
+
+    assert code == 0
+    assert downloads() == 999, "补跑过去日期后 current 不能回退到那一天"
