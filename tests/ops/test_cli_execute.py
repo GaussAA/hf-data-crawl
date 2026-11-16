@@ -109,3 +109,39 @@ def test_恢复锁被占用时跳过而不无痕崩溃(
 
     assert "跳过启动恢复" in capsys.readouterr().out
     assert probed == [], "拿不到锁就不该在锁外做恢复"
+
+
+def test_锁被占只报一句不打堆栈(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """锁被占用是预期状态：人要读「谁占着」，不是一段 traceback。
+
+    原先它与真正的崩溃走同一条 catch-all：既打堆栈，又把同一条原因打印两遍
+    （「失败：…」+「未完成：…」），两处措辞还不一样。
+    """
+    store = DatasetStore(tmp_path / "data")
+    store.root.mkdir(parents=True)
+
+    def busy() -> Outcome:
+        raise LockBusy("数据目录正被另一个写命令占用：reconcile（pid 42）")
+
+    code = _execute(store, "build", busy)
+
+    output = capsys.readouterr()
+    assert code == 1
+    assert "reconcile（pid 42）" in output.out
+    assert "Traceback" not in output.err
+    assert output.out.count("未完成") == 1, "同一条原因不该打印两遍"
+
+
+def test_空库导出给出可照做的失败而不是堆栈(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """空库是预期状态：要读到「先跑 collect」，而不是 GoldNotReady 的堆栈。"""
+    store = DatasetStore(tmp_path / "data")
+    store.root.mkdir(parents=True)
+
+    code = cli.main(["--data-dir", str(store.root), "export-wide"])
+
+    output = capsys.readouterr()
+    assert code == 1
+    assert "collect" in output.out
+    assert "Traceback" not in output.err

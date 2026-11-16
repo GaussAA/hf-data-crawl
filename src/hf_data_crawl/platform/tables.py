@@ -275,6 +275,12 @@ SIZE_SCHEMA: dict[str, PolarsType] = {
     "id": pl.Utf8,
     "url": pl.Utf8,
     "snapshot_date": pl.Date,
+    # 这一行被抓取的**时刻**。只有日期会留下一个盲区：库在「被抓取的那一天」
+    # 又改一次时，`last_modified` 与 `snapshot_date` 的日期恒相等，「严格晚于」
+    # 永不成立；而该行只有判据成立才会被重抓，也不会产生新的 snapshot_date，
+    # 于是永久停在旧值，连体检的「规模待重取」都看不见（2026-11-16 审计）。
+    # 加列之前写入的行为空，判据回退成「该日零点」。
+    "fetched_at": TIMESTAMP,
     "status": pl.Utf8,
     "num_rows": pl.Int64,
     "estimated_num_rows": pl.Int64,

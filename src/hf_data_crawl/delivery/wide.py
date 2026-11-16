@@ -42,7 +42,14 @@ import polars as pl
 
 from ..platform.store import DatasetStore
 from ..query.gold import GoldCatalog, wide_column_names
-from .fields import DEFAULT_COLUMNS, FALLBACKS, contract_errors, projection_sql
+from .fields import (
+    COLUMN_TYPES,
+    DEFAULT_COLUMNS,
+    FALLBACKS,
+    contract_errors,
+    projection_sql,
+    type_family,
+)
 
 #: 默认产物路径，相对 `store.root`。放在 `exports/` 而非登记表管理的目录，
 #: 是为了让「它不是一张表」在目录结构上一眼可见。
@@ -51,6 +58,15 @@ DEFAULT_RELATIVE = Path("exports") / "datasets.parquet"
 
 class WideExportMismatch(RuntimeError):
     """导出结果不满足契约（视图列、静态清单、行数三者对不上），已撤销临时文件。"""
+
+
+class WideExportPath(ValueError):
+    """导出目标越出了数据目录。
+
+    单独一个类型是为了让命令层把它转成一句能照做的失败，而不是把堆栈摊给人看：
+    这是**输入写错了**，不是程序坏了。`ValueError` 本身太宽，捕获它会连同真正的
+    编程错误一起吞掉。
+    """
 
 
 @dataclass(frozen=True)
@@ -77,7 +93,7 @@ def export_path(store: DatasetStore) -> Path:
 def _assert_inside(root: Path, target: Path) -> None:
     """目标必须落在数据目录内；用 resolve 消掉 `..` 与符号链接再判。"""
     if not target.resolve().is_relative_to(root.resolve()):
-        raise ValueError(f"导出目标必须在数据目录内：{target}（数据目录 {root}）")
+        raise WideExportPath(f"导出目标必须在数据目录内：{target}（数据目录 {root}）")
 
 
 def _current_rows(store: DatasetStore) -> int:
@@ -128,6 +144,21 @@ def export_wide(store: DatasetStore, target: Path | None = None) -> WideExportSu
             raise WideExportMismatch(
                 f"导出文件列与默认交付契约不一致：缺 {sorted(set(DEFAULT_COLUMNS) - set(actual))}，"
                 f"多 {sorted(set(actual) - set(DEFAULT_COLUMNS))}"
+            )
+
+        # 列名对了还不够：`tags` 从 VARCHAR 改回 LIST 那次，列名一个没变。
+        # 契约现在声明了类型族，导出物必须与它一致——不一致说明「改了类型却没同步
+        # 契约」（也就没升 CONTRACT_VERSION），这正是 2026 年那轮变更漏掉的一步。
+        schema = frame.collect_schema()
+        wrong_types = [
+            (name, type_family(schema[name]), COLUMN_TYPES[name])
+            for name in DEFAULT_COLUMNS
+            if type_family(schema[name]) not in (COLUMN_TYPES[name], "unknown")
+        ]
+        if wrong_types:
+            raise WideExportMismatch(
+                f"导出列类型与默认交付契约不一致（列名、类型族、契约族）：{wrong_types}；"
+                "改列类型须同步 COLUMN_TYPES 并升 CONTRACT_VERSION"
             )
 
         rows = int(frame.select(pl.len()).collect().item())

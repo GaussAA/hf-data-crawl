@@ -91,6 +91,15 @@ def _print_build(summary: RebuildSummary) -> None:
     if summary.cold_gaps:
         # 全量重建才可能非零：这些日期的历史这次没被重放，别让人以为「已全量」。
         print(f"  [!] 冷区 {summary.cold_gaps} 天未参与重放（无 Raw 可读），其历史未恢复")
+    if summary.shrinks:
+        # 重放先清分区再写回：这条不喊，删掉的历史观测不留任何痕迹。
+        shown = "、".join(
+            f"{day}（{before}→{after}）" for day, before, after in summary.shrinks[:3]
+        )
+        print(
+            f"  [!] {len(summary.shrinks)} 天的观测只写回不到一半，历史可能已丢失：{shown}；"
+            "多半是当天 Raw 缺批，核对后重跑派生"
+        )
     if summary.card_rows or summary.config_rows:
         print(
             f"  卡片 {summary.card_rows} 行 · config 明细 {summary.config_rows} 行"

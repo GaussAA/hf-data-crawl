@@ -394,7 +394,7 @@ def test_diff默认比最近两版(tmp_path: Path, capsys: pytest.CaptureFixture
 
     out = capsys.readouterr().out
     assert "口径 v1 → v2" in out
-    assert "criteria[下载量].value" in out
+    assert "criteria[下载量 > #0].value" in out
     assert "1000" in out and "800" in out
 
 

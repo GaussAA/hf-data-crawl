@@ -31,6 +31,7 @@ def make_run(
 ) -> None:
     payload = {"snapshot_date": when.date().isoformat(), "stopped_reason": reason, **extra}
     path = write_run(store, command, when, Outcome(payload))
+    assert path is not None, "台账写入不该失败"
     # write_run 的 finished_at 取真实当前时间；体检用它判新鲜度，夹具必须让它与假时钟一致。
     body = json.loads(path.read_text(encoding="utf-8"))
     body["finished_at"] = when.isoformat(timespec="microseconds")
@@ -1116,3 +1117,86 @@ def test_同一天多次体检只算一天(tmp_path: Path) -> None:
 
     body = (store.root / ALERT_NAME).read_text(encoding="utf-8")
     assert "已连续" not in body
+
+
+def _ctx(store: DatasetStore, now: datetime = NOW) -> RunContext:
+    """最小上下文：锁与对账判据只用到 store / now / runs。"""
+    return RunContext(
+        store=store, now=now, runs=[], current=pl.DataFrame(), current_ids=frozenset()
+    )
+
+
+def test_写锁占用过久要报(tmp_path: Path) -> None:
+    """一个挂死数小时的进程不能只在终端露一行。
+
+    `_lock_state` 原先两个分支都返回绿，于是「谁占着」永远进不了 `ALERT.txt`：
+    2026-11-13 实测过一次卡住的对账持锁，只有恰好看见终端的人知道。
+    """
+    from hf_data_crawl.ops.doctor import LOCK_ALERT_AFTER_MINUTES, _lock_state
+
+    store = DatasetStore(tmp_path / "data")
+    store.root.mkdir(parents=True)
+    since = NOW - timedelta(minutes=LOCK_ALERT_AFTER_MINUTES + 1)
+    (store.root / ".lock").write_bytes(
+        b"\0"
+        + json.dumps({"command": "reconcile", "pid": 4242, "since": since.isoformat()}).encode()
+    )
+
+    finding = _lock_state(_ctx(store))
+
+    assert finding.problem
+    assert "4242" in finding.text
+
+
+def test_写锁刚占用不算问题(tmp_path: Path) -> None:
+    """正常的一轮对账要跑半小时，刚占一会儿不该报警。"""
+    from hf_data_crawl.ops.doctor import _lock_state
+
+    store = DatasetStore(tmp_path / "data")
+    store.root.mkdir(parents=True)
+    since = NOW - timedelta(minutes=5)
+    (store.root / ".lock").write_bytes(
+        b"\0" + json.dumps({"command": "collect", "pid": 7, "since": since.isoformat()}).encode()
+    )
+
+    assert not _lock_state(_ctx(store)).problem
+
+
+def test_有界对账不算完整全量() -> None:
+    """`reconcile --max-pages N` 也是 status=success，但只扫了前 N 页。
+
+    拿它当「最近一次全量对账」，`_field_freshness` 的覆盖基准会被半轮顶替：
+    要么假红「那轮没扫完」，要么把此前的真全量轮挡在基准之外。
+    """
+    from hf_data_crawl.ops.doctor import _last_sweep_date
+
+    bounded = {
+        "command": "reconcile",
+        "status": "success",
+        "payload": {"snapshot_date": "2026-11-10", "stopped_reason": "max_pages"},
+    }
+    full = {
+        "command": "reconcile",
+        "status": "success",
+        "payload": {"snapshot_date": "2026-11-09", "stopped_reason": "end"},
+    }
+
+    assert _last_sweep_date([bounded]) is None
+    assert _last_sweep_date([full, bounded]) == date(2026, 11, 9)
+
+
+def test_观测骤降要报(tmp_path: Path) -> None:
+    """重放先清分区再写回：这条不报，删掉的历史观测不留任何痕迹。"""
+    store = DatasetStore(tmp_path / "data")
+    make_run(store, "build", NOW, shrinks=[["2026-11-09", 782026, 205545]])
+
+    texts = problems(store)
+
+    assert any("观测骤降" in text and "2026-11-09" in text for text in texts)
+
+
+def test_没有骤降记录时不报(tmp_path: Path) -> None:
+    store = DatasetStore(tmp_path / "data")
+    make_run(store, "build", NOW)
+
+    assert not any("观测骤降" in text for text in problems(store))

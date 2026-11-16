@@ -106,6 +106,20 @@ def test_连续次数只数最近的一段(tmp_path: Path) -> None:
     assert health.streak(store, "raw_gaps") == 2
 
 
+def test_降级体检不清零连续天数(tmp_path: Path) -> None:
+    """降级轮不写任何 code——它既不证明红，也不证明恢复。
+
+    原先 `streak` 遇到缺 code 直接 break，于是撞一次写锁就把「已连续 3 天」变成 0：
+    `sync_alert` 的「（已连续 N 天）」后缀消失，读起来像刚坏，而那一天根本没读成。
+    """
+    store = DatasetStore(tmp_path / "data")
+    for offset in range(3):
+        health.record(store, entries("Raw 断日"), NOW + timedelta(days=offset))
+    health.record(store, [], NOW + timedelta(days=3), snapshot=False)
+
+    assert health.streak(store, "raw_gaps") == 3
+
+
 def test_连续次数不受文案改动影响(tmp_path: Path) -> None:
     """同一检查项换了说法，仍该算作同一件事。
 

@@ -95,6 +95,31 @@ def test_拒绝清理备份之外的路径(store: DatasetStore) -> None:
     assert victim.exists()
 
 
+def test_compact_当晚搬入的备份当晚不被删(store: DatasetStore) -> None:
+    """compact 只压 < today-7 的分区，搬入那一刻数据日期就已经 8 天旧。
+
+    判龄若也用 7 天，同一晚 03:10 的 prune 会把它当过期清掉——备份的实际保留期
+    只剩 2.6 小时（00:30 搬入 → 03:10 删除），「留 7 天给 build --full 回滚」
+    就是一句空话。默认阈值必须把 compact 的那个窗口算进去。
+    """
+    tonight = datetime(2026, 11, 16, 3, 10)
+    moved_in = date(2026, 11, 8)  # compact 只压早于 11-09 的分区
+    make_backup_partition(store, moved_in)
+
+    assert plan(store, now=tonight) == ()
+
+
+def test_默认阈值下真正过期的备份仍会清理(store: DatasetStore) -> None:
+    """放宽阈值不等于永不清理：早于保留期的备份照旧释放磁盘。"""
+    tonight = datetime(2026, 11, 16, 3, 10)
+    expired = date(2026, 10, 31)
+    make_backup_partition(store, expired)
+
+    targets = plan(store, now=tonight)
+
+    assert [item.path.name for item in targets] == [f"dt={expired.isoformat()}"]
+
+
 def test_旧基线按龄一并清理(store: DatasetStore) -> None:
     cold = store.root / "backup" / "cold"
     cold.mkdir(parents=True)

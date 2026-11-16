@@ -105,6 +105,12 @@ class StateUpdate:
 
     appended: int
     current_rows: int
+    #: 当日观测分区被大幅覆盖时的 (旧行数, 新行数)，没触发为 None。
+    #:
+    #: 这是「历史观测被静默删掉」的唯一信号。原先只有一行 `print`：计划任务把
+    #: 它重定向进按轮轮转的日志（只留 200 个），不进 `runs/` 的 Outcome、不进
+    #: `ALERT.txt`、不进体检流水。于是「某天 78 万行变成 20 万行」在系统里不留痕。
+    shrink: tuple[int, int] | None = None
 
 
 def mark_status(store: DatasetStore, updates: Mapping[str, str]) -> int:
@@ -147,6 +153,7 @@ def update(
     *,
     frame: pl.DataFrame | None = None,
     carry: Carry | None = None,
+    observation_before: int | None = None,
 ) -> StateUpdate:
     """按当日帧更新观测流水与当前态。
 
@@ -168,7 +175,11 @@ def update(
         return StateUpdate(appended=0, current_rows=current_rows)
 
     if carry is not None:
-        before = 0
+        # carry 路径下该日的旧分区已被 `clear_day` 删掉，`before` 读不到。但这条
+        # 护栏恰恰是为重放准备的：一次性清掉 7 天再逐日重写，缺一批 Raw 就会把
+        # 历史观测静默删掉。所以由调用方在清理**之前**把行数记下来传进来
+        # （`rebuild_from_raw` 就是这么做的）；拿不到才退回 0。
+        before = observation_before if observation_before is not None else 0
         previous = carry.previous
         prior_current = carry.current
     else:
@@ -192,7 +203,9 @@ def update(
         ]
     )
 
+    shrink: tuple[int, int] | None = None
     if before > 0 and new_observations.height < before * OBSERVATION_SHRINK_SHARE:
+        shrink = (before, new_observations.height)
         print(
             f"[!] 观测行数骤降：{snapshot_date} 分区原有 {before} 行，本轮只写入 "
             f"{new_observations.height} 行（不足 {OBSERVATION_SHRINK_SHARE:.0%}）。"
@@ -214,6 +227,7 @@ def update(
     return StateUpdate(
         appended=max(0, new_observations.height - before),
         current_rows=current.height,
+        shrink=shrink,
     )
 
 

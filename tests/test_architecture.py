@@ -187,8 +187,13 @@ def test_档案层只认契约不认形态() -> None:
     让执行体在各自模块末尾把自己写进 `EXECUTORS`，不从这里取任何名字。
 
     契约（`contract.py`）反过来也不许 import 任何执行体，否则环会从另一头长回来。
+
+    判据用 `_base_module()` 解析后的绝对模块名，而不是「相对导入且 level==1」：
+    后者会被 `from hf_data_crawl.delivery.backfill import FillError` 整条跳过，
+    档案层重新与回填绑死仍然全绿。
     """
     executor_modules = {"backfill", "query_exec", "fill_exec"}
+    package = f"{PACKAGE}.delivery"
     violations: list[str] = []
 
     for name, forbidden in (
@@ -198,12 +203,42 @@ def test_档案层只认契约不认形态() -> None:
         path = SRC / name
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if not isinstance(node, ast.ImportFrom) or node.level != 1:
+            if not isinstance(node, ast.ImportFrom):
                 continue
-            module = node.module or ""
-            # `from . import fill_exec` 是登记，允许；`from .fill_exec import X` 不是。
-            if module in forbidden:
+            module = _base_module(path, node)
+            # `from . import fill_exec` 是登记，允许；`from .fill_exec import X`
+            # 与绝对导入 `from hf_data_crawl.delivery.fill_exec import X` 都不是。
+            if not module.startswith(f"{package}."):
+                continue
+            short = module.removeprefix(f"{package}.")
+            if short in forbidden:
                 imported = ", ".join(alias.name for alias in node.names)
-                violations.append(f"{name}:{node.lineno} from .{module} import {imported}")
+                violations.append(f"{name}:{node.lineno} from {module} import {imported}")
 
     assert violations == [], "\n".join(violations)
+
+
+def test_不使用动态导入绕开依赖检查() -> None:
+    """AST 规则只认 `Import` / `ImportFrom`；`importlib` 与 `__import__` 对它们隐身。
+
+    当前代码一处都没有用。这条把「零使用」钉成规则：一旦要用，先想清楚它绕过了
+    哪一层检查（切片方向、模块环、跨切片私有名），再改成静态导入或在这里显式
+    登记——而不是让四条规则同时失效而测试全绿。
+    """
+    found: list[str] = []
+    for path in _sources():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Attribute):
+                name = func.attr
+            elif isinstance(func, ast.Name):
+                name = func.id
+            else:
+                continue
+            if name in {"import_module", "__import__"}:
+                found.append(f"{path.relative_to(SRC)}:{node.lineno}")
+
+    assert found == [], "动态导入会绕开切片与环检查：" + "、".join(found)

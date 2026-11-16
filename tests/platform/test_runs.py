@@ -6,14 +6,14 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 from hf_data_crawl.ops.cli import main
 from hf_data_crawl.pipeline import raw
 from hf_data_crawl.pipeline.derive import derive_day
-from hf_data_crawl.platform.runs import read_runs
+from hf_data_crawl.platform.runs import Outcome, read_runs, write_run
 from hf_data_crawl.platform.store import DatasetStore
 
 DAY1 = date(2026, 11, 1)
@@ -231,3 +231,17 @@ def test_同秒并发写台账不互相覆盖(tmp_path: Path) -> None:
 
     assert len(read_runs(store)) == 2
     assert len(list((store.root / "runs").glob("*.json"))) == 2
+
+
+def test_台账写不进去也不让命令失败(tmp_path: Path) -> None:
+    """数据已经落盘，不能因为记录写失败就让一次成功的命令以异常栈收场。
+
+    原先 `write_run` 在 `_execute` 的 try 之外：`runs/` 不可写、磁盘满或杀软
+    瞬时占用新文件时，异常直接穿透——命令成功了却报失败、退出码 1，而台账里
+    查不到这次运行，`--skip-if-done` 与体检的完成判据随后全部看空。
+    """
+    store = DatasetStore(tmp_path / "data")
+    store.root.mkdir(parents=True)
+    (store.root / "runs").write_text("占位：让 mkdir 失败", encoding="utf-8")
+
+    assert write_run(store, "build", datetime(2026, 11, 5), Outcome()) is None

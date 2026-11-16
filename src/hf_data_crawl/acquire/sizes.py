@@ -27,7 +27,7 @@ import math
 import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -140,6 +140,7 @@ def _success(dataset_id: str, snapshot_date: date, body: bytes) -> SizeResult:
             "id": dataset_id,
             "url": url_for(dataset_id),
             "snapshot_date": snapshot_date,
+            "fetched_at": datetime.now(UTC),
             "status": "ok",
             "num_rows": as_int(dataset.get("num_rows")),
             "estimated_num_rows": as_int(dataset.get("estimated_num_rows")),
@@ -285,18 +286,48 @@ def stale_ids(current: pl.DataFrame, existing: pl.DataFrame) -> pl.DataFrame:
     # 两张表都有 `status`：不先改名，`pl.col("status")` 取到的是底库的在架状态
     # （active/disappeared），过滤恒不成立——判据会静默变成「永远没有陈旧」。
     joined = current.join(
-        existing.select("id", "snapshot_date", pl.col("status").alias("size_status")),
+        existing.select("id", "snapshot_date", "fetched_at", pl.col("status").alias("size_status")),
         on="id",
         how="inner",
     )
-    return joined.filter(
-        (pl.col("size_status") == "ok")
-        & (pl.col("last_modified").dt.date() > pl.col("snapshot_date"))
+    # 判据两侧都取真时刻：`last_modified` 是库最后一次 commit 的时刻，`fetched_at`
+    # 是这一行被抓取的时刻。只比日期会留下一个盲区——库在「被抓取的那一天」又改
+    # 一次时两侧日期恒相等，`>` 永不成立；而该行只有判据成立才会被重抓，也就不会
+    # 产生新的 `snapshot_date`，于是它永久停在旧值。加列之前写入的旧行
+    # `fetched_at` 为空，回退成「该日零点」：升级后第一轮会把「最后改动日 ==
+    # 抓取日」的库补抓一次，之后走精确判据。
+    fetched = pl.coalesce(
+        [pl.col("fetched_at"), pl.col("snapshot_date").cast(pl.Datetime("us", "UTC"))]
     )
+    return joined.filter((pl.col("size_status") == "ok") & (pl.col("last_modified") > fetched))
 
 
 #: 抓取期间的暂存目录（相对数据根）。分片只写真数据、不碰正式表，故写它不必持锁。
 STAGING_DIR = ".staging/sizes"
+
+
+def protect_ok_rows(previous: pl.DataFrame, fresh: pl.DataFrame) -> pl.DataFrame:
+    """不让「不可用」覆盖「已拿到」。
+
+    为什么需要：`store.upsert` 的替换键是整行，而 `unavailable` 行除 `status` 与
+    `snapshot_date` 外全是 null。一次瞬时 500（它在 `UNAVAILABLE_STATUS` 里，与
+    404 同等对待）就会把旧行的 `num_rows` / `configs` 一起抹掉；此后
+    `_resolved_ids` 把该 id 长期跳过——它只认「有没有行」，不看状态——只有周任务
+    的 `--retry-unavailable` 可能把它救回来。而那次降级在表里只表现为「值变空」。
+
+    判据只看「旧行是不是 ok」：从未成功抓过的 id 照常写 `unavailable`（那是真实
+    结论，也是永久结论），已经拿到数字的 id 保持原样——`snapshot_date` 因此诚实地
+    表示「这个值是哪天取得的」，而不是「哪天问过」（docs/DATA.md 第五节第 14 条）。
+    """
+    if previous.height == 0 or fresh.height == 0:
+        return fresh
+    protected = previous.filter(pl.col("status") == "ok").select("id")
+    if protected.height == 0:
+        return fresh
+    degraded = fresh.filter(pl.col("status") != "ok").join(protected, on="id", how="semi")
+    if degraded.height == 0:
+        return fresh
+    return fresh.join(degraded.select("id"), on="id", how="anti")
 
 
 def staging_root(store: DatasetStore) -> Path:

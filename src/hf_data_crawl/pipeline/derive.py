@@ -44,6 +44,11 @@ class DayResult:
     card_rows: int | None = None
     config_rows: int | None = None
 
+    @property
+    def observation_shrink(self) -> tuple[int, int] | None:
+        """当日观测被大幅覆盖时的 (旧, 新)；没触发为 None。调用方要往台账上传。"""
+        return self.state.shrink
+
 
 @dataclass(frozen=True)
 class ReplayCarry:
@@ -71,6 +76,7 @@ def derive_day(
     *,
     enrich: bool = False,
     carry: ReplayCarry | None = None,
+    observation_before: int | None = None,
 ) -> DayResult:
     """按固定顺序推导一天：bronze → silver →（enrich 时）card → state。
 
@@ -111,6 +117,7 @@ def derive_day(
             snapshot_date,
             frame=today,
             carry=carry.state if carry is not None else None,
+            observation_before=observation_before,
         )
         lineage.stamp(
             store,

@@ -15,10 +15,16 @@
 
 阈值
 ----
-`BACKUP_PRUNE_AFTER_DAYS`（7 天）来自 `retention.py`，与 `compact` 的冷区门槛
-同一个常量：压缩过 7 天的分区才会进 backup，留 7 天是给 `build --full` 留出
-足够的重放窗口与回滚余量。两处若各写一个数，迟早会出现「刚备份就被删」或
-「该删的永远留着」。
+`BACKUP_KEEP_DAYS` 来自 `retention.py` = 「想保留的天数」+「compact 的冷区窗口」。
+
+为什么不是「想保留的天数」本身：备份目录名记的是**数据日期**，而 `compact` 只压
+早于 `today - REPLAY_WINDOW_DAYS` 的分区，所以一份备份落地那一刻数据日期就已经
+8 天旧了。判龄若只取 7 天，同一晚 00:30 刚搬进 `backup/raw/` 的分区会被 03:10
+的 `prune` 立刻删掉——备份只活 2.6 小时，`build --full` 的回滚依据等于没有。
+（2026-11-16 审计实测：`prune --dry-run` 直接命中当晚搬入的 `dt=<today-8>`。）
+
+两处共用一个常量：`prune.plan` 的默认值与 `doctor._backup_backlog` 的文案。
+各写一个数，迟早出现「刚备份就被删」或「该删的永远留着」。
 """
 
 from __future__ import annotations
@@ -29,7 +35,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..platform.retention import BACKUP_PRUNE_AFTER_DAYS
+from ..platform.retention import BACKUP_KEEP_DAYS
 
 if TYPE_CHECKING:
     from ..platform.store import DatasetStore
@@ -89,7 +95,7 @@ def plan(
     store: DatasetStore,
     *,
     now: datetime | None = None,
-    keep_days: int = BACKUP_PRUNE_AFTER_DAYS,
+    keep_days: int = BACKUP_KEEP_DAYS,
 ) -> tuple[PruneTarget, ...]:
     """列出该清的备份；纯计算，不碰磁盘。
 

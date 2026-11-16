@@ -49,9 +49,13 @@ def write_run(
     command: str,
     started_at: datetime,
     outcome: Outcome,
-) -> Path:
+) -> Path | None:
     runs_dir = store.root / "runs"
-    runs_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        runs_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        print(f"[警告] 运行台账目录无法创建（不影响命令结果）：{error}")
+        return None
     stamp = started_at.strftime("%Y%m%dT%H%M%S")
     path = runs_dir / f"{stamp}-{command}.json"
     body = {
@@ -81,6 +85,13 @@ def write_run(
         except FileExistsError:
             suffix += 1
             path = runs_dir / f"{stamp}-{command}-{suffix}.json"
+        except OSError as error:
+            # 台账写不进去是「少了一份记录」，不是「命令失败了」：数据已经落盘，
+            # 不能因为记录写失败就让一次成功的 collect 以异常栈收场、退出码变成 1。
+            # 原先异常直接穿过 `_execute`（`write_run` 在它 try 之外），后果是
+            # 命令成功了却报失败、且台账里查不到这次运行。降级为告警。
+            print(f"[警告] 运行台账写入失败（不影响命令结果）：{error}")
+            return None
     # 清理时机：每写一条就检查一次上限。这里不做「超过很多再批量清」——
     # 一次多解析几百个小 JSON 的代价可以忽略，却能让目录大小始终有界。
     prune_runs(store, RUNS_KEEP)

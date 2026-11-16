@@ -9,16 +9,139 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 import polars as pl
 import pytest
 
 from hf_data_crawl.acquire.hf.api import HfResponse, TransportError
-from hf_data_crawl.acquire.sizes import SIZE_SCHEMA, HfSizeApi, SizeFetcher, SizeSummary, tail
+from hf_data_crawl.acquire.sizes import (
+    SIZE_SCHEMA,
+    HfSizeApi,
+    SizeFetcher,
+    SizeSummary,
+    protect_ok_rows,
+    stale_ids,
+    tail,
+)
+from hf_data_crawl.platform.tables import TIMESTAMP
 
 DAY = date(2026, 11, 4)
+
+
+def _size_row(
+    dataset_id: str,
+    status: str,
+    num_rows: int | None,
+    *,
+    snapshot: date = DAY,
+    fetched_at: datetime | None = None,
+) -> dict[str, Any]:
+    """一行规模记录（未用到的列留空，与真实写入形状一致）。"""
+    return {
+        "id": dataset_id,
+        "url": f"https://huggingface.co/datasets/{dataset_id}",
+        "snapshot_date": snapshot,
+        "fetched_at": fetched_at,
+        "status": status,
+        "num_rows": num_rows,
+        "estimated_num_rows": None,
+        "num_bytes_original": None,
+        "num_bytes_parquet": None,
+        "num_bytes_memory": None,
+        "config_count": None,
+        "num_columns_max": None,
+        "configs": None,
+    }
+
+
+def _current_row(dataset_id: str, last_modified: datetime) -> dict[str, Any]:
+    """`current` 里陈旧判据要用到的两列。"""
+    return {"id": dataset_id, "last_modified": last_modified}
+
+
+def test_同日再次改动的库会被判成陈旧() -> None:
+    """库在被抓取的同一天又改一次：只比日期会永久漏判。
+
+    两侧日期相等时 `last_modified.date() > snapshot_date` 恒不成立；而该行只有
+    判据成立才会被重抓，也就不会产生新的 snapshot_date，于是它永久停在旧值，
+    连 doctor 的「规模待重取」也看不见（判据与 fetch-sizes --changed 同源）。
+    """
+    stale = stale_ids(
+        pl.DataFrame(
+            [_current_row("a/x", datetime(2026, 11, 4, 18, 0, tzinfo=UTC))],
+            schema={"id": pl.Utf8, "last_modified": TIMESTAMP},
+        ),
+        pl.DataFrame(
+            [_size_row("a/x", "ok", 100, fetched_at=datetime(2026, 11, 4, 10, 0, tzinfo=UTC))],
+            schema=SIZE_SCHEMA,
+        ),
+    )
+
+    assert stale.height == 1
+
+
+def test_抓取之后没再改动的不算陈旧() -> None:
+    """收紧判据不能把「本来就是最新」的行也拖进来——那会天天白烧配额。"""
+    stale = stale_ids(
+        pl.DataFrame(
+            [_current_row("a/x", datetime(2026, 11, 4, 9, 0, tzinfo=UTC))],
+            schema={"id": pl.Utf8, "last_modified": TIMESTAMP},
+        ),
+        pl.DataFrame(
+            [_size_row("a/x", "ok", 100, fetched_at=datetime(2026, 11, 4, 10, 0, tzinfo=UTC))],
+            schema=SIZE_SCHEMA,
+        ),
+    )
+
+    assert stale.height == 0
+
+
+def test_不可用不覆盖已拿到的数字() -> None:
+    """一次瞬时 500 不能把旧行的 num_rows 抹成 null。
+
+    `unavailable` 是「这个数据集没有规模数据」的结论，但 `upsert` 的替换键是整行：
+    那条全 null 的 unavailable 行会把旧值一起抹掉，此后 `_resolved_ids` 把该 id
+    长期跳过（只认「有没有行」），只有周任务 `--retry-unavailable` 可能救回。
+    而一次瞬时 500 恰好落在 `UNAVAILABLE_STATUS` 里。
+    """
+    previous = pl.DataFrame(
+        [
+            _size_row("a/ok", "ok", 100),
+            _size_row("b/was-bad", "unavailable", None),
+            _size_row("c/never", "unavailable", None),
+        ],
+        schema=SIZE_SCHEMA,
+    )
+    fresh = pl.DataFrame(
+        [
+            _size_row("a/ok", "unavailable", None),  # 瞬时失败
+            _size_row("b/was-bad", "ok", 200),  # 这次拿到了
+            _size_row("c/never", "unavailable", None),  # 仍然没有
+        ],
+        schema=SIZE_SCHEMA,
+    )
+
+    kept = protect_ok_rows(previous, fresh)
+
+    assert kept.filter(pl.col("id") == "a/ok").height == 0, "已拿到数字的 id 不该被降级行覆盖"
+    assert kept.filter(pl.col("id") == "b/was-bad")["num_rows"].item() == 200
+    assert kept.filter(pl.col("id") == "c/never").height == 1, "从未拿到过的照常写 unavailable"
+
+
+def test_重试不可用拿到数据时仍然覆盖() -> None:
+    """保护的是「ok 被降级」，不是「unavailable 不许变 ok」。"""
+    previous = pl.DataFrame([_size_row("a/x", "unavailable", None)], schema=SIZE_SCHEMA)
+    fresh = pl.DataFrame([_size_row("a/x", "ok", 7)], schema=SIZE_SCHEMA)
+
+    assert protect_ok_rows(previous, fresh)["num_rows"].item() == 7
+
+
+def test_没有旧表时原样返回() -> None:
+    fresh = pl.DataFrame([_size_row("a/x", "unavailable", None)], schema=SIZE_SCHEMA)
+
+    assert protect_ok_rows(pl.DataFrame(schema=SIZE_SCHEMA), fresh).height == 1
 
 
 class FakeSizeTransport:
@@ -221,12 +344,13 @@ def test_指定的库即使已存在也会重取() -> None:
     assert frame.height == 1
 
 
-def test_陈旧判据只看内容晚于抓取日() -> None:
-    """同日不判陈旧：`snapshot_date` 只有日期，宁可晚一天，不拿貌似相等冒充新鲜。"""
-    from datetime import datetime
+def test_陈旧判据只看内容晚于抓取时刻() -> None:
+    """抓取之后没再改动就不算陈旧；只比日期会让「同日二次变更」永久漏判。
 
-    from hf_data_crawl.acquire.sizes import stale_ids
-
+    这里给 `acme/same` 一个晚于 `last_modified` 的 `fetched_at`，表示「那次改动
+    已经包含在本次抓取里」；`acme/changed` 留空 `fetched_at`（加列之前的旧行），
+    判据回退成「该日零点」，所以仍然判陈旧——升级后第一轮会把它补抓一次。
+    """
     current = pl.DataFrame(
         {
             "id": ["acme/same", "acme/changed", "acme/new", "acme/no_size"],
@@ -234,19 +358,27 @@ def test_陈旧判据只看内容晚于抓取日() -> None:
             # 这一列，判据恒不成立——夹具带它，才钉得住这个坑。
             "status": ["active"] * 4,
             "last_modified": [
-                datetime(2026, 11, 3, 8),
-                datetime(2026, 11, 5, 9),
-                datetime(2026, 11, 9, 9),
-                datetime(2026, 11, 6, 9),
+                datetime(2026, 11, 3, 8, tzinfo=UTC),
+                datetime(2026, 11, 5, 9, tzinfo=UTC),
+                datetime(2026, 11, 9, 9, tzinfo=UTC),
+                datetime(2026, 11, 6, 9, tzinfo=UTC),
             ],
-        }
+        },
+        schema={"id": pl.Utf8, "status": pl.Utf8, "last_modified": TIMESTAMP},
     )
     existing = pl.DataFrame(
         {
             "id": ["acme/same", "acme/changed", "acme/no_size"],
-            "snapshot_date": [date(2026, 11, 3), date(2026, 11, 3), date(2026, 11, 3)],
+            "snapshot_date": [date(2026, 11, 3)] * 3,
+            "fetched_at": [datetime(2026, 11, 3, 10, tzinfo=UTC), None, None],
             "status": ["ok", "ok", "unavailable"],
-        }
+        },
+        schema={
+            "id": pl.Utf8,
+            "snapshot_date": pl.Date,
+            "fetched_at": TIMESTAMP,
+            "status": pl.Utf8,
+        },
     )
 
     stale = stale_ids(current, existing)

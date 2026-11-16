@@ -62,9 +62,21 @@ def leaves(spec: Spec) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in body.items():
         if key == "criteria":
+            # 同一词条可以有多条条件——区间筛选（`下载量 > 100` 且 `下载量 < 1000`）
+            # 是最常见的写法，`_validate` 也不禁止。只用 metric 作键时后一条会覆盖
+            # 前一条，于是删掉一条也报「口径未变」：变更治理命令给出错误结论，而唯一
+            # 能发现它的 `spec_digest` 不在 `request diff` 这条路径上显示。
+            #
+            # 键取 (metric, op) 再加同键序号：删除一条只报那一条（用 metric 单独作键
+            # 会让后面的条件整体移位、连带报一串）；插入**别的**词条的条件不影响对齐；
+            # 同词条同算子写两条（`> 100` 且 `> 50`）也能靠序号分开。
+            seen: dict[tuple[str, str], int] = {}
             for item in value:
-                out[f"criteria[{item['metric']}].op"] = item["op"]
-                out[f"criteria[{item['metric']}].value"] = item["value"]
+                marker = (str(item["metric"]), str(item["op"]))
+                index = seen.get(marker, 0)
+                seen[marker] = index + 1
+                out[f"criteria[{marker[0]} {marker[1]} #{index}].op"] = item["op"]
+                out[f"criteria[{marker[0]} {marker[1]} #{index}].value"] = item["value"]
             continue
         if key == "order_by":
             for item in value:
