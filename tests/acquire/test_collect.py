@@ -123,6 +123,27 @@ def test_次轮无变更在连续N页后提前停止(store: DatasetStore) -> Non
     assert state.read_current(store).height == 5
 
 
+def test_已有底库但无水位线时首轮走到末页(store: DatasetStore) -> None:
+    """首轮 `known` 来自现有 current（全站 id 都认识），后备判据会几页就停。
+
+    那会把水位线钉在「最新几页的最老时间」上，之后每轮增量只覆盖最新几条，中间
+    那段永远扫不到（列表按 lastModified 倒序，越老的越在后面）。首轮必须走到末页
+    ——那是首次建库的正常成本。次轮有基线，后备判据照旧生效。
+    """
+    collector(FakeCursorTransport([page("a", 3), page("b", 2)]), store).run(
+        DAY1, limit=100, pages_without_new=5
+    )
+    # 抹掉水位线：模拟「reconcile 已建好底库、但从未 collect 过」的真实起点
+    (store.state_dir / WATERMARK_FILENAME).unlink(missing_ok=True)
+
+    again = FakeCursorTransport([page("a", 3), page("b", 2), page("c", 2)])
+    summary = collector(again, store).run(DAY2, limit=100, pages_without_new=1)
+
+    assert summary.stopped_reason == "end", "首轮不能靠「无新 id」提前停"
+    assert len(again.calls) == 3
+    assert summary.new_ids == 2
+
+
 def test_有界运行保留游标且续跑不重复(store: DatasetStore) -> None:
     transport = FakeCursorTransport([page("a", 2), page("b", 2), page("c", 2)])
     runner = collector(transport, store)
