@@ -186,6 +186,19 @@ def test_429退避后重试成功() -> None:
     assert len(sleeps) == 2 and all(s >= 7 for s in sleeps)
 
 
+def test_重试耗尽时错误消息带最后一次状态码() -> None:
+    """`持续限流或不可用` 分不清 429 与 5xx，而两者的处置完全不同。
+
+    等配额与等上游恢复是两条路。2026-11-16 首次 collect 被打停时，台账里只有
+    这句话，只能靠手动重放同一请求才确认是 429（配额被并发任务摊薄，不是上游坏）。
+    """
+    transport = ScriptedTransport([(503, {}, []) for _ in range(5)])
+    api = HfDatasetApi(transport=transport, sleeper=lambda _: None, max_retries=2)
+
+    with pytest.raises(RuntimeError, match="HTTP 503"):
+        list(api.scan(sort="createdAt"))
+
+
 def test_配额将尽时先等待再取下一页() -> None:
     transport = FakeTransport(
         [[record("a/1")], [record("a/2")]],
