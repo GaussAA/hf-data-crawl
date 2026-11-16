@@ -1183,3 +1183,20 @@ def test_有界对账不算完整全量() -> None:
 
     assert _last_sweep_date([bounded]) is None
     assert _last_sweep_date([full, bounded]) == date(2026, 11, 9)
+
+
+def test_观测骤降要报(tmp_path: Path) -> None:
+    """重放先清分区再写回：这条不报，删掉的历史观测不留任何痕迹。"""
+    store = DatasetStore(tmp_path / "data")
+    make_run(store, "build", NOW, shrinks=[["2026-11-09", 782026, 205545]])
+
+    texts = problems(store)
+
+    assert any("观测骤降" in text and "2026-11-09" in text for text in texts)
+
+
+def test_没有骤降记录时不报(tmp_path: Path) -> None:
+    store = DatasetStore(tmp_path / "data")
+    make_run(store, "build", NOW)
+
+    assert not any("观测骤降" in text for text in problems(store))

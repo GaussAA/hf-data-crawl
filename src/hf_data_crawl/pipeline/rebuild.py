@@ -36,7 +36,7 @@ from __future__ import annotations
 import json
 import shutil
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
@@ -66,6 +66,10 @@ class RebuildSummary:
     #: 已压入冷区、主目录没有 Raw 可重放的日期数。非零说明这次重建拿不回这些
     #: 日期的历史；`--full` 会在执行前就被拒，recovery 回退则由它进台账。
     cold_gaps: int = 0
+    #: 观测被大幅覆盖的日期：(日期, 旧行数, 新行数)。非空说明某天只写回了不到
+    #: 一半的历史观测——多半是当天 Raw 缺批。它必须进 `runs/` 台账：重放会先
+    #: 清分区再写回，没有这条记录，删掉的历史不留任何痕迹。
+    shrinks: list[tuple[date, int, int]] = field(default_factory=list)
 
 
 def discover_raw_dates(store: DatasetStore) -> list[date]:
@@ -139,6 +143,14 @@ def _select_replay(
     return "window", dates[-window_days:]
 
 
+def _observation_rows(store: DatasetStore, snapshot: date) -> int:
+    """某日观测分区的行数；分区不存在按 0。只读 parquet 元数据，不载入整表。"""
+    path = store.path("observations", snapshot)
+    if not path.exists():
+        return 0
+    return int(pl.scan_parquet(path).select(pl.len()).collect().item())
+
+
 def rebuild_from_raw(
     store: DatasetStore,
     *,
@@ -177,17 +189,31 @@ def rebuild_from_raw(
     # 重建后写回，协议见本模块末尾「状态留存协议」；GLOSSARY #15/#18/#26 记有实测事故。
     retained = retain(store)
 
+    # 观测骤降的护栏要拿「这轮之前的行数」当尺子，而下一行就会把这些分区清掉，
+    # 所以必须在这里先记下来。原先重放路径把 `before` 硬写成 0，护栏在最需要它
+    # 的时候（一次性清 7 天再重写）结构性失效——2026-11-16 审计实锤。
+    observation_before = {day: _observation_rows(store, day) for day in replay}
+
     clear_derived(store, hot_dates=None if full else set(replay))
 
     bronze_rows = 0
     silver_rows = 0
+    shrinks: list[tuple[date, int, int]] = []
     # 日期升序重放，历史锚点从上一日顺推：否则每天都要重读全部 silver /
     # observations / current，代价随天数平方增长。
     carry = ReplayCarry.load(store, before=replay[0])
     for snapshot in replay:
-        day = derive_day(store, snapshot, enrich=True, carry=carry)
+        day = derive_day(
+            store,
+            snapshot,
+            enrich=True,
+            carry=carry,
+            observation_before=observation_before[snapshot],
+        )
         bronze_rows += day.bronze_rows
         silver_rows += day.silver_rows
+        if day.observation_shrink is not None:
+            shrinks.append((snapshot, *day.observation_shrink))
 
     restore(store, retained)
 
@@ -201,6 +227,7 @@ def rebuild_from_raw(
         card_rows=store.read("carddata").height,
         config_rows=store.read("card_configs").height,
         cold_gaps=len(gaps),
+        shrinks=shrinks,
     )
 
 

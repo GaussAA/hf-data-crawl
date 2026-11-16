@@ -939,6 +939,28 @@ def _recent_failures(ctx: RunContext) -> Finding:
 LOCK_ALERT_AFTER_MINUTES = 120
 
 
+def _observation_shrink(ctx: RunContext) -> Finding:
+    """最近一次重建里有没有「某天的观测只写回不到一半」。
+
+    重放会先清掉该日分区再写回，所以被删掉的历史观测不留任何痕迹——除非那一轮
+    自己记下来。`build` 把每次触发的 (日期, 旧行数, 新行数) 写进 `runs/` 的
+    `shrinks`；这里往回找最近一条带记录的，点名让人核对当天 Raw 是否缺批。
+    """
+    for entry in reversed(ctx.runs):
+        payload = entry.get("payload") or {}
+        shrinks = payload.get("shrinks")
+        if not shrinks:
+            continue
+        shown = "、".join(str(row[0]) for row in shrinks[:3])
+        return Finding(
+            True,
+            f"观测骤降：{entry.get('command')} 在 {entry.get('started_at')} 这一轮有 "
+            f"{len(shrinks)} 天的观测只写回不到一半（{shown}）；"
+            "多半是当天 Raw 缺批，核对后重跑派生",
+        )
+    return Finding(False, "观测：最近的重建没有出现行数骤降")
+
+
 def _lock_state(ctx: RunContext) -> Finding:
     """写锁被占用本身不是问题，占用太久才是。
 
@@ -1090,6 +1112,7 @@ def diagnose(
         _coded("probe_quality", _probe_quality(ctx)),
         _coded("probe_degraded", _probe_degraded(ctx)),
         _coded("recent_failures", _recent_failures(ctx)),
+        _coded("observation_shrink", _observation_shrink(ctx)),
         _coded("temp_files", _stale_temp_files(ctx)),
         _coded("request_self_contained", _request_self_contained(ctx)),
         _coded("spec_version", _spec_version_consistency(ctx)),
