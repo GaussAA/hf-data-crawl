@@ -730,8 +730,7 @@ fill:
     header_row: 2            # 列名所在行；其上可有多行分组标题
     key_column: URL          # 用列名定位，不用列号
   output:
-    name: 清单-已补全.xlsx    # 交付档案里的文件名
-    # copy_to: D:/somewhere/清单-已补全.xlsx   # 可选：档案落定后另存一份
+    name: 清单-已补全.xlsx    # 交付档案里的文件名；只给文件名，带路径会被拒
   # overrides: overrides.json # 逐库人工判读结果；引擎只合并、不生成
   overwrite: false           # 只填空格；表里已有内容一律不动
 
