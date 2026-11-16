@@ -34,6 +34,7 @@ dev = [
     "pre-commit>=4.0.0",
     "pyright==1.1.408",
     "pytest>=9.2.0",
+    "pytest-xdist>=3.8",
     "ruff>=0.17.3",
     "types-openpyxl>=3.1.5.20261017",
     "types-pyyaml>=6.0.12.20261103",
