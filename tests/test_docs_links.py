@@ -202,3 +202,22 @@ def test_worktree副本跳过但项目技能仍参与校验(tmp_path: Path) -> N
     skill.write_text("# OK\n", encoding="utf-8")
     fixed = _run(tmp_path)
     assert fixed.returncode == 0, fixed.stderr
+
+
+def test_本机记忆目录不参与校验(tmp_path: Path) -> None:
+    """`.workbuddy/` 是 gitignored 的本机 agent 记忆，不该被当成仓库文档。
+
+    校验器按文件系统递归、不读 `.gitignore`，所以这里必须与忽略规则对齐：
+    记忆文件里写着当时的旧路径，一旦参与校验，本机永远报断链而 CI 永远全绿。
+    """
+    memory = tmp_path / ".workbuddy" / "memory"
+    memory.mkdir(parents=True)
+    (memory / "2026-11-16.md").write_text(
+        "旧路径 `src/hf_data_crawl/raw.py` 早已搬走\n", encoding="utf-8"
+    )
+    # 根下留一份正常文档，否则「一个 md 都没有」本身就是另一种错误退出。
+    (tmp_path / "README.md").write_text("# OK\n", encoding="utf-8")
+
+    result = _run(tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert ".workbuddy" not in result.stderr

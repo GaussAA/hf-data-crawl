@@ -15,7 +15,7 @@ import polars as pl
 
 from ..pipeline.silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
 from ..platform.store import DatasetStore
-from ..platform.tables import DATASET_URL, TIMESTAMP, PolarsType, table
+from ..platform.tables import DATASET_URL, TIMESTAMP, PolarsType, TableSpec, table
 
 #: `copy_wide()` 的 parquet 压缩。DuckDB 的 `COPY ... FORMAT PARQUET` 默认 snappy，
 #: 与全库其余 parquet（zstd）不一致，且实测交付底库多占四成：112 万行 × 31 列，
@@ -264,6 +264,32 @@ def _empty_view(schema: dict[str, PolarsType]) -> str:
     return f"SELECT {columns}\n    WHERE false"
 
 
+def _aligned_select(
+    connection: duckdb.DuckDBPyConnection,
+    pattern: str,
+    schema: dict[str, PolarsType],
+) -> str:
+    """按 schema 生成投影：文件里没有的列补 NULL，文件里多出来的列丢掉。
+
+    与 `platform.store._align_frame` 是同一条语义的 DuckDB 版（缺列补空、多列
+    丢弃）。两处合不成一处——一个在 polars 里补帧，一个要生成 SQL——但口径必须
+    一致，`tests/query/test_gold.py` 的「旧结构表文件缺新列」把两边绑在一起。
+
+    起因：`size` 加 `fetched_at` 之后，本机那份没重写过的旧 parquet 少这一列，
+    而 `SELECT *` 让 `CREATE VIEW datasets` 在绑定期就报「没有这一列」——整个
+    gold 层（query / export / 交付）一起打不开。加列是常态，旧文件是常态，所以
+    兼容要落在视图这一层，而不是指望「加列时记得迁移磁盘」。
+    """
+    reader = f"read_parquet('{pattern}', union_by_name = true)"
+    described = connection.execute(f"DESCRIBE SELECT * FROM {reader}").fetchall()
+    present = {row[0] for row in described}
+    columns = ",\n                   ".join(
+        column if column in present else f"CAST(NULL AS {_duckdb_type(dtype)}) AS {column}"
+        for column, dtype in schema.items()
+    )
+    return f"SELECT {columns}\n        FROM {reader}"
+
+
 class GoldNotReady(RuntimeError):
     """尚无采集数据，无法建立视图。"""
 
@@ -403,8 +429,7 @@ class GoldCatalog:
     def _register(self, connection: duckdb.DuckDBPyConnection) -> None:
         # 视图的连接路径与空视图 schema 全部取自登记表，不再硬编码。
         for view, name in _VIEWS:
-            spec = table(name)
-            self._create_file_view(connection, view, spec.glob(), _empty_view(spec.schema))
+            self._create_file_view(connection, view, table(name))
         connection.execute(
             """
             CREATE VIEW latest_silver AS
@@ -511,13 +536,17 @@ class GoldCatalog:
         self,
         connection: duckdb.DuckDBPyConnection,
         name: str,
-        relative_pattern: str,
-        empty_sql: str,
+        spec: TableSpec,
     ) -> None:
-        """无分区时挂空视图，让「刚装好还没采集」也能建连并给出空结果而非报错。"""
-        if any(self._store.root.glob(relative_pattern)):
-            pattern = f"{self._store.root.as_posix()}/{relative_pattern}"
-            source = f"SELECT * FROM read_parquet('{pattern}', union_by_name = true)"
+        """无分区时挂空视图，让「刚装好还没采集」也能建连并给出空结果而非报错。
+
+        有文件时按登记表 schema 投影，而不是 `SELECT *`——加列之后，磁盘上那些
+        没重写过的旧文件会少一列，`SELECT *` 让整张视图在绑定期就报「没有这一列」，
+        而损失是整个 gold 层，不只是那一列。见 `_aligned_select`。
+        """
+        if any(self._store.root.glob(spec.glob())):
+            pattern = f"{self._store.root.as_posix()}/{spec.glob()}"
+            source = _aligned_select(connection, pattern, spec.schema)
         else:
-            source = empty_sql
+            source = _empty_view(spec.schema)
         connection.execute(f"CREATE VIEW {name} AS {source}")
