@@ -216,7 +216,12 @@ OVERVIEW_SQL = """
            (SELECT coalesce(sum(CASE WHEN status = 'renamed' THEN 1 ELSE 0 END), 0)
               FROM current) AS renamed,
            (SELECT count(*) FROM card) AS cards,
-           (SELECT count(*) FROM dataset_size WHERE status = 'ok') AS sized,
+           -- 与 current 取交集：`dataset_size` 里可能留着已删除库的行，直接数会
+           -- 让报告首屏的覆盖率高于体检口径（体检用的是 `_covered()`：交集）。
+           -- 同一个数两套算法，两处报出来的百分比就会不一样，而没有人会去对。
+           (SELECT count(*) FROM dataset_size AS ds
+              JOIN current AS c ON c.id = ds.id
+             WHERE ds.status = 'ok') AS sized,
            (SELECT count(*) FROM v_growth) AS growth_ready,
            (SELECT count(*) FROM observations
              WHERE snapshot_date = (SELECT max(snapshot_date) FROM observations)) AS moved,
