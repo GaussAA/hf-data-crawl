@@ -204,6 +204,14 @@ def deliver(
     stamp_value = source or _stamp(store)
     runner = _catalog(store, catalog)
 
+    # 先落口径快照，再换名出产物。
+    #
+    # 反过来（改名后快照）在那两步之间崩溃时会留下「产物已出土、history 没有这版」：
+    # `version_conflict` 靠 `history/vN.yaml` 判断版本号是否用过，于是这版会静默
+    # 隐身，下次复用同一版本号不会报冲突——历史被改写而无人知道。宁可多一条
+    # 「从未交付」的快照记录（用户可以从 `history/` 里删掉），也不能少一条。
+    snapshot_history(request_dir / SPEC_NAME, spec.version)
+
     directory = _reserve_dir(request_dir, moment)
     staging = directory.parent / f".tmp-{directory.name}"
     shutil.rmtree(staging, ignore_errors=True)
@@ -243,7 +251,7 @@ def deliver(
         raise
 
     # 首次交付落一份口径快照——只留「真的用过」的版本，没用过的口径没有保留价值。
-    snapshot_history(request_dir / SPEC_NAME, spec.version)
+    # （快照已在函数开头、换名之前落盘，见那里的说明。）
 
     return DeliveryResult(
         request_id=spec.id,

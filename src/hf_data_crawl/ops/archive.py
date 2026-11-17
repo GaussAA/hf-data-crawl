@@ -254,8 +254,24 @@ def archive_day(store: DatasetStore, snapshot_date: date) -> ArchiveResult | Non
     target = backup_dir(store, snapshot_date)
     if moved:
         target.mkdir(parents=True, exist_ok=True)
-        for path in moved:
-            shutil.move(str(path), str(target / path.name))
+        done: list[tuple[Path, Path]] = []
+        try:
+            for path in moved:
+                destination = target / path.name
+                shutil.move(str(path), str(destination))
+                done.append((path, destination))
+        except BaseException:
+            # 回滚：数据从未丢失（`backup/` 与 `raw/` 两边都在），但「一半在
+            # backup、一半在 raw」会让 `batch_files` 与断日检查看到不一致的现场，
+            # 而归档本该是全有或全无。逆序移回原地，再把原始异常抛出去。
+            for origin, destination in reversed(done):
+                shutil.move(str(destination), str(origin))
+            # 新分片也一并撤掉：验证已经通过，但这次归档没成，留着它会与刚移回的
+            # 原分片同时被 `batch_files` 看到——同一批记录出现两遍。
+            for path in created:
+                if path not in set(sources):
+                    path.unlink(missing_ok=True)
+            raise
 
     records_before = 0
     for path in moved:

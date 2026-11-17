@@ -227,3 +227,34 @@ def test_派生一致时归档仍刷新戳记(store: DatasetStore) -> None:
     assert after.source != before.source, "分片换了名字，指纹本应变"
     assert after.bronze_rows == before.bronze_rows, "没重派生，行数不该动"
     assert [item.state for item in lineage.compare(store, [DAY])] == [lineage.OK]
+
+
+def test_搬移中途失败要回滚到原位(store: DatasetStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """归档本该是全有或全无。
+
+    数据从未丢失（`backup/` 与 `raw/` 两边都在），但「一半在 backup、一半在
+    raw」会让 `batch_files` 与断日检查看到不一致的现场。回滚把源文件逆序移回。
+    """
+    before = set(raw.batch_files(store, DAY))
+    original = archive.shutil.move
+    backup = archive.backup_dir(store, DAY)
+    calls = {"n": 0}
+
+    def flaky(source: Any, target: Any) -> None:
+        # 回滚是「backup → raw」：放行，否则连撤销本身都跑不完，测的就不是回滚了。
+        if Path(source).parent == backup:
+            original(source, target)
+            return
+        calls["n"] += 1
+        if calls["n"] == 1:
+            original(source, target)
+        else:
+            raise OSError("模拟搬移中途失败")
+
+    monkeypatch.setattr(archive.shutil, "move", flaky)
+
+    with pytest.raises(OSError):
+        archive_day(store, DAY)
+
+    after = set(raw.batch_files(store, DAY))
+    assert after == before, f"缺 {before - after} / 多 {after - before}"

@@ -118,6 +118,31 @@ def test_交付写出三件套(store: DatasetStore, tmp_path: Path) -> None:
     assert result.rows == 2
 
 
+def test_产物出土失败时口径快照已经落下(
+    store: DatasetStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """顺序是「先快照、后改名」。
+
+    反过来（改名后快照）在那两步之间崩溃会留下「产物已出土、history 没有这版」：
+    `version_conflict` 靠 `history/vN.yaml` 判断版本号是否用过，于是这版静默隐身，
+    下次复用同一版本号不会报冲突。宁可多一条「从未交付」的快照记录。
+    """
+    root = tmp_path / "req"
+    make_request(root)
+
+    def boom(source: Path, target: Path) -> None:
+        raise OSError("模拟换名失败")
+
+    monkeypatch.setattr("hf_data_crawl.delivery.delivery.replace", boom)
+
+    with pytest.raises(OSError):
+        deliver(store, root, "REQ-0001", now=NOW)
+
+    assert (root / "REQ-0001" / "history" / "v1.yaml").exists(), (
+        "换名失败不代表口径没被用过：快照必须先落下，否则版本号复用查不出来"
+    )
+
+
 def test_manifest记下底库指纹与校验和(store: DatasetStore, tmp_path: Path) -> None:
     root = tmp_path / "req"
     make_request(root)
