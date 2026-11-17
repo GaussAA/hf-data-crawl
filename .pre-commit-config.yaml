@@ -29,9 +29,15 @@ repos:
         language: system
         pass_filenames: false
         files: ^(?:.*\.md|scripts/check_docs_links\.py)$
+      # 本地并行提速；CI 仍串行跑全量——总得留一处「串行全量」，否则测试间的
+      # 顺序依赖一旦出现，本地与 CI 会一起把它藏起来（全绿不等于都跑了）。
+      #
+      # 为什么是 8 而不是 `-n auto`：本机 16 逻辑核（4P+8E），实测串行 140s、
+      # -n 4/6/8 落在 34~54s 且互相差在噪声内（瓶颈是磁盘 IO 不是 CPU），
+      # -n 12 反而回到 56s。核少的机器可自行调小，别照抄。
       - id: pytest-fast
-        name: pytest (full suite)
-        entry: uv run pytest -x --tb=short
+        name: pytest (full suite, -n 8)
+        entry: uv run pytest -x --tb=short -n 8
         language: system
         pass_filenames: false
         always_run: true

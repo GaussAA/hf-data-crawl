@@ -695,7 +695,12 @@ def _raw_growth(ctx: RunContext) -> Finding:
     """盯住 Raw 规模：compact 压跨天重复，热区仍会逐日增长，靠阈值兜底。"""
     store = ctx.store
     files = (
-        [path for path in store.raw_dir.rglob("*.json.gz") if path.is_file()]
+        [
+            path
+            for suffix in raw.SUFFIXES
+            for path in store.raw_dir.rglob(f"*{suffix}")
+            if path.is_file()
+        ]
         if store.raw_dir.exists()
         else []
     )

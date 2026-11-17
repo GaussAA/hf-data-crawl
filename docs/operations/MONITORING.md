@@ -112,11 +112,11 @@ jq -r '.status' data/runs/*-collect*.json | tail -30 | grep -c "success"
 **采集方法**：
 ```bash
 du -sh data/raw data/backup/raw 2>/dev/null
-find data/raw -name '*.json.gz' | wc -l
+find data/raw \( -name '*.json.zst' -o -name '*.json.gz' \) | wc -l
 uv run hf-data-crawl doctor      # 直接给出「Raw 规模 / 冷区 / 归档 / 备份」结论
 du -sh data/cold/raw 2>/dev/null
 cat data/cold/raw/manifest.json  # 已压缩进冷区基线的日期
-uv run python -c "from pathlib import Path; from hf_data_crawl.pipeline.raw import source_of; print(sorted({source_of(p) for p in Path('data/raw').rglob('*.json.gz')}))"  # 当天有哪些扫描来源
+uv run python -c "from pathlib import Path; from hf_data_crawl.pipeline.raw import SUFFIXES, source_of; print(sorted({source_of(p) for s in SUFFIXES for p in Path('data/raw').rglob(f'*{s}')}))"  # 当天有哪些扫描来源
 ```
 
 **正常范围**：

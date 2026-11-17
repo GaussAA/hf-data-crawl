@@ -15,6 +15,7 @@ import pytest
 
 from hf_data_crawl.acquire.hf.api import IDENTITY_EXPAND, Page
 from hf_data_crawl.acquire.hf.scan import ScanRun, ScanSpec
+from hf_data_crawl.pipeline import raw
 from hf_data_crawl.platform.store import DatasetStore
 
 DAY = date(2026, 11, 4)
@@ -82,7 +83,7 @@ def test_逐页落盘并累计计数(store: DatasetStore) -> None:
     assert summary.records == 3
     assert summary.rate_remaining == 480
     assert summary.stopped_reason == "end"
-    assert len(list((store.raw_dir / f"dt={DAY.isoformat()}").glob("*.json.gz"))) == 2
+    assert len(list((store.raw_dir / f"dt={DAY.isoformat()}").glob(f"*{raw.SUFFIX}"))) == 2
 
 
 def test_跳过计数被累计(store: DatasetStore) -> None:
@@ -105,19 +106,18 @@ def test_dry_run不写盘(store: DatasetStore) -> None:
     ScanRun(api, store).run(DAY, spec(write=False))
 
     partition = store.raw_dir / f"dt={DAY.isoformat()}"
-    assert not partition.exists() or not list(partition.glob("*.json.gz"))
+    assert not partition.exists() or not list(partition.glob(f"*{raw.SUFFIX}"))
 
 
 def test_label与mode落进raw的meta(store: DatasetStore) -> None:
-    import gzip
     import json
 
     api = FakeScanApi([page("a", cursor=None)])
 
     ScanRun(api, store).run(DAY, spec(label="top", mode="top-refresh"))
 
-    path = next((store.raw_dir / f"dt={DAY.isoformat()}").glob("top-*.json.gz"))
-    meta = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))["meta"]
+    path = next((store.raw_dir / f"dt={DAY.isoformat()}").glob(f"top-*{raw.SUFFIX}"))
+    meta = json.loads(raw.unpack(path.read_bytes(), name=path.name).decode("utf-8"))["meta"]
     assert meta["mode"] == "top-refresh"
     assert meta["sort"] == "lastModified"
 

@@ -127,7 +127,8 @@ uv run hf-data-crawl archive --date 2026-11-07
 uv run hf-data-crawl compact                       # 默认压缩超过 7 天的日期
 uv run hf-data-crawl compact --date 2026-10-01    # 只压指定日期
 ```
-压缩把多个日期的全量快照按 id 跨天去重，合并成 `data/cold/raw/baseline-*.json.gz`
+压缩把多个日期的全量快照按 id 跨天去重，合并成 `data/cold/raw/baseline-*`
+（新基线 `.json.zst`，2026-11-16 之前的 `.json.gz` 仍可照读）
 一份基线；分片 `groups` 仍冻结原写入序与来源命名空间。写入前后逐个 id 校验
 胜出者，不等即撤销新分片、原文件不动。原分块移入 `data/backup/raw/dt=<日期>/`
 **不删除**；已压缩日期登记在 `data/cold/raw/manifest.json`，`doctor` 据此避免

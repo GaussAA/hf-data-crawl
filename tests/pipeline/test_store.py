@@ -60,7 +60,7 @@ def test_同页写两次只留一个文件且内容不变(store: DatasetStore) -
     )
 
     assert first == second
-    assert len(list(store.raw_dir.rglob("*.json.gz"))) == 1
+    assert len(list(store.raw_dir.rglob(f"*{raw.SUFFIX}"))) == 1
 
 
 def test_raw文件可独立解压并保留元信息(store: DatasetStore) -> None:
@@ -72,7 +72,7 @@ def test_raw文件可独立解压并保留元信息(store: DatasetStore) -> None
         meta={"cursor": "abc==", "sort": "lastModified"},
     )
 
-    payload = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+    payload = json.loads(raw.unpack(path.read_bytes(), name=path.name).decode("utf-8"))
 
     assert payload["meta"]["cursor"] == "abc=="
     assert payload["meta"]["page_index"] == 3
@@ -84,7 +84,7 @@ def test_同页内容变化时不覆盖旧文件(store: DatasetStore) -> None:
     raw.write(store, snapshot_date=SNAPSHOT, page_index=1, records=[record(1)], meta={})
     raw.write(store, snapshot_date=SNAPSHOT, page_index=1, records=[record(2)], meta={})
 
-    assert len(list(store.raw_dir.rglob("*.json.gz"))) == 2
+    assert len(list(store.raw_dir.rglob(f"*{raw.SUFFIX}"))) == 2
 
 
 def test_从raw重建bronze行数与记录数一致(store: DatasetStore) -> None:
@@ -199,11 +199,46 @@ def test_后写入的新字段不会被先写入的空值覆盖(store: DatasetSt
 
     # 让 part 的 mtime 更早，模拟真实时序（collect 先跑增量、再跑顶部刷新）。
     now = time.time()
-    for path in (store.raw_dir / f"dt={SNAPSHOT.isoformat()}").glob("part-*.json.gz"):
+    for path in (store.raw_dir / f"dt={SNAPSHOT.isoformat()}").glob(f"part-*{raw.SUFFIX}"):
         os.utime(path, (now - 10, now - 10))
-    for path in (store.raw_dir / f"dt={SNAPSHOT.isoformat()}").glob("top-*.json.gz"):
+    for path in (store.raw_dir / f"dt={SNAPSHOT.isoformat()}").glob(f"top-*{raw.SUFFIX}"):
         os.utime(path, (now, now))
 
     bronze.build(store, SNAPSHOT)
 
     assert store.read("bronze", SNAPSHOT).row(0, named=True)["main_size"] == 999
+
+
+def test_历史gzip分块与新zstd分块混存时都能读(store: DatasetStore) -> None:
+    """压缩格式换代之后，历史分块必须照读——它们不重写，指纹才不动。
+
+    2026-11-16 把 Raw 的压缩从 gzip（默认 level 9，压一页要 61 ms）换成 zstd
+    level 3（4.7 ms，体积还小 5%）。已落的 10419 个 `.json.gz` 一律不碰：文件名
+    参与 `lineage` 指纹，重写一个就等于宣告那天派生作废。兼容只能落在读取端，
+    所以这里同时造新旧两种分块，钉住「同一天混存也能读全」。
+    """
+    partition = raw.partition_dir(store, SNAPSHOT)
+    partition.mkdir(parents=True)
+    legacy_payload = {
+        "meta": {"written_at": "2026-11-03T10:00:00+00:00"},
+        "records": [record(1)],
+    }
+    legacy = partition / "part-legacy-000001-abcd1234.json.gz"
+    legacy.write_bytes(gzip.compress(json.dumps(legacy_payload).encode("utf-8")))
+
+    fresh = raw.write(store, snapshot_date=SNAPSHOT, page_index=2, records=[record(2)])
+
+    assert fresh.name.endswith(raw.SUFFIX)
+    assert legacy.exists(), "历史分块不该被改写或删除，删掉就动了指纹"
+
+    # 单文件读：按后缀分派解压，不靠试错
+    assert raw.load_batches(legacy)[0].records == [record(1)]
+
+    # 整天读：两种后缀都要被 batch_files 收进来
+    names = {path.name for path in raw.batch_files(store, SNAPSHOT)}
+    assert names == {legacy.name, fresh.name}
+    assert len(raw.read_batches(store, SNAPSHOT)) == 2
+
+    # 混存的一天照样能派生，且两个 id 都在
+    bronze.build(store, SNAPSHOT)
+    assert set(store.read("bronze", SNAPSHOT)["id"].to_list()) == {"acme/ds-1", "acme/ds-2"}

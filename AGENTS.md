@@ -24,9 +24,9 @@ platform < pipeline < {acquire, query} < delivery < ops
 | 你要动 | 先读 | 它回答 |
 |---|---|---|
 | 采集 / 对账 / 探测 | GLOSSARY #5–#6、#10、#15、#17、#20、#27、#29–#30、#68、#72–#73 | 排序与异常值、扫描时序、来源命名、状态判定、探测限流 |
-| 派生 / 重建 / 恢复 / 留存 | GLOSSARY #18–#19、#28、#31、#44–#45、#47、#78；`docs/operations/RECOVERY.md` | 标记文件、后缀重放、派生凭据、冷热分层与回滚 |
+| 派生 / 重建 / 恢复 / 留存 | GLOSSARY #18–#19、#28、#31、#44–#45、#47、#78、#93；`docs/operations/RECOVERY.md` | 标记文件、后缀重放、派生凭据、冷热分层与回滚、换压缩格式 |
 | 体检 / 告警 | GLOSSARY #74、#76、#81–#84；`docs/operations/MONITORING.md` | 判据基准（快照日而非日历）、Finding 的身份、连续天数 |
-| 调度 / 日志 | `scripts/daily.ps1`（顺序的唯一来源）、GLOSSARY #67、#77 | 为什么是一条链、哪些任务不补跑、重试边界 |
+| 调度 / 日志 | `scripts/daily.ps1`（顺序的唯一来源）、GLOSSARY #67、#77、#92 | 为什么是一条链、哪些任务不补跑、重试边界、批量补采卡住怎么看得出来 |
 | 交付 / 需求 | `.agents/skills/hf-request/SKILL.md`、GLOSSARY #51–#58、#69–#71、#79、#85–#87 | 受理 → 口径 → 方法 → 预演 → 交付 → 变更 |
 | 字段 / 数据形状 | `docs/DATA.md`（生成物）、GLOSSARY #62–#66、`delivery/fields.py` | 表结构、字段含义、默认交付契约 |
 | 架构决策 / 术语 | `docs/adr/`、GLOSSARY #75、`docs/agents/domain.md` | 当时的取舍与事故；术语怎么用 |

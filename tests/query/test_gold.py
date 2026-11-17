@@ -520,3 +520,43 @@ def test_README列出全部内置榜单() -> None:
         f"README 榜单清单与 BOARDS 不一致：缺 {sorted(expected - listed)}，"
         f"多 {sorted(listed - expected)}"
     )
+
+
+# ---------------------------------------------------------------- 旧库兼容
+
+
+def test_旧结构表文件缺新列时视图仍能建立(tmp_path: Path) -> None:
+    """加列之后，磁盘上没重写过的旧文件不该让整个视图建不起来。
+
+    `gold` 的视图直读 parquet，而列对齐只发生在 `DatasetStore.read` 里。远程给
+    `size` 加 `fetched_at` 后，本机那份 12 列的旧 `enrich/size.parquet` 让
+    `CREATE VIEW datasets` 直接 BinderException——CI 里没有 `data/`，那条真实库
+    对照测试是 skip，于是「加列」在本机炸、在 CI 全绿。这里造一份旧结构文件钉住：
+    视图要照常建立，缺的列补 null，而不是整个视图建不起来。
+    """
+    import polars as pl
+
+    store = DatasetStore(tmp_path / "data")
+    seed(store, DAY1, [record(1, downloads=100)])
+
+    legacy = store.path("size")
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "id": ["acme/ds-1"],
+            "url": ["https://huggingface.co/datasets/acme/ds-1"],
+            "snapshot_date": [DAY1],
+            "status": ["ok"],
+            "num_rows": [10],
+        }
+    ).write_parquet(legacy)
+
+    catalog = GoldCatalog(store)
+    frame = catalog.run("SELECT id, fetched_at, server_num_rows FROM datasets")
+
+    assert frame["server_num_rows"].to_list() == [10]
+    assert frame["fetched_at"].to_list() == [None]
+
+    # 补 null 而不是少一列：旧文件缺的列在视图里照样存在，只是全空。
+    columns = set(catalog.run("SELECT * FROM datasets LIMIT 0").columns)
+    assert {"fetched_at", "server_num_rows", "size_status"} <= columns

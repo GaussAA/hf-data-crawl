@@ -6,7 +6,6 @@ build 的结果**；原分块只移入 backup、不删除；校验失败必须�
 
 from __future__ import annotations
 
-import gzip
 import hashlib
 import json
 from datetime import date
@@ -78,7 +77,7 @@ def state_fingerprint(store: DatasetStore) -> dict[str, str]:
 
 
 def baseline_records(store: DatasetStore) -> list[dict[str, Any]]:
-    files = sorted((store.root / "cold" / "raw").glob("baseline-*.json.gz"))
+    files = sorted((store.root / "cold" / "raw").glob(f"baseline-*{raw.SUFFIX}"))
     rows: list[dict[str, Any]] = []
     for path in files:
         for batch in raw.load_batches(path):
@@ -110,8 +109,8 @@ def test_基线只留每个id的最后写入记录(store: DatasetStore) -> None:
 def test_基线groups保留来源命名空间与写入序(store: DatasetStore) -> None:
     compact(store, COLD[:2])
 
-    path = next((store.root / "cold" / "raw").glob("baseline-*.json.gz"))
-    payload = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+    path = next((store.root / "cold" / "raw").glob(f"baseline-*{raw.SUFFIX}"))
+    payload = json.loads(raw.unpack(path.read_bytes(), name=path.name).decode("utf-8"))
 
     assert payload["meta"]["baseline"] is True
     assert all("key" in group and "source" in group for group in payload["groups"])
@@ -214,7 +213,7 @@ def test_校验失败时撤销新分片且原文件不动(
     with pytest.raises(CompactMismatch, match="冷区基线校验失败"):
         compact(store, COLD[:2])
 
-    assert list((store.root / "cold" / "raw").glob("baseline-*.json.gz")) == []
+    assert list((store.root / "cold" / "raw").glob(f"baseline-*{raw.SUFFIX}")) == []
     assert {
         path.name: hashlib.sha256(path.read_bytes()).hexdigest()
         for day in COLD[:2]
@@ -237,7 +236,7 @@ def test_compact命令端到端可用(tmp_path: Path) -> None:
 
     assert code == 0
     assert raw.batch_files(store, day) == []
-    assert list((store.root / "cold" / "raw").glob("baseline-*.json.gz"))
+    assert list((store.root / "cold" / "raw").glob(f"baseline-*{raw.SUFFIX}"))
     assert read_compressed_dates(store) == {day}
 
 

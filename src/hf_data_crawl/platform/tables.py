@@ -16,7 +16,7 @@ store 里的文件名常量、各模块的 schema 常量、gold 里的硬编码�
 ------------
 `Origin` 决定了重建时的待遇，这是本模块存在的核心理由：
 
-- **RAW**：由 `raw/*.json.gz` 派生，删掉能重算 → rebuild 应当清除。
+- **RAW**：由 `raw/*.json.zst`（历史 `.json.gz`）派生，删掉能重算 → rebuild 应当清除。
 - **NETWORK**：来自外部接口，raw 里没有对应数据 → rebuild 必须保留。
 - **STATE**：运行态（当前态、观测流水），由派生过程维护 → rebuild 重建。
 """

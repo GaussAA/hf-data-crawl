@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+import orjson
 import polars as pl
 
 from ..platform.atomic import write_parquet
@@ -122,7 +123,7 @@ class HfSizeApi:
 
 def _success(dataset_id: str, snapshot_date: date, body: bytes) -> SizeResult:
     try:
-        payload = json.loads(body.decode("utf-8"))
+        payload = orjson.loads(body)
     except (UnicodeDecodeError, json.JSONDecodeError):
         return _failure(dataset_id, "error")
     size = payload.get("size") if isinstance(payload, dict) else None
@@ -189,10 +190,12 @@ class SizeFetcher:
         *,
         workers: int = 16,
         progress: Callable[[int, int], None] | None = None,
+        heartbeat: Callable[[int, int], None] | None = None,
     ) -> None:
         self._api = api
         self._workers = max(1, workers)
         self._progress = progress
+        self._heartbeat = heartbeat
 
     def run(
         self,
@@ -227,6 +230,7 @@ class SizeFetcher:
             flush=flush,
             flush_every=flush_every,
             progress=self._progress,
+            heartbeat=self._heartbeat,
         )
         ok = sum(1 for result in results if result.status == "ok")
         unavailable = sum(1 for result in results if result.status == "unavailable")

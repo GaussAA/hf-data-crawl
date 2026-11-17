@@ -212,5 +212,5 @@ def test_变化集卡片写成card批次而非part(store: DatasetStore) -> None:
         baseline=Watermark("2026-11-01T00:00:00Z"),
     )
 
-    names = [path.name for path in store.raw_dir.rglob("*.json.gz")]
+    names = [path.name for path in store.raw_dir.rglob(f"*{raw.SUFFIX}")]
     assert names and all(name.startswith("card-") for name in names)

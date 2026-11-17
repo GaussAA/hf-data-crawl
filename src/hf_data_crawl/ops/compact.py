@@ -20,7 +20,6 @@
 
 from __future__ import annotations
 
-import gzip
 import hashlib
 import json
 import shutil
@@ -38,7 +37,8 @@ if TYPE_CHECKING:
 
 #: 与 archive 分片同量级，保留并行度。
 BASELINE_RECORDS = 10_000
-_BASELINE_GLOB = "baseline-*.json.gz"
+#: 不带后缀：新基线是 `.json.zst`、历史基线是 `.json.gz`，两者都要能被认出来。
+_BASELINE_GLOB = "baseline-*"
 
 
 class CompactMismatch(RuntimeError):
@@ -113,9 +113,9 @@ def _write_baseline(
         "records": records,
     }
     body = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    path = directory / f"baseline-{index:06d}-{hashlib.sha256(body).hexdigest()[:8]}.json.gz"
+    path = directory / f"baseline-{index:06d}-{hashlib.sha256(body).hexdigest()[:8]}{raw.SUFFIX}"
     if not path.exists():
-        write_bytes(path, gzip.compress(body))
+        write_bytes(path, raw.pack(body))
     return path
 
 

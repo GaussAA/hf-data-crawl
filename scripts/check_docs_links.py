@@ -39,8 +39,14 @@ _FENCE = re.compile(r"^\s*(?:```|~~~)")
 #: 不参与扫描的目录：产物、依赖、缓存与工作区内部记录。
 #: `.agents/skills` 是跟仓库走的项目技能，仍要参与校验；只跳过
 #: `.agents/worktrees`（DSH 的工作树副本，每个都是一份完整 checkout）。
+#:
+#: `.workbuddy` 是本机 agent 的对话记忆与逐日工作日志（见 `.gitignore`）。它必须在这里
+#: 再列一次：本校验按文件系统递归，不读 `.gitignore`，而记忆文件里满是当时的旧路径，
+#: 于是同一份代码在 CI 上全绿、在本机永远报十几条断链——「本机红、CI 绿」比不校验更坏，
+#: 它会训练人忽略这条命令。
 _EXCLUDED = {
     ".git",
+    ".workbuddy",
     ".venv",
     "node_modules",
     "data",
