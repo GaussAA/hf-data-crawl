@@ -69,7 +69,8 @@ HF 列表接口也不提供「被哪些模型 / Space 使用」这类应用字�
 
 默认面只加 5 列有实际信息量的：`pretty_name`（展示名 14.17%）、
 `multilinguality`、`arxiv_ids`（论文）、`source_datasets` / `task_ids`（用途与来源）。
-其余约 15 个语义字段不进默认面，改由 `EXTENDED_FIELDS` 登记定义与覆盖档：
+其余约 15 个语义字段不进默认面，改由 `EXTENDED_FIELDS` 登记定义（覆盖率不写进
+源码，见该常量的注释）：
 它们一直都在 72 列视图里，`spec.output.columns` 点名即可投列——**默认面管的是
 「不指定时给什么」，不是「总共有什么」**。低覆盖列塞回默认面，等于把 v1 裁掉的
 「九成空」问题请回来。
@@ -259,32 +260,34 @@ PAGE_FIELDS: tuple[tuple[str, tuple[str, ...], str], ...] = (
 #: 不进默认面、但一直都在 72 列视图里的语义字段。
 #:
 #: 登记在这里是为了回答「总共有什么、怎么拿」：默认面管「不指定时给什么」，
-#: 不是「总共有什么」。覆盖档刻意写区间而非精确百分比——百分比会随每日采集漂移，
-#: 档位不会。精确值以 `doctor` / 实测为准（本表定档于 2026-11-08，112 万行）。
-EXTENDED_FIELDS: tuple[tuple[str, str, str], ...] = (
-    ("regions", "数据覆盖地区标签", "全库有值但 99.94% 是 HF 自动推断的 us，无区分度"),
-    ("dois", "关联的 DOI 编号", "低（<1%）"),
-    ("paperswithcode_id", "Papers with Code 条目 id", "极低（<0.2%）"),
-    ("arxiv", "卡片里声明的 arXiv 编号", "极低（<0.1%）"),
-    ("citation", "作者给出的引用格式（BibTeX / 纯文本）", "极低（<0.5%，长文本）"),
-    ("license_link", "许可证全文链接", "低（<1%）"),
-    ("card_homepage", "项目主页", "极低（<0.1%）"),
+#: 不是「总共有什么」。
+#:
+#: **刻意不写覆盖档**：覆盖率随上游与补抓节奏天天漂，写进源码就等于抄下一份会
+#: 过期且无从判断新旧的数字（与 README 那条「不抄数」同一理由）。要覆盖率就去
+#: `docs/DATA.md` 第八节或交付 README，两处都按当期底库现算。
+EXTENDED_FIELDS: tuple[tuple[str, str], ...] = (
+    ("regions", "数据覆盖地区标签"),
+    ("dois", "关联的 DOI 编号"),
+    ("paperswithcode_id", "Papers with Code 条目 id"),
+    ("arxiv", "卡片里声明的 arXiv 编号"),
+    ("citation", "作者给出的引用格式（BibTeX 或纯文本）"),
+    ("license_link", "许可证全文链接"),
+    ("card_homepage", "项目主页"),
     (
         "card_description",
         "卡片 YAML 声明的一句话摘要（作者口径），与 description 不是一回事",
-        "极低（<0.1%）",
     ),
-    ("annotations_creators", "标注者类型（专家 / 众包 / 机器生成）", "低（约 1%）"),
-    ("language_creators", "语料来源（原始采集 / 翻译 / 机器生成）", "低（约 1%）"),
-    ("card_multilinguality", "卡片声明的多语言性；与 multilinguality 近重复", "低（约 4%）"),
-    ("card_source_datasets", "卡片声明的上游数据集；与 source_datasets 近重复", "低（约 1%）"),
-    ("card_num_rows", "卡片声明的行数；与 datasets-server 实测行数是两个口径", "低（约 1.6%）"),
-    ("card_dataset_bytes", "卡片声明的数据体积", "低（约 1.4%）"),
-    ("card_config_count", "卡片里列出的 config 个数", "中（约 43%）"),
-    ("server_num_bytes_original", "datasets-server 统计的原始文件体积", "中（约 66%）"),
-    ("server_configs", "datasets-server 返回的 config 明细（JSON 文本）", "中（约 67%）"),
-    ("file_formats", "文件清单试点得到的扩展名计数（JSON 文本）", "极低（约 0.08%，头部子集）"),
-    ("total_bytes", "文件清单试点得到的总字节数（下限）", "极低（约 0.08%，头部子集）"),
+    ("annotations_creators", "标注者类型（专家 / 众包 / 机器生成）"),
+    ("language_creators", "语料来源（原始采集 / 翻译 / 机器生成）"),
+    ("card_multilinguality", "卡片声明的多语言性；与 multilinguality 近重复"),
+    ("card_source_datasets", "卡片声明的上游数据集；与 source_datasets 近重复"),
+    ("card_num_rows", "卡片声明的行数；与 datasets-server 实测行数是两个口径"),
+    ("card_dataset_bytes", "卡片声明的数据体积"),
+    ("card_config_count", "卡片里列出的 config 个数"),
+    ("server_num_bytes_original", "datasets-server 统计的原始文件体积"),
+    ("server_configs", "datasets-server 返回的 config 明细（JSON 文本）"),
+    ("file_formats", "文件清单试点得到的扩展名计数（JSON 文本）"),
+    ("total_bytes", "文件清单试点得到的总字节数（下限）"),
 )
 
 #: 交付 README 与数据说明里对扩展字段的统一说明。
@@ -292,7 +295,7 @@ EXTENDED_NOTE = (
     "以下字段一直都在 `gold.datasets` 视图里，只是**不进默认交付面**：低覆盖列塞回"
     "默认面会让九成行重新变空。需要时在 spec 里写 `output.columns: [id, <列名>]` "
     "即可投列（列名既认词条也认视图列名）。空值表示作者未声明，不代表没有。"
-    "覆盖档基于 2026-11-08 全库 112 万行实测，精确值以当期 `doctor` 为准。"
+    "覆盖率按当期底库现算——数字会随每日采集与补抓漂移，所以不抄进源码。"
 )
 
 #: 默认投影的兜底：主列为空时取卡片 YAML 声明的同义列。
@@ -490,7 +493,7 @@ def contract_errors() -> list[str]:
         problems.append(f"页面对照表指向契约之外的列：{missing_page}")
     if not DISPLAY_COLUMNS <= set(DEFAULT_COLUMNS):
         problems.append("CSV 展平映射里有契约之外的列")
-    extended = [column for column, _definition, _tier in EXTENDED_FIELDS]
+    extended = [column for column, _definition in EXTENDED_FIELDS]
     if len(extended) != len(set(extended)):
         problems.append("扩展字段清单里有重复列")
     unknown_extended = [column for column in extended if column not in known]

@@ -1,6 +1,6 @@
 # data 目录说明
 
-> 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-17 14:20，**请勿手工编辑**。
+> 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-17 14:38，**请勿手工编辑**。
 > 表结构与行数由代码和实际文件算出；字段含义维护在 `src/hf_data_crawl/ops/fielddocs.py`。
 > 改完代码后重新生成即可，`tests/ops/test_docs.py` 会在忘记生成时报错。
 
@@ -124,7 +124,7 @@ DuckDB / Spark / Athena 都能零配置把它当列读出来；表内另有 `sna
 | `libraries` | 字符串数组 | 适配的框架库（`datasets`、`pandas`、`polars` …） |
 | `modalities` | 字符串数组 | 模态（`text`/`image`/`audio`/`video`/`3d`/`tabular` 等；无前缀的 `multimodal` 也会并入，属本仓库扩展取值） |
 | `formats` | 字符串数组 | 数据文件格式（`parquet`、`csv`、`json`、`arrow` …） |
-| `regions` | 字符串数组 | 数据覆盖的地区；实测 99.94% 是 HF 自动推断的 `us`，几乎无区分度（见第八节） |
+| `regions` | 字符串数组 | 数据覆盖的地区；几乎全库都有值，但绝大多数是 HF 自动推断的 `us`，区分度极低（实测覆盖见本文件第八节） |
 | `multilinguality` | 字符串数组 | 多语言性标记（单语 / 多语） |
 | `source_datasets` | 字符串数组 | 该数据集派生自哪些上游数据集 |
 | `annotations_creators` | 字符串数组 | 标注者类型（专家、众包、机器生成等） |
@@ -509,7 +509,7 @@ mtime 一复制就变，靠它排序会让「Raw 是唯一事实来源」名不�
 | 页面显示 | 表字段 | 覆盖 | 说明 |
 | --- | --- | --- | --- |
 | Number of rows | `size.num_rows` | — | datasets-server 实测行数 |
-| Total file size | `current.main_size` | 100.0% | **仓库字节**，含 LFS 与历史版本 |
+| Total file size | `current.main_size` | 100% | **仓库字节**，含 LFS 与历史版本 |
 | Estimated rows（预估行数） | `size.estimated_num_rows` | — | 上游按体积估算，精度差 |
 | Columns | `size.num_columns_max` | — | 各 config 中列数的最大值 |
 
@@ -572,33 +572,33 @@ v5 起标签列回到 LIST 原值，与 `gold.datasets` 视图完全同构：要
 
 契约 v5 起默认面扩充到 31 列：新增展示名、
 多语言性、arXiv 论文号、上游数据集与细分任务。**地区 `regions` 刻意不进默认面**
-——实测 100% 有值，但 99.94% 是 HF 自动推断的 `us`，等于每行填个常量。
+——几乎全库都有值，但绝大多数是 HF 自动推断的 `us`，等于每行填个常量。
 
 ### 扩展字段（不进默认面，按需取用）
 
-以下字段一直都在 `gold.datasets` 视图里，只是**不进默认交付面**：低覆盖列塞回默认面会让九成行重新变空。需要时在 spec 里写 `output.columns: [id, <列名>]` 即可投列（列名既认词条也认视图列名）。空值表示作者未声明，不代表没有。覆盖档基于 2026-11-08 全库 112 万行实测，精确值以当期 `doctor` 为准。
+以下字段一直都在 `gold.datasets` 视图里，只是**不进默认交付面**：低覆盖列塞回默认面会让九成行重新变空。需要时在 spec 里写 `output.columns: [id, <列名>]` 即可投列（列名既认词条也认视图列名）。空值表示作者未声明，不代表没有。覆盖率按当期底库现算——数字会随每日采集与补抓漂移，所以不抄进源码。
 
-| 字段 | 定义 | 覆盖档 |
+| 字段 | 定义 | 实测覆盖 |
 | --- | --- | --- |
-| `regions` | 数据覆盖地区标签 | 全库有值但 99.94% 是 HF 自动推断的 us，无区分度 |
-| `dois` | 关联的 DOI 编号 | 低（<1%） |
-| `paperswithcode_id` | Papers with Code 条目 id | 极低（<0.2%） |
-| `arxiv` | 卡片里声明的 arXiv 编号 | 极低（<0.1%） |
-| `citation` | 作者给出的引用格式（BibTeX / 纯文本） | 极低（<0.5%，长文本） |
-| `license_link` | 许可证全文链接 | 低（<1%） |
-| `card_homepage` | 项目主页 | 极低（<0.1%） |
-| `card_description` | 卡片 YAML 声明的一句话摘要（作者口径），与 description 不是一回事 | 极低（<0.1%） |
-| `annotations_creators` | 标注者类型（专家 / 众包 / 机器生成） | 低（约 1%） |
-| `language_creators` | 语料来源（原始采集 / 翻译 / 机器生成） | 低（约 1%） |
-| `card_multilinguality` | 卡片声明的多语言性；与 multilinguality 近重复 | 低（约 4%） |
-| `card_source_datasets` | 卡片声明的上游数据集；与 source_datasets 近重复 | 低（约 1%） |
-| `card_num_rows` | 卡片声明的行数；与 datasets-server 实测行数是两个口径 | 低（约 1.6%） |
-| `card_dataset_bytes` | 卡片声明的数据体积 | 低（约 1.4%） |
-| `card_config_count` | 卡片里列出的 config 个数 | 中（约 43%） |
-| `server_num_bytes_original` | datasets-server 统计的原始文件体积 | 中（约 66%） |
-| `server_configs` | datasets-server 返回的 config 明细（JSON 文本） | 中（约 67%） |
-| `file_formats` | 文件清单试点得到的扩展名计数（JSON 文本） | 极低（约 0.08%，头部子集） |
-| `total_bytes` | 文件清单试点得到的总字节数（下限） | 极低（约 0.08%，头部子集） |
+| `regions` | 数据覆盖地区标签 | 100% |
+| `dois` | 关联的 DOI 编号 | 0.4% |
+| `paperswithcode_id` | Papers with Code 条目 id | <0.1% |
+| `arxiv` | 卡片里声明的 arXiv 编号 | <0.1% |
+| `citation` | 作者给出的引用格式（BibTeX 或纯文本） | 0 |
+| `license_link` | 许可证全文链接 | <0.1% |
+| `card_homepage` | 项目主页 | 0 |
+| `card_description` | 卡片 YAML 声明的一句话摘要（作者口径），与 description 不是一回事 | <0.1% |
+| `annotations_creators` | 标注者类型（专家 / 众包 / 机器生成） | 1.0% |
+| `language_creators` | 语料来源（原始采集 / 翻译 / 机器生成） | 0.7% |
+| `card_multilinguality` | 卡片声明的多语言性；与 multilinguality 近重复 | <0.1% |
+| `card_source_datasets` | 卡片声明的上游数据集；与 source_datasets 近重复 | <0.1% |
+| `card_num_rows` | 卡片声明的行数；与 datasets-server 实测行数是两个口径 | <0.1% |
+| `card_dataset_bytes` | 卡片声明的数据体积 | <0.1% |
+| `card_config_count` | 卡片里列出的 config 个数 | <0.1% |
+| `server_num_bytes_original` | datasets-server 统计的原始文件体积 | 0 |
+| `server_configs` | datasets-server 返回的 config 明细（JSON 文本） | 0 |
+| `file_formats` | 文件清单试点得到的扩展名计数（JSON 文本） | 0 |
+| `total_bytes` | 文件清单试点得到的总字节数（下限） | 0 |
 
 **它是可重建的投影，不是第五张状态表**：
 
@@ -622,9 +622,9 @@ v5 起标签列回到 LIST 原值，与 `gold.datasets` 视图完全同构：要
 
 | 字段 | 列表接口 | 单库详情 | 库内覆盖 | 结论 |
 | --- | --- | --- | --- | --- |
-| `citation` | 返回但稀疏 | 有 | 0.0% | 已在 `IDENTITY_EXPAND`，近乎零带宽 |
-| `paperswithcode_id` | 返回但稀疏 | — | 0.1% | 同上 |
-| `cardData` | 返回 | 有 | 85.4%（license_name） | 4.1 KB/条，全量重扫约 4.6 GB/轮，故只按批次补 |
+| `citation` | 返回但稀疏 | 有 | 0 | 已在 `IDENTITY_EXPAND`，近乎零带宽 |
+| `paperswithcode_id` | 返回但稀疏 | — | <0.1% | 同上 |
+| `cardData` | 返回 | 有 | 85%（license_name） | 4.1 KB/条，全量重扫约 4.6 GB/轮，故只按批次补 |
 | `siblings` | **请求也不返回** | 有，详情约 1.2 MB/次 | 0 | 只在详情接口，逐库补 112 万不现实 |
 | `resourceGroup` | 请求也不返回 | — | 0 | 历史占位列，整列为空 |
 

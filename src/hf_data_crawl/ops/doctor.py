@@ -44,6 +44,7 @@ from ..platform.retention import (
 from ..platform.runs import COLLECT_COMPLETE_REASONS, read_runs
 from ..platform.store import DatasetStore
 from ..platform.tables import table
+from ..query.gold import share_text
 from .finding import Finding
 from .finding import coded as _coded
 from .health import red_days
@@ -427,17 +428,12 @@ def _covered(frame: pl.DataFrame, current_ids: set[str]) -> int:
 
 
 def _share_text(ratio: float) -> str:
-    """覆盖率的统一写法，全体检只此一种。
+    """覆盖率的统一写法，全体检只此一种；实现见 `query.gold.share_text`。
 
-    10% 以上取整、以下留一位：`files` 试点只有 1000 行（约 0.09%），取整会写成
-    「0%」，读起来像「一行都没有」，而它确实有、只是不足千分之一。
-
-    两条检查项曾经各写各的：「产物新鲜度」用 `.0f`、「字段新鲜度」用 `.1%`，
-    于是同一个 68.342% 在同一份体检里印成「68%」与「68.3%」。数字不同不只难看：
-    读者会以为其中一个错了，去查，查完发现两个都对——从此不再信这两个数。
+    留这个别名不直接改名，是因为体检里四条检查项与它们的测试都按这个名字找；
+    真正的格式规则（10% 以上取整、以下一位、不足 0.1% 写 `<0.1%`）只有一处。
     """
-    percent = ratio * 100
-    return f"{percent:.1f}%" if percent < 10 else f"{percent:.0f}%"
+    return share_text(ratio)
 
 
 def _artifact_freshness(ctx: RunContext) -> Finding:

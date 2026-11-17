@@ -125,6 +125,62 @@ def url_expr(column: str = "id") -> str:
     return f"'{DATASET_URL}' || {column} AS url"
 
 
+def column_coverage(catalog: GoldCatalog, columns: Iterable[str]) -> dict[str, float]:
+    """每列在 `datasets` 视图里「有内容」的行占比；0.0 表示整列为空。
+
+    一次聚合算完，不把 112 万行读进内存。**「有内容」不等于「非 NULL」**：
+    列表列要 `len > 0`，文本列排除空串。空列表在这套库里表示「问过、答了没有」，
+    对使用者与 NULL 同样不可用——拿 `count(col)` 算会把 `plain_tags` 报成 100%，
+    而真正带了自定义标签的数据集只有两成多。
+
+    表达式按视图列的**类型**生成，不靠运行时判断：DuckDB 的 `len()` 在绑定期就按
+    列类型选重载，对 `BIGINT` 列写 `len(col)` 是一条直接报错的 SQL。
+
+    覆盖率只给「这一刻的底库」：补抓与上游都会让它漂，所以消费方（交付 README、
+    `docs/DATA.md`）必须现算，不能抄进常量。
+    """
+    probe = catalog.run("SELECT * FROM datasets LIMIT 0")
+    schema = probe.schema
+    # 先落成列表：调用方可能传生成器，下面要遍历两遍（生成表达式、再组装结果）。
+    names = list(columns)
+    exprs: list[str] = []
+    for index, column in enumerate(names):
+        dtype = schema[column]
+        # `count_if` 在 DuckDB 里是 `sum(CASE …)`，空输入（表还没有数据）返回 NULL
+        # 而不是 0——直接 `float()` 会炸在「装好还没采集」这一步。
+        if isinstance(dtype, pl.List):
+            expr = f'coalesce(count_if(len("{column}") > 0), 0)'
+        elif dtype == pl.Utf8:
+            expr = f'coalesce(count_if("{column}" IS NOT NULL AND "{column}" <> \'\'), 0)'
+        else:
+            expr = f'count("{column}")'
+        exprs.append(f"{expr} AS c{index}")
+    counted = catalog.run(f"SELECT count(*) AS n, {', '.join(exprs)} FROM datasets")
+    total = int(counted["n"][0])
+    if total == 0:
+        return {column: 0.0 for column in names}
+    return {column: float(counted[f"c{index}"][0]) / total for index, column in enumerate(names)}
+
+
+def share_text(ratio: float) -> str:
+    """覆盖率的统一写法，全项目只此一种。
+
+    10% 以上取整、以下留一位、不足 0.1% 写 `<0.1%`：`files` 试点只有 1000 行
+    （约 0.09%），取整会写成 `0%`，读起来像「一行都没有」，而它确实有。整列为空
+    写 `0`，与 `<0.1%` 分开——这两件事读者必须能一眼区分。
+
+    原先 `ops.doctor`、`ops.datadoc`、`delivery.query_exec` 各写一份，同一个
+    68.342% 在体检里印成「68%」、在字段说明里印成「68.3%」。数字不同不只难看：
+    读者会以为其中一个错了，查完发现两个都对——从此不再信这两个数。
+    """
+    percent = ratio * 100
+    if percent == 0:
+        return "0"
+    if percent < 0.1:
+        return "<0.1%"
+    return f"{percent:.1f}%" if percent < 10 else f"{percent:.0f}%"
+
+
 #: 内置榜单。`?` 为条数上限占位。
 #:
 #: 每个榜都以唯一键收尾（数据集榜用 `id`，聚合榜用分组键）：只按计数排序时，

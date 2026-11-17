@@ -58,7 +58,8 @@ FIELD_DOCS: dict[str, dict[str, str]] = {
         "libraries": "适配的框架库（`datasets`、`pandas`、`polars` …）",
         "modalities": "模态（`text`/`image`/`audio`/`video`/`3d`/`tabular` 等；无前缀的 `multimodal` 也会并入，属本仓库扩展取值）",
         "formats": "数据文件格式（`parquet`、`csv`、`json`、`arrow` …）",
-        "regions": "数据覆盖的地区；实测 99.94% 是 HF 自动推断的 `us`，几乎无区分度（见第八节）",
+        "regions": "数据覆盖的地区；几乎全库都有值，但绝大多数是 HF 自动推断的 `us`，"
+        "区分度极低（实测覆盖见本文件第八节）",
         "multilinguality": "多语言性标记（单语 / 多语）",
         "source_datasets": "该数据集派生自哪些上游数据集",
         "annotations_creators": "标注者类型（专家、众包、机器生成等）",

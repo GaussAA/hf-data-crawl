@@ -273,16 +273,19 @@ def test_v4新增五列都在默认面() -> None:
 
 def test_地区因无区分度不进默认面但进扩展清单() -> None:
     assert "regions" not in DEFAULT_COLUMNS
-    extended = {column for column, _definition, _tier in EXTENDED_FIELDS}
+    extended = {column for column, _definition in EXTENDED_FIELDS}
     assert "regions" in extended
     assert {"dois", "paperswithcode_id", "citation", "card_homepage"} <= extended
 
 
 def test_扩展清单与默认面不重叠且列都存在() -> None:
-    extended = [column for column, _definition, _tier in EXTENDED_FIELDS]
+    extended = [column for column, _definition in EXTENDED_FIELDS]
     assert not set(extended) & set(DEFAULT_COLUMNS)
     assert set(extended) <= set(wide_column_names())
-    assert all(definition.strip() and tier.strip() for _c, definition, tier in EXTENDED_FIELDS)
+    assert all(definition.strip() for _c, definition in EXTENDED_FIELDS)
+    # 覆盖率是按当期底库现算的（DATA.md 与交付 README 各算一次），不进源码：
+    # 写死一个百分比，读者无法判断它是哪天的，也没人会记得回来改。
+    assert all(len(item) == 2 for item in EXTENDED_FIELDS)
 
 
 def test_扩展说明写明按需取用方式() -> None:

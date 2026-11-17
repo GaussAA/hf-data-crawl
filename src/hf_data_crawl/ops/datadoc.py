@@ -23,7 +23,9 @@ import polars as pl
 
 from ..delivery.fields import CONTRACT_VERSION, DEFAULT_COLUMNS, EXTENDED_FIELDS, EXTENDED_NOTE
 from ..pipeline.raw import BRONZE_LABELS, CARD_LABEL
+from ..platform.store import DatasetStore
 from ..platform.tables import TABLES, Origin, TableSpec
+from ..query.gold import GoldCatalog, column_coverage, share_text
 from .fielddocs import describe
 
 #: 各类 Raw 分块的作用与派生去向。类别清单取自 `raw` 的常量，避免文档与
@@ -251,6 +253,8 @@ def missing_docs() -> list[tuple[str, str]]:
 def render(store_root: Path, now: datetime | None = None) -> str:
     """生成整份文档。"""
     stamp = (now or datetime.now()).strftime("%Y-%m-%d %H:%M")
+    # 覆盖率按当前底库现算：写死在源码或文档里的百分比，读者无法判断它是哪天的。
+    extended_coverage = _extended_coverage(store_root)
     lines: list[str] = [
         "# data 目录说明",
         "",
@@ -592,17 +596,17 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "",
         f"契约 v{CONTRACT_VERSION} 起默认面扩充到 {len(DEFAULT_COLUMNS)} 列：新增展示名、",
         "多语言性、arXiv 论文号、上游数据集与细分任务。**地区 `regions` 刻意不进默认面**",
-        "——实测 100% 有值，但 99.94% 是 HF 自动推断的 `us`，等于每行填个常量。",
+        "——几乎全库都有值，但绝大多数是 HF 自动推断的 `us`，等于每行填个常量。",
         "",
         "### 扩展字段（不进默认面，按需取用）",
         "",
         EXTENDED_NOTE,
         "",
-        "| 字段 | 定义 | 覆盖档 |",
+        "| 字段 | 定义 | 实测覆盖 |",
         "| --- | --- | --- |",
         *(
-            f"| `{column}` | {definition} | {tier} |"
-            for column, definition, tier in EXTENDED_FIELDS
+            f"| `{column}` | {definition} | {_share_text(extended_coverage.get(column))} |"
+            for column, definition in EXTENDED_FIELDS
         ),
         "",
         "**它是可重建的投影，不是第五张状态表**：",
@@ -685,7 +689,33 @@ def _coverage(root: Path, name: str, column: str) -> str:
     except (OSError, pl.exceptions.PolarsError):
         return "—"
 
-    return f"{filled / total * 100:.1f}%"
+    return share_text(filled / total)
+
+
+def _extended_coverage(root: Path) -> dict[str, float]:
+    """扩展字段在 `datasets` 视图里的真实覆盖；底库还没建起来时返回空字典。
+
+    走视图而不是逐表：扩展字段散在 `silver` / `carddata` / `size` / `files` 四张表，
+    且有些在视图里改过名（`size.num_rows` → `server_num_rows`）。视图是唯一一处
+    「这些列叫什么、从哪来」已经拼好的地方，照着它算不会漏、也不会算错口径。
+
+    空目录不能抛错：`docs` 是装好就能跑的第一步命令，`tests/ops/test_docs.py` 的
+    `test_空数据目录也能生成` 钉着这条。
+    """
+    if not (root / "state" / "current.parquet").exists():
+        return {}
+    catalog = GoldCatalog(DatasetStore(root))
+    try:
+        return column_coverage(catalog, [column for column, _definition in EXTENDED_FIELDS])
+    finally:
+        catalog.close()
+
+
+def _share_text(share: float | None) -> str:
+    """覆盖率的写法：没有底库时给 `—`，有则走全项目统一格式 `share_text`。"""
+    if share is None:
+        return "—"
+    return share_text(share)
 
 
 def _grain_rows(root: Path) -> list[str]:

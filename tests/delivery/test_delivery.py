@@ -386,6 +386,27 @@ def test_默认交付README列出逐列定义(store: DatasetStore, tmp_path: Pat
     assert "output.columns" in readme
 
 
+def test_交付README点出整列为空的列(store: DatasetStore, tmp_path: Path) -> None:
+    """交付方拿到一份整列为空的 `server_*` 会以为数据坏了。
+
+    `size` / `carddata` 没采集时，这几个来源的列必然全空——这是「计划内还没抓」，
+    不是「这个数据集没有这一属性」。两者在表格里都是空，只能靠这段文字区分。
+    """
+    root = tmp_path / "req"
+    make_request(root)
+
+    result = deliver(store, root, "REQ-0001", now=NOW)
+
+    readme = (result.directory / "README.md").read_text(encoding="utf-8")
+    assert "本次输出的列覆盖" in readme
+    # 夹具没有 size / carddata 表，这两列的来源必然全空。
+    empty_line = next(line for line in readme.splitlines() if "整列为空" in line)
+    assert "`server_num_rows`" in empty_line
+    assert "`pretty_name`" in empty_line
+    # 扩展字段的覆盖率按当期底库现算，不是抄在源码里的固定档位。
+    assert "| 字段 | 定义 | 全库覆盖 |" in readme
+
+
 def test_一次性需求重复交付需force(store: DatasetStore, tmp_path: Path) -> None:
     root = tmp_path / "req"
     make_request(root)

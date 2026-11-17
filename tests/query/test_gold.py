@@ -10,12 +10,14 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 import pytest
 
 from hf_data_crawl.pipeline import raw
 from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.store import DatasetStore
-from hf_data_crawl.query.gold import BOARDS, GoldCatalog
+from hf_data_crawl.platform.tables import CURRENT_SCHEMA
+from hf_data_crawl.query.gold import BOARDS, GoldCatalog, column_coverage
 
 DAY1 = date(2026, 11, 1)
 DAY4 = date(2026, 11, 4)
@@ -560,3 +562,32 @@ def test_旧结构表文件缺新列时视图仍能建立(tmp_path: Path) -> Non
     # 补 null 而不是少一列：旧文件缺的列在视图里照样存在，只是全空。
     columns = set(catalog.run("SELECT * FROM datasets LIMIT 0").columns)
     assert {"fetched_at", "server_num_rows", "size_status"} <= columns
+
+
+def test_覆盖率只数真有内容的行(catalog: GoldCatalog) -> None:
+    """非 NULL 不等于有内容：空列表要算空。
+
+    这是 `docs/DATA.md` 与交付 README 里那个百分比的唯一算法。夹具里的
+    `plain_tags` 是 `fill_null([])` 出来的空列表，按 `count(col)` 会报成 100%，
+    而实际没有一个数据集真带了自定义标签。
+    """
+    coverage = column_coverage(catalog, ["downloads", "tags", "plain_tags"])
+
+    assert coverage["downloads"] == 1.0
+    assert coverage["tags"] == 1.0
+    assert coverage["plain_tags"] == 0.0
+
+
+def test_空底库的覆盖率是零而不是炸掉(tmp_path: Path) -> None:
+    """装着还没采集时 `docs` 也要能生成。
+
+    空视图上的 `count_if` 是 `sum(CASE …)`，输入为空返回 NULL——直接 `float()`
+    会炸在「装好还没跑过采集」这一步，而那正是第一次生成文档的时刻。
+    """
+    store = DatasetStore(tmp_path / "empty")
+    store.write("current", pl.DataFrame(schema=CURRENT_SCHEMA))
+    catalog = GoldCatalog(store)
+    try:
+        assert column_coverage(catalog, ["downloads"]) == {"downloads": 0.0}
+    finally:
+        catalog.close()

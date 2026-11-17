@@ -21,7 +21,7 @@ import duckdb
 import polars as pl
 
 from ..platform import atomic
-from ..query.gold import GoldCatalog
+from ..query.gold import GoldCatalog, column_coverage, share_text
 from .contract import EXECUTORS, DeliveryBlocked, Payload, RunContext
 from .fields import (
     COLUMN_NOTES,
@@ -43,7 +43,7 @@ def payload(ctx: RunContext) -> Payload:
     """跑这条口径，产出交付物与它在档案里的两段说明。"""
     frame = query(ctx.spec, ctx.catalog)
     definition = definition_of(ctx.spec, frame.columns)
-    lines = detail_lines(ctx.spec)
+    lines = detail_lines(ctx.spec, frame, ctx.catalog)
     if ctx.dry_run:
         # 预演不写盘：只报行列数，`files` 留空。档案层据此也能跑通同一条路径。
         return Payload(
@@ -98,8 +98,18 @@ def definition_of(spec: Spec, result_columns: Sequence[str]) -> dict[str, Any]:
     }
 
 
-def detail_lines(spec: Spec) -> list[str]:
-    """查询形态的人读口径：条件表、投影来源、以及默认契约下逐列是什么。"""
+def detail_lines(
+    spec: Spec,
+    frame: pl.DataFrame,
+    catalog: GoldCatalog | None = None,
+) -> list[str]:
+    """查询形态的人读口径：条件表、投影来源、以及默认契约下逐列是什么。
+
+    `frame` 是本次结果，用来当真算「这次交出去的列有多少有内容」——交付方拿到
+    一份全空的 `server_*` 会以为数据坏了，而管线里没有任何地方会告诉他这是
+    「size 还没采集」。`catalog` 用来算扩展字段的**全库**覆盖：那是底库属性，
+    与本次筛选无关，不能拿结果的覆盖率顶替。
+    """
     lines: list[str] = []
     if spec.mode is Mode.SQL:
         lines += ["手写 SQL：", "", "```sql", (spec.sql or "").strip(), "```", ""]
@@ -145,18 +155,71 @@ def detail_lines(spec: Spec) -> list[str]:
         for label, columns, note in PAGE_FIELDS:
             refs = " / ".join(f"`{column}`" for column in columns)
             lines.append(f"| {label} | {refs} | {note} |")
+        extended_coverage = (
+            column_coverage(catalog, [column for column, _definition in EXTENDED_FIELDS])
+            if catalog is not None
+            else {}
+        )
         lines += [
             "",
             "### 扩展字段（不进默认面，按需取用）",
             "",
             EXTENDED_NOTE,
             "",
-            "| 字段 | 定义 | 覆盖档 |",
+            "| 字段 | 定义 | 全库覆盖 |",
             "| --- | --- | --- |",
         ]
-        for column, definition, tier in EXTENDED_FIELDS:
-            lines.append(f"| `{column}` | {definition} | {tier} |")
+        for column, definition in EXTENDED_FIELDS:
+            share = extended_coverage.get(column)
+            text = "—" if share is None else share_text(share)
+            lines.append(f"| `{column}` | {definition} | {text} |")
         lines.append("")
+    lines += _coverage_lines(frame)
+    return lines
+
+
+def _coverage_lines(frame: pl.DataFrame) -> list[str]:
+    """本次结果的列覆盖：哪几列整列为空、哪几列几乎为空。
+
+    口径与 `query.gold.column_coverage` 一致：非 NULL，且列表非空——空列表表示
+    「问过、答了没有」，对使用者与空值同样不可用。
+    """
+    if frame.height == 0:
+        return [
+            "",
+            "### 本次输出的列覆盖",
+            "",
+            "结果为空（0 行），各列覆盖率无从谈起；先确认口径是否筛得过紧。",
+            "",
+        ]
+    pairs: list[tuple[str, float]] = []
+    for column in frame.columns:
+        series = frame[column]
+        if isinstance(series.dtype, pl.List):
+            filled = int((series.list.len() > 0).sum())
+        elif series.dtype == pl.Utf8:
+            filled = int((series.is_not_null() & (series != "")).sum())
+        else:
+            filled = int(series.is_not_null().sum())
+        pairs.append((column, filled / frame.height))
+
+    empty = [column for column, share in pairs if share == 0]
+    lowest = sorted((item for item in pairs if item[1] > 0), key=lambda item: item[1])[:5]
+    lines = ["", "### 本次输出的列覆盖", ""]
+    lines.append(
+        f"- 行数 {frame.height:,}；{len(frame.columns)} 列中 "
+        f"{len(frame.columns) - len(empty)} 列有内容。"
+    )
+    if empty:
+        lines.append(f"- **整列为空**：{'、'.join(f'`{column}`' for column in empty)}")
+    if lowest:
+        lowest_text = " · ".join(f"`{column}` {share_text(share)}" for column, share in lowest)
+        lines.append(f"- 覆盖最低：{lowest_text}")
+    lines += [
+        "",
+        "「有内容」= 非 NULL 且列表非空。空值表示作者未声明，不代表该数据集没有这一属性。",
+        "",
+    ]
     return lines
 
 
