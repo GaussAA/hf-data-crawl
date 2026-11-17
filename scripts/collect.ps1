@@ -32,4 +32,4 @@ param(
 exit (Invoke-HfTask -Name "collect" -Arguments (@(
     "--lock-wait", "900",
     "collect", "--refresh-top", "20000", "--cards", "--skip-if-done"
-) + $Rest))
+) + $Rest) -TimeoutSeconds 1800)

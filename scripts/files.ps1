@@ -26,4 +26,4 @@ param(
 exit (Invoke-HfTask -Name "files" -Arguments (@(
     "--lock-wait", "900",
     "fetch-files", "--top", "1000", "--workers", "8"
-) + $Rest))
+) + $Rest) -TimeoutSeconds 1800)

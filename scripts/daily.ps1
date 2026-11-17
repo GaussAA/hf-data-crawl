@@ -46,34 +46,44 @@ function Write-Summary {
 
 # 顺序即依赖。`Requires` 只写「真的必须先成」的前置：前置失败则跳过本步，
 # 而不是带着半截状态硬跑——那正是 11-09 那次导出抢跑的病根。
+#: 墙钟上限一律「正常耗时的若干倍」，不是「够用就好」：这一步卡死时要尽快放行
+#: 后面几步，但也不能把一次偏慢的正常运行误杀。取值依据是 runs/ 台账的实测分布
+#: （2026-11-03 至 11-17）：collect 中位 40s/最大 397s、build 162s/570s、
+#: reconcile 1249s/4769s（11-17 起改分批扫，单次扫 600 页，正常约 25–40 分钟）、
+#: sizes 40s/13089s（那次本身是卡死）、export 9.6s/18s。
+#: 误杀的代价也要想清楚：该步记 124、链条继续，数据没坏，第二天补跑即可；
+#: 而卡死的代价是整条链被堵到天亮（11-16 堵 1h35m、11-17 堵 2h），孰轻孰重很分明。
 $steps = @(
-    @{ Name = "collect"; Label = "日增量采集"; Requires = @(); Report = $false
+    @{ Name = "collect"; Label = "日增量采集"; Requires = @(); Report = $false; TimeoutSeconds = 1800
         Arguments = @(
             "--lock-wait", "900",
             "collect", "--refresh-top", "20000", "--cards", "--skip-if-done"
         ) },
-    @{ Name = "build"; Label = "派生层重放"; Requires = @(); Report = $false
+    @{ Name = "build"; Label = "派生层重放"; Requires = @(); Report = $false; TimeoutSeconds = 1800
         Arguments = @("--lock-wait", "900", "build", "--stale") },
     # 分批扫：整站 1127 页要连续跑 30–60 分钟，期间撞上 hf-update 的抓取批就
     # 被 429 打停，两次实测都在 89% 左右断掉。`--max-pages 600` 把单次压到约
     # 15 分钟，游标（`reconcile-checkpoint.json`）记住扫到哪，次日接着扫；
     # 两天走完一轮全量，`RECONCILE_MAX_AGE` 相应放宽到 48 小时。
-    @{ Name = "reconcile"; Label = "全站对账"; Requires = @(); Report = $false
+    # 墙钟上限仍按「不分批时的整站一轮」给（90 分钟），不随分批收紧：分批后正常
+    # 约 25–40 分钟（扫 600 页约 12 分 + 探测预算 15 分 + 单批最坏溢出 20 分），
+    # 90 分钟是它两倍余量；这道闸的用途是「卡死就掐断」，不是「跑得久就杀」。
+    @{ Name = "reconcile"; Label = "全站对账"; Requires = @(); Report = $false; TimeoutSeconds = 5400
         Arguments = @("--lock-wait", "900", "reconcile", "--max-pages", "600") },
     # 规模随内容走：只在库改动（lastModified 越过抓取日）后重取，日取几千个，
     # 与周日那次全量轮替分工——全量补缺，这步保鲜。
-    @{ Name = "sizes"; Label = "规模随变化刷新"; Requires = @("reconcile"); Report = $false
+    @{ Name = "sizes"; Label = "规模随变化刷新"; Requires = @("reconcile"); Report = $false; TimeoutSeconds = 3600
         Arguments = @("--lock-wait", "900", "fetch-sizes", "--changed", "8000") },
-    @{ Name = "export"; Label = "导出宽表"; Requires = @("build", "reconcile", "sizes"); Report = $false
+    @{ Name = "export"; Label = "导出宽表"; Requires = @("build", "reconcile", "sizes"); Report = $false; TimeoutSeconds = 900
         Arguments = @("--lock-wait", "900", "export-wide") },
-    @{ Name = "deliver"; Label = "到期需求交付"; Requires = @("build", "reconcile"); Report = $false
+    @{ Name = "deliver"; Label = "到期需求交付"; Requires = @("build", "reconcile"); Report = $false; TimeoutSeconds = 600
         Arguments = @("--lock-wait", "900", "request", "run-due") },
     # 清理紧跟导出：本地产物刚定稿，正是把上一批备份释放掉的时候。
     # 只动 backup/，与搬运分开，删错也不可能伤到权威层。
-    @{ Name = "prune"; Label = "清理备份"; Requires = @(); Report = $false
+    @{ Name = "prune"; Label = "清理备份"; Requires = @(); Report = $false; TimeoutSeconds = 600
         Arguments = @("--lock-wait", "900", "prune") },
     # 体检放最后：前面任一步出事，它才看得见。不计入链条成败，理由见 .NOTES。
-    @{ Name = "doctor"; Label = "体检"; Requires = @(); Report = $true
+    @{ Name = "doctor"; Label = "体检"; Requires = @(); Report = $true; TimeoutSeconds = 300
         Arguments = @("doctor") }
 )
 
@@ -92,7 +102,7 @@ foreach ($step in $steps) {
     }
 
     Write-Summary "  [开始] $($step.Label)（$($step.Name)）"
-    $code = Invoke-HfTask -Name $step.Name -Arguments $step.Arguments
+    $code = Invoke-HfTask -Name $step.Name -Arguments $step.Arguments -TimeoutSeconds $step.TimeoutSeconds
 
     # 采集是唯一「一次抖动就整天没有增量」的步骤：2026-11-15 03:10 实测撞上 TLS
     # 断连（SSL UNEXPECTED_EOF），一分钟后对账却正常，属瞬时故障。故只给它一次
@@ -100,7 +110,7 @@ foreach ($step in $steps) {
     if ($code -ne 0 -and $step.Name -eq "collect") {
         Write-Summary "  [重试] $($step.Label)（$($step.Name)）：首次失败，2 分钟后重试一次"
         Start-Sleep -Seconds 120
-        $code = Invoke-HfTask -Name $step.Name -Arguments $step.Arguments
+        $code = Invoke-HfTask -Name $step.Name -Arguments $step.Arguments -TimeoutSeconds $step.TimeoutSeconds
     }
 
     $codes[$step.Name] = $code
@@ -112,6 +122,13 @@ foreach ($step in $steps) {
     if ($step.Report) {
         # 体检非零＝有告警，不等于故障；它自己已写 ALERT.txt。
         Write-Summary "  [告警] $($step.Label) 退出码 $code，详情见 data\ALERT.txt 与对应日志"
+        continue
+    }
+    if ($code -eq $script:TimeoutExitCode) {
+        # 与「自己失败」分开写：前者是上游或代码的问题，后者是这一步卡住了,
+        # 处置完全不同（一个是查原因，一个是看它卡在哪、要不要拆细）。
+        Write-Summary "  [超时] $($step.Label) 墙钟 $($step.TimeoutSeconds) 秒用尽，已强杀进程树；链条继续"
+        if ($failure -eq 0) { $failure = $code }
         continue
     }
     Write-Summary "  [失败] $($step.Label) 退出码 $code"

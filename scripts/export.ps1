@@ -27,4 +27,4 @@ param(
 exit (Invoke-HfTask -Name "export" -Arguments (@(
     "--lock-wait", "900",
     "export-wide"
-) + $Rest))
+) + $Rest) -TimeoutSeconds 900)

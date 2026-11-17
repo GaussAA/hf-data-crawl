@@ -28,4 +28,4 @@ param(
 exit (Invoke-HfTask -Name "prune" -Arguments (@(
     "--lock-wait", "900",
     "prune"
-) + $Rest))
+) + $Rest) -TimeoutSeconds 600)

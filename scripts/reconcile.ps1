@@ -24,4 +24,4 @@ param(
 exit (Invoke-HfTask -Name "reconcile" -Arguments (@(
     "--lock-wait", "900",
     "reconcile"
-) + $Rest))
+) + $Rest) -TimeoutSeconds 7200)

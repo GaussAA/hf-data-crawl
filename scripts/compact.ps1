@@ -25,4 +25,4 @@ param(
 exit (Invoke-HfTask -Name "compact" -Arguments (@(
     "--lock-wait", "900",
     "compact"
-) + $Rest))
+) + $Rest) -TimeoutSeconds 7200)

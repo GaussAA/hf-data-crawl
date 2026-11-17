@@ -105,17 +105,61 @@ function Write-HfChain {
     return $script:ChainLogPath
 }
 
+#: 被墙钟掐掉时的退出码，取 coreutils `timeout` 的惯例值。与真实失败区分开：
+#: hf-data-crawl 自己只返回 0/1，124 不会撞车，摘要里一眼能认出「是被我们杀的」。
+$script:TimeoutExitCode = 124
+
+function Stop-ProcessTree {
+    <#
+    .SYNOPSIS
+        连子进程一起杀。
+    .DESCRIPTION
+        只杀父进程会留下持锁的 python：`uv` 是启动器，真正的 python 与
+        hf-data-crawl.exe 都在它下面，`Stop-Process` 只杀得掉 uv，那两个会变成
+        孤儿继续跑——手里还攥着写锁，后面每一步都因「拿不到锁」而失败，比不杀更糟。
+        `taskkill /T` 按进程树杀，是这里唯一可靠的办法。
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][int]$ProcessId)
+
+    $taskkill = Join-Path $env:SystemRoot "System32\taskkill.exe"
+    if (Test-Path -LiteralPath $taskkill) {
+        & $taskkill /PID $ProcessId /T /F *> $null
+    }
+
+    # 强杀可能让我们自己先死：等它真的消失再返回，否则后续步骤抢锁会撞上一个
+    # 「还活着但已经没人管」的进程。15 秒足够，超时就用 Stop-Process 再补一刀。
+    $deadline = (Get-Date).AddSeconds(15)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) { return }
+        Start-Sleep -Milliseconds 200
+    }
+    Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+}
+
 function Invoke-HfTask {
     <#
     .SYNOPSIS
-        跑一条 hf-data-crawl 子命令，输出追加到 data\logs\<时间戳>-<Name>.log。
+        跑一条 hf-data-crawl 子命令，输出进 data\logs\<时间戳>-<Name>.log，带墙钟上限。
+    .DESCRIPTION
+        为什么要墙钟上限：2026-11-16 的 `fetch-sizes` 与 11-17 的 `reconcile` 各卡死
+        一次，症状一模一样——进程留着、线程挂着、CPU 与读写计数零增长、`Get-NetTCPConnection`
+        一个连接都没有（卡在 DNS 解析，httpx 的超时覆盖不到 getaddrinfo）。心跳只让它
+        可见，救不了链条：进程不退出，后面每一步都在排队等锁。
+        这里给每一步一个总时长上限，到点杀进程树、记 124、链条照常往下走。
+
+        为什么用 `Start-Process` 重定向文件而不是 `& ... *>> $log`：前者由 OS 直接
+        写文件句柄，跑到一半也能 tail；后者在 PowerShell 里是同一进程内的管道，
+        我们没法既实时读又在超时后掐断。管道还有个额外风险：没人读满缓冲就死锁。
     .OUTPUTS
-        进程退出码。计划任务据此判定成败。
+        进程退出码（超时为 124）。计划任务据此判定成败。
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Name,
-        [Parameter(Mandatory)][string[]]$Arguments
+        [Parameter(Mandatory)][string[]]$Arguments,
+        # 墙钟上限（秒）。默认一小时，各脚本按自己那步的正常耗时给值。
+        [ValidateRange(1, 86400)][int]$TimeoutSeconds = 3600
     )
 
     $root = Split-Path -Parent $PSScriptRoot
@@ -139,6 +183,8 @@ function Invoke-HfTask {
     # 同一秒连跑两条加序号，不覆盖上一轮现场。
     $log = New-RunLogPath -Name $Name
     $logDir = Split-Path -Parent $log
+    # stderr 不能与 stdout 同一个文件（Start-Process 不允许），先分着，收尾时合流。
+    $stderrLog = "$log.stderr"
 
     $uvCommand = Get-Command uv -ErrorAction SilentlyContinue
     $uv = if ($uvCommand) { $uvCommand.Source } else { Join-Path $env:USERPROFILE ".local\bin\uv.exe" }
@@ -147,19 +193,57 @@ function Invoke-HfTask {
     }
 
     $started = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    "== $started  $Name  $($Arguments -join ' ')" | Out-File -FilePath $log -Append -Encoding utf8
+    $startedAt = Get-Date
+    $argumentsWithCommand = @("run", "hf-data-crawl") + $Arguments
 
-    Push-Location $root
+    $timedOut = $false
+    $code = -1
+    $process = $null
     try {
-        & $uv run hf-data-crawl @Arguments *>> $log
-        $code = $LASTEXITCODE
+        # 头部两行不在这里写：`-RedirectStandardOutput` 会**截断**目标文件，
+        # 先写必被冲掉。收尾时把「头 + 正文 + 尾」一次性重写，格式与旧版一致。
+        $process = Start-Process -FilePath $uv -ArgumentList $argumentsWithCommand `
+            -WorkingDirectory $root -NoNewWindow -PassThru `
+            -RedirectStandardOutput $log -RedirectStandardError $stderrLog
+
+        if ($process.WaitForExit($TimeoutSeconds * 1000)) {
+            $code = $process.ExitCode
+        }
+        else {
+            $timedOut = $true
+            $code = $script:TimeoutExitCode
+            Stop-ProcessTree -ProcessId $process.Id
+        }
     }
     finally {
-        Pop-Location
+        if ($process) { $process.Dispose() }
     }
 
     $finished = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    "== $finished  退出码 $code" | Out-File -FilePath $log -Append -Encoding utf8
+    $elapsed = [int]((Get-Date) - $startedAt).TotalSeconds
+
+    $body = ""
+    if (Test-Path -LiteralPath $log) {
+        $body = [string](Get-Content -LiteralPath $log -Raw -Encoding utf8)
+    }
+    if (Test-Path -LiteralPath $stderrLog) {
+        $stderrText = [string](Get-Content -LiteralPath $stderrLog -Raw -Encoding utf8)
+        if ($stderrText) { $body = "$body$stderrText" }
+        Remove-Item -LiteralPath $stderrLog -Force -ErrorAction SilentlyContinue
+    }
+
+    $header = "== $started  $Name  $($Arguments -join ' ')`r`n"
+    $footer = if ($timedOut) {
+        "== $finished  退出码 $code（墙钟 ${TimeoutSeconds}s 用尽、实耗 ${elapsed}s，已强杀进程树）`r`n"
+    }
+    else {
+        "== $finished  退出码 $code（实耗 ${elapsed}s）`r`n"
+    }
+    # 正文若不以换行收尾，尾行会粘在最后一行输出后面；空正文时更不该留一行空白。
+    if ($body -and -not $body.EndsWith("`n")) { $body = "$body`r`n" }
+    # 去掉尾部换行再由 Out-File 补一个：否则每份日志末尾会多出一整行空白，
+    # 而 MONITORING 承诺「末行带实耗秒数」——多出空行就变成末行什么都没有。
+    ($header + $body + $footer).TrimEnd("`r", "`n") | Out-File -FilePath $log -Encoding utf8
 
     Remove-StaleLogs -LogDir $logDir
     return $code
