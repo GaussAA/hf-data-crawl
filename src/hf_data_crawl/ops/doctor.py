@@ -836,6 +836,10 @@ def _storage(ctx: RunContext) -> Finding:
     把四层摊开列出来，是为了让「哪天发现磁盘吃紧」时不必再逐个 du：
     raw 是热区（7 天窗口）、cold 是去重后的基线（体量恒定）、backup 是待销毁的
     副本（应当有界）、reports 是诊断产物。
+
+    后两句回答的是「会不会只增不减」：`backup` 的稳态由「保留天数 × 每天搬进多少」
+    决定，`observations` 是唯一无界增长的一层（变化才追加，不能压缩、不能采样），
+    按最近一天的速率年化。两句都是粗估，但比「等磁盘满了再看」强。
     """
     store = ctx.store
     from .prune import total_size
@@ -851,12 +855,71 @@ def _storage(ctx: RunContext) -> Finding:
     report_bytes = tree(store.root / "reports")
     whole = tree(store.root)
     other = max(0, whole - raw_bytes - cold_bytes - backup_bytes - report_bytes)
+
+    raw_days = len([path for path in (store.root / "raw").glob("dt=*") if path.is_dir()])
+    steady_backup = (raw_bytes / raw_days) * BACKUP_KEEP_DAYS if raw_days else 0
+    yearly_obs = _latest_partition_bytes(store, "observations") * 365
     return Finding(
         False,
         f"存储：data {whole / 1e9:.2f} GB（raw {raw_bytes / 1e6:.0f} MB · "
         f"cold {cold_bytes / 1e6:.0f} MB · backup {backup_bytes / 1e6:.0f} MB · "
-        f"reports {report_bytes / 1e6:.0f} MB · 其余 {other / 1e6:.0f} MB）",
+        f"reports {report_bytes / 1e6:.0f} MB · 其余 {other / 1e6:.0f} MB）；"
+        f"按当前速率，backup 稳态约 {steady_backup / 1e9:.1f} GB"
+        f"（{BACKUP_KEEP_DAYS} 天 × 每天搬入量）、观测流水每年约 {yearly_obs / 1e9:.1f} GB",
     )
+
+
+def _latest_partition_bytes(store: DatasetStore, name: str) -> int:
+    """某张分区表最新一个分区的字节数；没有分区返回 0。"""
+    parts = sorted(store.root.glob(table(name).glob()))
+    return parts[-1].stat().st_size if parts else 0
+
+
+#: `.staging` 是抓取中间产物的落点：分片先写这里，收尾才并进正式表。
+#: 一个目录里最新分片超过这么久没动，才算停在半路——全量抓取最长约 21 小时
+#: （readme），2 天留足余量，不会把正在跑的批误报成残留。
+STAGING_STALE_AFTER = timedelta(days=2)
+
+
+def _staging_backlog(ctx: RunContext) -> Finding:
+    """抓取中间产物有没有停在半路。
+
+    `fetch-sizes` / `fetch-readme` 是「先写分片、收尾才并表」的：进程被杀、机器
+    重启、任务被停，分片就留在 `data/.staging/<表>/` 里。它们不进任何表，也不在
+    `*.tmp` 的扫描范围，于是「有半成品却没人知道」——与 `.tmp` 那条检查防的是
+    同一种事，只是换了个目录。
+
+    **只报不删**：分片是断点续跑的凭据，删掉等于让几十小时的抓取从头再来。
+    判断「是否还在跑」看最新分片的 mtime，不看目录本身——空目录或只剩旧分片都
+    说明这一批已经停了。
+    """
+    store, now = ctx.store, ctx.now
+    staging = store.root / ".staging"
+    if not staging.is_dir():
+        return Finding(False, "抓取暂存：无残留")
+    stalled: list[str] = []
+    for child in sorted(staging.iterdir()):
+        if not child.is_dir():
+            continue
+        files = [path for path in child.rglob("*.parquet") if path.is_file()]
+        if not files:
+            continue
+        try:
+            newest = max(datetime.fromtimestamp(path.stat().st_mtime) for path in files)
+        except OSError:
+            continue
+        if now - newest > STAGING_STALE_AFTER:
+            stalled.append(
+                f"{child.name}（{len(files)} 个分片，最近写入 {(now - newest).days} 天前）"
+            )
+    if stalled:
+        return Finding(
+            True,
+            f"抓取暂存：{len(stalled)} 处停在半路 —— "
+            + "、".join(stalled)
+            + "；分片是断点续跑的凭据，确认不再续跑再删 `data/.staging/` 下对应目录",
+        )
+    return Finding(False, "抓取暂存：无停滞的分片（有批次在跑时也走这条）")
 
 
 def _backup_backlog(ctx: RunContext) -> Finding:
@@ -1220,6 +1283,7 @@ def diagnose(
         _coded("cold_backlog", _cold_backlog(ctx)),
         _coded("archive_backlog", _archive_backlog(ctx)),
         _coded("storage", _storage(ctx)),
+        _coded("staging_backlog", _staging_backlog(ctx)),
         _coded("backup_backlog", _backup_backlog(ctx)),
         _coded("probe_quality", _probe_quality(ctx)),
         _coded("probe_degraded", _probe_degraded(ctx)),

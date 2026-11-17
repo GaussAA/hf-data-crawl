@@ -1278,3 +1278,51 @@ def test_没有骤降记录时不报(tmp_path: Path) -> None:
     make_run(store, "build", NOW)
 
     assert not any("观测骤降" in text for text in problems(store))
+
+
+def test_存储报出备份稳态与观测年化(tmp_path: Path) -> None:
+    """「会不会只增不减」得有个数字，而不是等磁盘满了才发现。
+
+    backup 的稳态由「保留天数 × 每天搬进多少」决定；观测流水是唯一无界增长的
+    一层，按最近一天年化。两句都是粗估，但比逐个 du 强。
+    """
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+
+    finding = next(item for item in diagnose(store, NOW) if item.text.startswith("存储"))
+
+    assert "backup 稳态约" in finding.text
+    assert "观测流水每年约" in finding.text
+
+
+def test_停滞的抓取分片要报(tmp_path: Path) -> None:
+    """`fetch-sizes` / `fetch-readme` 的分片不进任何表，也不在 `*.tmp` 的扫描范围。
+
+    进程被杀、机器重启，分片就留在 `.staging/` 里，没人知道有半成品。
+    """
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    shard = store.root / ".staging" / "sizes" / "2026-11-17-abc-0000.parquet"
+    shard.parent.mkdir(parents=True)
+    shard.write_bytes(b"x")
+    old = (NOW - timedelta(days=3)).timestamp()
+    os.utime(shard, (old, old))
+
+    finding = next(item for item in diagnose(store, NOW) if item.text.startswith("抓取暂存"))
+
+    assert finding.problem
+    assert "sizes" in finding.text
+    assert "3 天前" in finding.text
+
+
+def test_正在跑的抓取分片不报(tmp_path: Path) -> None:
+    """最新分片还在动，说明这一批还在跑——报红只会训练人忽略告警。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    shard = store.root / ".staging" / "readme" / "2026-11-17-def-0000.parquet"
+    shard.parent.mkdir(parents=True)
+    shard.write_bytes(b"x")
+
+    finding = next(item for item in diagnose(store, NOW) if item.text.startswith("抓取暂存"))
+
+    assert not finding.problem
