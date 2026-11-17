@@ -219,10 +219,14 @@ def run_doctor(store: DatasetStore, wait: float, *, requests_root: Path | None =
         return _doctor(store, snapshot=False, requests_root=requests_root)
 
 
-def run_docs(args: argparse.Namespace, store: DatasetStore) -> int:
+def run_docs(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     """生成 data 目录说明。纯本地动作，不联网。
 
     缺字段说明时退出码为 1：文档不完整等于没写，应当在生成那一刻就看见。
+
+    返回 `Outcome` 而不是裸退出码，是为了和别的命令一样经 `_execute` 落一条台账：
+    `docs` 曾自己加锁、自己返回，失败了从不在 runs/ 里出现，而体检只读台账——
+    盲区就等于「这条命令从不失败」。
     """
     from .datadoc import missing_docs, write
 
@@ -234,5 +238,9 @@ def run_docs(args: argparse.Namespace, store: DatasetStore) -> int:
         preview = "、".join(f"{name}.{column}" for name, column in gaps[:6])
         print(f"  [!] {len(gaps)} 个字段缺说明：{preview}{' …' if len(gaps) > 6 else ''}")
         print("      补在 src/hf_data_crawl/ops/fielddocs.py 里")
-        return 1
-    return 0
+        return Outcome(
+            payload={"path": str(path), "gaps": len(gaps)},
+            code=1,
+            reason=f"{len(gaps)} 个字段缺说明：{preview}",
+        )
+    return Outcome(payload={"path": str(path), "gaps": 0})

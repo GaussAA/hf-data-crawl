@@ -112,7 +112,11 @@ def test_只读命令不受锁影响(tmp_path: Path) -> None:
 def test_docs在锁被占用时等不到就失败(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """docs 需要一致快照，撞上写命令时应先等；等不到再明确失败，不生成半新半旧的文件。"""
+    """docs 需要一致快照，撞上写命令时应先等；等不到再明确失败，不生成半新半旧的文件。
+
+    失败措辞与其余命令一致（`未完成`），并且同样在 runs/ 里留一条：docs 曾自己
+    开锁、自己返回，锁冲突只打印一句话，台账里查不到——体检也就看不见。
+    """
     from hf_data_crawl.ops import cli
 
     monkeypatch.setattr(cli, "SNAPSHOT_LOCK_WAIT", 0.0)
@@ -123,8 +127,11 @@ def test_docs在锁被占用时等不到就失败(
         code = main(["--data-dir", str(root), "docs", "--out", str(target)])
 
     assert code == 1
-    assert "docs 失败" in capsys.readouterr().out
+    assert "docs 未完成" in capsys.readouterr().out
     assert not target.exists()
+    runs = read_runs(DatasetStore(root))
+    assert [item["status"] for item in runs] == ["failed"]
+    assert "LockBusy" in runs[0]["reason"]
 
 
 def test_report在锁被占用时留下失败记录(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

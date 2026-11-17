@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -17,6 +18,7 @@ import pytest
 
 from hf_data_crawl.ops.cli import main
 from hf_data_crawl.ops.datadoc import missing_docs, render
+from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.platform.tables import TABLES
 
 STAMP = datetime(2026, 11, 7, 12, 0)
@@ -87,6 +89,26 @@ def test_生成命令写出文件并返回成功(tmp_path: Path) -> None:
     assert code == 0
     assert target.exists()
     assert "data 目录说明" in target.read_text(encoding="utf-8")
+
+
+def test_缺字段时台账里也留一条失败(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`docs` 曾自己加锁、自己返回退出码，失败从不出现在 runs/ 里。
+
+    `doctor._recent_failures` 只读台账，盲区就等于「这条命令从不失败」。
+    """
+    from hf_data_crawl.ops import datadoc
+
+    monkeypatch.setattr(datadoc, "missing_docs", lambda: [("gold", "downloads")])
+    store = DatasetStore(tmp_path / "data")
+
+    code = main(["--data-dir", str(store.root), "docs", "--out", str(tmp_path / "DATA.md")])
+
+    assert code == 1
+    runs = list((store.root / "runs").glob("*-docs.json"))
+    assert len(runs) == 1, "docs 失败必须留在台账里"
+    body = json.loads(runs[0].read_text(encoding="utf-8"))
+    assert body["status"] == "failed"
+    assert "个字段缺说明" in body["reason"]
 
 
 def test_命令生成的文档与渲染函数一致(tmp_path: Path) -> None:

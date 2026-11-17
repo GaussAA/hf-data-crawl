@@ -581,13 +581,10 @@ def main(argv: list[str] | None = None, *, transport: Any = None) -> int:
     if args.command == "doctor":
         return run_doctor(store, lock_wait, requests_root=Path(args.requests_dir))
     if args.command == "docs":
-        # docs 不写 runs/，但同样要在一致快照上生成；拿不到锁就明确失败。
-        try:
-            with exclusive(store.root, "docs", lock_wait):
-                return run_docs(args, store)
-        except LockBusy as error:
-            print(f"docs 失败：{type(error).__name__}: {error}")
-            return 1
+        # 与 report 同路：加锁与落台账都交给 `_execute`。缺字段说明时退出码为 1，
+        # 失败因此也会留在 runs/ 里——原先这里自己开一次锁并直接返回，等于在
+        # `_execute` 之外又造了一条「有加锁、没台账」的路径。
+        return _execute(store, "docs", lambda: run_docs(args, store), lock_wait)
 
     return 1
 
