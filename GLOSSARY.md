@@ -1665,3 +1665,22 @@
       穷尽分派**逼着**改，而不是漏改。
     - **反向验证**：把末尾那行 `raise` 退回 `return _compare_frames(...)`，新测试立刻红，
       且报错变成「left 里没有 data.parquet / data.csv」——正是这条要防的误导。
+
+105. **体检项的三件事写在一处**（2026-11-17，架构复检 #5 落地）：`diagnose` 的调用点上，
+     每条检查同时写着三样——码字符串、调用表达式、要不要包 `_snapshot_dependent`。
+     前两样漏了看得出来（码为空会在台账里显形），第三样漏了**不报错**：非快照模式下
+     跨表读数可能跨时点，却照样参与退出码，报出来是一条真问题。
+
+    - **做法**：`CHECKS: tuple[Check, ...]`，`Check(code, run, snapshot_dependent)`。
+      `diagnose` 只负责迭代与降级。顺序就是输出顺序（人读的那份清单靠它），别按字母排；
+      `lock_state` 单独登记，因为它在快照模式下会自己跟自己抢锁。
+    - **同批收掉的重复**：`problem and not degraded` 原先在「退出码与告警」和「体检流水
+      计数」两处各写一遍，现在是 `Finding.counts`。
+    - **顺手修的真 bug**：`_snapshot_dependent` 用 `Finding(problem, text, ...)` **重新
+      构造**，把 `code` 与 `degraded` 一起丢掉。今天靠「先包快照依赖、后贴码」的顺序
+      遮着；顺序一改就是静默丢字段，台账里那条记录的码变空——而连续天数正是按码数的，
+      归零看起来和「已经修好了」一模一样。改成 `replace(finding, snapshot_dependent=True)`。
+    - **它不保证什么**：登记表保证「三件事只写一处、漏不掉第二遍」，但保证不了某条新
+      检查的 `snapshot_dependent` 填对了——那仍然要靠写的人判断。
+    - **反向验证**：把 `replace` 退回重新构造，`test_降级不会丢掉已经贴上的码` 立刻红
+       （`'' == 'raw_gaps'`）。
