@@ -22,7 +22,13 @@ import polars as pl
 from ..acquire.reconcile import PROBE_DEGRADE_AFTER
 from ..acquire.sizes import stale_ids
 from ..delivery.delivery import deliveries_of, method
-from ..delivery.fields import COLUMN_TYPES, DEFAULT_COLUMNS, contract_errors, type_family
+from ..delivery.fields import (
+    COLUMN_SOURCES,
+    COLUMN_TYPES,
+    DEFAULT_COLUMNS,
+    contract_errors,
+    type_family,
+)
 from ..delivery.requirement import SPEC_NAME, SpecError, request_dirs, version_conflict
 from ..delivery.requirement import load as load_spec
 from ..delivery.wide import export_path
@@ -531,6 +537,80 @@ def _artifact_freshness(ctx: RunContext) -> Finding:
     if problems:
         return Finding(True, "产物新鲜度：" + "；".join(problems))
     return Finding(False, "产物新鲜度：" + "；".join(notes))
+
+
+def _contract_coverage(ctx: RunContext) -> Finding:
+    """默认交付面有没有「整列为空」的列。
+
+    行数、列名、类型族都对，仍可能整列没有值：`size` 有数据而 `server_*` 全空、
+    `carddata` 有行而 `pretty_name` 全空——拿导出物做分析的人会以为数据坏了，
+    而体检此前全绿。2026-11-04 `private` 整列静默变空是同一个形态，发生在 bronze；
+    这项把它挪到交付面上再守一次。
+
+    判据是**整列为空**，不是覆盖率阈值：低覆盖是上游分布（`arxiv_ids` 3.7%、
+    `languages` 17%），拿阈值判会天天红，红了就没人看。整列空时再按来源分两种：
+    来源表本身没有数据（`size` / `carddata`，计划内还没抓）只报提示；有数据却
+    全空才告警——那说明这一列没接上，而不是「上游没有」。
+
+    空列表算空：`languages` 是空列表而不是 NULL 时，对使用者与 NULL 同样不可用。
+    """
+    store, current = ctx.store, ctx.current
+    if current.height == 0:
+        return Finding(True, "交付面取值：current 为空，无法判定")
+    export = export_path(store)
+    if not export.exists():
+        # 缺文件由「产物新鲜度」报，这里不重复。
+        return Finding(False, "交付面取值：宽表导出不存在，跳过（见产物新鲜度）")
+    try:
+        schema = pl.scan_parquet(export.as_posix()).collect_schema()
+    except (OSError, pl.exceptions.PolarsError):
+        return Finding(False, "交付面取值：宽表导出读取失败，跳过（见产物新鲜度）")
+    # 列集不符契约时也由「产物新鲜度」报；这里若硬按 31 列去 select，一份少了列的
+    # 旧导出会让整个体检抛错——体检不能因为一份产物坏掉而整体失败。
+    missing = [column for column in DEFAULT_COLUMNS if column not in schema]
+    if missing:
+        return Finding(False, f"交付面取值：导出物缺 {len(missing)} 列，跳过（见产物新鲜度）")
+
+    expressions: list[pl.Expr] = [pl.len().alias("__rows")]
+    for column in DEFAULT_COLUMNS:
+        empty = pl.col(column).is_null()
+        if COLUMN_TYPES.get(column) == "list":
+            empty = empty | (pl.col(column).list.len() == 0)
+        expressions.append(empty.sum().alias(column))
+    counted = pl.scan_parquet(export.as_posix()).select(expressions).collect().row(0, named=True)
+    rows = int(counted.pop("__rows"))
+    if rows == 0:
+        return Finding(False, "交付面取值：宽表导出为空，跳过（见产物新鲜度）")
+
+    empty_columns = [column for column in DEFAULT_COLUMNS if counted[column] == rows]
+    if not empty_columns:
+        worst = max(DEFAULT_COLUMNS, key=lambda column: counted[column])
+        return Finding(
+            False,
+            f"交付面取值：{len(DEFAULT_COLUMNS)} 列都有值"
+            f"（最空的是 {worst}，{_share_text(counted[worst] / rows)} 为空）",
+        )
+
+    blocked: list[str] = []
+    pending: dict[str, list[str]] = {}
+    for column in empty_columns:
+        source = COLUMN_SOURCES.get(column)
+        if source is None:
+            blocked.append(column)
+        elif store.read(source).height == 0:
+            pending.setdefault(source, []).append(column)
+        else:
+            blocked.append(f"{column}（{source} 有数据却全空）")
+
+    pending_text = "；".join(
+        f"{source} 未采集，{'、'.join(columns)} 整列为空" for source, columns in pending.items()
+    )
+    if blocked:
+        text = "交付面取值：整列为空 —— " + "、".join(blocked)
+        if pending_text:
+            text += f"；另有 {pending_text}"
+        return Finding(True, text)
+    return Finding(False, f"交付面取值：{pending_text}；交付前跑对应采集命令，或注明这几列不提供")
 
 
 def _last_sweep_date(runs: list[dict]) -> date | None:
@@ -1137,6 +1217,7 @@ def diagnose(
         _coded("derive_state", _derive_state(ctx)),
         _coded("status_snapshot", _status_snapshot(ctx)),
         _coded("artifact_freshness", _snapshot_dependent(_artifact_freshness(ctx))),
+        _coded("contract_coverage", _snapshot_dependent(_contract_coverage(ctx))),
         _coded("field_freshness", _snapshot_dependent(_field_freshness(ctx))),
         _coded("card_provenance", _snapshot_dependent(_card_provenance(ctx))),
         _coded("raw_growth", _raw_growth(ctx)),

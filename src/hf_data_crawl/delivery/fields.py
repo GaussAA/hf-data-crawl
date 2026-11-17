@@ -82,7 +82,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from ..platform.tables import PolarsType
+from ..platform.tables import TABLES, PolarsType
 from ..query.gold import wide_column_names
 
 #: 契约版本。增删字段、改列序、改列类型都要加一；只改说明文字不必。
@@ -307,6 +307,23 @@ FALLBACKS: dict[str, str] = {
     "plain_tags": "card_tags",
 }
 
+#: 契约列 → 值来自哪张附表。只登记「来源表可能整体没采集」的列。
+#:
+#: 用途只有一个：某列**整列为空**时，先看来源表有没有数据，才知道该报故障还是报
+#: 「计划内还没抓」。`size`（datasets-server，全量约 3.6 小时）与 `carddata`
+#: （卡片批次，按下载量补头部）都可能长期为空；把两者与「本该有值却没了」混成
+#: 一类，体检要么天天红（没人再看），要么永远不红（`private` 整列静默变空那次）。
+#:
+#: 没登记在此的列，值来自 `current` / `silver`，整列为空一律算故障。
+COLUMN_SOURCES: dict[str, str] = {
+    "pretty_name": "carddata",
+    "license_name": "carddata",
+    "server_num_rows": "size",
+    "server_num_columns": "size",
+    "server_config_count": "size",
+    "server_num_bytes_parquet": "size",
+}
+
 #: CSV 展平时做「机器码 → 页面形式」变换的列。parquet 与 SQL 结果不变。
 DISPLAY_COLUMNS: frozenset[str] = frozenset({"languages", "task_categories", "size_categories"})
 
@@ -355,10 +372,24 @@ _LANGUAGE_NAMES: dict[str, str] = {
 def projection_sql() -> str:
     """默认投影的 SQL 列清单：契约列序不变，少数列带卡片兜底。
 
-    只做一件事：按 `FALLBACKS` 给四列补上卡片 YAML 的声明，其余列原样投出。
-    别名一律取契约列名，所以导出文件、`compile_sql` 结果与契约三者的列集逐列一致，
-    `doctor` 的勾稽不必为兜底另写一套。列类型与 `gold.datasets` 视图同构——视图里
-    是 LIST 的，投出来也是 LIST，不做任何压平（v3 那层压平已随 v5 撤销）。
+    按 `FALLBACKS` 给四列补上卡片 YAML 的声明，其余列原样投出。别名一律取契约列
+    名，所以导出文件、`compile_sql` 结果与契约三者的列集逐列一致，`doctor` 的勾稽
+    不必为兜底另写一套。列类型与 `gold.datasets` 视图同构——视图里是 LIST 的，
+    投出来也是 LIST，不做任何压平（v3 那层压平已随 v5 撤销）。
+
+    兜底只在「主列为空」时生效，并保持两种空的分野（2026-11-17 修正，GLOSSARY #95）：
+
+    - 主列有值 → 原值；
+    - 主列是**空列表**（`silver` 里 `fill_null([])` 的结果，意为作者未声明）→ 兜底；
+      兜底也没命中（卡片 LEFT JOIN 未命中）→ **仍是空列表**，不塌成 NULL；
+    - 主列是 **NULL**（该 id 在 `silver` 里根本没有行，意为「不知道」）→ 兜底；
+      兜底也没有就保持 NULL。
+
+    此前 ELSE 直接吐兜底列，于是「主列空列表 + 兜底未命中」一律塌成 NULL：实测
+    `languages` 941,307 行、`plain_tags` 832,492 行由空列表变成 NULL，而同一列在
+    `gold.datasets` 视图里是空列表。后果不是显示问题——`NOT list_contains(...)`
+    遇 NULL 得 NULL，`WHERE` 会把整行滤掉，拿导出物筛「不含某语言」会静默漏行；
+    导出物号称与视图同构，这曾是唯一没对上的地方。
     """
     parts: list[str] = []
     for column in DEFAULT_COLUMNS:
@@ -367,8 +398,9 @@ def projection_sql() -> str:
             parts.append(f'"{column}"')
             continue
         parts.append(
-            f'CASE WHEN coalesce(array_length("{column}"), 0) > 0 '
-            f'THEN "{column}" ELSE "{fallback}" END AS "{column}"'
+            f'CASE WHEN coalesce(array_length("{column}"), 0) > 0 THEN "{column}" '
+            f'WHEN "{column}" IS NULL THEN "{fallback}" '
+            f'ELSE coalesce("{fallback}", CAST([] AS VARCHAR[])) END AS "{column}"'
         )
     return ", ".join(parts)
 
@@ -467,4 +499,11 @@ def contract_errors() -> list[str]:
     overlap = sorted(set(extended) & set(DEFAULT_COLUMNS))
     if overlap:
         problems.append(f"扩展字段清单与默认面重复：{overlap}")
+    bad_sources = [
+        (column, source)
+        for column, source in COLUMN_SOURCES.items()
+        if column not in DEFAULT_COLUMNS or source not in TABLES
+    ]
+    if bad_sources:
+        problems.append(f"来源登记指向契约之外的列或不存在的表：{bad_sources}")
     return problems

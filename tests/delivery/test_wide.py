@@ -104,6 +104,22 @@ def test_默认产物落在_exports_目录(store: DatasetStore) -> None:
     assert export_wide(store).path == store.root / "exports" / "datasets.parquet"
 
 
+def test_兜底未命中的空列表导出后仍是空列表(store: DatasetStore) -> None:
+    """回归（2026-11-17）：`ELSE 兜底列` 会把空列表塌成 NULL，与视图不同构。
+
+    夹具的三条记录 `tags` 只有 license / task_categories / language，
+    `size_categories` 与 `plain_tags` 在 silver 里是 `fill_null([])` 出来的空列表，
+    且都没有卡片行——正是「主列空列表 + 兜底未命中」这一支。旧写法下这两列整列
+    变 NULL：`NOT list_contains(...)` 得 NULL，`WHERE` 会把整行滤掉，拿导出物筛
+    「不含某语言 / 某标签」会静默漏行，而同样的语句在视图上是正确的。
+    """
+    frame = pl.read_parquet(export_wide(store).path)
+
+    for column in ("size_categories", "plain_tags"):
+        assert frame[column].null_count() == 0, f"{column} 不该塌成 NULL"
+        assert frame[column].list.len().max() == 0, f"{column} 应当是空列表"
+
+
 def test_导出物用_zstd_压缩(store: DatasetStore) -> None:
     """压紧方式也是交付物的口径：DuckDB 的 COPY 默认 snappy，同样数据多占四成。
 

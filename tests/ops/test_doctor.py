@@ -21,7 +21,7 @@ from hf_data_crawl.platform.lock import LockBusy
 from hf_data_crawl.platform.retention import REPLAY_WINDOW_DAYS, manifest_path
 from hf_data_crawl.platform.runs import Outcome, write_run
 from hf_data_crawl.platform.store import DatasetStore
-from hf_data_crawl.platform.tables import CURRENT_SCHEMA, ENRICH_SCHEMA
+from hf_data_crawl.platform.tables import CURRENT_SCHEMA, ENRICH_SCHEMA, SIZE_SCHEMA
 
 NOW = datetime(2026, 11, 10, 12, 0, 0)
 
@@ -82,19 +82,38 @@ def put_ids(store: DatasetStore, name: str, day: date, ids: list[str]) -> None:
     pl.DataFrame({"id": ids}).write_parquet(target)
 
 
-def put_export(store: DatasetStore, ids: list[str]) -> None:
-    """造一份符合默认交付契约的宽表导出；体检比对 id 差集与列集。
+def put_export(store: DatasetStore, ids: list[str], *, empty: tuple[str, ...] = ()) -> None:
+    """造一份符合默认交付契约的宽表导出；体检比对 id 差集、列集与「整列为空」。
 
     落点取 `delivery.export_path` 而不是自己拼 `root/exports`：夹具若自成一套，
     「体检与导出写的是同一个地方」这条就测不出来了——两边各错一半也会通过。
+
+    各列按契约类型族填占位值，而不是一律 None：`contract_coverage` 把「整列为空」
+    当故障信号，全 None 的夹具会把「夹具偷懒」报成「这一列没接上」。要测整列为空
+    时用 `empty` 点名，一次只让该空的列空着。
     """
-    from hf_data_crawl.delivery.fields import DEFAULT_COLUMNS
+    from hf_data_crawl.delivery.fields import COLUMN_TYPES, DEFAULT_COLUMNS
     from hf_data_crawl.delivery.wide import export_path
+
+    def placeholder(column: str) -> Any:
+        family = COLUMN_TYPES.get(column)
+        if family == "list":
+            return ["x"]
+        if family == "number":
+            return 1
+        if family == "time":
+            return date(2026, 1, 1)
+        return "x"
 
     target = export_path(store)
     target.parent.mkdir(parents=True, exist_ok=True)
     pl.DataFrame(
-        {column: ids if column == "id" else [None] * len(ids) for column in DEFAULT_COLUMNS}
+        {
+            column: ids
+            if column == "id"
+            else ([None] * len(ids) if column in empty else [placeholder(column)] * len(ids))
+            for column in DEFAULT_COLUMNS
+        }
     ).write_parquet(target)
 
 
@@ -523,6 +542,65 @@ def test_宽表导出缺失要报(tmp_path: Path) -> None:
     (store.root / "exports" / "datasets.parquet").unlink()
 
     assert any("导出不存在" in text for text in problems(store))
+
+
+def test_导出物整列为空要报(tmp_path: Path) -> None:
+    """列名、行数、类型都对，仍可能整列没有值。
+
+    2026-11-04 `private` 整列静默变空是同一个形态，发生在 bronze；导出物每天被覆盖、
+    不报错、查询照常返回，是它最容易藏住的地方。
+    """
+    store = DatasetStore(tmp_path / "data")
+    ids = [f"acme/ds-{index}" for index in range(3)]
+    put_current(store, NOW.date(), rows=3)
+    put_export(store, ids, empty=("downloads",))
+
+    finding = next(item for item in diagnose(store, NOW) if item.text.startswith("交付面取值"))
+
+    assert finding.problem
+    assert "downloads" in finding.text
+
+
+def test_来源表未采集时整列空只提示不报红(tmp_path: Path) -> None:
+    """`size` 没抓时四个 `server_*` 必然全空，这是计划内，不是故障。
+
+    判红的话从装好到抓完 size 之间天天红，告警很快就没人看了——与「产物新鲜度」
+    只把未生成的富化表记成提示是同一条理由。
+    """
+    store = DatasetStore(tmp_path / "data")
+    ids = [f"acme/ds-{index}" for index in range(3)]
+    put_current(store, NOW.date(), rows=3)
+    put_export(
+        store,
+        ids,
+        empty=(
+            "server_num_rows",
+            "server_num_columns",
+            "server_config_count",
+            "server_num_bytes_parquet",
+        ),
+    )
+
+    finding = next(item for item in diagnose(store, NOW) if item.text.startswith("交付面取值"))
+
+    assert not finding.problem
+    assert "size 未采集" in finding.text
+
+
+def test_来源表有数据而导出仍全空要报(tmp_path: Path) -> None:
+    """同样是整列为空，来源表有没有数据决定它是「还没抓」还是「没接上」。"""
+    store = DatasetStore(tmp_path / "data")
+    ids = [f"acme/ds-{index}" for index in range(3)]
+    put_current(store, NOW.date(), rows=3)
+    put_export(store, ids, empty=("server_num_rows",))
+    data: dict[str, list[Any]] = {name: [None] for name in SIZE_SCHEMA}
+    data["id"] = [ids[0]]
+    store.write("size", pl.DataFrame(data, schema=SIZE_SCHEMA))
+
+    finding = next(item for item in diagnose(store, NOW) if item.text.startswith("交付面取值"))
+
+    assert finding.problem
+    assert "有数据却全空" in finding.text
 
 
 def test_宽表导出列集不符契约要报(tmp_path: Path) -> None:

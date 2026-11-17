@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import re
+
 import polars as pl
 
 from hf_data_crawl.delivery.fields import (
@@ -151,8 +153,7 @@ def test_卡片兜底只作用于四列且别名不变() -> None:
     for column, source in FALLBACKS.items():
         assert column in DEFAULT_COLUMNS
         assert source in wide_column_names()
-        assert f'ELSE "{source}" END' in sql
-        assert f'AS "{column}"' in sql
+        assert f'ELSE coalesce("{source}", CAST([] AS VARCHAR[])) END AS "{column}"' in sql
     assert not set(FALLBACKS.values()) & set(DEFAULT_COLUMNS)
 
 
@@ -211,7 +212,32 @@ def test_卡片兜底仍保留且不改变列类型() -> None:
     sql = projection_sql()
 
     for column, source in FALLBACKS.items():
-        assert f'ELSE "{source}" END AS "{column}"' in sql
+        assert f'ELSE coalesce("{source}", CAST([] AS VARCHAR[])) END AS "{column}"' in sql
+
+
+def test_兜底未命中时保持空列表而非塌成NULL() -> None:
+    """2026-11-17 修正：空列表被兜底吞成 NULL 后，`NOT list_contains` 会静默漏行。
+
+    同一列在导出物里是 NULL、在视图里是空列表，是「导出物与视图同构」唯一没对上的
+    地方。三条分支必须各自成立，因为它们是三件事：
+
+    - 主列空列表 + 兜底未命中 → 空列表（作者未声明）
+    - 主列空列表 + 兜底有值 → 兜底值（只在卡片 YAML 里声明过）
+    - 主列为 NULL + 兜底未命中 → 仍是 NULL（该 id 在 silver 里没有行，属「不知道」）
+    """
+    import duckdb
+
+    expression = re.search(r'CASE WHEN .*?END AS "languages"', projection_sql())
+    assert expression is not None, "契约里应当有 languages 的兜底表达式"
+
+    with duckdb.connect() as connection:
+        connection.execute("CREATE TABLE t(languages VARCHAR[], card_languages VARCHAR[])")
+        connection.execute(
+            "INSERT INTO t VALUES ([], NULL), ([], ['y']), (NULL, NULL), (['x'], ['z'])"
+        )
+        rows = connection.execute(f"SELECT {expression.group(0)} FROM t").fetchall()
+
+    assert rows == [([],), (["y"],), (None,), (["x"],)]
 
 
 def test_列表列仍能展平成页面形式交给CSV() -> None:
