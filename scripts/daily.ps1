@@ -54,8 +54,12 @@ $steps = @(
         ) },
     @{ Name = "build"; Label = "派生层重放"; Requires = @(); Report = $false
         Arguments = @("--lock-wait", "900", "build", "--stale") },
+    # 分批扫：整站 1127 页要连续跑 30–60 分钟，期间撞上 hf-update 的抓取批就
+    # 被 429 打停，两次实测都在 89% 左右断掉。`--max-pages 600` 把单次压到约
+    # 15 分钟，游标（`reconcile-checkpoint.json`）记住扫到哪，次日接着扫；
+    # 两天走完一轮全量，`RECONCILE_MAX_AGE` 相应放宽到 48 小时。
     @{ Name = "reconcile"; Label = "全站对账"; Requires = @(); Report = $false
-        Arguments = @("--lock-wait", "900", "reconcile") },
+        Arguments = @("--lock-wait", "900", "reconcile", "--max-pages", "600") },
     # 规模随内容走：只在库改动（lastModified 越过抓取日）后重取，日取几千个，
     # 与周日那次全量轮替分工——全量补缺，这步保鲜。
     @{ Name = "sizes"; Label = "规模随变化刷新"; Requires = @("reconcile"); Report = $false
