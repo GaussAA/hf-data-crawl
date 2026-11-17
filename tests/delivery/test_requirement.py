@@ -456,8 +456,13 @@ def test_数值项写成非数字按口径错误报(tmp_path: Path) -> None:
     book = tmp_path / "REQ-0001" / "input" / "清单.xlsx"
     book.parent.mkdir(parents=True, exist_ok=True)
     openpyxl.Workbook().save(book)
-    fill = {
-        "source": {"path": "input/清单.xlsx", "header_row": "第一行", "key_column": "URL"},
+    source: dict[str, Any] = {
+        "path": "input/清单.xlsx",
+        "header_row": "第一行",
+        "key_column": "URL",
+    }
+    fill: dict[str, Any] = {
+        "source": source,
         "output": {"name": "已补全.xlsx"},
         "columns": {"名称": {"field": "id"}},
     }
@@ -465,7 +470,7 @@ def test_数值项写成非数字按口径错误报(tmp_path: Path) -> None:
     with pytest.raises(SpecError, match="header_row"):
         load(write_spec(tmp_path, kind="backfill", criteria=[], fill=fill))
 
-    fill["source"]["header_row"] = 1
+    source["header_row"] = 1
     fill["columns"] = {"名称": {"field": "id", "width": "很宽"}}
     with pytest.raises(SpecError, match="width"):
         load(write_spec(tmp_path, kind="backfill", criteria=[], fill=fill))

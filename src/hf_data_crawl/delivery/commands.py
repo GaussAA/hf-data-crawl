@@ -267,9 +267,11 @@ def _request_usage(root: Path, term: str) -> int:
             continue
         sites: list[str] = []
         if spec.kind is Kind.QUERY:
-            for index, item in enumerate(spec.criteria, 1):
-                if item.metric in names or _metric_field(item.metric) == field_name:
-                    sites.append(f"条件 {index}：{item.metric} {item.op} {item.value}")
+            for position, criterion in enumerate(spec.criteria, 1):
+                if criterion.metric in names or _metric_field(criterion.metric) == field_name:
+                    sites.append(
+                        f"条件 {position}：{criterion.metric} {criterion.op} {criterion.value}"
+                    )
             for key in spec.order_by:
                 if key.metric in names or _metric_field(key.metric) == field_name:
                     sites.append(f"排序：{key.metric} {'降序' if key.descending else '升序'}")
@@ -278,13 +280,13 @@ def _request_usage(root: Path, term: str) -> int:
                     sites.append(f"输出列：{name}")
         else:
             fill = spec.fill
-            for item in fill.columns if fill else ():
-                if item.field in names or item.name in names:
+            for rule in fill.columns if fill else ():
+                if rule.field in names or rule.name in names:
                     sites.append(
-                        f"列「{item.name}」← {'field ' + str(item.field) if item.field else item.kind}"
+                        f"列「{rule.name}」← {'field ' + str(rule.field) if rule.field else rule.kind}"
                     )
-                elif item.template and any(f"{{{name}}}" in item.template for name in names):
-                    sites.append(f"列「{item.name}」← 模板 `{item.template}`")
+                elif rule.template and any(f"{{{name}}}" in rule.template for name in names):
+                    sites.append(f"列「{rule.name}」← 模板 `{rule.template}`")
         if not sites:
             continue
         requests += 1
