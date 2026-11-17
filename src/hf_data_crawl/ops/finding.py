@@ -19,7 +19,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -33,19 +33,24 @@ class Finding:
     `degraded` 只在一处为真：没拿到写锁时，跨表读数可能跨时点。此时 `problem`
     **保留原判断**——「它是不是问题」与「这次读数算不算数」是两件事，用一个布尔值
     二选一会丢掉信息，于是「本来是红、因降级变黄」这件事在数据里就不存在了，
-    只能靠字符串开头那个 `[非快照]` 前缀去猜。消费者判 `problem and not degraded`。
+    只能靠字符串开头那个 `[非快照]` 前缀去猜。消费者判 `Finding.counts`。
     """
 
     problem: bool
     text: str
     #: 只有在一份一致快照上才有意义；非快照模式下置 `degraded`，不参与退出码。
     snapshot_dependent: bool = False
-    #: 检查项标识，由 `diagnose` 贴。空值说明有人新加了检查项却忘了贴码。
+    #: 检查项标识，由 `diagnose` 按登记表贴。空值说明有人手工造了条结论而没贴码。
     code: str = ""
     #: 本次读数不算数（非快照模式），`problem` 保持原值。
     degraded: bool = False
 
+    @property
+    def counts(self) -> bool:
+        """这条结论算不算数：是问题、且不是非快照模式下的降级读数。
 
-def coded(code: str, finding: Finding) -> Finding:
-    """给一条结论贴检查项标识。只在 `diagnose` 的编排处调用。"""
-    return replace(finding, code=code)
+        「它是不是问题」与「这次读数算不算数」是两件事，所以判定要落成一个名字。
+        原先这条式子写在两个消费者里（退出码与告警、体检流水的计数），改一处漏一处
+        的结果是同一个数在两处不一样——#81 修过的那类错。
+        """
+        return self.problem and not self.degraded

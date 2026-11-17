@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -46,7 +47,6 @@ from ..platform.store import DatasetStore
 from ..platform.tables import table
 from ..query.gold import share_text
 from .finding import Finding
-from .finding import coded as _coded
 from .health import red_days
 
 ALERT_NAME = "ALERT.txt"
@@ -1160,7 +1160,7 @@ def _lock_state(ctx: RunContext) -> Finding:
 
 def _snapshot_dependent(finding: Finding) -> Finding:
     """把一条跨表检查的结论标记为「只有一致快照上才有意义」。"""
-    return Finding(finding.problem, finding.text, snapshot_dependent=True)
+    return replace(finding, snapshot_dependent=True)
 
 
 def _request_self_contained(ctx: RunContext) -> Finding:
@@ -1233,6 +1233,65 @@ def _spec_version_consistency(ctx: RunContext) -> Finding:
     return Finding(False, f"口径版本：{checked} 份已交付需求的版本号未被复用")
 
 
+@dataclass(frozen=True)
+class Check:
+    """一条体检项：码、判定，以及「这次读数算不算数」。
+
+    三样写在一起，因为它们描述的是同一件事——「这一项检查」。原先码与「要不要标
+    快照依赖」散在 `diagnose` 的调用点上、各写一遍：漏包 `_snapshot_dependent` 一次，
+    非快照模式下跨表读数就会照样参与退出码，读数可能跨时点却报成真问题。
+    """
+
+    code: str
+    run: Callable[[RunContext], Finding]
+    #: 跨表读数：非快照模式下降级为「本次不算数」，`problem` 保持原值。
+    snapshot_dependent: bool = False
+
+
+def _collect_freshness(ctx: RunContext) -> Finding:
+    return _freshness(
+        ctx.runs, ctx.now, "collect", COLLECT_COMPLETE_REASONS, COLLECT_MAX_AGE, "日增量采集"
+    )
+
+
+def _reconcile_freshness(ctx: RunContext) -> Finding:
+    return _freshness(
+        ctx.runs, ctx.now, "reconcile", _RECONCILE_DONE, RECONCILE_MAX_AGE, "全量对账"
+    )
+
+
+#: 体检项登记表。顺序就是输出顺序——人读的那份清单靠它，别按字母排。
+CHECKS: tuple[Check, ...] = (
+    Check("collect_freshness", _collect_freshness),
+    Check("reconcile_freshness", _reconcile_freshness),
+    Check("catalog_staleness", _catalog_staleness),
+    Check("layer_reconcile", _layer_reconcile, snapshot_dependent=True),
+    Check("raw_gaps", _raw_gaps),
+    Check("derive_state", _derive_state),
+    Check("status_snapshot", _status_snapshot),
+    Check("artifact_freshness", _artifact_freshness, snapshot_dependent=True),
+    Check("contract_coverage", _contract_coverage, snapshot_dependent=True),
+    Check("field_freshness", _field_freshness, snapshot_dependent=True),
+    Check("card_provenance", _card_provenance, snapshot_dependent=True),
+    Check("raw_growth", _raw_growth),
+    Check("cold_backlog", _cold_backlog),
+    Check("archive_backlog", _archive_backlog),
+    Check("storage", _storage),
+    Check("staging_backlog", _staging_backlog),
+    Check("backup_backlog", _backup_backlog),
+    Check("probe_quality", _probe_quality),
+    Check("probe_degraded", _probe_degraded),
+    Check("recent_failures", _recent_failures),
+    Check("observation_shrink", _observation_shrink),
+    Check("temp_files", _stale_temp_files),
+    Check("request_self_contained", _request_self_contained),
+    Check("spec_version", _spec_version_consistency),
+)
+
+#: 只在非快照模式跑：快照模式下本次体检已持写锁，再去抢锁会自己跟自己冲突。
+LOCK_STATE = Check("lock_state", _lock_state)
+
+
 def diagnose(
     store: DatasetStore,
     now: datetime | None = None,
@@ -1252,50 +1311,15 @@ def diagnose(
     """
     now = now or datetime.now()
     ctx = _context(store, now, requests_root)
-    findings = [
-        _coded(
-            "collect_freshness",
-            _freshness(
-                ctx.runs,
-                ctx.now,
-                "collect",
-                COLLECT_COMPLETE_REASONS,
-                COLLECT_MAX_AGE,
-                "日增量采集",
-            ),
-        ),
-        _coded(
-            "reconcile_freshness",
-            _freshness(
-                ctx.runs, ctx.now, "reconcile", _RECONCILE_DONE, RECONCILE_MAX_AGE, "全量对账"
-            ),
-        ),
-        _coded("catalog_staleness", _catalog_staleness(ctx)),
-        _coded("layer_reconcile", _snapshot_dependent(_layer_reconcile(ctx))),
-        _coded("raw_gaps", _raw_gaps(ctx)),
-        _coded("derive_state", _derive_state(ctx)),
-        _coded("status_snapshot", _status_snapshot(ctx)),
-        _coded("artifact_freshness", _snapshot_dependent(_artifact_freshness(ctx))),
-        _coded("contract_coverage", _snapshot_dependent(_contract_coverage(ctx))),
-        _coded("field_freshness", _snapshot_dependent(_field_freshness(ctx))),
-        _coded("card_provenance", _snapshot_dependent(_card_provenance(ctx))),
-        _coded("raw_growth", _raw_growth(ctx)),
-        _coded("cold_backlog", _cold_backlog(ctx)),
-        _coded("archive_backlog", _archive_backlog(ctx)),
-        _coded("storage", _storage(ctx)),
-        _coded("staging_backlog", _staging_backlog(ctx)),
-        _coded("backup_backlog", _backup_backlog(ctx)),
-        _coded("probe_quality", _probe_quality(ctx)),
-        _coded("probe_degraded", _probe_degraded(ctx)),
-        _coded("recent_failures", _recent_failures(ctx)),
-        _coded("observation_shrink", _observation_shrink(ctx)),
-        _coded("temp_files", _stale_temp_files(ctx)),
-        _coded("request_self_contained", _request_self_contained(ctx)),
-        _coded("spec_version", _spec_version_consistency(ctx)),
-    ]
+    checks = CHECKS if snapshot else (*CHECKS, LOCK_STATE)
+    findings: list[Finding] = []
+    for check in checks:
+        finding = check.run(ctx)
+        if check.snapshot_dependent:
+            finding = _snapshot_dependent(finding)
+        findings.append(replace(finding, code=check.code))
     if snapshot:
         return findings
-    findings.append(_coded("lock_state", _lock_state(ctx)))
     return [
         replace(item, degraded=True, text=f"[非快照] {item.text}")
         if item.snapshot_dependent
@@ -1313,7 +1337,7 @@ def sync_alert(
     应重跑一次。没有问题时仍删文件——锁占用本身不是数据告警。
     """
     path = store.root / ALERT_NAME
-    problems = [item for item in findings if item.problem and not item.degraded]
+    problems = [item for item in findings if item.counts]
     if not problems:
         path.unlink(missing_ok=True)
         return

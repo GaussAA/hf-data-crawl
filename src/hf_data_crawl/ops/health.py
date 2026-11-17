@@ -110,7 +110,7 @@ def record(
     items = list(findings)
     # 降级项不进流水：这次读数可能跨时点，它「是不是问题」还没定。记进去会让
     # 「连续红了几轮」虚高，而这正是用来判断「要不要现在动手」的那个数。
-    live = [item for item in items if item.problem and not item.degraded]
+    live = [item for item in items if item.counts]
     entry = HealthRecord(
         at=now,
         total=len(items),
