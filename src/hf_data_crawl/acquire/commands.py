@@ -222,6 +222,32 @@ def resolve_size_top(args_top: int, candidates: int, refresh: set[str]) -> int:
     return max(1, candidates if refresh or args_top <= 0 else args_top)
 
 
+#: `--ids` 一次最多点多少名。这是「补几个库」的手工活，不是批量重跑：
+#: 没有上限时，一条手滑的 `--ids` 就能把全站请求一遍。
+IDS_LIMIT = 200
+
+
+def split_ids(raw: str) -> list[str]:
+    """`--ids` 的逗号串 → 去空白的 id 列表。"""
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def pick_ids(ordered: pl.DataFrame, raw: str) -> tuple[pl.DataFrame, str]:
+    """按 `--ids` 过滤候选，返回 (过滤后的表, 错误消息)。错误消息为空表示没问题。
+
+    名单里查不到的 id 静默丢弃（多打了个空格、或库里已下架），但**一个都没匹配上
+    要报错**：那多半是 id 写错，而「跑完了 0 行、状态 success」比报错更容易被当成
+    正常结果。
+    """
+    wanted = split_ids(raw)
+    if not wanted or len(wanted) > IDS_LIMIT:
+        return ordered, f"--ids 需要 1–{IDS_LIMIT} 个有效 id，实得 {len(wanted)} 个"
+    picked = ordered.filter(pl.col("id").is_in(wanted))
+    if picked.height == 0:
+        return picked, "--ids 里的 id 在 current 里都不存在（底库没有这个库，或已下架）"
+    return picked, ""
+
+
 def run_fetch_sizes(
     args: argparse.Namespace,
     store: DatasetStore,
@@ -263,6 +289,13 @@ def run_fetch_sizes(
         ordered = ordered.filter(pl.col("id").is_in(sorted(refresh)))
         print(f"规模随变化刷新：{len(refresh)} 个库内容已变，重取其规模。")
 
+    if args.ids:
+        # 按需补：只问点名的库。全量一轮三小时，而交付实际命中的常常只有几十条。
+        ordered, problem = pick_ids(ordered, args.ids)
+        if problem:
+            print(f"失败：{problem}")
+            return Outcome({"error": "ids"}, code=1, reason=problem)
+
     fetcher = SizeFetcher(
         api=HfSizeApi(transport=_open_transport(transport)),
         workers=args.workers,
@@ -271,10 +304,12 @@ def run_fetch_sizes(
     )
     writer = StagingWriter(store, snapshot)
     candidates = ordered["id"].to_list()
+    # 点名了就不再按下载量截断：名单本身就是范围，`--top` 只在批量扫描时说话。
+    top = len(candidates) if args.ids else resolve_size_top(args.top, len(candidates), refresh)
     summary, frame = fetcher.run(
         snapshot,
         dataset_ids=candidates,
-        top=resolve_size_top(args.top, len(candidates), refresh),
+        top=top,
         retry_unavailable=args.retry_unavailable,
         existing=existing,
         refresh=refresh,
@@ -318,6 +353,13 @@ def run_fetch_files(
         return Outcome({"error": "empty"}, code=1, reason="尚无采集数据，请先运行 collect")
 
     ordered = current.sort("downloads", descending=True, nulls_last=True)
+    if args.ids:
+        # 与 fetch-sizes / fetch-readme 同一套按需补：名单即范围，`--top` 不参与。
+        ordered, problem = pick_ids(ordered, args.ids)
+        if problem:
+            print(f"失败：{problem}")
+            return Outcome({"error": "ids"}, code=1, reason=problem)
+
     fetcher = FileFetcher(
         api=HfFilesApi(
             transport=_files_transport(transport, args.timeout),
@@ -331,7 +373,8 @@ def run_fetch_files(
     summary, frame = fetcher.run(
         snapshot,
         dataset_ids=ordered["id"].to_list(),
-        top=max(1, args.top),
+        # 点了名就按名单来（名单已过滤成正好这几个），否则照旧按下载量取前 N。
+        top=max(1, ordered.height if args.ids else args.top),
         retry_unavailable=args.retry_unavailable,
         refresh_truncated=args.refresh_truncated,
         existing=store.read("files"),

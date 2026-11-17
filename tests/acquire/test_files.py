@@ -606,6 +606,31 @@ def test_命令行补采成功并留下运行摘要(tmp_path: Path) -> None:
     assert read_runs(store)[-1]["status"] == "success"
 
 
+def test_命令行按ids只补点名的库(tmp_path: Path) -> None:
+    """长尾没进头部的库靠 `--ids` 单独补：名单即范围，`--top` 不参与截断。"""
+    root = tmp_path / "data"
+    store = DatasetStore(root)
+    seed(store, 3)
+    transport = FakeFilesTransport({f"acme/ds-{i}": tree() for i in range(1, 4)})
+
+    code = main(
+        [
+            "--data-dir",
+            str(root),
+            "fetch-files",
+            "--top",
+            "1",
+            "--ids",
+            "acme/ds-1,acme/ds-3",
+        ],
+        transport=transport,
+    )
+
+    assert code == 0
+    assert sorted(transport.calls) == ["acme/ds-1", "acme/ds-3"]
+    assert sorted(store.read("files")["id"].to_list()) == ["acme/ds-1", "acme/ds-3"]
+
+
 def test_命令行可显式加大页数(tmp_path: Path) -> None:
     root = tmp_path / "data"
     store = DatasetStore(root)

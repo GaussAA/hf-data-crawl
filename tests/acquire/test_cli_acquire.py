@@ -240,6 +240,64 @@ def test_残留分片会被续抓并合入正式表(root: Path) -> None:
     assert staged_shards(store) == []
 
 
+def test_fetch_sizes只抓点名的ids(root: Path) -> None:
+    """长尾没进头部的库，靠 `--ids` 单独补：名单即范围，`--top` 不参与截断。"""
+    store = DatasetStore(root)
+    raw.write(
+        store, snapshot_date=DAY, page_index=1, records=[record(1), record(2), record(3)], meta={}
+    )
+    derive_day(store, DAY)
+    transport = SizeTransport()
+
+    code = run(
+        root,
+        "fetch-sizes",
+        "--date",
+        DAY_ARG,
+        "--top",
+        "1",  # 若按 top 截断就只会抓 ds-1，点名后这个数应当被忽略
+        "--ids",
+        "acme/ds-1,acme/ds-3",
+        "--workers",
+        "1",
+        transport=transport,
+    )
+
+    assert code == 0
+    assert sorted(transport.calls) == ["acme/ds-1", "acme/ds-3"]
+    assert sorted(store.read("size")["id"].to_list()) == ["acme/ds-1", "acme/ds-3"]
+
+
+def test_fetch_sizes点名一个都不存在时失败而不是静默跑空(root: Path) -> None:
+    """「跑完了 0 行、状态 success」比报错更容易被当成正常结果。"""
+    store = DatasetStore(root)
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[record(1)], meta={})
+    derive_day(store, DAY)
+    transport = SizeTransport()
+
+    code = run(
+        root, "fetch-sizes", "--date", DAY_ARG, "--ids", "acme/not-here", transport=transport
+    )
+
+    assert code == 1
+    assert transport.calls == []
+    assert [item["status"] for item in read_runs(store)] == ["failed"]
+
+
+def test_fetch_sizes的ids超过上限直接拒绝(root: Path) -> None:
+    """`--ids` 是补几条的手工活；没上限时一条手滑就能把全站请求一遍。"""
+    store = DatasetStore(root)
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[record(1)], meta={})
+    derive_day(store, DAY)
+    transport = SizeTransport()
+    too_many = ",".join(f"acme/ds-{index}" for index in range(1, 202))
+
+    code = run(root, "fetch-sizes", "--date", DAY_ARG, "--ids", too_many, transport=transport)
+
+    assert code == 1
+    assert transport.calls == []
+
+
 def test_合并拿不到锁时保留分片供下轮继续(root: Path) -> None:
     """合并是短锁；抓不到就如实失败，但抓到的数据不能丢。"""
     store = DatasetStore(root)

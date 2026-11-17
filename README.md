@@ -26,8 +26,8 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 |---|---|---|
 | `collect` | 日增量：按 `lastModified` 倒序扫到水位线 | 是 |
 | `enrich` | 按下载量取头部补抓 `cardData`（标签、config/split 明细、行数列数）；`--ids a,b,c` 按需补（上限 200） | 是 |
-| `fetch-sizes` | 经 datasets-server 补规模与列数（`num_rows` / `num_columns_max`）；`--changed N` 只重取内容已变的库，`--top 0` 表示全量（按 `current` 实际行数，不写死常量） | 是 |
-| `fetch-files` | 按下载量取头部，经 `/tree/main` 补文件清单汇总（试点：top 1000，每库默认 1 页） | 是 |
+| `fetch-sizes` | 经 datasets-server 补规模与列数（`num_rows` / `num_columns_max`）；`--changed N` 只重取内容已变的库，`--top 0` 表示全量（按 `current` 实际行数，不写死常量），`--ids a,b,c` 只补点名的库（上限 200，忽略 `--top`） | 是 |
+| `fetch-files` | 按下载量取头部，经 `/tree/main` 补文件清单汇总（试点：top 1000，每库默认 1 页）；`--ids a,b,c` 只补点名的库（上限 200，忽略 `--top`） | 是 |
 | `fetch-readme` | 逐库抓 README 全文（`description` 只有约 600 字符摘要）；`--ids` 按需、`--top N` 取头部、`--top 0` 全量、`--changed N` 只重取 commit 已变的、`--rate 15` 匀速（配额 5000 次/5 分钟）；独立表，**不进默认 31 列导出** | 是 |
 | `reconcile` | 全量对账：按 `createdAt` 稳定序扫全站，产出新增/删除/转私有/改名/sha 变更 | 是 |
 | `build` | 重建派生层：默认只重放近 7 天热区，`--stale` 只修派生滞后的日子及其后，`--full` 全量重放 | 否 |
@@ -47,8 +47,8 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 ```bash
 hf-data-crawl collect      [--date YYYY-MM-DD] [--limit 1000] [--max-pages N] [--pages-without-new 3] [--preset NAME] [--refresh-top 20000] [--cards] [--card-pages 200] [--skip-if-done] [--dry-run]
 hf-data-crawl enrich       [--date YYYY-MM-DD] [--top 20000] [--ids a,b,c] [--limit 1000]
-hf-data-crawl fetch-sizes  [--date YYYY-MM-DD] [--top 20000] [--changed N] [--workers 16] [--retry-unavailable]
-hf-data-crawl fetch-files  [--date YYYY-MM-DD] [--top 1000] [--workers 8] [--retry-unavailable] [--timeout 30] [--max-retries 1] [--max-pages 1] [--refresh-truncated]
+hf-data-crawl fetch-sizes  [--date YYYY-MM-DD] [--top 20000] [--changed N] [--ids a,b,c] [--workers 16] [--retry-unavailable]
+hf-data-crawl fetch-files  [--date YYYY-MM-DD] [--top 1000] [--ids a,b,c] [--workers 8] [--retry-unavailable] [--timeout 30] [--max-retries 1] [--max-pages 1] [--refresh-truncated]
 hf-data-crawl fetch-readme [--date YYYY-MM-DD] [--top 20000|0] [--ids a,b,c] [--changed N] [--workers 12] [--timeout 30] [--max-retries 2] [--retry-denied]
 hf-data-crawl reconcile    [--date YYYY-MM-DD] [--limit 1000] [--max-pages N] [--probe-limit 2000]
 hf-data-crawl build        [--stale | --full]                            # 默认只重放近 7 天
