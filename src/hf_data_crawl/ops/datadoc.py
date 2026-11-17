@@ -46,9 +46,12 @@ _TABLE_GRAIN: dict[str, tuple[str, str]] = {
     "silver": ("一次属性变更一行", "**多对一**：改过几次就有几行，比基准多"),
     "observations": ("一次指标变化一行", "**多对一**：指标变过才追加"),
     "bronze": ("某天扫到的一条记录", "**子集**：只留最新一天，历史由 `raw` 重算"),
-    "carddata": ("一个数据集一行", "**子集**：按下载量取头部补齐；长尾多数没有卡片"),
+    "carddata": (
+        "一个数据集一行",
+        "**子集**：随扫描批次补齐（每日 `--cards`、按需 `enrich`）；长尾多数没有卡片",
+    ),
     "card_configs": ("一个 config/split 一行", "**展开**：卡片里的 config 逐条拆开"),
-    "size": ("一个数据集一行", "**全量**：每库一条，其中约七成有实测行数"),
+    "size": ("一个数据集一行", "**全量**：每库一条；有实测行数的是子集，覆盖率见 `doctor`"),
     "files": ("一个数据集一行", "**子集**：按下载量取头部补文件树，长尾没有"),
 }
 
@@ -83,10 +86,13 @@ _TABLE_STORY: dict[str, tuple[str, str, str]] = {
         "`state` 模块写；只读不删，是最不会被重建影响的一层（它记的是历史事实）。",
     ),
     "carddata": (
-        "README 卡片是唯一能拿到「展示名、许可证、引用格式、项目主页」的地方。",
-        "不额外请求：列表接口带 `expand[]=cardData` 就一起回来了。但只有写了 README 的库才有——"
-        "全站约 68% 有，剩下 32% 不是抓漏，是本来没有。",
-        "`enrich` 写，宽表左连其字段。它不参与派生链，所以 `build` 清不掉它（除非重抓）。",
+        "README 卡片是唯一能拿到「展示名、许可证名称与链接、引用格式、项目主页」的地方——"
+        "许可证标签（`licenses`）另有 tags 一条来源。",
+        "不额外请求：列表接口带 `expand[]=cardData` 就一起回来了。能覆盖多少取决于 raw 里"
+        "留了多少带卡片的批次（每日 `collect --cards` 与按需 `enrich`），所以它是子集；"
+        "没写 README 的库本来就没有卡片——两种空值要分开看，别一律当成抓漏。",
+        "由 `raw` 里的 `card-*` 批次派生（`build` 按 id upsert，日常不清空）；但 `rebuild` 会"
+        "清掉后按 raw 重放，raw 里没有卡片批次就补不回来，只能重抓。",
     ),
     "card_configs": (
         "卡片里 `dataset_info` 列的 config 与 split 逐条展开，回答「有哪些子集、各多少行」。",
@@ -96,15 +102,15 @@ _TABLE_STORY: dict[str, tuple[str, str, str]] = {
     ),
     "size": (
         "唯一能回答「到底多少行、多少列」的来源。",
-        "列表接口的 `mainSize` 是仓库字节，卡片里的行数只覆盖 2.3%——都指望不上。"
+        "列表接口的 `mainSize` 是仓库字节，卡片里声明的行数只覆盖少数库——都指望不上。"
         "只能逐条打 datasets-server，所以它是全流程最慢的一步（全量 3.6 小时）。"
         "也是唯一带 `status` 的表：`unavailable` 表示上游根本没算过，重试是白烧配额。",
-        "`fetch-sizes` 写。26% 的库是 `unavailable`——这个比例随长尾上升，是数据本身的稀疏，不是失败。",
+        "`fetch-sizes` 写。相当一部分库是 `unavailable`——比例随长尾上升，是数据本身的稀疏，不是失败。",
     ),
     "files": (
         "仓库的文件清单（`siblings`），回答「这个库到底有哪些文件」。",
-        "一个库可能几千个文件，逐库拉体积很大，所以只对头部补。目前只覆盖千分之一左右，"
-        "属于刚起步的维度——`doctor` 会照实报覆盖率，不要拿它当结论。",
+        "一个库可能几千个文件，逐库拉体积很大，所以只对头部补（`--top`，默认 1000 名）。"
+        "覆盖率由 `doctor` 照实报，别拿它当全站口径。",
         "`enrich` 的另一个分支写；与 `carddata` 不同源，互不依赖。",
     ),
 }
@@ -429,11 +435,12 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "",
         "## 五、几个容易误解的地方",
         "",
-        "1. **`downloads` 是近 30 天，不是累计**。累计值在 `downloads_all_time`，只增不减。",
+        "1. **`downloads` 是近 30 天，不是累计**。累计值在 `downloads_all_time`，正常只增不减"
+        "（上游偶有清零）。",
         "2. **`card_num_rows` 与 `num_rows` 是两个口径**：前者是作者在卡片里声明的，后者是",
         "   datasets-server 实测的。两个都留着，就是为了让它们能对不上时被看见。",
         "3. **`silver` 是属性流水，不是每日快照**。一个 id 只在属性变化时追加一行，",
-        "   所以它的行数会少于 `bronze` 的累计行数；指标历史在 `state/observations`。",
+        "   行数与「天数 × 库数」无关，也不能和只留一天的 `bronze` 分区比大小；指标历史在 `state/observations`。",
         "4. **`bronze` 只保留最新一天**。历史快照没有保留价值——它可由 `raw` 重算。",
         "5. **`status` 的 `restricted` 不是删除**。它表示数据集转为私有，数据还在，",
         "   只是不再公开。真正删除的 `disappeared` 在全站 111 万条里曾长期为 0。",
@@ -491,11 +498,11 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "**两处必须留意的差异**：",
         "",
         "1. `Total file size` 取的是 `main_size`（仓库字节），**不是** `size.num_bytes_original`。",
-        "   两者在 58% 的数据集上相等，但四分之一以上差 4 倍——多 config 的大数据集尤其明显",
+        "   2026-11-08 全量实测：两者在 58% 的数据集上相等，但四分之一以上差 4 倍——多 config 的大数据集尤其明显",
         "   （实测 `permutans/wdc-common-crawl-embedded-jsonld`：页面 3.79 TB = `main_size`，",
         "   而 `num_bytes_original` 只有 1.48 TB）。要「和页面对得上」就用 `main_size`。",
         "2. `estimated_num_rows` 只在数据集太大、上游放弃精确统计时才出现，且**极不准**：",
-        "   实测有 1.64 亿行被估成 289 亿（差 175 倍）的例子。它只适合做「量级判断」，",
+        "   实测有 1.64 亿行被估成 289 亿（差 175 倍）的例子（2026-11-08 全量实测）。它只适合做「量级判断」，",
         "   需要准确行数时看 `num_rows`，宁可空着也不要拿估算值冒充。",
         "",
         "页面上的卡片只在有数据时才显示——我们抓不到，通常意味着上游也没算出来。",
@@ -577,7 +584,7 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "| --- | --- | --- | --- | --- |",
         f"| `citation` | 返回但稀疏 | 有 | {_coverage(store_root, 'carddata', 'citation')} | 已在 `IDENTITY_EXPAND`，近乎零带宽 |",
         f"| `paperswithcode_id` | 返回但稀疏 | — | {_coverage(store_root, 'carddata', 'paperswithcode_id')} | 同上 |",
-        f"| `cardData` | 返回（头部约七成有） | 有 | {_coverage(store_root, 'carddata', 'license_name')}（license_name） | 4.1 KB/条，全量重扫约 4.6 GB/轮 |",
+        f"| `cardData` | 返回 | 有 | {_coverage(store_root, 'carddata', 'license_name')}（license_name） | 4.1 KB/条，全量重扫约 4.6 GB/轮，故只按批次补 |",
         "| `siblings` | **请求也不返回** | 有，详情约 1.2 MB/次 | 0 | 只在详情接口，逐库补 112 万不现实 |",
         "| `resourceGroup` | 请求也不返回 | — | 0 | 历史占位列，整列为空 |",
         "",
@@ -590,11 +597,11 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "",
         "`citation` 与 `paperswithcode_id` 进基座只为让各来源 Raw 留下可回溯副本：",
         "它们不对应 Bronze 列、也不进宽表；`carddata` 表仍只由 `card-*` 分块解析，",
-        "覆盖率受 `enrich --top` 限制。数值稀疏是作者没填，不是抓漏了。",
+        "覆盖多少取决于带卡片扫描的批次（每日 `collect --cards` 与按需 `enrich`），不是全站普查。",
         "",
         "文件清单走 `fetch-files`（`/tree/main` 递归树）按下载量取头部补",
         f"`enrich/files.parquet`（当前 {_total_rows(store_root, 'files'):,} 行）。",
-        "它是 `Origin.NETWORK` 表，重建不清；**只覆盖下载量前 1000 名**（约千分之一），",
+        "它是 `Origin.NETWORK` 表，重建不清；**只覆盖下载量前 1000 名**（`--top` 默认值），",
         "既不是抽样也不是全站，拿它算任何全站比例或格式分布都是错的。",
         "默认每库一页（1000 条），`truncated=true` 表示还有后续页未取，",
         "此时 `file_count` / `total_bytes` / `formats` / `has_readme` 都只是下限；",

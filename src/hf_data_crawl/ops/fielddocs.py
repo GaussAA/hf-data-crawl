@@ -27,14 +27,15 @@ COMMON: dict[str, str] = {
     "last_modified": "最后一次提交的时刻（UTC）；增量扫描按它排序",
     "snapshot_date": "快照日期，也是分区键——同一条记录落在哪个 `dt=` 目录",
     "downloads": "**近 30 天**下载量。不是累计值，也不是当日增量",
-    "downloads_all_time": "历史累计下载量，只增不减",
+    "downloads_all_time": "历史累计下载量；正常只增不减，但上游偶有清零，不能假设绝对单调",
     "likes": "点赞数",
-    "trending_score": "HF 计算的趋势分，可为空；它随时间漂移，**不能用来排序翻页**",
+    "trending_score": "HF 计算的趋势分：进趋势榜为正、未进榜为 `0`（**不是空值**）；"
+    "随时间漂移，**不能用来排序翻页**",
     "gated": "访问门槛：`false` 公开、`manual` 需人工审批、`auto` 自动授权",
     "private": "是否私有。私有库对外不可见，但公开索引里可能仍留一条记录",
     "disabled": "是否被平台禁用",
     "main_size": "主分支的仓库字节数（含 LFS 指针指向的实际大小）",
-    "xet_enabled": "是否使用 Xet 存储后端",
+    "xet_enabled": "是否使用 Xet 存储后端；实测全库皆为 `true`（上游默认全开），当前无区分度",
     "resource_group": "所属资源组；原值是复合结构，按 JSON 文本存储。**列表接口从不返回此字段**（实测请求了也拿不到），故整列为空",
     "description": "数据集简介：卡片正文（README）的纯文本摘要，HF 会截断并附「见数据集页」；"
     "不是作者填的一行简介；无正文则为空",
@@ -57,7 +58,7 @@ FIELD_DOCS: dict[str, dict[str, str]] = {
         "libraries": "适配的框架库（`datasets`、`pandas`、`polars` …）",
         "modalities": "模态（`text`/`image`/`audio`/`video`/`3d`/`tabular` 等；无前缀的 `multimodal` 也会并入，属本仓库扩展取值）",
         "formats": "数据文件格式（`parquet`、`csv`、`json`、`arrow` …）",
-        "regions": "数据覆盖的地区",
+        "regions": "数据覆盖的地区；实测 99.94% 是 HF 自动推断的 `us`，几乎无区分度（见第八节）",
         "multilinguality": "多语言性标记（单语 / 多语）",
         "source_datasets": "该数据集派生自哪些上游数据集",
         "annotations_creators": "标注者类型（专家、众包、机器生成等）",
@@ -76,6 +77,7 @@ FIELD_DOCS: dict[str, dict[str, str]] = {
         "status": "`active` 在架 / `disappeared` 已删除 / `restricted` 转私有 / `renamed` 已改名",
     },
     "carddata": {
+        "snapshot_date": "最近一次成功抓到这张卡的日期（按 id 覆盖的单文件表，不分区）",
         "source_sha": (
             "抓这张卡时该库的 commit sha。拿它与 `sha`（仓库当前版本）对照，"
             "就能判断卡片是否落后——`snapshot_date` 只说什么时候抓的，不说内容对应哪一版。"
@@ -104,12 +106,15 @@ FIELD_DOCS: dict[str, dict[str, str]] = {
         "card_download_bytes": "作者声明的下载体积（压缩后）",
     },
     "card_configs": {
+        "snapshot_date": "最近一次成功抓到这张卡的日期（随卡片批次，按 id 覆盖）",
         "config_name": "配置名（一个数据集可以有多个 config，如不同语言子集）",
         "split": "切分名（`train`、`test`、`validation`）",
         "num_bytes": "该 split 的原始字节数",
         "num_examples": "该 split 的行数",
-        "dataset_size": "生成 arrow 后的内存占用（卡片口径）",
-        "download_size": "下载体积（卡片口径）",
+        "dataset_size": "该 config 生成 arrow 后的内存占用（卡片口径）；"
+        "**在同一 config 的每条 split 行上重复**，跨行求和先按 `config_name` 去重",
+        "download_size": "该 config 的下载体积（压缩后，卡片口径）；同样按 split 行重复，"
+        "直接按行求和会放大",
         "features": "列名与数据类型的 JSON 描述——整条管线里唯一能回答「有哪些列」的来源",
         "data_files": "该 split 由哪些文件构成（JSON 数组，可能是通配符）",
     },
