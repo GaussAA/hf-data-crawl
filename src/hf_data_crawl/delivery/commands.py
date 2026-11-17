@@ -839,6 +839,10 @@ def _request_show(root: Path, request_id: str) -> int:
         print("  合规：步骤齐备，脚本索引与文件指纹一致")
     runs = deliveries_of(path.parent)
     print(f"交付台账：{len(runs)} 次")
+    if runs:
+        # 台账从旧到新列，读的人还得自己挑最后一行；「当前有效」是 INDEX 的第一句话，
+        # 这里也说出来——两份视图对同一件事只能有一个答案。
+        print(f"  当前有效：{runs[-1].name}（`deliveries/INDEX.md` 的第一行同此）")
     for run in runs:
         print(f"  {run.name}{manifest_summary(run)}")
     return 0
