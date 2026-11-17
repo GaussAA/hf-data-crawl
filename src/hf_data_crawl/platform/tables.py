@@ -311,6 +311,24 @@ FILES_SCHEMA: dict[str, PolarsType] = {
 }
 
 
+#: README 全文。按 id 覆盖的单文件表，`text` 是原始 Markdown（含 YAML 头）。
+#:
+#: 为什么单开一张表而不是给 `description` 换源：全文均值 4.6 KB，塞进默认 31 列
+#: 导出会让文件从 105 MB 涨到约 4 GB，而绝大多数筛选只看摘要。两者并存——
+#: `description` 供粗筛，本表供精读。`status` 区分四种空：`ok` 拿到全文、
+#: `absent` 仓库本来没有 README、`denied` 受限读不到、`error` 临时失败；
+#: 后三种都不是「作者没写描述」，别混为一谈。
+README_SCHEMA: dict[str, PolarsType] = {
+    "id": pl.Utf8,
+    "url": pl.Utf8,
+    "snapshot_date": pl.Date,
+    "source_sha": pl.Utf8,
+    "status": pl.Utf8,
+    "bytes": pl.Int64,
+    "text": pl.Utf8,
+}
+
+
 # ------------------------------------------------------------------ 登记
 
 TABLES: dict[str, TableSpec] = {
@@ -325,9 +343,11 @@ TABLES: dict[str, TableSpec] = {
         "card_configs", "enrich/card_configs.parquet", CARD_CONFIGS_SCHEMA, Origin.RAW
     ),
     # NETWORK 表来自外部接口，raw 里没有对应数据，删掉就要重抓：
-    # size 走 datasets-server，files 走单库详情接口（按下载量取头部）。
+    # size 走 datasets-server，files 走单库详情接口（按下载量取头部），
+    # readme 走 raw 文件下载（按 id / top / 全量补齐）。
     "size": TableSpec("size", "enrich/size.parquet", SIZE_SCHEMA, Origin.NETWORK),
     "files": TableSpec("files", "enrich/files.parquet", FILES_SCHEMA, Origin.NETWORK),
+    "readme": TableSpec("readme", "enrich/readme.parquet", README_SCHEMA, Origin.NETWORK),
 }
 
 #: `derive_day` 按日产出的分区表。恢复与局部重建都按这张清单清层，

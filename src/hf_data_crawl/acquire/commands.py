@@ -14,12 +14,32 @@ from ..platform.lock import exclusive
 from ..platform.presets import get_preset
 from ..platform.runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs
 from ..platform.store import DatasetStore
-from .batch import STALL_HEARTBEAT_SECONDS
+from ..platform.tables import README_SCHEMA
+from .batch import (
+    STALL_HEARTBEAT_SECONDS,
+)
+from .batch import (
+    StagingWriter as StagingDirWriter,
+)
+from .batch import (
+    clear_staged as clear_staged_dir,
+)
+from .batch import (
+    read_staged as read_staged_dir,
+)
 from .collect import Collector, CollectSummary
 from .enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
 from .files import FileFetcher, FileSummary, HfFilesApi
 from .hf.api import HfDatasetApi, Transport
 from .hf.transport import HttpxTransport
+from .readme import (
+    README_STAGING_DIR,
+    HfReadmeApi,
+    ReadmeFetcher,
+    ReadmeSummary,
+    keep_previous_ok,
+    stale_readme_ids,
+)
 from .reconcile import PROBE_DEGRADE_AFTER, Reconciler, ReconcileSummary
 from .sizes import (
     HfSizeApi,
@@ -323,6 +343,118 @@ def run_fetch_files(
         store.upsert("files", frame)
     _print_files(summary, store.read("files").height)
     return Outcome(summary)
+
+
+def run_fetch_readme(
+    args: argparse.Namespace,
+    store: DatasetStore,
+    transport: Transport | None,
+    lock_wait: float = 0.0,
+) -> Outcome:
+    """锁外抓取、锁内合并：全量要跑十几小时，整段持锁会挡住当天的采集。
+
+    与 `fetch-sizes` 同一套路：结果先写 `.staging/readme/` 的原子分片，
+    收尾才用短锁并入 `enrich/readme.parquet`；中断后分片还在，下一轮续抓。
+    """
+    snapshot = _snapshot(args)
+    current = state.read_current(store)
+    if current.height == 0:
+        print("尚无采集数据，请先运行 `hf-data-crawl collect`。")
+        return Outcome({"error": "empty"}, code=1, reason="尚无采集数据，请先运行 collect")
+
+    # 残留分片同样是「已处理」的 id：上一轮中断前抓到的结果不该再请求一遍。
+    existing = store.read("readme")
+    staged, _ = read_staged_dir(store, README_STAGING_DIR, README_SCHEMA)
+    if staged.height:
+        existing = pl.concat([existing, staged], how="vertical_relaxed")
+
+    ordered = current.sort("downloads", descending=True, nulls_last=True)
+    # README 是仓库里的一个文件：commit 变了，旧全文就不再是当前版本。
+    # `--changed N` 只重取这批里的前 N 个（按下载量），全量那一趟留给人工择机跑。
+    refresh: set[str] = set()
+    if args.changed > 0:
+        stale = stale_readme_ids(current, store.read("readme"))
+        picked = stale.sort("downloads", descending=True, nulls_last=True).head(args.changed)
+        refresh = set(picked["id"].to_list())
+        if not refresh:
+            print("README 无陈旧：没有 commit 变过的库。")
+            return Outcome({"changed": 0, "refreshed": 0})
+        ordered = ordered.filter(pl.col("id").is_in(sorted(refresh)))
+        print(f"README 随内容刷新：{len(refresh)} 个库 commit 已变，重取其全文。")
+
+    if args.ids:
+        wanted = [item.strip() for item in args.ids.split(",") if item.strip()]
+        ordered = ordered.filter(pl.col("id").is_in(wanted))
+        if ordered.height == 0:
+            print("--ids 里没有有效的数据集 id。")
+            return Outcome({"error": "ids"}, code=1, reason="--ids 无有效 id")
+        candidates = ordered["id"].to_list()
+        picked = ordered
+    elif refresh:
+        candidates = ordered["id"].to_list()
+        picked = ordered
+    else:
+        candidates = (
+            ordered["id"].to_list()[: args.top] if args.top > 0 else ordered["id"].to_list()
+        )
+        picked = ordered.head(len(candidates))
+
+    # sha 只给本轮候选：全库 113 万条建 dict 没必要，候选通常几万个。
+    shas = dict(zip(picked["id"].to_list(), picked["sha"].to_list()))
+
+    fetcher = ReadmeFetcher(
+        api=HfReadmeApi(
+            transport=_files_transport(transport, args.timeout),
+            max_retries=args.max_retries,
+            rate=args.rate,
+        ),
+        workers=args.workers,
+        progress=lambda done, total: _progress_line(done, total, "补 README"),
+        heartbeat=lambda done, total: _stall_line(done, total, "补 README"),
+    )
+    writer = StagingDirWriter(store, snapshot, README_STAGING_DIR)
+    summary, frame = fetcher.run(
+        snapshot,
+        dataset_ids=candidates,
+        shas=shas,
+        existing=existing,
+        refresh=refresh,
+        retry_denied=args.retry_denied,
+        # 边跑边落暂存分片：中断时最多损失一个批次，但写入发生在锁外。
+        flush=writer.write,
+        flush_every=args.flush_every,
+    )
+    # `flush` 只在攒满一批时触发；不足一批的尾巴必须补写进分片，否则合并只读
+    # 分片时会漏掉它们。`frame` 的行序与写入序一致，尾巴从已写行数处切。
+    if frame.height > writer.flushed:
+        writer.write(frame.slice(writer.flushed, frame.height - writer.flushed))
+    # 进度条走的是 \r 原地刷新，收尾必须换行，否则摘要会贴在同一行上。
+    print()
+
+    # 短锁：只在这段独占数据目录，把本轮结果与残留分片一次并入正式表。
+    # 抓不到锁就失败，分片原样留着，下一轮继续（不丢已抓到的数据）。
+    with exclusive(store.root, "fetch-readme:merge", lock_wait):
+        merged, paths = read_staged_dir(store, README_STAGING_DIR, README_SCHEMA)
+        if merged.height:
+            # 临时失败不许抹掉已拿到的全文；absent / denied 是明确结论，可以覆盖。
+            store.upsert("readme", keep_previous_ok(store.read("readme"), merged))
+        clear_staged_dir(store, paths, README_STAGING_DIR)
+
+    _print_readme(summary, store.read("readme").height)
+    return Outcome(summary)
+
+
+def _print_readme(summary: ReadmeSummary, table_rows: int) -> None:
+    print(
+        f"{summary.snapshot_date} README 补齐：候选 {summary.requested} 条"
+        f" / 耗时 {summary.elapsed_seconds:.1f}s"
+        f" / 下载 {summary.downloaded_bytes / 1e6:.1f}MB"
+    )
+    print(
+        f"  成功 {summary.fetched} · 仓库没有 README {summary.absent} · "
+        f"受限读不到 {summary.denied} · 临时失败 {summary.failed} · 已存跳过 {summary.skipped}"
+    )
+    print(f"  全文表累计 {table_rows} 行（临时失败不入库，下次自然重试）")
 
 
 def _progress_line(done: int, total: int, label: str = "补齐规模") -> None:

@@ -147,6 +147,16 @@ FIELD_DOCS: dict[str, dict[str, str]] = {
         "truncated": "是否还有未取的下一页；为 true 时上面四项都只是下限",
         "snapshot_date": "最近一次补抓文件清单的日期",
     },
+    "readme": {
+        "status": "`ok` 拿到全文 / `absent` 仓库没有 README / `denied` 门禁或私有读不到 / "
+        "`error` 临时失败。后三种都不是「作者没写」",
+        "source_sha": "抓这份 README 时该库的 commit sha；与 `sha` 不一致说明仓库已改过，"
+        "全文可能不是当前版本",
+        "bytes": "README 的字节数；非 `ok` 行为空",
+        "text": "README 原文（含 YAML 头），Markdown 文本；与 `description`"
+        "（HF 截断的摘要）不是一回事",
+        "snapshot_date": "最近一次成功抓取 README 的日期（按 id 覆盖的单文件表，不分区）",
+    },
 }
 
 

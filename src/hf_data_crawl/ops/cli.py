@@ -20,6 +20,7 @@ from ..acquire.commands import (
     run_collect,
     run_enrich,
     run_fetch_files,
+    run_fetch_readme,
     run_fetch_sizes,
     run_reconcile,
 )
@@ -57,6 +58,7 @@ WRITE_COMMANDS = frozenset(
         "enrich",
         "fetch-sizes",
         "fetch-files",
+        "fetch-readme",
         "archive",
         "compact",
         "prune",
@@ -75,7 +77,7 @@ LOCKED_COMMANDS = WRITE_COMMANDS | SNAPSHOT_COMMANDS
 #: 它们仍在 WRITE_COMMANDS 里（启动检查/恢复未完成的派生照旧），但不走
 #: `_execute` 的整段锁。原因见 `sizes.StagingWriter`：全量抓取要跑三小时，
 #: 整段持锁会直接让当天的 collect 等锁失败（2026-11-07 实际事故）。
-SELF_LOCKED_COMMANDS = frozenset({"fetch-sizes"})
+SELF_LOCKED_COMMANDS = frozenset({"fetch-sizes", "fetch-readme"})
 
 #: 生成命令默认等锁时长（秒）。它们通常由计划任务或人工临时触发，撞上采集
 #: 时干等一会儿比直接失败有用；等不到仍会如实报错。可用 `--lock-wait` 覆盖。
@@ -360,6 +362,54 @@ def build_parser() -> argparse.ArgumentParser:
         help="每处理多少条就落一次库，中断时最多损失这一批",
     )
 
+    readme = subparsers.add_parser(
+        "fetch-readme", help="按 id / top / 全量抓 README 全文（独立表，不进默认导出）"
+    )
+    readme.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
+    readme.add_argument(
+        "--top",
+        type=int,
+        default=20_000,
+        help="按下载量取前多少名；0 表示全量（按 current 实际行数，随底库增长自动适配）",
+    )
+    readme.add_argument("--ids", default=None, help="只抓这些 id（逗号分隔），忽略 --top")
+    readme.add_argument(
+        "--changed",
+        type=int,
+        default=0,
+        help="README 随内容刷新：重取 commit 已变的库，最多 N 个（0 表示不做）",
+    )
+    readme.add_argument("--workers", type=int, default=12, help="并发数，实测 12 稳定在 19 req/s")
+    readme.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        help="单库请求超时秒数；README 中位 2.5 KB，超时即记临时失败",
+    )
+    readme.add_argument(
+        "--rate",
+        type=float,
+        default=15.0,
+        help="每秒请求数上限（HF 解析器配额 5000 次 / 5 分钟 ≈ 16.7/s，默认留余量取 15；0 不限速）",
+    )
+    readme.add_argument(
+        "--max-retries",
+        type=int,
+        default=2,
+        help="单库重试次数；429 按上游 Retry-After 退避",
+    )
+    readme.add_argument(
+        "--retry-denied",
+        action="store_true",
+        help="重试上次 401/403 的库（受门禁的库带令牌也可能读到）",
+    )
+    readme.add_argument(
+        "--flush-every",
+        type=int,
+        default=2_000,
+        help="每处理多少条就写一个暂存分片，中断时最多损失这一批",
+    )
+
     doctor = subparsers.add_parser("doctor", help="体检：任务是否按时、Raw 是否断日、有无残留文件")
     # 未显式给时沿用全局默认；SUPPRESS 避免把全局 --lock-wait 覆盖回 None。
     doctor.add_argument(
@@ -485,6 +535,13 @@ def main(argv: list[str] | None = None, *, transport: Any = None) -> int:
     if args.command == "fetch-files":
         return _execute(
             store, "fetch-files", lambda: run_fetch_files(args, store, transport), lock_wait
+        )
+    if args.command == "fetch-readme":
+        return _execute(
+            store,
+            "fetch-readme",
+            lambda: run_fetch_readme(args, store, transport, lock_wait),
+            lock_wait,
         )
     if args.command == "report":
         return _execute(store, "report", lambda: run_report(args, store), lock_wait)

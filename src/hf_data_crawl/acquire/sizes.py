@@ -30,15 +30,30 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from uuid import uuid4
 
 import orjson
 import polars as pl
 
-from ..platform.atomic import write_parquet
 from ..platform.coerce import as_int
 from ..platform.tables import SIZE_SCHEMA, url_for
-from .batch import collect_rows
+from .batch import (
+    StagingWriter as _StagingWriter,
+)
+from .batch import (
+    clear_staged as _clear_staged,
+)
+from .batch import (
+    collect_rows,
+)
+from .batch import (
+    read_staged as _read_staged,
+)
+from .batch import (
+    staged_shards as _staged_shards,
+)
+from .batch import (
+    staging_root as _staging_root,
+)
 from .hf.api import Transport, TransportError
 
 if TYPE_CHECKING:
@@ -316,7 +331,7 @@ def stale_ids(current: pl.DataFrame, existing: pl.DataFrame) -> pl.DataFrame:
     return joined.filter((pl.col("size_status") == "ok") & (pl.col("last_modified") > fetched))
 
 
-#: 抓取期间的暂存目录（相对数据根）。分片只写真数据、不碰正式表，故写它不必持锁。
+#: 规模表的暂存目录；分片只写真数据、不碰正式表，故写它不必持锁。
 STAGING_DIR = ".staging/sizes"
 
 
@@ -345,84 +360,30 @@ def protect_ok_rows(previous: pl.DataFrame, fresh: pl.DataFrame) -> pl.DataFrame
 
 
 def staging_root(store: DatasetStore) -> Path:
-    """暂存分片所在目录。"""
-    return store.root / STAGING_DIR
+    """规模表的暂存目录。"""
+    return _staging_root(store, STAGING_DIR)
 
 
 def staged_shards(store: DatasetStore) -> list[Path]:
-    """现有暂存分片，按文件名排序。
-
-    同一轮内序号递增，文件名序即写入序；跨轮顺序无关紧要——各轮的 id 集合
-    已经互斥（本轮开跑时就把已有分片记作「已处理」）。
-    """
-    root = staging_root(store)
-    if not root.exists():
-        return []
-    return sorted(root.glob("*.parquet"))
+    """规模表现有暂存分片，按文件名排序。"""
+    return _staged_shards(store, STAGING_DIR)
 
 
 def read_staged(store: DatasetStore) -> tuple[pl.DataFrame, list[Path]]:
-    """读出上次中断留下的暂存分片，返回 (结果表, 分片路径)。
-
-    分片写盘是原子的，读到的要么是完整的一批、要么不存在；不必做半截容错。
-    但并发跑的另一个进程可能在列目录之后、读文件之前把某个分片删掉（它合并完
-    自己的那份），丢掉一个分片不算错误——那一批已经由它并入正式表了。
-    """
-    paths = staged_shards(store)
-    frames: list[pl.DataFrame] = []
-    for path in paths:
-        try:
-            frames.append(pl.read_parquet(path))
-        except FileNotFoundError:
-            continue
-    if not frames:
-        return pl.DataFrame(schema=SIZE_SCHEMA), paths
-    return pl.concat(frames, how="vertical_relaxed"), paths
+    """读出上次中断留下的规模分片，返回 (结果表, 分片路径)。"""
+    return _read_staged(store, STAGING_DIR, SIZE_SCHEMA)
 
 
-class StagingWriter:
-    """抓取期间的追加式暂存：一批一个分片，原子写入，不碰正式表。
-
-    为什么要它：`fetch-sizes` 全量跑三小时，若整段持锁，当天的 `collect` 会直接
-    因拿不到锁而失败（2026-11-07 实际事故）。把写入改成「锁外写分片、收尾短锁
-    合并」之后，长耗时部分不再占锁；中断时已抓到的批次也还在分片里，下一轮
-    据此续抓，而不是从头再烧一遍请求。
-    """
+class StagingWriter(_StagingWriter):
+    """规模表的暂存写入：目录固定为自己的那一个。"""
 
     def __init__(self, store: DatasetStore, snapshot_date: date) -> None:
-        self._root = staging_root(store)
-        self._prefix = snapshot_date.isoformat()
-        # 用随机串而不是 pid 做分片标识：pid 会被复用，复用之后这一轮的分片会
-        # 直接覆盖上一轮遗留的同名分片（原子替换不会报错，只是数据悄悄没了）。
-        self._run = uuid4().hex[:12]
-        self._seq = 0
-        #: 已写进分片的行数。尾部不足 `flush_every` 的那批由调用方补写。
-        self.flushed = 0
-
-    def write(self, frame: pl.DataFrame) -> Path | None:
-        """原子写一个分片；空批返回 None。"""
-        if frame.height == 0:
-            return None
-        self._root.mkdir(parents=True, exist_ok=True)
-        target = self._root / f"{self._prefix}-{self._run}-{self._seq:04d}.parquet"
-        write_parquet(frame, target)
-        self._seq += 1
-        self.flushed += frame.height
-        return target
+        super().__init__(store, snapshot_date, STAGING_DIR)
 
 
 def clear_staged(store: DatasetStore, paths: Sequence[Path] | None = None) -> None:
-    """删除已并入正式表的暂存分片；不给路径就清空整个暂存目录。
-
-    只删「这一次读到的路径」而不是整目录：并发跑的另一轮可能刚写进新分片，
-    那是它的成果，不能替它丢掉。
-    """
-    targets = staged_shards(store) if paths is None else list(paths)
-    for path in targets:
-        path.unlink(missing_ok=True)
-    root = staging_root(store)
-    if root.exists() and not any(root.iterdir()):
-        root.rmdir()
+    """删除已并入正式表的规模分片；不给路径就清空暂存目录。"""
+    _clear_staged(store, paths, STAGING_DIR)
 
 
 def tail(count: int, total: int) -> int:

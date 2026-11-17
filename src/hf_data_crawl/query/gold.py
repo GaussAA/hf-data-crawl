@@ -83,6 +83,7 @@ _VIEWS: tuple[tuple[str, str], ...] = (
     ("card_config", "card_configs"),
     ("dataset_size", "size"),
     ("files", "files"),
+    ("readme", "readme"),
 )
 
 

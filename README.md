@@ -28,6 +28,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `enrich` | 按下载量取头部补抓 `cardData`（标签、config/split 明细、行数列数）；`--ids a,b,c` 按需补（上限 200） | 是 |
 | `fetch-sizes` | 经 datasets-server 补规模与列数（`num_rows` / `num_columns_max`）；`--changed N` 只重取内容已变的库，`--top 0` 表示全量（按 `current` 实际行数，不写死常量） | 是 |
 | `fetch-files` | 按下载量取头部，经 `/tree/main` 补文件清单汇总（试点：top 1000，每库默认 1 页） | 是 |
+| `fetch-readme` | 逐库抓 README 全文（`description` 只有约 600 字符摘要）；`--ids` 按需、`--top N` 取头部、`--top 0` 全量、`--changed N` 只重取 commit 已变的、`--rate 15` 匀速（配额 5000 次/5 分钟）；独立表，**不进默认 31 列导出** | 是 |
 | `reconcile` | 全量对账：按 `createdAt` 稳定序扫全站，产出新增/删除/转私有/改名/sha 变更 | 是 |
 | `build` | 重建派生层：默认只重放近 7 天热区，`--stale` 只修派生滞后的日子及其后，`--full` 全量重放 | 否 |
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
@@ -47,6 +48,7 @@ hf-data-crawl collect      [--date YYYY-MM-DD] [--limit 1000] [--max-pages N] [-
 hf-data-crawl enrich       [--date YYYY-MM-DD] [--top 20000] [--ids a,b,c] [--limit 1000]
 hf-data-crawl fetch-sizes  [--date YYYY-MM-DD] [--top 20000] [--changed N] [--workers 16] [--retry-unavailable]
 hf-data-crawl fetch-files  [--date YYYY-MM-DD] [--top 1000] [--workers 8] [--retry-unavailable] [--timeout 30] [--max-retries 1] [--max-pages 1] [--refresh-truncated]
+hf-data-crawl fetch-readme [--date YYYY-MM-DD] [--top 20000|0] [--ids a,b,c] [--changed N] [--workers 12] [--timeout 30] [--max-retries 2] [--retry-denied]
 hf-data-crawl reconcile    [--date YYYY-MM-DD] [--limit 1000] [--max-pages N] [--probe-limit 2000]
 hf-data-crawl build        [--stale | --full]                            # 默认只重放近 7 天
 hf-data-crawl compact      [--older-than-days 7] [--date YYYY-MM-DD]  # 冷区跨天压缩
@@ -73,7 +75,7 @@ hf-data-crawl request      run-due                  # 只跑到期的（计划�
 全局参数 `--data-dir` / `--requests-dir` / `--lock-wait` 需放在子命令之前；前两者默认取
 `HF_DATA_DIR` / `HF_REQUESTS_DIR`，否则 `./data` 与 `./requests`。
 
-锁分三档（见 `src/hf_data_crawl/ops/cli.py`）：**写命令**（`collect` / `reconcile` / `build` / `enrich` / `fetch-sizes` / `fetch-files` / `archive` / `compact` / `prune` / `export-wide`）执行期间持有 `data/.lock` 的独占锁，同一时刻只能跑一个；拿不到锁会失败并在 `runs/` 留记录，进程被杀后系统自动释放，不会留下死锁。**`report` / `docs` 不改数据，但要同时读多张表**，故与写命令共用同一把独占锁以保证一致快照（默认等锁 60 秒）。**`fetch-sizes` 例外**：全量抓取耗时可达数小时，只在「并入正式表」时自排短锁，否则会饿死当天的 `collect`。`doctor` 等锁 2 秒，拿不到就降级为非快照；只有 `query` 完全不加锁。
+锁分三档（见 `src/hf_data_crawl/ops/cli.py`）：**写命令**（`collect` / `reconcile` / `build` / `enrich` / `fetch-sizes` / `fetch-files` / `fetch-readme` / `archive` / `compact` / `prune` / `export-wide`）执行期间持有 `data/.lock` 的独占锁，同一时刻只能跑一个；拿不到锁会失败并在 `runs/` 留记录，进程被杀后系统自动释放，不会留下死锁。**`report` / `docs` 不改数据，但要同时读多张表**，故与写命令共用同一把独占锁以保证一致快照（默认等锁 60 秒）。**`fetch-sizes` / `fetch-readme` 例外**：全量抓取耗时可达数小时到十几小时，只在「并入正式表」时自排短锁，否则会饿死当天的 `collect`。`doctor` 等锁 2 秒，拿不到就降级为非快照；只有 `query` 完全不加锁。
 
 **默认交付底库**：`current` 只留状态标量，语义字段分散在 `silver` / `carddata` / `size`。
 `export-wide` 按 `delivery/fields.py` 的**默认交付字段契约**把 `gold.datasets` 视图裁成
@@ -231,7 +233,7 @@ uv run hf-data-crawl doctor                        # 手动体检；有问题退
 
 每轮摘要落在 `runs/`，失败也写并带错误原因，不会静默。`runs/<时间戳>-<命令>.json` 与 `logs/<时间戳>-<命令>.log` 是同一次运行的**两半**（机读结论 / 人读现场），同键不同扩展名，查某一轮取同前缀即可。`doctor` 不写 `runs/`：它退出码 1 表示「有告警」而非「命令失败」，写进去会污染「近 7 天无失败运行」那条判据；体检结论看 `data\ALERT.txt`（覆盖式，只存最新一次）、流水 `state\health-history.jsonl`（一行一次，据它追「断日从哪天开始」「这条告警连续几天」，保留最近 `HEALTH_KEEP` 次）与对应日志。
 
-**写命令互斥**：所有写命令（collect / enrich / fetch-sizes / fetch-files / reconcile / build / archive / compact / prune / export-wide）持有数据目录的锁，避免 `current.parquet` 被并发覆盖。人工执行时撞上别人会立刻报错并说明占用者；计划任务的包装脚本加了 `--lock-wait 900`，会先等 15 分钟而不是白丢一轮（`fetch-sizes` 一次可能跑一小时，与 03:10 的采集重叠过，曾因此丢过一次采集）。
+**写命令互斥**：所有写命令（collect / enrich / fetch-sizes / fetch-files / fetch-readme / reconcile / build / archive / compact / prune / export-wide）持有数据目录的锁，避免 `current.parquet` 被并发覆盖。人工执行时撞上别人会立刻报错并说明占用者；计划任务的包装脚本加了 `--lock-wait 900`，会先等 15 分钟而不是白丢一轮（`fetch-sizes` 一次可能跑一小时、`fetch-readme` 全量要十几小时，与 03:10 的采集重叠过，曾因此丢过一次采集）。
 
 ## 需求与交付
 
