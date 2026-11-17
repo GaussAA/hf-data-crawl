@@ -453,6 +453,10 @@ def _lexicon(spec: FillSpec) -> dict[str, str]:
 def _translate(value: Any, table: dict[str, str]) -> Any:
     if isinstance(value, list):
         return [_translate(item, table) for item in value]
+    if isinstance(value, bool):
+        # 布尔列（`has_readme` 之类）走同一张词表：词表里有 true/false 就译，没有就
+        # 原样返回。否则中文表里会冒出一格 `TRUE`，与旁边「否」「受限」并排。
+        return table.get("true" if value else "false", value)
     if not isinstance(value, str):
         return value
     return table.get(value.strip(), value)

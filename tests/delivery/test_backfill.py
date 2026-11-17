@@ -369,6 +369,14 @@ def test_字节按十进制折GB(tmp_path: Path) -> None:
     assert render(spec.columns[0], ROW, spec) == 2.5
 
 
+def test_布尔列按词表译成是不是(tmp_path: Path) -> None:
+    """`has_readme` 是布尔；不译就会在中文表里冒出一格 `TRUE`，与旁边「否」并排。"""
+    spec = spec_of(tmp_path, 'columns:\n  "是否有README": {field: has_readme, translate: true}')
+
+    assert render(spec.columns[0], ROW, spec) == "是"
+    assert render(spec.columns[0], {**ROW, "has_readme": False}, spec) == "否"
+
+
 def test_简介压平但不改写措辞(tmp_path: Path) -> None:
     spec = spec_of(tmp_path, 'columns:\n  "数据模态": {field: description, format: prose}')
 
