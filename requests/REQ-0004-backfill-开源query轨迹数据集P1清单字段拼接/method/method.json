@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "updated_at": "2026-11-17T17:29:08+08:00",
+  "scripts": [
+    {
+      "name": "columns.py",
+      "purpose": "把底库 datasets 视图的 74 列分成四桶（原表已有 / 平台与管道记账 / 这批整列为空 / 该拼），并核对 spec.yaml 里声明的底库列正好是第四桶：手抄的列清单会随底库补采而过期，这里每次现算",
+      "run": ".venv/Scripts/python.exe requests/<本需求目录>/method/scripts/columns.py（仓库根目录下跑；退出码 1 表示 spec 与底库对不上）",
+      "inputs": [
+        "data/（Gold datasets 视图）",
+        "input/开源query轨迹数据集P1紧急需求清单-28条-1113.xlsx",
+        "spec.yaml"
+      ],
+      "outputs": [
+        "stdout：四桶清单、逐列覆盖率、spec 核对结论"
+      ],
+      "sha256": "481b27e173dc81c64ea74dd37ba363b130beaab04ad59309e4485d237cbdba82"
+    },
+    {
+      "name": "verify_table.py",
+      "purpose": "交付前后自检：输入表头、序号连续、名称与 URL 是否指向同一个库；给定交付目录时再查产物与档案——原表三列逐格未改、追加列顺序与 spec 一致、每一列都真有值、manifest 把输入表头与追加列分开记",
+      "run": ".venv/Scripts/python.exe requests/<本需求目录>/method/scripts/verify_table.py [deliveries/<时刻>]（不给交付目录时只查输入；退出码 1 表示有问题）",
+      "inputs": [
+        "input/开源query轨迹数据集P1紧急需求清单-28条-1113.xlsx",
+        "spec.yaml",
+        "deliveries/<时刻>/（可选：产物与 manifest.json）"
+      ],
+      "outputs": [
+        "stdout：输入行数、表头、产物列数、底库指纹是否漂移、自检结论"
+      ],
+      "sha256": "dc038084f7ece60f194136761abdd4dcde21b509a0f902c74e46c3fd35c14af9"
+    }
+  ]
+}

@@ -1,0 +1,528 @@
+{
+  "request_id": "REQ-0004",
+  "title": "开源query轨迹数据集P1清单字段拼接",
+  "requester": "大帅",
+  "kind": "backfill",
+  "spec_version": 1,
+  "spec_sha256": "d3486f067c00e4cec2b4d916a58079b8c51a6cb5cf1584d87051e6a6521b6514",
+  "delivered_at": "2026-11-17T17:30:45+08:00",
+  "source": {
+    "current_md5": "4d1dbaf321d0a94f0e4b22f2a15d12f7",
+    "current_rows": 1133802,
+    "newest_snapshot_date": "2026-11-17"
+  },
+  "result": {
+    "rows": 28,
+    "columns": [
+      "作者",
+      "发布时间",
+      "更新时间",
+      "最新提交(sha)",
+      "近30天下载量",
+      "累计下载量",
+      "点赞量",
+      "趋势分",
+      "访问门槛",
+      "数据大小(GB)",
+      "简介",
+      "任务类别",
+      "数据模态",
+      "语种",
+      "文件格式",
+      "适配库",
+      "规模档",
+      "许可证",
+      "标签",
+      "自定义标签",
+      "地区",
+      "arXiv编号",
+      "论文URL"
+    ],
+    "files": [
+      {
+        "name": "开源query轨迹数据集P1清单-28条-已拼接字段.xlsx",
+        "bytes": 22911,
+        "sha256": "8707d1ba43e180d571367a890c518d09e3a983d5f390f93dc7a9c69d12374246"
+      }
+    ]
+  },
+  "health": {
+    "status": "first",
+    "baseline_rows": null,
+    "delta_pct": null,
+    "delta_abs": null,
+    "supersedes": null,
+    "note": "",
+    "header_note": ""
+  },
+  "previous": null,
+  "method": {
+    "doc": {
+      "path": "method/METHOD.md",
+      "sha256": "863f81d4101b97863621fcf0e64bc6b3d13a14a76a2224fceef8ed2ad2c612f6"
+    },
+    "index": {
+      "path": "method/method.json",
+      "sha256": "61a9da88d79eb459df4171e810eeb6daf5009fc03176f2b8f54f8c66b41f2d46"
+    },
+    "scripts": [
+      {
+        "name": "columns.py",
+        "purpose": "把底库 datasets 视图的 74 列分成四桶（原表已有 / 平台与管道记账 / 这批整列为空 / 该拼），并核对 spec.yaml 里声明的底库列正好是第四桶：手抄的列清单会随底库补采而过期，这里每次现算",
+        "sha256": "481b27e173dc81c64ea74dd37ba363b130beaab04ad59309e4485d237cbdba82"
+      },
+      {
+        "name": "verify_table.py",
+        "purpose": "交付前后自检：输入表头、序号连续、名称与 URL 是否指向同一个库；给定交付目录时再查产物与档案——原表三列逐格未改、追加列顺序与 spec 一致、每一列都真有值、manifest 把输入表头与追加列分开记",
+        "sha256": "dc038084f7ece60f194136761abdd4dcde21b509a0f902c74e46c3fd35c14af9"
+      }
+    ],
+    "inputs": {},
+    "env": {
+      "package": "0.1.0",
+      "contract_version": 5,
+      "commit": "6005ad09e2533ec7af6ab9b6a9eabc1e0374fea7"
+    }
+  },
+  "fill": {
+    "input": {
+      "path": "input/开源query轨迹数据集P1紧急需求清单-28条-1113.xlsx",
+      "bytes": 10303,
+      "sha256": "f522886a66ed4dcef5a851a91bb206516d01849ff75c9675eb4a19c8b12f4642",
+      "header": {
+        "sha256": "c62ffb6e5b391f579f38df9fa8d5b3f1859e18a8c7170390e2ff0aaacc37fa59",
+        "columns": [
+          "序号",
+          "名称",
+          "URL"
+        ]
+      }
+    },
+    "source": {
+      "path": "input/开源query轨迹数据集P1紧急需求清单-28条-1113.xlsx",
+      "sheet": "Sheet1",
+      "header_row": 1,
+      "key_column": "URL"
+    },
+    "output": "开源query轨迹数据集P1清单-28条-已拼接字段.xlsx",
+    "appended": [
+      "作者",
+      "发布时间",
+      "更新时间",
+      "最新提交(sha)",
+      "近30天下载量",
+      "累计下载量",
+      "点赞量",
+      "趋势分",
+      "访问门槛",
+      "数据大小(GB)",
+      "简介",
+      "任务类别",
+      "数据模态",
+      "语种",
+      "文件格式",
+      "适配库",
+      "规模档",
+      "许可证",
+      "标签",
+      "自定义标签",
+      "地区",
+      "arXiv编号",
+      "论文URL"
+    ],
+    "overrides": null,
+    "overwrite": false,
+    "stamp_note": "取自本地 HuggingFace 底库（对账后快照，见交付 manifest 的 source.current_md5）；未凭记忆或现场浏览填写，底库没有的一律留空。",
+    "columns": [
+      {
+        "name": "作者",
+        "kind": "field",
+        "field": "author",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "发布时间",
+        "kind": "field",
+        "field": "created_at",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": "date"
+      },
+      {
+        "name": "更新时间",
+        "kind": "field",
+        "field": "last_modified",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": "date"
+      },
+      {
+        "name": "最新提交(sha)",
+        "kind": "field",
+        "field": "sha",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "近30天下载量",
+        "kind": "field",
+        "field": "downloads",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "累计下载量",
+        "kind": "field",
+        "field": "downloads_all_time",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "点赞量",
+        "kind": "field",
+        "field": "likes",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "趋势分",
+        "kind": "field",
+        "field": "trending_score",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "访问门槛",
+        "kind": "field",
+        "field": "gated",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "数据大小(GB)",
+        "kind": "field",
+        "field": "main_size",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": "gb"
+      },
+      {
+        "name": "简介",
+        "kind": "field",
+        "field": "description",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": "prose"
+      },
+      {
+        "name": "任务类别",
+        "kind": "field",
+        "field": "task_categories",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "数据模态",
+        "kind": "field",
+        "field": "modalities",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "语种",
+        "kind": "field",
+        "field": "languages",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "文件格式",
+        "kind": "field",
+        "field": "formats",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "适配库",
+        "kind": "field",
+        "field": "libraries",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "规模档",
+        "kind": "field",
+        "field": "size_categories",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "许可证",
+        "kind": "field",
+        "field": "licenses",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "标签",
+        "kind": "field",
+        "field": "tags",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "自定义标签",
+        "kind": "field",
+        "field": "plain_tags",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "地区",
+        "kind": "field",
+        "field": "regions",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "arXiv编号",
+        "kind": "field",
+        "field": "arxiv_ids",
+        "template": null,
+        "const": null,
+        "reason": null,
+        "format": null
+      },
+      {
+        "name": "论文URL",
+        "kind": "template",
+        "field": null,
+        "template": "https://arxiv.org/abs/{arxiv_ids}",
+        "const": null,
+        "reason": null,
+        "format": null
+      }
+    ],
+    "written": 564,
+    "tallies": {
+      "作者": {
+        "written": 28,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 0
+      },
+      "发布时间": {
+        "written": 28,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 0
+      },
+      "更新时间": {
+        "written": 28,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 0
+      },
+      "最新提交(sha)": {
+        "written": 28,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 0
+      },
+      "近30天下载量": {
+        "written": 28,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 0
+      },
+      "累计下载量": {
+        "written": 28,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 0
+      },
+      "点赞量": {
+        "written": 28,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 0
+      },
+      "趋势分": {
+        "written": 28,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 0
+      },
+      "访问门槛": {
+        "written": 28,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 0
+      },
+      "数据大小(GB)": {
+        "written": 28,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 0
+      },
+      "简介": {
+        "written": 28,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 0
+      },
+      "任务类别": {
+        "written": 24,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 4
+      },
+      "数据模态": {
+        "written": 25,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 3
+      },
+      "语种": {
+        "written": 13,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 15
+      },
+      "文件格式": {
+        "written": 20,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 8
+      },
+      "适配库": {
+        "written": 20,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 8
+      },
+      "规模档": {
+        "written": 26,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 2
+      },
+      "许可证": {
+        "written": 25,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 3
+      },
+      "标签": {
+        "written": 28,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 0
+      },
+      "自定义标签": {
+        "written": 25,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 3
+      },
+      "地区": {
+        "written": 28,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 0
+      },
+      "arXiv编号": {
+        "written": 11,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 17
+      },
+      "论文URL": {
+        "written": 11,
+        "from_override": 0,
+        "kept": 0,
+        "empty": 17
+      }
+    },
+    "missing_ids": [],
+    "undeclared": [
+      "序号",
+      "名称",
+      "URL"
+    ],
+    "manual": [],
+    "notes": [
+      {
+        "title": "收录规则",
+        "text": "底库 `datasets` 视图共 74 列，本单拼进来 22 列（另加 1 列由 arXiv 号拼出的论文URL）。不拼的三类：①原表已有的 id、url；②平台与管道记账（first_seen_at/last_seen_at/status/private/disabled/xet_enabled/resource_group/fetched_at/size_status/files_status/truncated/card_source_sha），它们描述的是「我们怎么采的」，不是数据集本身；③这 28 个库整列为空的数据（card_* 未抓卡片、server_*/files_* 未采集规模与文件清单、dois/task_ids/multilinguality 等），拼进来只会多出一片空格。完整四桶划分由 method/scripts/columns.py 现算并自证，不靠手抄。"
+      },
+      {
+        "title": "下载量口径",
+        "text": "「近30天下载量」是 downloads（HF 数据集页显示的就是这个数）；「累计下载量」是 downloads_all_time。两列并排是为了让人一眼看出差异，不混成一个数。"
+      },
+      {
+        "title": "数据大小口径",
+        "text": "main_size（主分支仓库字节数）按十进制折 GB（1 GB = 10^9 字节），与 HF 页面、README 自述的「4.5TB」同一口径；不是解压后大小，也不是 datasets-server 的 arrow 体积。"
+      },
+      {
+        "title": "趋势分口径",
+        "text": "HF 计算的 trending_score，进趋势榜为正、未进榜为 0（0 不是空值）。该值随时间漂移，只能当天的快照看，不能用来排序翻页。"
+      },
+      {
+        "title": "简介口径",
+        "text": "description 是 HF 抓的卡片正文摘要（会截断并附「见数据集页」），不是作者填的一句话简介；prose 只压平空白与 HTML 残片，不改写措辞。"
+      },
+      {
+        "title": "标签口径",
+        "text": "「标签」是 tags 原样全量（带 license:、language:、task_categories: 这类前缀），「自定义标签」是拆掉前缀后的 plain_tags；两者都是平台规范化后的值，不是作者在卡片里手写的那份。"
+      },
+      {
+        "title": "原表三列",
+        "text": "序号 / 名称 / URL 属对方已填内容，本份 spec 不声明、引擎不碰；名称与 URL 是否一致由 method/scripts/verify_table.py 事后核对。"
+      },
+      {
+        "title": "内部流程列",
+        "text": "对方表里将来若加「处理人 / 质检结果 / 存储路径」这类列，同样无权填，保持空白。"
+      }
+    ]
+  }
+}

@@ -1,0 +1,106 @@
+# 需求 REQ-0004：开源query轨迹数据集P1清单字段拼接
+#
+# 对方给的是一张 28 行、只有「序号 / 名称 / URL」三列的表；要我们「把所有能拿到的
+# 字段都拼接进这张表里」。所以这单既不是纯回填（对方表里没有那些列），也不是查询
+# （对方要的是他手上那张表，不是一张新表）：用回填，新列写 `append: true` 追加到
+# 原表最右侧，原表三列一格不动（GLOSSARY #100）。
+#
+# 改口径必须把 version 加一：交付档案会钉住当时的版本号。
+# 预演：hf-data-crawl request run REQ-0004 --dry-run
+# 正式交付：hf-data-crawl request run REQ-0004
+id: REQ-0004
+title: 开源query轨迹数据集P1清单字段拼接
+requester: 大帅
+purpose: "把 28 条候选数据集能拿到的元信息拼进对方原表，供 P1 立项评估"
+version: 2
+
+# 交付节奏 manual：本仓需求一律由人点名触发。对方还会陆陆续续发新清单，
+# 换清单走 `request input --add` + 升版，不靠日历。
+cadence: manual
+kind: backfill
+
+# 护栏与标疑对所有形态同义：这里的 rows 是输入表的数据行数。
+guard:
+  # 本单交付的就是这 28 条。少一条说明输入被读漏或标识列解析失败，
+  # 那种表看着齐整、却少了几行长尾，比不交危险。
+  min_rows: 28
+  max_rows: 500000
+alert:
+  row_delta_pct: 20
+  row_delta_abs: 100
+
+fill:
+  # 受理时已把原件复制进 input/（原表一字未改，此后不再依赖 Downloads）。表头在第 1 行：
+  # A 序号、B 名称、C URL；标识列取 URL，名称列只用来事后核对（见 method/scripts）。
+  source:
+    path: "input/开源query轨迹数据集P1紧急需求清单-28条-1113.xlsx"
+    sheet: Sheet1
+    header_row: 1
+    key_column: URL
+
+  output:
+    name: "开源query轨迹数据集P1清单-28条-已拼接字段.xlsx"
+
+  # 本单没有需要人判的列：对方要的是「能拿到的字段」，拿不到的一律留空并在
+  # 「补全说明」页点名，不用判读表补。
+  overwrite: false           # 只填空格；表里已有内容（序号/名称/URL）一律不动
+
+  # HF 的枚举值按平台页面写法归一；词表外的取值原样保留，不硬猜。
+  lexicon:
+    auto: 自动审批
+    manual: 人工审批
+    other: 其它
+    # 这次 28 个库里实际出现的任务大类与模态；共用词表里没有的，只在本份 spec 里补，
+    # 免得为了一单去改全仓口径（共用词表见 delivery/backfill.py 的 LEXICON）。
+    image-text-to-text: 图文到文本
+    text-generation: 文本生成
+    image-to-image: 图像到图像
+    document-question-answering: 文档问答
+    visual-document-retrieval: 视觉文档检索
+    multimodal: 多模态
+
+  # 一列只能用一种取值方式：field / template / const / manual。
+  # 这 23 列原表里都没有，故一律 append: true —— 不写 append 的列名对不上表头会直接报错。
+  # 收录规则（哪些底库列拼、哪些不拼）写在 notes 的「收录规则」一条里。
+  columns:
+    # —— 身份与时间 ——
+    "作者": {field: author, append: true}
+    "发布时间": {field: created_at, format: date, width: 12, append: true}
+    "更新时间": {field: last_modified, format: date, width: 12, append: true}
+    "最新提交(sha)": {field: sha, width: 42, append: true}
+    # —— 热度 ——
+    "近30天下载量": {field: downloads, width: 14, append: true}
+    "累计下载量": {field: downloads_all_time, width: 12, append: true}
+    "点赞量": {field: likes, width: 8, append: true}
+    "趋势分": {field: trending_score, width: 8, append: true}
+    # —— 可用性 ——
+    "访问门槛": {field: gated, translate: true, width: 12, append: true}
+    "数据大小(GB)": {field: main_size, format: gb, width: 12, append: true}
+    # —— 内容画像 ——
+    "简介": {field: description, format: prose, width: 46, wrap: true, append: true}
+    "任务类别": {field: task_categories, join: "、", translate: true, width: 22, wrap: true, append: true}
+    "数据模态": {field: modalities, join: "、", translate: true, width: 20, wrap: true, append: true}
+    "语种": {field: languages, join: "、", width: 18, wrap: true, append: true}
+    "文件格式": {field: formats, join: "、", width: 18, wrap: true, append: true}
+    "适配库": {field: libraries, join: "、", width: 18, wrap: true, append: true}
+    "规模档": {field: size_categories, join: "、", width: 16, wrap: true, append: true}
+    "许可证": {field: licenses, join: "、", width: 18, wrap: true, append: true}
+    "标签": {field: tags, join: "、", width: 40, wrap: true, append: true}
+    "自定义标签": {field: plain_tags, join: "、", width: 30, wrap: true, append: true}
+    "地区": {field: regions, join: "、", width: 12, append: true}
+    # —— 论文 ——
+    "arXiv编号": {field: arxiv_ids, join: "、", width: 16, append: true}
+    # 占位符取 arxiv_ids 首项；该库没登记 arXiv 号则整格留空，不拼出半截链接。
+    "论文URL": {template: "https://arxiv.org/abs/{arxiv_ids}", width: 34, wrap: true, append: true}
+
+  notes:
+    "收录规则": "底库 `datasets` 视图共 74 列，本单拼进来 22 列（另加 1 列由 arXiv 号拼出的论文URL）。不拼的三类：①原表已有的 id、url；②平台与管道记账（first_seen_at/last_seen_at/status/private/disabled/xet_enabled/resource_group/fetched_at/size_status/files_status/truncated/card_source_sha），它们描述的是「我们怎么采的」，不是数据集本身；③这 28 个库整列为空的数据（card_* 未抓卡片、server_*/files_* 未采集规模与文件清单、dois/task_ids/multilinguality 等），拼进来只会多出一片空格。完整四桶划分由 method/scripts/columns.py 现算并自证，不靠手抄。"
+    "下载量口径": "「近30天下载量」是 downloads（HF 数据集页显示的就是这个数）；「累计下载量」是 downloads_all_time。两列并排是为了让人一眼看出差异，不混成一个数。"
+    "数据大小口径": "main_size（主分支仓库字节数）按十进制折 GB（1 GB = 10^9 字节），与 HF 页面、README 自述的「4.5TB」同一口径；不是解压后大小，也不是 datasets-server 的 arrow 体积。"
+    "趋势分口径": "HF 计算的 trending_score，进趋势榜为正、未进榜为 0（0 不是空值）。该值随时间漂移，只能当天的快照看，不能用来排序翻页。"
+    "简介口径": "description 是 HF 抓的卡片正文摘要（会截断并附「见数据集页」），不是作者填的一句话简介；prose 只压平空白与 HTML 残片，不改写措辞。"
+    "标签口径": "「标签」是 tags 原样全量（带 license:、language:、task_categories: 这类前缀），「自定义标签」是拆掉前缀后的 plain_tags；两者都是平台规范化后的值，不是作者在卡片里手写的那份。"
+    "原表三列": "序号 / 名称 / URL 属对方已填内容，本份 spec 不声明、引擎不碰；名称与 URL 是否一致由 method/scripts/verify_table.py 事后核对。"
+    "内部流程列": "对方表里将来若加「处理人 / 质检结果 / 存储路径」这类列，同样无权填，保持空白。"
+
+  stamp_note: 取自本地 HuggingFace 底库（对账后快照，见交付 manifest 的 source.current_md5）；未凭记忆或现场浏览填写，底库没有的一律留空。
