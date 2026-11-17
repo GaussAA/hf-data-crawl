@@ -3,7 +3,7 @@
 为什么需要
 ----------
 Raw 可以被重写：`archive` 重新分片、`compact` 移走冷区、补采再落一块同名分块。
-重写之后派生层不会自己更新——`derive_day` 只在 `collect` / `enrich` / `build` 里跑。
+重写之后派生层不会自己更新——`derive_day` 只在 `collect` / `reconcile` / `build` 里跑。
 于是存在一种没有任何报错的坏状态：**Raw 已经是新的，bronze / silver / observations
 却是旧的**，而且从文件时间上也看不出来（派生文件可能比 Raw 更晚，因为别的日子刚跑过）。
 
