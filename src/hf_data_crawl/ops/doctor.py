@@ -22,7 +22,7 @@ import polars as pl
 
 from ..acquire.reconcile import PROBE_DEGRADE_AFTER
 from ..acquire.sizes import stale_ids
-from ..delivery.delivery import deliveries_of, method
+from ..delivery.delivery import deliveries_of, index_problem, method
 from ..delivery.fields import (
     COLUMN_SOURCES,
     COLUMN_TYPES,
@@ -1197,6 +1197,39 @@ def _request_self_contained(ctx: RunContext) -> Finding:
     return Finding(False, f"需求自包含：{checked} 份已交付需求的方法与脚本索引一致")
 
 
+def _delivery_index(ctx: RunContext) -> Finding:
+    """交付索引是否跟得上台账。
+
+    索引是给人看「哪条算数、哪条是重钉」的。它一旦落后于台账，比没有更坏——读者会
+    拿一份过期清单当现状，而清单长得完全正常。判据用 INDEX 里的机读标记，不按
+    mtime：`git checkout` 会把时间全部刷新，按时间比会在每次 clone 后误报一遍。
+    """
+    requests_root = ctx.requests_root
+    if requests_root is None:
+        return Finding(False, "交付索引：未指定需求目录，本次未检查")
+    if not requests_root.is_dir():
+        return Finding(False, f"交付索引：{requests_root} 不存在，本次未检查")
+
+    checked = 0
+    bad: list[str] = []
+    for request_dir in request_dirs(requests_root):
+        if not deliveries_of(request_dir):
+            continue
+        checked += 1
+        problem = index_problem(request_dir)
+        if problem:
+            bad.append(problem)
+
+    if bad:
+        return Finding(
+            True,
+            f"交付索引：{len(bad)}/{checked} 份需求的 INDEX.md 缺失或过期 —— "
+            + "；".join(bad)
+            + "。跑 `hf-data-crawl request index` 重写。",
+        )
+    return Finding(False, f"交付索引：{checked} 份需求的 INDEX.md 与台账一致")
+
+
 def _spec_version_consistency(ctx: RunContext) -> Finding:
     """口径改了却没升版本：档案会指着一份「当时说过、现在已经不是」的定义。
 
@@ -1286,6 +1319,7 @@ CHECKS: tuple[Check, ...] = (
     Check("temp_files", _stale_temp_files),
     Check("request_self_contained", _request_self_contained),
     Check("spec_version", _spec_version_consistency),
+    Check("delivery_index", _delivery_index),
 )
 
 #: 只在非快照模式跑：快照模式下本次体检已持写锁，再去抢锁会自己跟自己冲突。

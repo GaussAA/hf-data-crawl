@@ -43,6 +43,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
@@ -53,10 +54,11 @@ from ..platform.atomic import replace
 from ..platform.store import DatasetStore
 from ..query.gold import GoldCatalog, GoldNotReady
 from . import fill_exec, method, query_exec  # noqa: F401
-from .contract import EXECUTORS, DeliveryBlocked, Payload, RunContext
+from .contract import EXECUTORS, DeliveryBlocked, DeliveryUnchanged, Payload, RunContext
 from .header import header_change
 from .requirement import (
     DELIVERIES_DIR,
+    HISTORY_DIR,
     MANIFEST_NAME,
     README_NAME,
     SPEC_NAME,
@@ -66,6 +68,7 @@ from .requirement import (
     SpecError,
     resolve_dir,
     snapshot_history,
+    spec_core_digest,
     spec_digest,
     version_conflict,
 )
@@ -74,6 +77,20 @@ from .stamp import SourceMissing, SourceStamp, stamp
 
 #: 交付目录名的时刻格式。到秒：同一分钟内跑两个需求是常态。
 _STAMP_FORMAT = "%Y%m%dT%H%M%S"
+
+#: 需求目录下的草稿区。预览产物落这里，**不进交付台账**：台账只收可交付的成品。
+SCRATCH_DIR = "scratch"
+PREVIEW_DIR = "preview"
+PREVIEW_NAME = "PREVIEW.md"
+
+#: 交付目录根下的两份索引文件。
+#: `INDEX.md` 由引擎每次交付后重写（人只读）；`AUDIT.md` 是唯一的人工文件，
+#: 记录那些引擎当场不知道、只能事后核出的事实（某条交付的代码与产物对不上）。
+INDEX_NAME = "INDEX.md"
+AUDIT_NAME = "AUDIT.md"
+
+#: INDEX 里用来让 doctor 核对「索引是否过期」的机读标记。
+_INDEX_MARK = "<!-- deliveries: {newest} · entries: {count} -->"
 
 
 @dataclass(frozen=True)
@@ -110,9 +127,12 @@ class DeliveryResult:
 
 @dataclass(frozen=True)
 class Preview:
-    """预演结果：只算不写，不建目录、不留档案，也不受护栏阻断。
+    """预演结果：算一遍、把产物落在草稿区，不建交付目录、不留档案。
 
-    预演的用途恰恰是「看看会不会 0 行」，此时套护栏等于自相矛盾。
+    与 `--dry-run` 的分工：`--dry-run` 只打印「会出多少行」，一行文件都不写；
+    `--preview` 把真产物写进 `<需求目录>/scratch/preview/`，好让人**打开看一眼**。
+    后者是这次治理加的：在此之前，「想看看这张表长什么样」的唯一办法是正式交付，
+    于是排版问题只能靠多交一份成品来修——那正是交付目录里堆条目的直接原因。
     """
 
     request_id: str
@@ -120,6 +140,12 @@ class Preview:
     rows: int
     columns: tuple[str, ...]
     lines: list[str]
+    #: 产物落在哪（草稿区绝对路径）。预演没写出任何文件时为 None。
+    path: Path | None = None
+    files: tuple[dict[str, Any], ...] = ()
+    #: 正式交付会被拦下的原因（护栏、重复闸门）。预演不拦，但必须说出来——
+    #: 否则人会以为「跑通了就能交」。
+    notes: tuple[str, ...] = ()
 
 
 def _stamp(store: DatasetStore) -> SourceStamp:
@@ -179,6 +205,70 @@ def _method_stamp(request_dir: Path, spec: Spec) -> dict[str, Any]:
     return method.stamp(request_dir, record, _pinned_inputs(request_dir, spec))
 
 
+def _worktree_gate(request_id: str) -> dict[str, Any]:
+    """脏代码不出版：档案记的 HEAD 必须真的能跑出这份产物。
+
+    为什么拦而不是「记一笔脏」：档案的用处是「拿这个 commit 重跑，应当得到同一个
+    sha256」。脏着跑出来的产物，这个承诺从写下的那一刻就是假的，而它看起来与真的
+    一模一样——下次没人能从 manifest 里看出区别，只能靠重交一份来补。堵在出口上，
+    这种事就不必发生。
+    """
+    state = method.worktree_state()
+    if state["checked"] and not state["clean"]:
+        sample = "、".join(f"`{name}`" for name in state["paths"][:5])
+        more = f" 等 {len(state['paths'])} 处" if len(state["paths"]) > 5 else ""
+        raise DeliveryBlocked(
+            f"{request_id}: 决定产物的代码有未提交改动（{sample}{more}），"
+            "交付档案会记一个复现不出的 commit。\n"
+            "  先 `git commit` 再交付；只想先看产物长什么样，用 `request run <id> --preview`。"
+        )
+    return state
+
+
+def _product_digests(files: Any) -> list[tuple[str, str]]:
+    """产物指纹：只认「文件名 + sha256」，顺序无关。"""
+    return sorted((str(item.get("name")), str(item.get("sha256"))) for item in (files or []))
+
+
+def _refuse_unchanged(
+    request_dir: Path, spec: Spec, stamp_value: SourceStamp, payload: Payload
+) -> None:
+    """同底库、同产物字节 → 不新增交付条目。
+
+    判据是**两样都没变**：底库指纹没变说明原材料一样，产物字节没变说明这份表一个
+    字符都不差。此时新增一条交付，除了给 spec 版本号留个摆设，没有任何信息增益——
+    2026-11-17 REQ-0004 的 5 条里有 2 条就是这么来的。
+
+    只在底库**也**没变时拒绝：底库变了而产物没变，是「在新底库上复核过，结果一致」，
+    那是一条有效的观测，不该被当成重复。
+    """
+    last = _last_delivery(request_dir)
+    if last is None:
+        return
+    body = read_manifest(last)
+    if body is None:
+        return
+    previous_source = (body.get("source") or {}).get("current_md5")
+    if previous_source != stamp_value.current_md5:
+        return
+    previous_files = (body.get("result") or {}).get("files")
+    if _product_digests(previous_files) != _product_digests(payload.files):
+        return
+    raise DeliveryUnchanged(
+        f"{spec.id}: 与上一条交付（{last.name}）底库相同、产物逐字节相同，"
+        "这次运行没有新信息可记，未新增交付。\n"
+        f"  要文件直接取 `{last}`；要出新内容，先让底库或口径真的变。"
+    )
+
+
+def _scratch_preview(request_dir: Path) -> Path:
+    """预览产物目录：固定路径，每次重算前先清空——草稿只留最新一份。"""
+    base = request_dir / SCRATCH_DIR / PREVIEW_DIR
+    shutil.rmtree(base, ignore_errors=True)
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
 def deliver(
     store: DatasetStore,
     requests_root: Path,
@@ -192,6 +282,9 @@ def deliver(
     request_dir = resolve_dir(requests_root, request_id)
     spec_path = request_dir / SPEC_NAME
     spec = load_spec(spec_path)
+    # 代码干净与否先查：脏着跑出来的产物，manifest 记的 commit 复现不出来。
+    # 放在方法闸门之前，是因为它的修复动作（commit）比补方法更快，早报早干活。
+    worktree = _worktree_gate(spec.id)
     # 版本号不可复用：口径变了却还用 v1，档案会指着一份「当时说过、现在已经不是」
     # 的定义。这比缺方法更隐蔽——缺方法至少会报错，这一种只会让人拿着错前提核对。
     conflict = version_conflict(spec_path, spec.version)
@@ -227,6 +320,8 @@ def deliver(
             )
         )
         _check_guard(spec, payload.rows)
+        # 产物已经算出来了，重复闸门才有东西可比：同底库 + 同字节 = 没有新信息。
+        _refuse_unchanged(request_dir, spec, stamp_value, payload)
         health = _health(request_dir, spec, payload.rows, payload.header)
         manifest = _manifest(
             spec=spec,
@@ -237,6 +332,7 @@ def deliver(
             previous=_last_delivery_name(request_dir, exclude=directory.name),
             method_stamp=method_stamp,
             spec_sha=spec_sha,
+            worktree=worktree,
         )
         (staging / MANIFEST_NAME).write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -249,6 +345,11 @@ def deliver(
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
+
+    # 索引随交付重写：它列的是台账本身，不重写就会在第二天开始说谎。
+    write_index(request_dir)
+    # 客已交完，草稿不再需要：留着只会让人以为「这里还有一份可能要交的东西」。
+    shutil.rmtree(request_dir / SCRATCH_DIR / PREVIEW_DIR, ignore_errors=True)
 
     # 首次交付落一份口径快照——只留「真的用过」的版本，没用过的口径没有保留价值。
     # （快照已在函数开头、换名之前落盘，见那里的说明。）
@@ -272,29 +373,91 @@ def preview(
     *,
     catalog: GoldCatalog | None = None,
     source: SourceStamp | None = None,
+    keep_files: bool = True,
 ) -> Preview:
-    """只算不写：看这次会出多少行、每列能填多少，不产生任何交付档案。"""
+    """算一遍；`keep_files` 时把真产物落进草稿区，否则一行文件都不写。
+
+    两种「跑一次看看」共用本函数，区别只在落不落盘：
+    - `--dry-run`（`keep_files=False`）只回答「会出多少行」，与治理前完全一致；
+    - `--preview`（默认）把产物写进 `scratch/preview/`，好让人**打开看一眼**。
+    后者是这次治理加的：此前「想看看这张表长什么样」只能靠正式交付，排版问题
+    只好再交一份成品来修——那正是交付目录里堆条目的直接原因。
+    """
     request_dir = resolve_dir(requests_root, request_id)
     spec = load_spec(request_dir / SPEC_NAME)
+    stamp_value = source or _stamp(store)
+    if keep_files:
+        staging = _scratch_preview(request_dir)
+    else:
+        # 不落盘时给一个明确的哨兵路径：误写会立刻暴露在不存在目录上，
+        # 而不是悄悄落到当前工作目录。
+        staging = request_dir / DELIVERIES_DIR / ".preview"
     payload = _execute(
         RunContext(
             store=store,
             spec=spec,
-            # 预演下执行体不得写盘；给一个明确的哨兵路径，误写也会立刻暴露在
-            # 这个不存在的目录上，而不是悄悄落到当前工作目录。
-            staging=request_dir / DELIVERIES_DIR / ".preview",
+            staging=staging,
             catalog=_catalog(store, catalog),
-            source=source or _stamp(store),
-            dry_run=True,
+            source=stamp_value,
+            dry_run=not keep_files,
         )
     )
+    # 预演不拦，但要把「正式交付会被拦」说清楚：否则人会以为跑通了就能交。
+    notes: list[str] = []
+    try:
+        _check_guard(spec, payload.rows)
+    except DeliveryBlocked as error:
+        notes.append(str(error))
+    if payload.files:
+        # 重复闸门要比对产物字节，不落盘时没有字节可比——那就不报，不猜。
+        try:
+            _refuse_unchanged(request_dir, spec, stamp_value, payload)
+        except DeliveryUnchanged as error:
+            notes.append(str(error))
+    if keep_files:
+        _write_preview_note(request_dir, spec, stamp_value, payload, notes)
     return Preview(
         request_id=spec.id,
         kind=spec.kind,
         rows=payload.rows,
         columns=payload.columns,
         lines=_preview_lines(request_dir, payload.detail_lines),
+        path=staging if keep_files else None,
+        files=tuple(payload.files),
+        notes=tuple(notes),
     )
+
+
+def _write_preview_note(
+    request_dir: Path,
+    spec: Spec,
+    stamp_value: SourceStamp,
+    payload: Payload,
+    notes: list[str],
+) -> Path:
+    """草稿区那一页说明：不落档案也要说清「这份草稿是哪一版口径、哪一版底库算的」。"""
+    path = request_dir / SCRATCH_DIR / PREVIEW_DIR / PREVIEW_NAME
+    lines = [
+        f"# {spec.id} 预览（不是交付）",
+        "",
+        "> 本目录是草稿：可随时重算、会在下次成功交付时删除。",
+        "> 它**不进交付台账**，也不受方法闸门与护栏阻断。",
+        "",
+        f"- 需求版本：v{spec.version}",
+        f"- 底库：`{stamp_value.current_md5}` · {stamp_value.current_rows:,} 行",
+        f"- 行数：{payload.rows:,} · 列数：{len(payload.columns)}",
+    ]
+    for entry in payload.files:
+        lines.append(
+            f"- `{entry['name']}`：{entry['bytes']:,} 字节，sha256 `{str(entry['sha256'])[:16]}…`"
+        )
+    if notes:
+        lines += ["", "## 正式交付会被拦下的原因", ""]
+        lines += [f"- {item}" for item in notes]
+    else:
+        lines += ["", "正式交付前仍要过：代码已提交、底库或产物与本条不同、方法合规。"]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
 
 
 def _preview_lines(request_dir: Path, detail: list[str]) -> list[str]:
@@ -404,6 +567,177 @@ def read_manifest(directory: Path) -> dict[str, Any] | None:
     return body if isinstance(body, dict) else None
 
 
+# ---------------------------------------------------------------- 交付索引
+
+
+def audit_facts(request_dir: Path) -> dict[str, dict[str, Any]]:
+    """读 `AUDIT.md` 里那段 ```json：引擎当场不知道、只能事后核出的事实。
+
+    「某条交付的代码与产物对不上」这类判定，引擎在事后无法重算——它只知道交付时
+    的 HEAD，不知道那天的 HEAD 是否包含实际跑着的改动。这种事只能人核一次、写下来，
+    再由 INDEX 引用。**读不出来就当没有**（返回空），不因此拦交付：索引少一列可信度
+    比交付被一份手写文件卡住要好。
+    """
+    path = request_dir / DELIVERIES_DIR / AUDIT_NAME
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    match = re.search(r"```json\s*\n(.*?)\n```", text, re.DOTALL)
+    if match is None:
+        return {}
+    try:
+        body = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(body, dict):
+        return {}
+    return {str(key): value for key, value in body.items() if isinstance(value, dict)}
+
+
+def _core_digest_of(request_dir: Path, body: dict[str, Any]) -> str | None:
+    """从 `history/v<n>.yaml` 现算某一版的口径指纹；快照不在就返回 None。
+
+    INDEX 要区分「口径变了」与「只是排过版」：档案里只记了完整指纹（含展示项），
+    单看它分不出来。快照本来就在需求目录里，现算一次比在矩阵里加一列更省事。
+    """
+    version = body.get("spec_version")
+    if not isinstance(version, int):
+        return None
+    path = request_dir / HISTORY_DIR / f"v{version}.yaml"
+    if not path.is_file():
+        return None
+    try:
+        return spec_core_digest(path, base_dir=request_dir)
+    except SpecError:
+        return None
+
+
+def _nature(request_dir: Path, current: dict[str, Any], previous: dict[str, Any] | None) -> str:
+    """这条交付相对上一条「变了什么」——只据档案与版本快照推断，不猜意图。
+
+    判据次序：产物字节 → 列集 → 口径指纹（展示项除外）。合起来区分六件事：
+    重钉、复核（底库变了产物没变）、结构变化、口径变化、排版变化、数据刷新。
+    """
+    if previous is None:
+        return "首版"
+    same_files = _product_digests((current.get("result") or {}).get("files")) == _product_digests(
+        (previous.get("result") or {}).get("files")
+    )
+    same_source = (current.get("source") or {}).get("current_md5") == (
+        previous.get("source") or {}
+    ).get("current_md5")
+    if same_files:
+        return "重钉" if same_source else "复核（底库更新，产物未变）"
+    now_columns = len(((current.get("result") or {}).get("columns")) or ())
+    before_columns = len(((previous.get("result") or {}).get("columns")) or ())
+    if now_columns != before_columns:
+        return "结构扩展" if now_columns > before_columns else "结构收缩"
+    now_core = _core_digest_of(request_dir, current)
+    before_core = _core_digest_of(request_dir, previous)
+    if now_core and before_core and now_core != before_core:
+        return "口径变更"
+    if current.get("spec_version") != previous.get("spec_version") or same_source:
+        # 版本动了、口径指纹却相同：动的是展示项（旧规则下会顺带升一版），或只是重排。
+        return "排版变更"
+    return "数据刷新"
+
+
+def _reproducible(body: dict[str, Any]) -> str:
+    """这一条能不能按 manifest 记的 commit 复现。三态：是 / 否 / 未核。"""
+    worktree = body.get("worktree")
+    if isinstance(worktree, dict) and worktree.get("checked"):
+        return "✓" if worktree.get("clean") else "✗ 代码未提交"
+    return "?"
+
+
+def index_lines(request_dir: Path) -> list[str]:
+    """`deliveries/INDEX.md` 的正文。一条不删、不评，只把台账摊成一张能读的表。"""
+    directories = deliveries_of(request_dir)
+    audit = audit_facts(request_dir)
+    # 目录名是 `REQ-0004-backfill-标题`：前两段才是需求号，`split('-', 1)[0]` 只会得到 `REQ`。
+    request_id = "-".join(request_dir.name.split("-")[:2])
+    header = [
+        f"# {request_id} 交付索引",
+        "",
+        "> 由 `hf-data-crawl request index` 生成，**请勿手改**：下次交付会整份重写。",
+        "> 交付目录是不可变台账——每条只增不删；「当前有效」只看最后一行。",
+        "",
+    ]
+    if not directories:
+        return [*header, "（尚未交付）", ""]
+    lines = [
+        *header,
+        f"- 当前有效：`{directories[-1].name}`",
+        f"- 交付条数：{len(directories)}",
+        f"- 可复现性：`✓` 代码干净、`✗` 有未提交改动、`?` 该条档案里没有这项记录"
+        f"（{AUDIT_NAME} 里的历史结论会覆盖 `?`）",
+        "",
+        "| 时刻 | 版本 | 行数 | 列数 | 性质 | 可复现 | 产物 sha256 | 底库 md5 | 代码 commit |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    previous: dict[str, Any] | None = None
+    for directory in directories:
+        body = read_manifest(directory) or {}
+        result = body.get("result") or {}
+        files = result.get("files") or []
+        digest = str(files[0].get("sha256", ""))[:8] if files else "-"
+        source = str((body.get("source") or {}).get("current_md5", ""))[:8]
+        commit = str(((body.get("method") or {}).get("env") or {}).get("commit", ""))[:8]
+        known = audit.get(directory.name) or {}
+        mark = (
+            "✓（见 AUDIT）"
+            if known.get("reproducible") is True
+            else "✗（见 AUDIT）"
+            if known.get("reproducible") is False
+            else _reproducible(body)
+        )
+        lines.append(
+            f"| {directory.name} | v{body.get('spec_version', '?')} | {result.get('rows', '?')} "
+            f"| {len(result.get('columns') or [])} | {_nature(request_dir, body, previous)} | {mark} "
+            f"| {digest} | {source} | {commit} |"
+        )
+        previous = body
+    lines += [
+        "",
+        _INDEX_MARK.format(newest=directories[-1].name, count=len(directories)),
+        "",
+    ]
+    return lines
+
+
+def write_index(request_dir: Path) -> Path:
+    """把 `deliveries/INDEX.md` 整份重写。交付后与 `request index` 都走这里。"""
+    path = request_dir / DELIVERIES_DIR / INDEX_NAME
+    path.write_text("\n".join(index_lines(request_dir)), encoding="utf-8")
+    return path
+
+
+def index_problem(request_dir: Path) -> str | None:
+    """索引与台账对不上时返回一句人话（doctor 用）。对得上返回 None。
+
+    判据是 INDEX 里那行机读标记，不是文件时间：`git checkout` 会把 mtime 全部刷新，
+    按时间比会在每次 clone 之后误报一遍。
+    """
+    directories = deliveries_of(request_dir)
+    if not directories:
+        return None
+    path = request_dir / DELIVERIES_DIR / INDEX_NAME
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return f"{request_dir.name}：有 {len(directories)} 条交付但没有 {INDEX_NAME}"
+    match = re.search(r"<!-- deliveries: (\S+) · entries: (\d+) -->", text)
+    if match is None:
+        return f"{request_dir.name}：{INDEX_NAME} 里没有台账标记，说明它不是引擎生成的"
+    if match.group(1) != directories[-1].name or int(match.group(2)) != len(directories):
+        return (
+            f"{request_dir.name}：{INDEX_NAME} 记的是 {match.group(2)} 条 / 最新 {match.group(1)}，"
+            f"台账实际是 {len(directories)} 条 / 最新 {directories[-1].name}"
+        )
+    return None
+
+
 def _health(request_dir: Path, spec: Spec, rows: int, header: tuple[str, ...] = ()) -> Health:
     """与上一次交付比：同一口径版本内才比行数；表头则只在有基线时比。
 
@@ -505,6 +839,7 @@ def _manifest(
     previous: str | None,
     method_stamp: dict[str, Any],
     spec_sha: str,
+    worktree: dict[str, Any],
 ) -> dict[str, Any]:
     manifest: dict[str, Any] = {
         "request_id": spec.id,
@@ -543,6 +878,9 @@ def _manifest(
         # 过程自包含：这份结果由哪版方法、哪版脚本、哪版代码产出。缺了它，
         # 「基于哪一版底库」只钉住了原材料，钉不住做法。
         "method": method_stamp,
+        # 代码是否干净：`method.env.commit` 记的是 HEAD，只有这一项能说明
+        # 「产物是否真的出自那个提交」。INDEX 的可复现列就据此判。
+        "worktree": worktree,
     }
     # 形态特有的口径进顶层，便于「读 manifest 就知道这次怎么算的」；公共键不许被
     # 覆盖——一旦覆盖，「这份交付基于哪版底库」就可能被某个执行体悄悄改写。
@@ -619,6 +957,8 @@ def _readme(
         "",
         "同一版底库、同一份输入表下重跑，sha256 应当与上面一致。若不一致，",
         "说明底库或输入表已经变过。",
+        "",
+        f"只想先看看产物长什么样（不新增交付）：`hf-data-crawl request run {spec.id} --preview`。",
         "",
     ]
     return "\n".join(lines)
@@ -729,6 +1069,10 @@ def run_due(
                 source=stamp_value,
                 now=moment,
             )
+        except DeliveryUnchanged as error:
+            # 「无事发生」与「出事了」必须分开记：混成一种，日志里的红点会失去意义。
+            skipped.append((request_id, str(error)))
+            continue
         except (DeliveryBlocked, SpecError) as error:
             failed.append((request_id, str(error)))
             continue

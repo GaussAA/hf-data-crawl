@@ -267,6 +267,39 @@ def test_method命令只判不写且以退出码表达(tmp_path: Path) -> None:
     assert run(tmp_path, "request", "method", "REQ-0001", "--check") == 0
 
 
+def test_缺需求成立性一节只提示不拦(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """判断的价值在于有人真读到不同的东西；做成必填，最先发生的总是抄一句过闸。"""
+    path = make(tmp_path)
+    doc = path.parent / "method" / "METHOD.md"
+    doc.write_text(
+        doc.read_text(encoding="utf-8")
+        .replace("<!-- 待填：", "<!-- 已填：")
+        .replace("## 需求成立性", "## 需求成立性（已删）"),
+        encoding="utf-8",
+    )
+
+    assert run(tmp_path, "request", "method", "REQ-0001", "--check") == 0
+    assert "需求成立性" in capsys.readouterr().out
+
+
+def test_index命令重写交付索引(tmp_path: Path) -> None:
+    """补建历史索引不该靠再交付一份——那正是这次治理要断掉的循环。"""
+    path = make(tmp_path)
+    assert run(tmp_path, "request", "index", "REQ-0001") == 1, "没有交付时无事可写"
+
+    delivery = path.parent / "deliveries" / "20261101T000000"
+    delivery.mkdir(parents=True)
+    (delivery / "manifest.json").write_text(
+        '{"spec_version": 1, "source": {"current_md5": "aaa"},'
+        ' "result": {"rows": 2, "columns": ["id"], "files": [{"name": "d.parquet", "sha256": "s"}]}}',
+        encoding="utf-8",
+    )
+
+    assert run(tmp_path, "request", "index", "REQ-0001") == 0
+    index = path.parent / "deliveries" / "INDEX.md"
+    assert "当前有效：`20261101T000000`" in index.read_text(encoding="utf-8")
+
+
 def test_show打印过程记录状态(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     make(tmp_path)
 

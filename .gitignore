@@ -32,6 +32,8 @@ runs/
 !**/deliveries/**/
 !**/deliveries/**/manifest.json
 !**/deliveries/**/README.md
+!**/deliveries/**/INDEX.md
+!**/deliveries/**/AUDIT.md
 
 # 接口探测的临时样本
 .probe/
@@ -53,3 +55,7 @@ runs/
 # 文档整体迁到 `.agents/` 时这条规则丢了，于是 `git add -A` 会把整目录记忆并入提交——
 # 2026-11-16 同步远程时踩到一次，已从提交中剔除。
 .workbuddy/*
+
+# 需求目录里的草稿区：`request run --preview` 的产物落在这里（ADR-0003）。
+# 可随时重算、会在成功交付时删除，与交付台账无关。
+/requests/*/scratch/

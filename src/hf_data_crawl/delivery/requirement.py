@@ -912,6 +912,37 @@ def spec_body_digest(body: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+#: 只影响显示、不影响取值的列属性。改列宽、开换行——表会变样、字节会变，但每个
+#: 数字都没动。它们**仍进档案指纹**（档案要能分辨两份产物），但**不占版本号**：
+#: 版本号是「这一版口径算出来的」的承诺，不是「这一版排过版」的记录。
+#: 2026-11-17 前它们进版本指纹，于是改个列宽就得升一版、多交一条——那是交付目录
+#: 里堆条目的直接原因之一（REQ-0004 的 v2）。
+DISPLAY_KEYS: frozenset[str] = frozenset({"width", "wrap"})
+
+
+def spec_body_core(body: dict[str, Any]) -> dict[str, Any]:
+    """把展示项从摊平的 body 里剔掉，得到「口径指纹」的输入。
+
+    深拷贝后再改：调用方可能还要用原结构（`request diff` 就要用完整的 body
+    才能看出列宽变了）。
+    """
+    core: dict[str, Any] = json.loads(json.dumps(body, ensure_ascii=False))
+    columns = (core.get("fill") or {}).get("columns") or []
+    for column in columns:
+        for key in DISPLAY_KEYS:
+            column.pop(key, None)
+    return core
+
+
+def spec_core_digest(spec_path: Path, *, base_dir: Path | None = None) -> str:
+    """只算口径（不含展示项）的指纹。版本号占用与否按它判。"""
+    body = spec_body(load(spec_path, base_dir=base_dir))
+    canonical = json.dumps(
+        spec_body_core(body), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def version_conflict(spec_path: Path, version: int) -> str | None:
     """当前内容是否占用了**别的**口径的版本号。有冲突返回人读说明，否则 None。
 
@@ -919,6 +950,8 @@ def version_conflict(spec_path: Path, version: int) -> str | None:
     spec 不同，说明有人就地改了口径没升版本：档案会记 `spec_version: N`，读档的人
     以为这就是当时那一版，而它已经不是了。这种错不会报错，只会让人拿着错的前提
     核对三个月——所以必须拦。
+
+    比较用**口径指纹**（不含列宽/换行）：改排版不算改口径，不该逼人升版本。
     """
     target = spec_path.parent / HISTORY_DIR / f"v{version}.yaml"
     if not target.is_file():
@@ -926,7 +959,9 @@ def version_conflict(spec_path: Path, version: int) -> str | None:
     # 两边都按需求目录解析相对路径：历史快照自己躺在 history/ 下，用它的父目录
     # 当基准，`input/清单.xlsx` 就会被读成 `history/input/清单.xlsx`。
     request_dir = spec_path.parent
-    if spec_digest(target, base_dir=request_dir) == spec_digest(spec_path, base_dir=request_dir):
+    if spec_core_digest(target, base_dir=request_dir) == spec_core_digest(
+        spec_path, base_dir=request_dir
+    ):
         return None
     return (
         f"v{version} 已被 {HISTORY_DIR}/{target.name} 占用，当前 spec 的口径却与它不同 —— "

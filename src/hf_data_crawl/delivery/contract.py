@@ -35,6 +35,15 @@ class DeliveryBlocked(RuntimeError):
     """按护栏不该交付（0 行、超上限、底库缺失、执行失败）。一律不落盘。"""
 
 
+class DeliveryUnchanged(DeliveryBlocked):
+    """与上一条交付同底库、同产物字节：这次运行没有新信息可记。
+
+    单独一个类型，是为了 `run-due` 能把它记成「跳过」而不是「失败」——两者都
+    不落盘，但一个说明「今天没事发生」，一个说明「今天出事了」。混成一种，日志
+    里的红点会失去意义。
+    """
+
+
 @dataclass(frozen=True)
 class Payload:
     """执行体的产出，也是**执行体与档案层之间唯一的契约**。

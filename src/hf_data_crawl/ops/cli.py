@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..acquire import DEFAULT_TOP, MAX_LIMIT, PREVIEW_TOP, PROBE_DAILY_LIMIT
+from ..acquire import DEFAULT_PREVIEW_RATE, DEFAULT_TOP, MAX_LIMIT, PREVIEW_TOP, PROBE_DAILY_LIMIT
 from ..acquire.commands import (
     run_collect,
     run_enrich,
@@ -204,7 +204,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="只算不写：报行数与逐列覆盖，不建交付档案、不受护栏阻断",
     )
+    request_run.add_argument(
+        "--preview",
+        action="store_true",
+        help="算一遍并把产物写进 <需求目录>/scratch/preview/，可打开看，但不新增交付",
+    )
     request_sub.add_parser("run-due", help="跑所有到期的需求（计划任务用）")
+    request_index = request_sub.add_parser(
+        "index", help="重写 deliveries/INDEX.md：列出每条交付的性质、可复现性与当前有效"
+    )
+    request_index.add_argument("id", nargs="?", default=None, help="需求号；不写则全部重写")
     request_method = request_sub.add_parser(
         "method", help="校验过程记录 method/，并按目录实际内容重算脚本索引"
     )
@@ -433,7 +442,13 @@ def build_parser() -> argparse.ArgumentParser:
     preview.add_argument("--rows", type=int, default=3, help="每个库取几行（默认 3，上限 100）")
     preview.add_argument("--config", default="default", help="viewer 的 config 名（默认 default）")
     preview.add_argument("--split", default="train", help="viewer 的 split 名（默认 train）")
-    preview.add_argument("--workers", type=int, default=8, help="并发数，实测 8 稳定")
+    preview.add_argument(
+        "--rate",
+        type=float,
+        default=DEFAULT_PREVIEW_RATE,
+        help="每秒放行几个请求（默认 4）。撞 429 会整轮中止——它按 IP 封，继续打只会更久",
+    )
+    preview.add_argument("--workers", type=int, default=8, help="并发数；吞吐由 --rate 决定")
     doctor = subparsers.add_parser("doctor", help="体检：任务是否按时、Raw 是否断日、有无残留文件")
     # 未显式给时沿用全局默认；SUPPRESS 避免把全局 --lock-wait 覆盖回 None。
     doctor.add_argument(

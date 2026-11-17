@@ -30,6 +30,7 @@ from hf_data_crawl.delivery.requirement import (
     resolve_dir,
     skeleton,
     snapshot_history,
+    spec_core_digest,
     spec_digest,
     version_conflict,
 )
@@ -400,6 +401,53 @@ def test_改条件即改指纹(tmp_path: Path) -> None:
     write_spec(tmp_path, criteria=[{"metric": "下载量", "op": ">", "value": 800}])
 
     assert spec_digest(path) != before
+
+
+def fill_spec(tmp_path: Path, **column: Any) -> Path:
+    """造一份回填口径：一列、规则可换——测展示项与取值项的指纹差异用。"""
+    book = tmp_path / "REQ-0001" / "input" / "清单.xlsx"
+    book.parent.mkdir(parents=True, exist_ok=True)
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.cell(row=1, column=1, value="URL")
+    sheet.cell(row=1, column=2, value="名称")
+    workbook.save(book)
+    return write_spec(
+        tmp_path,
+        kind="backfill",
+        criteria=[],
+        fill={
+            "source": {"path": "input/清单.xlsx", "header_row": 1, "key_column": "URL"},
+            "output": {"name": "已补全.xlsx"},
+            "columns": {"名称": {"field": "id", **column}},
+        },
+    )
+
+
+def test_改列宽不改口径指纹但改档案指纹(tmp_path: Path) -> None:
+    """展示项是「同一版口径、另一种排版」：不占版本号，但产物字节确实变了。
+
+    两个指纹各司其职——`spec_core_digest` 判版本号能不能复用，
+    `spec_digest` 记进档案、用来分辨两份产物。
+    """
+    path = fill_spec(tmp_path)
+    before_core, before_full = spec_core_digest(path), spec_digest(path)
+
+    fill_spec(tmp_path, width=40)
+
+    assert spec_core_digest(path) == before_core, "列宽不该占版本号"
+    assert spec_digest(path) != before_full, "但产物会变，档案指纹必须跟着变"
+
+
+def test_只改列宽不升版本也放行(tmp_path: Path) -> None:
+    """改排版不算改口径：`version_conflict` 按口径指纹判，否则每调一次列宽都得升版。"""
+    path = fill_spec(tmp_path)
+    snapshot_history(path, 1)
+
+    fill_spec(tmp_path, wrap=True)
+
+    assert version_conflict(path, 1) is None
 
 
 def test_版本号被别的口径占用时要拦住(tmp_path: Path) -> None:

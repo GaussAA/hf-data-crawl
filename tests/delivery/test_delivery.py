@@ -7,7 +7,8 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+import shutil
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -19,13 +20,16 @@ from support import write_method
 
 from hf_data_crawl.delivery import method
 from hf_data_crawl.delivery.commands import deliveries_of
+from hf_data_crawl.delivery.contract import DeliveryUnchanged
 from hf_data_crawl.delivery.delivery import (
     EXECUTORS,
     DeliveryBlocked,
     deliver,
     due_state,
+    index_problem,
     preview,
     run_due,
+    write_index,
 )
 from hf_data_crawl.delivery.fields import CONTRACT_VERSION, DEFAULT_COLUMNS
 from hf_data_crawl.delivery.requirement import (
@@ -180,15 +184,33 @@ def test_手写SQL的交付不谎称按默认契约投影(store: DatasetStore, t
 
 
 def test_同一底库两次交付逐字节相同(store: DatasetStore, tmp_path: Path) -> None:
-    """可复现的判据。靠的是编译时那条 "id" ASC 兜底。"""
+    """可复现的判据。靠的是编译时那条 "id" ASC 兜底。
+
+    第二次交付会被重复闸门拦下（同底库、同字节），所以这里先把上一条从台账里摘掉
+    ——测的是「同样的输入给同样的字节」，不是「能不能重复记账」。
+    """
     root = tmp_path / "req"
     make_request(root)
 
     first = deliver(store, root, "REQ-0001", now=NOW)
+    path = first.directory
+    digest = first.files[0]["sha256"]
+    shutil.rmtree(path)
     second = deliver(store, root, "REQ-0001", now=NOW.replace(second=30))
 
-    assert first.files[0]["sha256"] == second.files[0]["sha256"]
-    assert first.directory != second.directory
+    assert first.files[0]["sha256"] == second.files[0]["sha256"] == digest
+
+
+def test_同底库同字节的重复交付被拦下(store: DatasetStore, tmp_path: Path) -> None:
+    """没有新信息就不记新条目：这是交付目录堆条目的主要来源（2026-11-17 复盘）。"""
+    root = tmp_path / "req"
+    make_request(root)
+    deliver(store, root, "REQ-0001", now=NOW)
+
+    with pytest.raises(DeliveryUnchanged, match="没有新信息"):
+        deliver(store, root, "REQ-0001", now=NOW.replace(second=30))
+
+    assert len(delivery_dirs(root)) == 1
 
 
 def test_零行不交付且不留目录(store: DatasetStore, tmp_path: Path) -> None:
@@ -408,6 +430,10 @@ def test_交付README点出整列为空的列(store: DatasetStore, tmp_path: Pat
 
 
 def test_一次性需求重复交付需force(store: DatasetStore, tmp_path: Path) -> None:
+    """`--force` 只解除「once 已交付」的名额，解不开重复闸门：同一份东西不记第二条。
+
+    真要让对方再拿一份，直接取旧目录里的文件——重交出来也只是多一条一模一样的账。
+    """
     root = tmp_path / "req"
     make_request(root)
     argv = [
@@ -422,7 +448,9 @@ def test_一次性需求重复交付需force(store: DatasetStore, tmp_path: Path
 
     assert main(argv) == 0
     assert main(argv) == 1
-    assert main([*argv, "--force"]) == 0
+    # --force 放行「once 已交付」这一关，但产物没变，重复闸门仍然拒绝。
+    assert main([*argv, "--force"]) == 1
+    assert len(delivery_dirs(root)) == 1
 
 
 # ---------------------------------------------------------------- 到期判断
@@ -709,12 +737,188 @@ def test_预演不落盘也不受护栏阻断(store: DatasetStore, tmp_path: Pat
     book = make_book(tmp_path / "in.xlsx", ["acme/ds-1", "acme/ds-2"])
     make_backfill_request(root, book, guard={"min_rows": 999, "max_rows": 500000})
 
-    looked = preview(store, root, "REQ-0002")
+    looked = preview(store, root, "REQ-0002", keep_files=False)
 
     assert looked.kind is Kind.BACKFILL
     assert looked.rows == 2
     assert any("逐列规则" in line for line in looked.lines)
     assert not (root / "REQ-0002" / DELIVERIES_DIR).exists()
+    assert not (root / "REQ-0002" / "scratch").exists()
+    assert looked.path is None
+
+
+def test_预览把产物落进草稿区且不进台账(store: DatasetStore, tmp_path: Path) -> None:
+    """「想看一眼真表」不该以多一条交付为代价——这是本次治理要拆的那个结。"""
+    root = tmp_path / "req"
+    book = make_book(tmp_path / "in.xlsx", ["acme/ds-1", "acme/ds-2"])
+    make_backfill_request(root, book)
+
+    looked = preview(store, root, "REQ-0002")
+
+    scratch = root / "REQ-0002" / "scratch" / "preview"
+    assert looked.path == scratch
+    assert (scratch / "已补全.xlsx").exists()
+    assert (scratch / "PREVIEW.md").exists()
+    note = (scratch / "PREVIEW.md").read_text(encoding="utf-8")
+    assert "不是交付" in note
+    assert deliveries_of(root / "REQ-0002") == [], "预览不能变成一条交付"
+
+
+def test_预览会写出正式交付会被拦下的原因(store: DatasetStore, tmp_path: Path) -> None:
+    """跑通了不等于能交；预览必须把闸门的结论说出来，而不是留到正式那一刻。"""
+    root = tmp_path / "req"
+    book = make_book(tmp_path / "in.xlsx", ["acme/ds-1"])
+    make_backfill_request(root, book, guard={"min_rows": 99, "max_rows": 500000})
+
+    looked = preview(store, root, "REQ-0002")
+
+    assert looked.notes and "min_rows" in looked.notes[0]
+    assert "正式交付会被拦下的原因" in (
+        root / "REQ-0002" / "scratch" / "preview" / "PREVIEW.md"
+    ).read_text(encoding="utf-8")
+
+
+def test_交付成功后草稿区被清掉(store: DatasetStore, tmp_path: Path) -> None:
+    """客已交完，草稿留着只会让人以为「这里还有一份可能要交的东西」。"""
+    root = tmp_path / "req"
+    make_request(root)
+    preview(store, root, "REQ-0001")
+
+    deliver(store, root, "REQ-0001", now=NOW)
+
+    assert not (root / "REQ-0001" / "scratch" / "preview").exists()
+
+
+def test_批量交付把重复的记为跳过而不是失败(store: DatasetStore, tmp_path: Path) -> None:
+    """「今天没事发生」和「今天出事了」混成一种，日志里的红点就失去意义。"""
+    root = tmp_path / "req"
+    make_request(root, cadence="daily")
+    deliver(store, root, "REQ-0001", now=NOW - timedelta(days=1))
+
+    report = run_due(store, root, now=NOW)
+
+    assert report.delivered == []
+    assert report.failed == []
+    assert [item[0] for item in report.skipped] == ["REQ-0001"]
+    assert "没有新信息" in report.skipped[0][1]
+    assert len(delivery_dirs(root)) == 1
+
+
+def test_脏代码不许交付(store: DatasetStore, tmp_path: Path, monkeypatch: Any) -> None:
+    """manifest 记 HEAD，产物就必须真出自那个提交；否则档案从写下的那一刻就是假的。"""
+    root = tmp_path / "req"
+    make_request(root)
+    monkeypatch.setattr(
+        method,
+        "worktree_state",
+        lambda: {"checked": True, "clean": False, "paths": ["src/x.py"], "note": ""},
+    )
+
+    with pytest.raises(DeliveryBlocked, match="未提交"):
+        deliver(store, root, "REQ-0001", now=NOW)
+
+    assert deliveries_of(root / "REQ-0001") == []
+
+
+def test_档案记下代码是否干净(store: DatasetStore, tmp_path: Path) -> None:
+    """「查没查」与「干不干净」都要留痕：半年后没人能从 commit 号倒推出这件事。"""
+    root = tmp_path / "req"
+    make_request(root)
+
+    result = deliver(store, root, "REQ-0001", now=NOW)
+
+    body = json.loads((result.directory / MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert body["worktree"] == {"checked": True, "clean": True, "paths": [], "note": ""}
+
+
+# ---------------------------------------------------------------- 交付索引
+
+
+def seed_manifest(root: Path, name: str, **fields: Any) -> Path:
+    """造一条只放到索引要用的字段的交付目录。"""
+    directory = root / "REQ-0001" / DELIVERIES_DIR / name
+    directory.mkdir(parents=True, exist_ok=True)
+    body = {
+        "spec_version": 1,
+        "source": {"current_md5": "aaa"},
+        "result": {"rows": 2, "columns": ["id"], "files": [{"name": "d.parquet", "sha256": "s1"}]},
+        "method": {"env": {"commit": "c1"}},
+    }
+    body.update(fields)
+    (directory / MANIFEST_NAME).write_text(json.dumps(body), encoding="utf-8")
+    return directory
+
+
+def test_索引把重钉与内容变化分开(tmp_path: Path) -> None:
+    """台账里最容易混淆的一件事：这条是「又交了一份一样的」还是「真的变过」。"""
+    root = tmp_path / "req"
+    seed_manifest(root, "20261101T000000")
+    seed_manifest(root, "20261102T000000")  # 同底库同字节 → 重钉
+    seed_manifest(
+        root,
+        "20261103T000000",
+        spec_version=2,
+        source={"current_md5": "bbb"},
+        result={
+            "rows": 2,
+            "columns": ["id", "作者"],
+            "files": [{"name": "d.parquet", "sha256": "s2"}],
+        },
+    )
+
+    write_index(root / "REQ-0001")
+
+    text = (root / "REQ-0001" / DELIVERIES_DIR / "INDEX.md").read_text(encoding="utf-8")
+    assert "| 首版 |" in text
+    assert "| 重钉 |" in text
+    assert "| 结构扩展 |" in text
+    assert "当前有效：`20261103T000000`" in text
+    assert "<!-- deliveries: 20261103T000000 · entries: 3 -->" in text
+
+
+def test_索引的可复现列认档案与AUDIT(tmp_path: Path) -> None:
+    """新交付由闸门保证干净；历史交付的结论只能来自 AUDIT.md，不能靠猜。"""
+    root = tmp_path / "req"
+    seed_manifest(root, "20261101T000000", worktree={"checked": True, "clean": False, "paths": []})
+    seed_manifest(
+        root,
+        "20261102T000000",
+        source={"current_md5": "bbb"},
+        result={"rows": 2, "columns": ["id"], "files": [{"name": "d.parquet", "sha256": "s2"}]},
+    )
+    (root / "REQ-0001" / DELIVERIES_DIR / "AUDIT.md").write_text(
+        '```json\n{"20261101T000000": {"reproducible": false, "note": "代码未提交"}}\n```\n',
+        encoding="utf-8",
+    )
+
+    write_index(root / "REQ-0001")
+
+    text = (root / "REQ-0001" / DELIVERIES_DIR / "INDEX.md").read_text(encoding="utf-8")
+    assert "✗（见 AUDIT）" in text
+    # 没有 worktree 段、也没进 AUDIT 的历史条目：只能写「未核」，不替它下结论。
+    assert "| ? |" in text
+
+
+def test_索引过期能被指出来(tmp_path: Path) -> None:
+    """过期 INDEX 比没有更坏：读者会拿一份长得完全正常的旧清单当现状。"""
+    root = tmp_path / "req"
+    request_dir = root / "REQ-0001"
+    assert index_problem(request_dir) is None, "还没有交付时不报"
+
+    seed_manifest(root, "20261101T000000")
+    assert "没有 INDEX.md" in (index_problem(request_dir) or "")
+
+    write_index(request_dir)
+    assert index_problem(request_dir) is None
+
+    # 台账多了一条、索引没跟上：判据是机读标记，不看 mtime。
+    seed_manifest(
+        root,
+        "20261102T000000",
+        source={"current_md5": "bbb"},
+        result={"rows": 2, "columns": ["id"], "files": [{"name": "d.parquet", "sha256": "s2"}]},
+    )
+    assert "台账实际是 2 条" in (index_problem(request_dir) or "")
 
 
 def test_产物只落在需求目录内且输入有指纹(store: DatasetStore, tmp_path: Path) -> None:

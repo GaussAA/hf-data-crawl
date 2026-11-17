@@ -33,7 +33,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `build` | 重建派生层：默认只重放近 7 天热区，`--stale` 只修派生滞后的日子及其后，`--full` 全量重放 | 否 |
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
 | `bronze` | 按日期从 Raw 现算 Bronze 并打印／导出（只读、不落盘、不写台账）。Bronze 只保留最新一天，历史那几天只能这样回看——**仅限 Raw 里还在的日期**（`archive` 前的 30 天窗口）；已压入冷区的日期回不来，cold 基线按 id 跨天去重、不是某天的快照 | 否 |
-| `request` | 需求与交付管理：`new` 建需求、`list` 看全部、`show` 看口径与台账、`method` 校验过程记录并重算脚本索引、`input` 收新版输入表、`diff` 比两版口径、`compare` 比两次交付、`run` 交付一次（`--dry-run` 预演）、`run-due` 跑到期的 | 否 |
+| `request` | 需求与交付管理：`new` 建需求、`list` 看全部、`show` 看口径与台账、`method` 校验过程记录并重算脚本索引、`input` 收新版输入表、`diff` 比两版口径、`compare` 比两次交付、`run` 交付一次（`--dry-run` 只算不写、`--preview` 落草稿区可打开看）、`run-due` 跑到期的、`index` 重写交付索引 | 否 |
 | `report` | 生成单文件榜单页（离线可看） | 否 |
 | `doctor` | 体检：调度新鲜度、底库行龄、层间勾稽、派生凭证、产物新鲜度、断日与残留文件；异常写 `ALERT.txt` 并追加体检流水 | 否 |
 | `archive` | 归档早于 N 天的 Raw 分区：合并小分块并去重，先验证 Bronze 逐行相等，原文件移入 `backup/raw/` | 否 |
@@ -67,8 +67,9 @@ hf-data-crawl request      method REQ-0001 [--check]   # 校验 method/ 并按�
 hf-data-crawl request      input REQ-0001 --add 新表.xlsx   # 收进 input/v<n>/，报字段差异，不改 spec
 hf-data-crawl request      diff REQ-0001 [v1 v2]     # 比两版口径；默认最近两版
 hf-data-crawl request      compare REQ-0001 [A B]    # 比两次交付的逐列差异；默认最近两次
-hf-data-crawl request      run REQ-0001 [--force] [--dry-run]   # once 重交须 --force；--dry-run 只算不写
+hf-data-crawl request      run REQ-0001 [--force] [--dry-run] [--preview]   # --dry-run 只算不写；--preview 落 scratch/preview/ 可打开看
 hf-data-crawl request      run-due                  # 只跑到期的（计划任务用）
+hf-data-crawl request      index [REQ-0001]         # 重写 deliveries/INDEX.md；不写则全部重写
 ```
 
 `--kind backfill` 时 `--source` 必填：该文件会被复制进 `<需求目录>/input/`，原件不动，
@@ -260,7 +261,18 @@ requests/REQ-0001-query-高热度数据集清单/
     data.parquet / 已补全.xlsx    # 产物字节，不进 git（白名单只放行两份说明）
     manifest.json            # 机器读：kind、底库指纹、输入指纹、方法指纹、行数、sha256、健康
     README.md                # 人读：要什么、怎么算的、基于哪天的底库、几行
+  deliveries/INDEX.md        # 引擎生成的台账索引：每条的性质、可复现性、当前有效
+  deliveries/AUDIT.md        # 唯一的人工文件：引擎事后核不出的历史事实
+  scratch/preview/           # 预览产物（--preview），草稿、不进台账、交付后删除
 ```
+
+**交付目录是不可变台账，不是货架**：每条只增不删，被取代的留在原地；「哪条算数」看
+`deliveries/INDEX.md` 的最后一行。想先看产物长什么样，用 `request run <id> --preview`
+把它落进 `scratch/preview/`——「想看一眼」不该以多一条交付为代价（ADR-0003）。
+
+**出口两道闸门**：代码脏（`src/`、`pyproject.toml`、`uv.lock` 有未提交改动）不交付——
+档案记的 commit 必须真能跑出这份产物；底库与产物字节都没变也不交付——除了给版本号留个
+摆设，那条账没有新信息，`run-due` 会把它记成「跳过」而不是「失败」。
 
 **目录名 = `REQ-xxxx-<kind>-<标题短名>`**：编号保唯一与排序，`kind` 一眼看出执行路径，
 标题短名不用打开文件就知道这单是什么。命令始终用编号（`request run REQ-0002`），

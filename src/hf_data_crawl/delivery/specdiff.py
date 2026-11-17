@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .requirement import Spec, spec_body
+from .requirement import DISPLAY_KEYS, Spec, spec_body
 
 #: 只在一侧存在的叶子值。用一个独有对象而非 None：null 本身是合法取值。
 _MISSING = object()
@@ -90,6 +90,10 @@ def leaves(spec: Spec) -> dict[str, Any]:
                 for column in content:
                     name = column["name"]
                     for attr, cell in column.items():
+                        # 展示项单独比（`display_notes`）：它们会改产物字节，却不进
+                        # 口径指纹，混在「口径差异」里会让人以为数字也变了。
+                        if attr in DISPLAY_KEYS:
+                            continue
                         # 默认值（None/False/空串）不入表：它们只是「没写」，
                         # 写全了再比，差异表里会全是噪声。
                         if attr == "name" or cell in (None, False, ""):
@@ -122,6 +126,40 @@ def side_notes(old: Spec, new: Spec) -> list[str]:
         ("交付节奏", old.cadence.value, new.cadence.value),
     )
     return [f"- {label}：{before} → {after}" for label, before, after in pairs if before != after]
+
+
+def display_notes(old: Spec, new: Spec) -> list[str]:
+    """展示项（列宽、换行）的差异：不进口径指纹，但**会改产物字节**。
+
+    与 `side_notes` 分开放，是因为它对读者的含义完全不同：改标题不影响任何东西，
+    改列宽会让「同版本、不同产物」成立——那必须交付一次才算数，却不该占版本号。
+    """
+
+    def shown(spec: Spec) -> dict[str, tuple[Any, Any]]:
+        body = spec_body(spec)
+        out: dict[str, tuple[Any, Any]] = {}
+        for column in (body.get("fill") or {}).get("columns") or []:
+            pair = tuple(column.get(key) for key in sorted(DISPLAY_KEYS))
+            if any(item is not None for item in pair):
+                out[str(column["name"])] = pair
+        return out
+
+    before, after = shown(old), shown(new)
+    lines: list[str] = []
+    for name in list(before) + [item for item in after if item not in before]:
+        if before.get(name) != after.get(name):
+            lines.append(
+                f"- `{name}`：{_display_text(before.get(name))} → {_display_text(after.get(name))}"
+            )
+    return lines
+
+
+def _display_text(pair: tuple[Any, Any] | None) -> str:
+    """`(width, wrap)` 的人读形式：`宽 30 · 不换行`。"""
+    if pair is None:
+        return "（无）"
+    width, wrap = pair
+    return f"宽 {width if width is not None else '默认'} · {'换行' if wrap else '不换行'}"
 
 
 def cell(value: Any) -> str:

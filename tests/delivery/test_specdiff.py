@@ -144,6 +144,19 @@ def test_只改标题时口径未变但要单独说一句(tmp_path: Path) -> Non
     assert "标题" in notes[0] and "改名" in notes[0]
 
 
+def test_只改列宽不算口径差异但要单独说一句(tmp_path: Path) -> None:
+    """展示项会改产物字节、却不进口径指纹：混进「口径差异」会让人以为数字变了。"""
+    old = make(tmp_path, "a", **fill_body(tmp_path))
+    body = fill_body(tmp_path)
+    body["fill"]["columns"]["下载量"]["width"] = 30
+    new = make(tmp_path, "b", **body)
+
+    assert specdiff.compare(old, new) == []
+    notes = specdiff.display_notes(old, new)
+    assert len(notes) == 1
+    assert "下载量" in notes[0] and "宽 30" in notes[0]
+
+
 def test_长文本截断且换行压平() -> None:
     long_sql = "SELECT " + "、".join("col" for _ in range(40)) + "\nFROM datasets"
 

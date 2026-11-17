@@ -322,6 +322,13 @@ def skeleton(request_id: str, title: str, kind: str) -> str:
 
 {DRAFT_MARK}把下面几节写成「换个人照着做也能重来一遍」的样子，填完删掉本行。 -->
 
+## 需求成立性
+
+（先判这条需求是**症状**还是**成因**：对方说的做法（「把这几列删掉」「目录要干净」）
+能不能推出他真正要的结果（「别再交重复的东西」「一眼看出哪条算数」）？照着做会不会
+把有用的证据一起扔掉？这一段不进口径、也不阻断交付，但它是六个月后唯一能解释
+「当初为什么这么做」的地方——写不出来，说明还没想清楚。）
+
 ## 目标
 
 （一句话：这份需求要产出什么，判「做完了」的标准是什么。）
@@ -342,7 +349,7 @@ def skeleton(request_id: str, title: str, kind: str) -> str:
 
 ## 脚本
 
-放在 `method/scripts/`，改完跑 `hf-data-crawl request method sync {request_id}` 重算指纹，
+放在 `method/scripts/`，改完跑 `hf-data-crawl request method {request_id}` 重算指纹，
 并在本节记一句「改了什么、为什么改」——索引只认指纹，不认理由。
 
 ## 环境
@@ -354,6 +361,29 @@ def skeleton(request_id: str, title: str, kind: str) -> str:
 
 （哪些做不到、哪些是近似、哪些依赖外部不可控的东西。写清楚，比留白强。）
 """
+
+
+#: 「需求成立性」小节：软校验——缺它只提示，不拦交付。
+#:
+#: 为什么不做成硬拦：这一节写的是判断，判断的价值在于有人真读到了不同的东西；
+#: 做成必填后，最先发生的永远是「先抄一句话把闸门过了」。
+PREMISE_HEADING = "## 需求成立性"
+
+
+def advisories(request_dir: Path) -> list[str]:
+    """不阻断交付、但值得回头补一句的提醒（目前只有「需求成立性」一节）。"""
+    doc = request_dir / METHOD_DIR / METHOD_DOC
+    try:
+        text = doc.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    if PREMISE_HEADING in text:
+        return []
+    return [
+        f"{METHOD_DIR}/{METHOD_DOC} 没有「{PREMISE_HEADING}」一节："
+        "这条需求是症状还是成因、照做会不会丢证据，将来没人能回答。"
+        f"（补一节即可，不影响交付。）"
+    ]
 
 
 def _empty_index() -> dict[str, Any]:
@@ -508,6 +538,68 @@ def _commit() -> str | None:
             text = done.stdout.strip()
             return text or None
     return None
+
+
+#: 决定产物字节的路径。只查这些，不查整个工作区：`manifest.method.env.commit`
+#: 记的是 HEAD，而 HEAD 只对**代码**负责。文档、测试、需求目录改没改，跑出来的
+#: 表一模一样——把它们也算脏，交付就变成「先全提交」的仪式，而不是一条判据。
+#:
+#: 反过来，`src/` 脏一条都不能交：那时 manifest 会记一个**复现不出这份产物**的
+#: 提交号，而这正是 2026-11-17 REQ-0004 五次交付里两次「重钉」的成因。
+CODE_PATHS: tuple[str, ...] = ("src", "pyproject.toml", "uv.lock")
+
+
+def dirty_paths() -> list[str]:
+    """工作区里改动过的代码路径；不是 git 仓库、取不到状态时返回空列表。
+
+    与 `_commit` 同一种「尽力而为」：判断不了就不拦，但**记不下**这段判断——所以
+    `worktree_state()` 把「查没查」也一并交出去，档案里能看出这次闸门到底跑没跑。
+    """
+    start = Path(__file__).resolve().parent
+    for candidate in (start, *start.parents):
+        if not (candidate / ".git").exists():
+            continue
+        existing = [name for name in CODE_PATHS if (candidate / name).exists()]
+        if not existing:
+            return []
+        try:
+            done = subprocess.run(
+                ["git", "status", "--porcelain", "--untracked-files=normal", "--", *existing],
+                cwd=candidate,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return []
+        if done.returncode != 0:
+            return []
+        paths: list[str] = []
+        for line in done.stdout.splitlines():
+            # 每行形如 ` M src/x.py` / `?? src/new.py`；前两位是状态码。
+            name = line[3:].strip()
+            if name:
+                paths.append(name)
+        return paths
+    return []
+
+
+def worktree_state() -> dict[str, Any]:
+    """这次交付时「代码是否干净」的机器可读结论，写进 manifest 的 `worktree` 段。
+
+    没有它，半年后只能靠 commit 号猜「这份产物到底是不是那个提交跑出来的」——
+    猜不出来，而这正是本次治理要堵的那条缝。
+    """
+    if _commit() is None:
+        return {"checked": False, "clean": False, "paths": [], "note": "不在 git 仓库里，未能检查"}
+    changed = dirty_paths()
+    return {
+        "checked": True,
+        "clean": not changed,
+        "paths": changed[:20],
+        "note": "" if not changed else f"{len(changed)} 处代码未提交",
+    }
 
 
 def env() -> dict[str, Any]:

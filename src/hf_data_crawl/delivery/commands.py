@@ -18,9 +18,10 @@ from .delivery import (
     preview,
     read_manifest,
     run_due,
+    write_index,
 )
 from .header import HeaderError, header_change
-from .method import METHOD_DIR, METHOD_DOC, METHOD_INDEX, problems
+from .method import METHOD_DIR, METHOD_DOC, METHOD_INDEX, advisories, problems
 from .method import sync as sync_method
 from .metrics import lookup
 from .requirement import (
@@ -37,6 +38,7 @@ from .requirement import (
     compile_sql,
     directory_name,
     history_versions,
+    request_dirs,
     resolve_dir,
     skeleton,
     spec_digest,
@@ -115,7 +117,41 @@ def run_request(args: argparse.Namespace) -> int:
         return _request_diff(root, args)
     if args.request_action == "compare":
         return _request_compare(root, args)
+    if args.request_action == "index":
+        return _request_index(root, args.id)
     return _request_show(root, args.id)
+
+
+def _request_index(root: Path, request_id: str | None) -> int:
+    """重写 `deliveries/INDEX.md`。不写数据的动作，不持数据目录的锁。
+
+    为什么留独立入口：INDEX 平时随交付自动重写，但「补建历史 / AI 改完 AUDIT 后
+    刷新一次」不能靠再交付一遍——那正是这次治理要断掉的循环。
+    """
+    if request_id:
+        try:
+            request_dir = resolve_dir(root, request_id)
+        except SpecError as error:
+            print(f"失败：{error}")
+            return 1
+        directories = [request_dir]
+    else:
+        directories = request_dirs(root)
+    if not directories:
+        print(f"{root} 下还没有需求。")
+        return 1
+    written = 0
+    for request_dir in directories:
+        if not deliveries_of(request_dir):
+            continue
+        path = write_index(request_dir)
+        print(f"  {request_dir.name} → {path.relative_to(request_dir)}")
+        written += 1
+    if not written:
+        print("没有已交付的需求，没有索引可写。")
+        return 1
+    print(f"已重写 {written} 份交付索引。")
+    return 0
 
 
 def _brief(text: str, limit: int = 42) -> str:
@@ -245,6 +281,12 @@ def _request_diff(root: Path, args: argparse.Namespace) -> int:
         print()
         print("  另（不影响产物，也不进口径指纹）：")
         for line in notes:
+            print(f"  {line}")
+    shown = specdiff.display_notes(old, new)
+    if shown:
+        print()
+        print("  另（展示项：不进口径指纹、不升版本，但产物字节会变，仍要交付一次）：")
+        for line in shown:
             print(f"  {line}")
     return 0
 
@@ -392,6 +434,9 @@ def _request_method(root: Path, request_id: str, *, check: bool) -> int:
             print(f"  - {text}")
         return 1
     print(f"{spec.id} 过程记录合规：{METHOD_DIR}/{METHOD_DOC} + 脚本索引一致")
+    # 软校验：写下来不拦交付，但要让人看见它缺着。
+    for text in advisories(request_dir):
+        print(f"  提示：{text}")
     return 0
 
 
@@ -591,7 +636,13 @@ def _request_show(root: Path, request_id: str) -> int:
 
 
 def run_request_run(args: argparse.Namespace, store: DatasetStore) -> int:
-    """交付一次。一次性需求交付过就不再自动重复，加 --force 才重交。"""
+    """交付一次。一次性需求交付过就不再自动重复，加 --force 才重交。
+
+    三条出口，对应三种「跑一次」：
+    - `--dry-run`：只打印会出多少行（一行文件都不写）；
+    - `--preview`：把真产物写进 `scratch/preview/`，可打开看，但不新增交付；
+    - 默认：正式交付，会过代码闸门、护栏与重复闸门。
+    """
     root = Path(args.requests_dir)
     try:
         request_dir = resolve_dir(root, args.id)
@@ -603,9 +654,18 @@ def run_request_run(args: argparse.Namespace, store: DatasetStore) -> int:
     if args.dry_run:
         # 预演不写盘、也不占「once 已交付」的名额——它本来就是给人先看一眼的。
         try:
-            looked = preview(store, root, args.id)
+            looked = preview(store, root, args.id, keep_files=False)
         except (DeliveryBlocked, SpecError) as error:
             print(f"预演失败：{error}")
+            return 1
+        _print_preview(looked)
+        return 0
+
+    if args.preview:
+        try:
+            looked = preview(store, root, args.id)
+        except (DeliveryBlocked, SpecError) as error:
+            print(f"预览失败：{error}")
             return 1
         _print_preview(looked)
         return 0
@@ -626,7 +686,16 @@ def run_request_run(args: argparse.Namespace, store: DatasetStore) -> int:
 
 
 def _print_preview(result: Preview) -> None:
-    print(f"预演 {result.request_id}（{result.kind.value}）· {result.rows:,} 行 · 未写盘")
+    label = "预览" if result.path else "预演"
+    print(f"{label} {result.request_id}（{result.kind.value}）· {result.rows:,} 行")
+    if result.path:
+        print(f"  产物落在草稿区：{result.path}（可打开看；不进交付台账）")
+        for item in result.files:
+            print(f"    {item['name']}  {item['bytes']:,} 字节  sha256 {str(item['sha256'])[:16]}…")
+    else:
+        print("  未写盘")
+    for note in result.notes:
+        print(f"  [!] {note}")
     for line in result.lines:
         print(f"  {line}")
 
