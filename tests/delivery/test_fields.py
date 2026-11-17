@@ -320,3 +320,20 @@ def test_列表列的类型声明不会退化成文本() -> None:
     multi = [name for name, family in COLUMN_TYPES.items() if family == "list"]
     assert "tags" in multi and "plain_tags" in multi
     assert COLUMN_TYPES["tags"] == "list"
+
+
+def test_与数据字典共用的列两边都要有说明() -> None:
+    """同一列在交付契约与内部数据字典里各有一份文案，写给两个读者。
+
+    两份不同是有意的（一个讲客户口径、一个讲管道语义，见 GLOSSARY #106）。这条钉的是
+    **列名漂移**：谁的列改了名或删了，交集就悄悄变小，而两边各自的测试都不会出声——
+    `COLUMN_NOTES` 只查自己的 31 列，`fielddocs` 只查自己表里的列。
+    """
+    from hf_data_crawl.ops.fielddocs import COMMON
+
+    shared = sorted(set(COMMON) & set(COLUMN_NOTES))
+
+    assert len(shared) >= 12, f"两边同名的列只剩 {len(shared)} 个，像是有人改了列名：{shared}"
+    for column in shared:
+        assert COMMON[column].strip(), f"{column} 在 fielddocs 里没有说明"
+        assert COLUMN_NOTES[column].strip(), f"{column} 在 COLUMN_NOTES 里没有说明"

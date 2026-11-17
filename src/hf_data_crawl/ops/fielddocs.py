@@ -12,6 +12,10 @@
 - 通用列放 `COMMON`，各表共用；表内同名列覆盖通用说明。
 - 新增列却忘了写说明时，`docs` 命令会把它标成「待补」并计数，
   `tests/ops/test_docs.py` 会因此变红——不会悄悄漏掉。
+- `COMMON` 里有 12 列与交付契约的 `delivery/fields.py::COLUMN_NOTES` 同名。那边写给
+  客户（口径与歧义），这边写内部管道语义，两份不同是有意的：`delivery`(3) 不许
+  import `ops`(4)，合并只能合到那边，代价是数据字典反过来依赖交付契约。改一列时
+  两边都看一眼，判据见 GLOSSARY #106。
 """
 
 from __future__ import annotations
