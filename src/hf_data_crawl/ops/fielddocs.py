@@ -162,6 +162,21 @@ FIELD_DOCS: dict[str, dict[str, str]] = {
         "（HF 截断的摘要）不是一回事",
         "snapshot_date": "最近一次成功抓取 README 的日期（按 id 覆盖的单文件表，不分区）",
     },
+    "preview": {
+        "status": "`ok` 取到行 / `unavailable` 这个库没有 viewer 或受限（401 与 404 的报文"
+        "一字不差，分不开）/ `error` 临时失败；后两者只有前者落库",
+        "config": "取样例时用的 config 名。目前由命令参数给（默认 `default`），不是从底库读的",
+        "split": "取样例时用的 split 名，同上（默认 `train`）",
+        "rows_total": "viewer 报的这个 split 共多少行；与 `row_count` 不同——样例只有几行，"
+        "别把它当总量",
+        "row_count": "本次实际取回几行（默认 3）",
+        "features": "列名与类型的 JSON（viewer 的 `features`）。**这个库有哪些列、什么类型**"
+        "只有这里知道：底库其余表记的都是聚合后的列，不是数据本身的列",
+        "rows": "行的 JSON：`[{row_idx, row}]`；结构化值（列表列、图像/音频对象）已压成字符串",
+        "truncated": "本次是否有单元格被截断（每格上限 500 字符，超过的结尾带「…（截断）」）",
+        "snapshot_date": "抓取所属的快照日",
+        "fetched_at": "抓取时刻。viewer 的内容随上游重写而变，这份数据只代表这一刻，不是可复现交付",
+    },
 }
 
 

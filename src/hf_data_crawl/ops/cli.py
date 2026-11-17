@@ -15,11 +15,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..acquire import DEFAULT_TOP, MAX_LIMIT, PROBE_DAILY_LIMIT
+from ..acquire import DEFAULT_TOP, MAX_LIMIT, PREVIEW_TOP, PROBE_DAILY_LIMIT
 from ..acquire.commands import (
     run_collect,
     run_enrich,
     run_fetch_files,
+    run_fetch_preview,
     run_fetch_readme,
     run_fetch_sizes,
     run_reconcile,
@@ -59,6 +60,7 @@ WRITE_COMMANDS = frozenset(
         "fetch-sizes",
         "fetch-files",
         "fetch-readme",
+        "fetch-preview",
         "archive",
         "compact",
         "prune",
@@ -77,7 +79,7 @@ LOCKED_COMMANDS = WRITE_COMMANDS | SNAPSHOT_COMMANDS
 #: 它们仍在 WRITE_COMMANDS 里（启动检查/恢复未完成的派生照旧），但不走
 #: `_execute` 的整段锁。原因见 `sizes.StagingWriter`：全量抓取要跑三小时，
 #: 整段持锁会直接让当天的 collect 等锁失败（2026-11-07 实际事故）。
-SELF_LOCKED_COMMANDS = frozenset({"fetch-sizes", "fetch-readme"})
+SELF_LOCKED_COMMANDS = frozenset({"fetch-sizes", "fetch-readme", "fetch-preview"})
 
 #: 生成命令默认等锁时长（秒）。它们通常由计划任务或人工临时触发，撞上采集
 #: 时干等一会儿比直接失败有用；等不到仍会如实报错。可用 `--lock-wait` 覆盖。
@@ -420,6 +422,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="每处理多少条就写一个暂存分片，中断时最多损失这一批",
     )
 
+    preview = subparsers.add_parser(
+        "fetch-preview", help="抓数据集 viewer 的前几行当样例（独立表，不进默认导出）"
+    )
+    preview.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
+    preview.add_argument(
+        "--top", type=int, default=PREVIEW_TOP, help="按下载量取前多少名（默认 10000）"
+    )
+    preview.add_argument("--ids", default=None, help="只抓这些 id（逗号分隔），忽略 --top")
+    preview.add_argument("--rows", type=int, default=3, help="每个库取几行（默认 3，上限 100）")
+    preview.add_argument("--config", default="default", help="viewer 的 config 名（默认 default）")
+    preview.add_argument("--split", default="train", help="viewer 的 split 名（默认 train）")
+    preview.add_argument("--workers", type=int, default=8, help="并发数，实测 8 稳定")
     doctor = subparsers.add_parser("doctor", help="体检：任务是否按时、Raw 是否断日、有无残留文件")
     # 未显式给时沿用全局默认；SUPPRESS 避免把全局 --lock-wait 覆盖回 None。
     doctor.add_argument(
@@ -562,6 +576,13 @@ def main(argv: list[str] | None = None, *, transport: Any = None) -> int:
             store,
             "fetch-readme",
             lambda: run_fetch_readme(args, store, transport, lock_wait),
+            lock_wait,
+        )
+    if args.command == "fetch-preview":
+        return _execute(
+            store,
+            "fetch-preview",
+            lambda: run_fetch_preview(args, store, transport, lock_wait),
             lock_wait,
         )
     if args.command == "report":

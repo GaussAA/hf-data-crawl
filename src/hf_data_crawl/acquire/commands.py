@@ -32,6 +32,7 @@ from .enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
 from .files import FileFetcher, FileSummary, HfFilesApi
 from .hf.api import HfDatasetApi, Transport
 from .hf.transport import HttpxTransport
+from .preview import HfPreviewApi, PreviewFetcher, PreviewSummary
 from .readme import (
     README_STAGING_DIR,
     HfReadmeApi,
@@ -335,6 +336,72 @@ def run_fetch_sizes(
 
     _print_sizes(summary, store.read("size").height)
     return Outcome(summary)
+
+
+def run_fetch_preview(
+    args: argparse.Namespace,
+    store: DatasetStore,
+    transport: Transport | None,
+    lock_wait: float = 0.0,
+) -> Outcome:
+    """锁外抓取、锁内并入，与 `fetch-sizes` 同一个形状（只是量级小得多）。
+
+    一万个库、8 并发大约十几分钟；整段持锁会挡住当天的 collect（2026-11-07 的事故）。
+    故抓取在锁外，只有「并入 preview 表」那一小段独占。这里不设暂存分片：中断最多
+    损失一轮十来分钟，重跑即可，不必为它维护一套续抓机制。
+
+    只抓 `size` 表里 `status=ok` 的库——没有 viewer 的库（14.25%）连请求都不该发。
+    """
+    snapshot = _snapshot(args)
+    current = state.read_current(store)
+    if current.height == 0:
+        print("尚无采集数据，请先运行 `hf-data-crawl collect`。")
+        return Outcome({"error": "empty"}, code=1, reason="尚无采集数据，请先运行 collect")
+
+    ordered = current.sort("downloads", descending=True, nulls_last=True)
+    if args.ids:
+        ordered, problem = pick_ids(ordered, args.ids)
+        if problem:
+            print(f"失败：{problem}")
+            return Outcome({"error": "ids"}, code=1, reason=problem)
+        candidates = ordered["id"].to_list()
+    else:
+        fetchable = set(store.read("size").filter(pl.col("status") == "ok")["id"].to_list())
+        candidates = [item for item in ordered["id"].to_list() if item in fetchable][: args.top]
+
+    if not candidates:
+        print("没有可抓的库：size 表里没有 status=ok 的记录，先跑 `fetch-sizes`。")
+        return Outcome({"fetched": 0})
+
+    print(f"取样例：{len(candidates)} 个库 × 最多 {args.rows} 行")
+    fetcher = PreviewFetcher(
+        api=HfPreviewApi(
+            transport=_open_transport(transport),
+            rows=args.rows,
+            config=args.config,
+            split=args.split,
+        ),
+        workers=args.workers,
+        progress=_progress_line,
+    )
+    summary, frame = fetcher.run(snapshot, candidates)
+    # 进度条是 \r 原地刷新，收尾必须换行。
+    print()
+
+    if frame.height:
+        with exclusive(store.root, "fetch-preview:merge", lock_wait):
+            store.upsert("preview", frame)
+
+    _print_preview(summary, store.read("preview").height)
+    return Outcome(summary)
+
+
+def _print_preview(summary: PreviewSummary, total_rows: int) -> None:
+    print(
+        f"样例：取到 {summary.fetched} · 无 viewer/受限 {summary.unavailable} · "
+        f"临时失败 {summary.failed} · 截断过 {summary.truncated}；"
+        f"preview 表现有 {total_rows} 行（{summary.elapsed_seconds:.0f}s）"
+    )
 
 
 def run_fetch_files(

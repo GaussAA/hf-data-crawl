@@ -1,6 +1,6 @@
 # data 目录说明
 
-> 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-17 15:06，**请勿手工编辑**。
+> 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-17 19:12，**请勿手工编辑**。
 > 表结构与行数由代码和实际文件算出；字段含义维护在 `src/hf_data_crawl/ops/fielddocs.py`。
 > 改完代码后重新生成即可，`tests/ops/test_docs.py` 会在忘记生成时报错。
 
@@ -33,11 +33,11 @@ data/
 ├── bronze/dt=YYYY-MM-DD/       # 标量快照，只保留最新一天（当前 1 个文件 · 293.8 MB）
 ├── silver/dt=YYYY-MM-DD/       # 属性变更流水（当前 2 个文件 · 143.5 MB）
 ├── state/                      # 当前态与观测流水（当前 8 个文件 · 116.4 MB）
-├── enrich/                     # 卡片与规模（当前 3 个文件 · 27.3 MB）
+├── enrich/                     # 卡片与规模（当前 5 个文件 · 170.2 MB）
 ├── meta/                       # 重建中断时留存的状态快照（当前 1 个文件 · 42 B）
 ├── reports/                    # 对账清单与榜单页（当前 3 个文件 · 50.6 MB）
-├── runs/                       # 每轮运行摘要（当前 32 个文件 · 16.4 KB）
-├── exports/                    # 宽表导出（可重建，当前 1 个文件 · 105.0 MB）
+├── runs/                       # 每轮运行摘要（当前 41 个文件 · 19.5 KB）
+├── exports/                    # 宽表导出（可重建，当前 1 个文件 · 108.0 MB）
 └── logs/                       # 计划任务日志（按轮命名，最近 200 个）
 ```
 
@@ -196,7 +196,7 @@ DuckDB / Spark / Athena 都能零配置把它当列读出来；表内另有 `sna
 - 逻辑名：`carddata`
 - 来源：由 `raw/` 派生，可随时重建
 - 分区：单文件，不分区
-- 现状：1,862 行 · 198.9 KB
+- 现状：1,890 行 · 201.8 KB
 
 **它回答什么** —— README 卡片是唯一能拿到「展示名、许可证名称与链接、引用格式、项目主页」的地方——许可证标签（`licenses`）另有 tags 一条来源。
 
@@ -236,7 +236,7 @@ DuckDB / Spark / Athena 都能零配置把它当列读出来；表内另有 `sna
 - 逻辑名：`card_configs`
 - 来源：由 `raw/` 派生，可随时重建
 - 分区：单文件，不分区
-- 现状：4,709 行 · 143.4 KB
+- 现状：4,794 行 · 145.7 KB
 
 **它回答什么** —— 卡片里 `dataset_info` 列的 config 与 split 逐条展开，回答「有哪些子集、各多少行」。
 
@@ -263,7 +263,7 @@ DuckDB / Spark / Athena 都能零配置把它当列读出来；表内另有 `sna
 - 逻辑名：`size`
 - 来源：来自外部接口，**删掉就要重抓**
 - 分区：单文件，不分区
-- 现状：尚无数据
+- 现状：371,000 行 · 36.6 MB
 
 **它回答什么** —— 唯一能回答「到底多少行、多少列」的来源。
 
@@ -292,7 +292,7 @@ DuckDB / Spark / Athena 都能零配置把它当列读出来；表内另有 `sna
 - 逻辑名：`files`
 - 来源：来自外部接口，**删掉就要重抓**
 - 分区：单文件，不分区
-- 现状：尚无数据
+- 现状：28 行 · 6.8 KB
 
 **它回答什么** —— 仓库的文件清单（`siblings`），回答「这个库到底有哪些文件」。
 
@@ -317,7 +317,7 @@ DuckDB / Spark / Athena 都能零配置把它当列读出来；表内另有 `sna
 - 逻辑名：`readme`
 - 来源：来自外部接口，**删掉就要重抓**
 - 分区：单文件，不分区
-- 现状：20,001 行 · 26.9 MB
+- 现状：124,006 行 · 133.2 MB
 
 **它回答什么** —— README 全文，回答「这个数据集自己怎么描述自己」——列表接口的 `description` 只有约 600 字符摘要，正文只能逐库取。
 
@@ -334,6 +334,34 @@ DuckDB / Spark / Athena 都能零配置把它当列读出来；表内另有 `sna
 | `status` | 字符串 | `ok` 拿到全文 / `absent` 仓库没有 README / `denied` 门禁或私有读不到 / `error` 临时失败。后三种都不是「作者没写」 |
 | `bytes` | 整数 | README 的字节数；非 `ok` 行为空 |
 | `text` | 字符串 | README 原文（含 YAML 头），Markdown 文本；与 `description`（HF 截断的摘要）不是一回事 |
+
+### `enrich/preview.parquet`
+
+- 逻辑名：`preview`
+- 来源：来自外部接口，**删掉就要重抓**
+- 分区：单文件，不分区
+- 现状：尚无数据
+
+**它回答什么** —— 数据集**长什么样**——viewer 里的前几行，回答「这个库的列与值到底成什么形状」。底库其余表记的都是聚合后的列，唯独这里能看到数据本身的列。
+
+**为什么是这个形态** —— 一行一个库、行内容存 JSON：列数每个库都不同（9 列到几十列），摊成宽表会让 schema 每换一个库就变一次。单元格截到 500 字符——实测 3 行可以到 161 KB，样例要的是形状不是全文。抓到的只是某一刻的切片（viewer 背后是自动转出的 parquet，上游重写就变），故记 `fetched_at`，且**不进可复现交付**。
+
+**谁写、谁读** —— `fetch-preview` 写；只抓 `size` 表里 `status=ok` 的库——没有 viewer 的占一成多，发请求是白烧配额。`Origin.NETWORK` 表，重建保留。
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `id` | 字符串 | 数据集标识，形如 `作者/名称`，全库唯一 |
+| `url` | 字符串 | 数据集页面地址，形如 `https://huggingface.co/datasets/作者/名称`；由 `id` 拼出，可直接点开 |
+| `snapshot_date` | 日期 | 抓取所属的快照日 |
+| `fetched_at` | 日期时间(UTC) | 抓取时刻。viewer 的内容随上游重写而变，这份数据只代表这一刻，不是可复现交付 |
+| `status` | 字符串 | `ok` 取到行 / `unavailable` 这个库没有 viewer 或受限（401 与 404 的报文一字不差，分不开）/ `error` 临时失败；后两者只有前者落库 |
+| `config` | 字符串 | 取样例时用的 config 名。目前由命令参数给（默认 `default`），不是从底库读的 |
+| `split` | 字符串 | 取样例时用的 split 名，同上（默认 `train`） |
+| `rows_total` | 整数 | viewer 报的这个 split 共多少行；与 `row_count` 不同——样例只有几行，别把它当总量 |
+| `row_count` | 整数 | 本次实际取回几行（默认 3） |
+| `features` | 字符串 | 列名与类型的 JSON（viewer 的 `features`）。**这个库有哪些列、什么类型**只有这里知道：底库其余表记的都是聚合后的列，不是数据本身的列 |
+| `rows` | 字符串 | 行的 JSON：`[{row_idx, row}]`；结构化值（列表列、图像/音频对象）已压成字符串 |
+| `truncated` | 布尔 | 本次是否有单元格被截断（每格上限 500 字符，超过的结尾带「…（截断）」） |
 
 ## 四、不属于表的东西
 
@@ -508,10 +536,10 @@ mtime 一复制就变，靠它排序会让「Raw 是唯一事实来源」名不�
 
 | 页面显示 | 表字段 | 覆盖 | 说明 |
 | --- | --- | --- | --- |
-| Number of rows | `size.num_rows` | — | datasets-server 实测行数 |
+| Number of rows | `size.num_rows` | 86% | datasets-server 实测行数 |
 | Total file size | `current.main_size` | 100% | **仓库字节**，含 LFS 与历史版本 |
-| Estimated rows（预估行数） | `size.estimated_num_rows` | — | 上游按体积估算，精度差 |
-| Columns | `size.num_columns_max` | — | 各 config 中列数的最大值 |
+| Estimated rows（预估行数） | `size.estimated_num_rows` | 1.5% | 上游按体积估算，精度差 |
+| Columns | `size.num_columns_max` | 74% | 各 config 中列数的最大值 |
 
 **两处必须留意的差异**：
 
@@ -536,11 +564,12 @@ mtime 一复制就变，靠它排序会让「Raw 是唯一事实来源」名不�
 | `silver` | 1,136,297 | 一次属性变更一行 | **多对一**：改过几次就有几行，比基准多 |
 | `observations` | 1,584,562 | 一次指标变化一行 | **多对一**：指标变过才追加 |
 | `bronze` | 1,133,516 | 某天扫到的一条记录 | **子集**：只留最新一天，历史由 `raw` 重算 |
-| `carddata` | 1,862 | 一个数据集一行 | **子集**：随扫描批次补齐（每日 `--cards`、按需 `enrich`）；长尾多数没有卡片 |
-| `card_configs` | 4,709 | 一个 config/split 一行 | **展开**：卡片里的 config 逐条拆开 |
-| `size` | 0 | 一个数据集一行 | **全量**：每库一条；有实测行数的是子集，覆盖率见 `doctor` |
-| `files` | 0 | 一个数据集一行 | **子集**：按下载量取头部补文件树，长尾没有 |
-| `readme` | 20,001 | 一个数据集一行 | **子集**：按 id / top / 全量补齐；约 25% 的仓库本来没有 README |
+| `carddata` | 1,890 | 一个数据集一行 | **子集**：随扫描批次补齐（每日 `--cards`、按需 `enrich`）；长尾多数没有卡片 |
+| `card_configs` | 4,794 | 一个 config/split 一行 | **展开**：卡片里的 config 逐条拆开 |
+| `size` | 371,000 | 一个数据集一行 | **全量**：每库一条；有实测行数的是子集，覆盖率见 `doctor` |
+| `files` | 28 | 一个数据集一行 | **子集**：按下载量取头部补文件树，长尾没有 |
+| `readme` | 124,006 | 一个数据集一行 | **子集**：按 id / top / 全量补齐；约 25% 的仓库本来没有 README |
+| `preview` | 0 | 一个数据集一行 | **子集**：按 id / top 取样例，且只有 `size.status=ok` 的库才可能有 viewer |
 
 归纳起来只有三种：**一对一**（`current`，唯一全量）、**多对一**（流水，比基准多）、
 **子集**（按天或按需补齐，比基准少）。想知道某个数据集的全部信息，
@@ -595,10 +624,10 @@ v5 起标签列回到 LIST 原值，与 `gold.datasets` 视图完全同构：要
 | `card_num_rows` | 卡片声明的行数；与 datasets-server 实测行数是两个口径 | <0.1% |
 | `card_dataset_bytes` | 卡片声明的数据体积 | <0.1% |
 | `card_config_count` | 卡片里列出的 config 个数 | <0.1% |
-| `server_num_bytes_original` | datasets-server 统计的原始文件体积 | 0 |
-| `server_configs` | datasets-server 返回的 config 明细（JSON 文本） | 0 |
-| `file_formats` | 文件清单试点得到的扩展名计数（JSON 文本） | 0 |
-| `total_bytes` | 文件清单试点得到的总字节数（下限） | 0 |
+| `server_num_bytes_original` | datasets-server 统计的原始文件体积 | 23% |
+| `server_configs` | datasets-server 返回的 config 明细（JSON 文本） | 24% |
+| `file_formats` | 文件清单试点得到的扩展名计数（JSON 文本） | <0.1% |
+| `total_bytes` | 文件清单试点得到的总字节数（下限） | <0.1% |
 
 **它是可重建的投影，不是第五张状态表**：
 
@@ -640,7 +669,7 @@ v5 起标签列回到 LIST 原值，与 `gold.datasets` 视图完全同构：要
 覆盖多少取决于带卡片扫描的批次（每日 `collect --cards` 与按需 `enrich`），不是全站普查。
 
 文件清单走 `fetch-files`（`/tree/main` 递归树）按下载量取头部补
-`enrich/files.parquet`（当前 0 行）。
+`enrich/files.parquet`（当前 28 行）。
 它是 `Origin.NETWORK` 表，重建不清；**只覆盖下载量前 1000 名**（`--top` 默认值），
 既不是抽样也不是全站，拿它算任何全站比例或格式分布都是错的。
 默认每库一页（1000 条），`truncated=true` 表示还有后续页未取，

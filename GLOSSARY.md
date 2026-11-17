@@ -1717,3 +1717,29 @@
        两套实现」先要问是不是两类对象。
      - **反向验证**：把 `downloads_all_time` 改名，交集掉到 11，新测试立刻红并列出剩下
        的列名。
+
+108. **样例表 `preview`：把 viewer 的前几行当样例，单开一张表**（2026-11-17）：数据集
+     页那个 Dataset Viewer 是唯一能看到「数据本身的列」的地方——底库其余表记的都是
+     聚合之后的列。抓 3 行就够看清形状。
+
+     - **接口**：`GET datasets-server.huggingface.co/rows?dataset=&config=&split=&offset=0&length=3`，
+       一次返回 `features`（列与类型）、`num_rows_total`、`rows[]`。
+     - **四种响应分开处理**：200 取到；404「这个库没有 viewer」（`ylecun/mnist` 就是）；
+       401 门禁或不存在——两者报文一字不差，只能都记 `unavailable`；429/5xx 退避重试。
+       `unavailable` 落库（下轮跳过），`error` 不落库（可救的别钉成失败）。
+     - **形状**：一行一库，`features` / `rows` 存 JSON。列数每个库都不同（9 列到几十列），
+       摊成宽表会让 schema 每换一个库就变一次。
+     - **截断**：每格 500 字符，结构化值（列表列、图像对象）先压成字符串再截。实测 3 行
+       可以到 161 KB（`open-r1/OpenR1-Math-220k`），不截断全库会到几十 GB；截断后一万个
+       库约 10 MB。
+     - **边界**：`AGENTS.md` 写「不下载数据集文件」。viewer 的几行不是文件，但它是**内容**
+       而非元数据，性质上跨过了那条线——故按 `readme` 的先例（#94）单开表、不进默认导出。
+     - **不可复现**：viewer 背后是自动转出的 parquet，上游重写后行序与内容都会变，故记
+       `fetched_at`；这份数据不进可复现交付。
+     - **一个请求的天花板**：`/rows` 要 `config` 与 `split`，而底库只存了 config 名
+       （`size.configs`）、没存 split。故两个参数由命令给（默认 `default` / `train`），
+       对不上的库落 `unavailable`。能在 `/splits` 里问到真名再补是下一步，代价是请求翻倍。
+     - **只抓 `size.status=ok` 的库**：`size` 表 371,000 行里 ok 占 85.75%，没有 viewer
+       的那一成多，发请求是白烧配额。
+     - **测试**：`tests/acquire/test_preview.py` 用脚本化的 `Transport` 钉住四类响应、
+       截断与成帧；`unavailable` 落库与 `error` 不落库是一对，各自一条。

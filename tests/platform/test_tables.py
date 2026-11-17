@@ -68,7 +68,7 @@ def test_网络来源的表清单是显式登记的() -> None:
     raw 里都没有对应数据。
     """
     network = [spec.name for spec in TABLES.values() if spec.origin is Origin.NETWORK]
-    assert network == ["size", "files", "readme"]
+    assert network == ["size", "files", "readme", "preview"]
 
 
 def test_当前态与观测属于运行态而非裸数据() -> None:
@@ -109,7 +109,7 @@ def test_重建只跳过网络来源的表(tmp_path: Path) -> None:
             store.root / spec.relative("2026-11-04") if spec.partitioned else store.root / spec.path
         ).exists()
     ]
-    assert surviving == ["size", "files", "readme"]
+    assert surviving == ["size", "files", "readme", "preview"]
 
 
 def test_清除分区表会连整个分区目录一起删(tmp_path: Path) -> None:

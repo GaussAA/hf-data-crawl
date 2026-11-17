@@ -318,6 +318,33 @@ FILES_SCHEMA: dict[str, PolarsType] = {
 #: `description` 供粗筛，本表供精读。`status` 区分四种空：`ok` 拿到全文、
 #: `absent` 仓库本来没有 README、`denied` 受限读不到、`error` 临时失败；
 #: 后三种都不是「作者没写描述」，别混为一谈。
+#: 演练数据：viewer 里的前几行，单开一张表、不进默认导出。
+#:
+#: `AGENTS.md` 写着「不下载数据集文件」；viewer 的几行不是文件，但它是**内容**而非
+#: 元数据，性质上跨过了那条边界。故沿用 `readme` 表的先例（GLOSSARY #94）：单开一张
+#: 表、不进默认导出、只在点名或取头部时抓。
+#:
+#: 列数不固定的问题进 `features` / `rows` 两列 JSON——否则换个库 schema 就变一次。
+#: 抓到的只是某一刻的切片（viewer 背后是自动转出的 parquet，上游重写行序与内容都会
+#: 变），故 `fetched_at` 记到时刻，这份数据不参与可复现交付。
+PREVIEW_SCHEMA: dict[str, PolarsType] = {
+    "id": pl.Utf8,
+    "url": pl.Utf8,
+    "snapshot_date": pl.Date,
+    "fetched_at": TIMESTAMP,
+    #: `ok` 取到、`unavailable` 没有 viewer 或受限（下次不再试）、`error` 临时失败。
+    "status": pl.Utf8,
+    "config": pl.Utf8,
+    "split": pl.Utf8,
+    #: viewer 报的该 split 总行数，与取回的 `row_count` 分开——样例只有几行。
+    "rows_total": pl.Int64,
+    "row_count": pl.Int64,
+    "features": pl.Utf8,
+    "rows": pl.Utf8,
+    #: 本次是否截断过单元格（每格上限见 `acquire/preview.MAX_CELL_CHARS`）。
+    "truncated": pl.Boolean,
+}
+
 README_SCHEMA: dict[str, PolarsType] = {
     "id": pl.Utf8,
     "url": pl.Utf8,
@@ -348,6 +375,7 @@ TABLES: dict[str, TableSpec] = {
     "size": TableSpec("size", "enrich/size.parquet", SIZE_SCHEMA, Origin.NETWORK),
     "files": TableSpec("files", "enrich/files.parquet", FILES_SCHEMA, Origin.NETWORK),
     "readme": TableSpec("readme", "enrich/readme.parquet", README_SCHEMA, Origin.NETWORK),
+    "preview": TableSpec("preview", "enrich/preview.parquet", PREVIEW_SCHEMA, Origin.NETWORK),
 }
 
 #: `derive_day` 按日产出的分区表。恢复与局部重建都按这张清单清层，
