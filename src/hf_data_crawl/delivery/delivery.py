@@ -50,7 +50,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..platform.atomic import replace
+from ..platform.atomic import replace, write_bytes
 from ..platform.store import DatasetStore
 from ..query.gold import GoldCatalog, GoldNotReady
 from . import fill_exec, method, query_exec  # noqa: F401
@@ -68,11 +68,13 @@ from .requirement import (
     SpecError,
     resolve_dir,
     snapshot_history,
+    spec_body,
+    spec_body_digest,
     spec_core_digest,
-    spec_digest,
     version_conflict,
 )
 from .requirement import load as load_spec
+from .requirement import loads as load_spec_text
 from .stamp import SourceMissing, SourceStamp, stamp
 
 #: 交付目录名的时刻格式。到秒：同一分钟内跑两个需求是常态。
@@ -281,16 +283,23 @@ def deliver(
     """跑一次交付。任何护栏不通过都抛 `DeliveryBlocked`，且不留任何目录。"""
     request_dir = resolve_dir(requests_root, request_id)
     spec_path = request_dir / SPEC_NAME
-    spec = load_spec(spec_path)
+    # 口径**只读一次**：校验、指纹、版本快照都从这份字节来。原先三处各读一次文件，
+    # 中途有人改 spec，就会得到「校验的是旧版、快照的是新版」——档案从此说不清
+    # 自己到底跑的是哪一版。
+    try:
+        raw_spec = spec_path.read_bytes()
+    except OSError as error:
+        raise DeliveryBlocked(f"{request_id}: 读不出 spec：{error}") from None
+    spec = load_spec_text(raw_spec.decode("utf-8"), spec_path)
     # 代码干净与否先查：脏着跑出来的产物，manifest 记的 commit 复现不出来。
     # 放在方法闸门之前，是因为它的修复动作（commit）比补方法更快，早报早干活。
     worktree = _worktree_gate(spec.id)
     # 版本号不可复用：口径变了却还用 v1，档案会指着一份「当时说过、现在已经不是」
     # 的定义。这比缺方法更隐蔽——缺方法至少会报错，这一种只会让人拿着错前提核对。
-    conflict = version_conflict(spec_path, spec.version)
+    conflict = version_conflict(spec_path, spec.version, spec=spec)
     if conflict:
         raise DeliveryBlocked(f"{spec.id}: {conflict}")
-    spec_sha = spec_digest(spec_path)
+    spec_sha = spec_body_digest(spec_body(spec))
     # 先验方法再算数：方法是「这份交付凭什么成立」的一部分，缺它连预留目录都不该做。
     method_stamp = _method_stamp(request_dir, spec)
     moment = now or datetime.now().astimezone()
@@ -301,9 +310,14 @@ def deliver(
     #
     # 反过来（改名后快照）在那两步之间崩溃时会留下「产物已出土、history 没有这版」：
     # `version_conflict` 靠 `history/vN.yaml` 判断版本号是否用过，于是这版会静默
-    # 隐身，下次复用同一版本号不会报冲突——历史被改写而无人知道。宁可多一条
-    # 「从未交付」的快照记录（用户可以从 `history/` 里删掉），也不能少一条。
-    snapshot_history(request_dir / SPEC_NAME, spec.version)
+    # 隐身，下次复用同一版本号不会报冲突——历史被改写而无人知道。
+    #
+    # 快照先落，但**可处理的失败要收回去**（见下面的 `created_history`）：崩溃来
+    # 不及收，只能靠「先落」兜底；而护栏、闸门、执行报错这些跑完就知道没发布的，
+    # 留着只会白占一个版本号——改好口径还得再跳一版。取舍见 ADR-0004。
+    history_path = request_dir / HISTORY_DIR / f"v{spec.version}.yaml"
+    created_history = not history_path.exists()
+    snapshot_history(spec_path, spec.version, content=raw_spec)
 
     directory = _reserve_dir(request_dir, moment)
     staging = directory.parent / f".tmp-{directory.name}"
@@ -344,10 +358,21 @@ def deliver(
         replace(staging, directory)
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
+        # 这次失败没有产出任何产物，就把它顺手落下的 vN 快照收回去：那版从没交付过，
+        # 留着会在人改好口径后逼他再升一版（`version_conflict` 认快照、不认台账），
+        # 白占一个版本号。只为「本次新建」的快照回滚——别人早就落下的不动。
+        if created_history:
+            history_path.unlink(missing_ok=True)
         raise
 
     # 索引随交付重写：它列的是台账本身，不重写就会在第二天开始说谎。
-    write_index(request_dir)
+    #
+    # 放在换名之后、且失败只告警：交付已经落盘，此时因为索引写不出来而报「交付失败」，
+    # 只会让人再跑一次、然后被重复闸门拦住。索引缺失本来就是体检项，红得起来。
+    try:
+        write_index(request_dir)
+    except OSError as error:
+        print(f"[警告] 交付已落盘，但索引没写成（`doctor` 会报出来）：{error}")
     # 客已交完，草稿不再需要：留着只会让人以为「这里还有一份可能要交的东西」。
     shutil.rmtree(request_dir / SCRATCH_DIR / PREVIEW_DIR, ignore_errors=True)
 
@@ -707,9 +732,13 @@ def index_lines(request_dir: Path) -> list[str]:
 
 
 def write_index(request_dir: Path) -> Path:
-    """把 `deliveries/INDEX.md` 整份重写。交付后与 `request index` 都走这里。"""
+    """把 `deliveries/INDEX.md` 整份重写。交付后与 `request index` 都走这里。
+
+    原子写：半截索引会让 `doctor` 报「与台账对不上」，而它本来是唯一能指出
+    「哪条算数」的东西——一份看起来正常、实际截断的索引比没有更坏。
+    """
     path = request_dir / DELIVERIES_DIR / INDEX_NAME
-    path.write_text("\n".join(index_lines(request_dir)), encoding="utf-8")
+    write_bytes(path, "\n".join(index_lines(request_dir)).encode("utf-8"))
     return path
 
 
@@ -1075,6 +1104,12 @@ def run_due(
             continue
         except (DeliveryBlocked, SpecError) as error:
             failed.append((request_id, str(error)))
+            continue
+        except (OSError, ValueError) as error:
+            # 预期之外的失败也要落在「这一条」上：磁盘满、权限、口径里的取值转换
+            # 写错，都会到这里。整批因为一条崩掉，其余需求就永远轮不到——批量交付
+            # 的意义正是「坏的报出来，好的照常出」。
+            failed.append((request_id, f"{type(error).__name__}: {error}"))
             continue
         delivered.append(result)
 

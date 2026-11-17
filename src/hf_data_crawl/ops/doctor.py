@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
@@ -22,7 +23,7 @@ import polars as pl
 
 from ..acquire.reconcile import PROBE_DEGRADE_AFTER
 from ..acquire.sizes import stale_ids
-from ..delivery.delivery import deliveries_of, index_problem, method
+from ..delivery.delivery import deliveries_of, index_problem, method, read_manifest
 from ..delivery.fields import (
     COLUMN_SOURCES,
     COLUMN_TYPES,
@@ -30,7 +31,13 @@ from ..delivery.fields import (
     contract_errors,
     type_family,
 )
-from ..delivery.requirement import SPEC_NAME, SpecError, request_dirs, version_conflict
+from ..delivery.requirement import (
+    HISTORY_DIR,
+    SPEC_NAME,
+    SpecError,
+    request_dirs,
+    version_conflict,
+)
 from ..delivery.requirement import load as load_spec
 from ..delivery.wide import export_path
 from ..pipeline import lineage, raw, state
@@ -1088,6 +1095,12 @@ def _recent_failures(ctx: RunContext) -> Finding:
     for item in runs:
         if item.get("status") != "failed":
             continue
+        # 单次 `request run` 是人在键盘前主动发起的：被闸门拦下、被护栏拦下，他都当场
+        # 看见了，且「今天没有新信息」也会走到这里。把它算进全局红点，等于让一次正常的
+        # 拒绝报警七天——红点一旦变成噪音，真故障就没人看。
+        # `request-run-due` 不在此列：那是没人盯着的定时路径，坏了必须报。
+        if item.get("command") == "request-run":
+            continue
         started = _run_time(item.get("started_at"))
         if started is None:
             continue
@@ -1230,6 +1243,67 @@ def _delivery_index(ctx: RunContext) -> Finding:
     return Finding(False, f"交付索引：{checked} 份需求的 INDEX.md 与台账一致")
 
 
+def _delivery_anchors(ctx: RunContext) -> Finding:
+    """交付档案钉住的两样东西还在不在：输入快照与历史版本。
+
+    档案里写的 sha256 与 `history/vN.yaml` 是「这份数据基于什么」的自证链。链路断掉
+    时**不会报错**，只会让档案显得比实际更可信：
+
+    - 输入快照被就地改过 → 产物再也对不上那行 `fill.input.sha256`；
+    - `history/vN.yaml` 被删 → `version_conflict` 从那一刻起静默失效，
+      「版本号不能复用」这条规则对那一版不再成立。
+
+    两样都按档案里记的值对账，不按「现在的 spec 应该是什么」——后者会随代码演进
+    漂移，历史交付没有义务重算成今天的口径。
+    """
+    requests_root = ctx.requests_root
+    if requests_root is None:
+        return Finding(False, "交付锚点：未指定需求目录，本次未检查")
+    if not requests_root.is_dir():
+        return Finding(False, f"交付锚点：{requests_root} 不存在，本次未检查")
+
+    checked = 0
+    bad: list[str] = []
+    for request_dir in request_dirs(requests_root):
+        directories = deliveries_of(request_dir)
+        if not directories:
+            continue
+        checked += 1
+        for directory in directories:
+            body = read_manifest(directory)
+            if body is None:
+                bad.append(f"{request_dir.name}/{directory.name}：manifest 读不出来")
+                continue
+            version = body.get("spec_version")
+            history = request_dir / HISTORY_DIR / f"v{version}.yaml"
+            if isinstance(version, int) and not history.is_file():
+                bad.append(
+                    f"{request_dir.name}/{directory.name}：v{version} 的历史快照不见了，"
+                    "版本号闸门对这一版失效"
+                )
+            fill = body.get("fill") or {}
+            source = fill.get("input") or {}
+            relative, expected = source.get("path"), source.get("sha256")
+            if not relative or not expected:
+                continue
+            snapshot = (request_dir / str(relative)).resolve()
+            # 档案是引擎写的，但体检读的是磁盘：手改过的 manifest 不该让它去读目录外。
+            if not snapshot.is_relative_to(request_dir.resolve()):
+                bad.append(f"{request_dir.name}/{directory.name}：输入快照路径越出了需求目录")
+                continue
+            if not snapshot.is_file():
+                bad.append(f"{request_dir.name}/{directory.name}：输入快照 {relative} 不见了")
+            elif hashlib.sha256(snapshot.read_bytes()).hexdigest() != expected:
+                bad.append(
+                    f"{request_dir.name}/{directory.name}：输入快照 {relative} 与档案指纹不符"
+                    "（原件被改过？它本该只读）"
+                )
+
+    if bad:
+        return Finding(True, f"交付锚点：{len(bad)} 处自证链断了 —— " + "；".join(bad))
+    return Finding(False, f"交付锚点：{checked} 份需求的输入快照与历史版本都与档案对得上")
+
+
 def _spec_version_consistency(ctx: RunContext) -> Finding:
     """口径改了却没升版本：档案会指着一份「当时说过、现在已经不是」的定义。
 
@@ -1320,6 +1394,7 @@ CHECKS: tuple[Check, ...] = (
     Check("request_self_contained", _request_self_contained),
     Check("spec_version", _spec_version_consistency),
     Check("delivery_index", _delivery_index),
+    Check("delivery_anchors", _delivery_anchors),
 )
 
 #: 只在非快照模式跑：快照模式下本次体检已持写锁，再去抢锁会自己跟自己冲突。

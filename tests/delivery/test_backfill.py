@@ -382,6 +382,22 @@ def test_简介压平但不改写措辞(tmp_path: Path) -> None:
     assert render(spec.columns[0], ROW, spec) == "第一行简介\n第二行简介"
 
 
+def test_格式与字段类型不符报口径错误(tmp_path: Path) -> None:
+    """把文本列按 `gb` 换算原先抛裸 ValueError：交付带栈崩、run-due 整批中断。
+
+    这类错是 spec 写错了列，不是程序坏了；要说成人话，并且落在 `FillError` 上，
+    由执行体翻成 `DeliveryBlocked`——那才是 `run-due` 认的失败形态。
+    """
+    spec = spec_of(tmp_path, 'columns:\n  "大小": {field: description, format: gb}')
+
+    with pytest.raises(FillError, match="format: gb"):
+        render(spec.columns[0], ROW, spec)
+
+    spec = spec_of(tmp_path, 'columns:\n  "大小": {field: description, format: int}')
+    with pytest.raises(FillError, match="format: int"):
+        render(spec.columns[0], ROW, spec)
+
+
 def test_模板占位符缺值就整格留空(tmp_path: Path) -> None:
     """拼出半截链接比空着更坏：空着有人会来问，半截会被当成真的。"""
     spec = spec_of(

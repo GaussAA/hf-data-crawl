@@ -20,6 +20,12 @@
 看 `ALERT.txt`（覆盖式，只存最新一次）、`data/state/health-history.jsonl`（一行一次，
 可追「这条告警连续多少天」）与当轮 `logs/`。
 
+**需求交付也进台账**：`request run` 记 `request-run`、`run-due` 记 `request-run-due`，
+失败同样落盘（`reason` 说明被哪道闸门拦住）。单次 `request-run` 的失败**不计入**
+「近 7 天未恢复失败」——它是人当场发起、当场看见的，把「今天没有新信息」报成七天红点
+只会训练人忽略告警；`request-run-due` 属没人盯着的定时路径，坏了照常报。
+`--dry-run` / `--preview` 不记账（草稿）。
+
 ## 核心指标
 
 ### 1. Watermark 触发统计

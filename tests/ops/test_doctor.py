@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections.abc import Mapping
@@ -312,6 +313,33 @@ def test_失败后同一命令又成功了就不再报(tmp_path: Path) -> None:
     make_run(store, "build", NOW - timedelta(days=1), "end")
 
     assert not any("失败运行" in text for text in problems(store))
+
+
+def test_单次交付被拦不算故障但批量交付失败要报(tmp_path: Path) -> None:
+    """`request run` 是人当场发起的：闸门拒绝、没有新信息都会走到「失败」，人看着终端。
+
+    把它算进七天红点，一次正常的拒绝就能让告警亮一周；而 `run-due` 是没人盯着的
+    定时路径，坏了一定要报。
+    """
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    write_run(
+        store,
+        "request-run",
+        NOW - timedelta(days=1),
+        Outcome({}, code=1, reason="代码有未提交改动"),
+    )
+
+    assert not any("失败运行" in text for text in problems(store))
+
+    write_run(
+        store,
+        "request-run-due",
+        NOW - timedelta(hours=2),
+        Outcome({}, code=1, reason="有需求交付失败"),
+    )
+
+    assert any("失败运行" in text for text in problems(store))
 
 
 def test_别的命令成功不能覆盖这条命令的失败(tmp_path: Path) -> None:
@@ -799,6 +827,73 @@ criteria:
     hits = [text for text in texts if "口径版本" in text]
     assert len(hits) == 1
     assert "版本号没跟着升" in hits[0]
+
+
+def test_历史快照被删要在体检里报出来(tmp_path: Path) -> None:
+    """`version_conflict` 只认 `history/vN.yaml`：它被删掉，版本号闸门对那一版就失效了。
+
+    删一个文件不会报任何错，档案照样长得完整——只有体检能发现这条自证链断了。
+    """
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    root = tmp_path / "req"
+    folder = root / "REQ-0001-query-高热度"
+    delivery = folder / "deliveries" / "20260101T000000"
+    delivery.mkdir(parents=True)
+    (folder / "spec.yaml").write_text(
+        "id: REQ-0001\ntitle: 高热度\nrequester: 大帅\nversion: 1\n"
+        "criteria:\n  - {metric: 下载量, op: '>', value: 1000}\n",
+        encoding="utf-8",
+    )
+    (delivery / "manifest.json").write_text(
+        json.dumps({"spec_version": 1, "result": {"files": []}}), encoding="utf-8"
+    )
+
+    texts = [item.text for item in diagnose(store, NOW, requests_root=root) if item.problem]
+
+    hits = [text for text in texts if "交付锚点" in text]
+    assert len(hits) == 1
+    assert "历史快照不见了" in hits[0]
+
+
+def test_输入快照被改过要在体检里报出来(tmp_path: Path) -> None:
+    """`input/` 只读是规矩，不是保证：改过之后产物就对不上档案里那行 sha256。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    root = tmp_path / "req"
+    folder = root / "REQ-0001-backfill-清单"
+    delivery = folder / "deliveries" / "20260101T000000"
+    (folder / "input").mkdir(parents=True)
+    delivery.mkdir(parents=True)
+    (folder / "history").mkdir()
+    (folder / "spec.yaml").write_text(
+        "id: REQ-0001\ntitle: 清单\nrequester: 大帅\nversion: 1\n", encoding="utf-8"
+    )
+    (folder / "history" / "v1.yaml").write_text(
+        (folder / "spec.yaml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    snapshot = folder / "input" / "清单.xlsx"
+    snapshot.write_bytes(b"original")
+    digest = hashlib.sha256(b"original").hexdigest()
+    (delivery / "manifest.json").write_text(
+        json.dumps(
+            {
+                "spec_version": 1,
+                "result": {"files": []},
+                "fill": {"input": {"path": "input/清单.xlsx", "sha256": digest}},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot.write_bytes(b"tampered")
+
+    texts = [item.text for item in diagnose(store, NOW, requests_root=root) if item.problem]
+
+    hits = [text for text in texts if "交付锚点" in text]
+    assert len(hits) == 1
+    assert "与档案指纹不符" in hits[0]
 
 
 def test_探测成片失败要报出来(tmp_path: Path) -> None:

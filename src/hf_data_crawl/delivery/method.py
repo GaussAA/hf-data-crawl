@@ -45,6 +45,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ..platform.atomic import write_bytes
 from .fields import CONTRACT_VERSION
 
 #: 需求目录下的固定位置。
@@ -486,12 +487,16 @@ def sync(
     if written:
         moment = (now or datetime.now().astimezone()).isoformat(timespec="seconds")
         payload = {"version": INDEX_VERSION, "updated_at": moment, **new_body}
-        path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-            # 固定 LF：换行风格属于平台，不属于内容；写死它，`git diff` 里就不会
-            # 每次只有行尾在动。
-            newline="\n",
+        # 原子写：半截的 method.json 会被读成「索引坏了」，而修复它得先过一次
+        # `request method`——偏偏那时 `problems` 也会因为读不动而报同一个错。
+        write_bytes(
+            path,
+            (
+                json.dumps(payload, ensure_ascii=False, indent=2)
+                # 固定 LF：换行风格属于平台，不属于内容；写死它，`git diff` 里就不会
+                # 每次只有行尾在动。
+                + "\n"
+            ).encode("utf-8"),
         )
 
     return SyncReport(

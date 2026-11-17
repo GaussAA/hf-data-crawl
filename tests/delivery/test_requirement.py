@@ -450,6 +450,27 @@ def test_只改列宽不升版本也放行(tmp_path: Path) -> None:
     assert version_conflict(path, 1) is None
 
 
+def test_数值项写成非数字按口径错误报(tmp_path: Path) -> None:
+    """`header_row: 不是数字` 原先抛裸 ValueError：`request new` 留半成品、
+    doctor 整份崩、run-due 带栈中断。它必须是一条 SpecError——能印给人看的那种。"""
+    book = tmp_path / "REQ-0001" / "input" / "清单.xlsx"
+    book.parent.mkdir(parents=True, exist_ok=True)
+    openpyxl.Workbook().save(book)
+    fill = {
+        "source": {"path": "input/清单.xlsx", "header_row": "第一行", "key_column": "URL"},
+        "output": {"name": "已补全.xlsx"},
+        "columns": {"名称": {"field": "id"}},
+    }
+
+    with pytest.raises(SpecError, match="header_row"):
+        load(write_spec(tmp_path, kind="backfill", criteria=[], fill=fill))
+
+    fill["source"]["header_row"] = 1
+    fill["columns"] = {"名称": {"field": "id", "width": "很宽"}}
+    with pytest.raises(SpecError, match="width"):
+        load(write_spec(tmp_path, kind="backfill", criteria=[], fill=fill))
+
+
 def test_版本号被别的口径占用时要拦住(tmp_path: Path) -> None:
     path = write_spec(tmp_path)
     snapshot_history(path, 1)  # v1 记的是「下载量 > 1000」

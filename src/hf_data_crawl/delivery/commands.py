@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
+from ..platform.atomic import write_bytes
 from ..platform.runs import Outcome
 from ..platform.store import DatasetStore
 from . import compare, specdiff
@@ -365,7 +367,7 @@ def _request_input(root: Path, args: argparse.Namespace) -> int:
         print(f"失败：{target} 已存在，不覆盖。")
         return 1
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(given, target)
+    write_bytes(target, given.read_bytes())
 
     try:
         old_header = header_of(
@@ -479,7 +481,7 @@ def _request_new(args: argparse.Namespace, root: Path) -> int:
             # 取材一次，取完即断：外部文件之后被删被改，都影响不到这份需求。
             snapshot = folder / INPUT_DIR / given.name
             snapshot.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(given, snapshot)
+            write_bytes(snapshot, given.read_bytes())
         target = folder / SPEC_NAME
         target.write_text(
             skeleton(
@@ -635,13 +637,26 @@ def _request_show(root: Path, request_id: str) -> int:
     return 0
 
 
-def run_request_run(args: argparse.Namespace, store: DatasetStore) -> int:
+@dataclass(frozen=True)
+class Attempt:
+    """一次交付尝试的结局：退出码 + 进台账的那句原因。
+
+    有它，`runs/` 里记的是「被哪道闸门拦住」，而不是「见上方说明」——终端早滚没了。
+    """
+
+    code: int = 0
+    reason: str | None = None
+
+
+def run_request_run(args: argparse.Namespace, store: DatasetStore) -> Attempt:
     """交付一次。一次性需求交付过就不再自动重复，加 --force 才重交。
 
     三条出口，对应三种「跑一次」：
     - `--dry-run`：只打印会出多少行（一行文件都不写）；
     - `--preview`：把真产物写进 `scratch/preview/`，可打开看，但不新增交付；
     - 默认：正式交付，会过代码闸门、护栏与重复闸门。
+
+    返回 `Attempt` 而不只是退出码：调用方要把「被哪道闸门拦住」写进 `runs/`。
     """
     root = Path(args.requests_dir)
     try:
@@ -649,7 +664,7 @@ def run_request_run(args: argparse.Namespace, store: DatasetStore) -> int:
         spec = load_spec(request_dir / SPEC_NAME)
     except SpecError as error:
         print(f"失败：{error}")
-        return 1
+        return Attempt(1, str(error))
 
     if args.dry_run:
         # 预演不写盘、也不占「once 已交付」的名额——它本来就是给人先看一眼的。
@@ -657,32 +672,32 @@ def run_request_run(args: argparse.Namespace, store: DatasetStore) -> int:
             looked = preview(store, root, args.id, keep_files=False)
         except (DeliveryBlocked, SpecError) as error:
             print(f"预演失败：{error}")
-            return 1
+            return Attempt(1, f"预演失败：{error}")
         _print_preview(looked)
-        return 0
+        return Attempt()
 
     if args.preview:
         try:
             looked = preview(store, root, args.id)
         except (DeliveryBlocked, SpecError) as error:
             print(f"预览失败：{error}")
-            return 1
+            return Attempt(1, f"预览失败：{error}")
         _print_preview(looked)
-        return 0
+        return Attempt()
 
     done = deliveries_of(request_dir)
     if spec.cadence is Cadence.ONCE and done and not args.force:
         print(f"{spec.id} 是一次性需求，已于 {done[-1].name} 交付过。")
         print("  确实要再交一份（比如对方要求重出），加 --force。")
-        return 1
+        return Attempt(1, f"一次性需求已于 {done[-1].name} 交付过，未加 --force")
 
     try:
         result = deliver(store, root, args.id)
     except (DeliveryBlocked, SpecError) as error:
         print(f"交付失败：{error}")
-        return 1
+        return Attempt(1, str(error))
     _print_delivery(result)
-    return 0
+    return Attempt()
 
 
 def _print_preview(result: Preview) -> None:
@@ -718,19 +733,19 @@ def _print_delivery(result: DeliveryResult) -> None:
         print(f"  {health.note}")
 
 
-def run_request_run_due(args: argparse.Namespace, store: DatasetStore) -> int:
+def run_request_run_due(args: argparse.Namespace, store: DatasetStore) -> Attempt:
     """跑所有到期的需求。一个失败不挡别的，但整体退出码会反映出来。"""
     root = Path(args.requests_dir)
     if not root.is_dir():
         print(f"{root} 下还没有需求，无需交付。")
-        return 0
+        return Attempt()
 
     try:
         report = run_due(store, root)
     except DeliveryBlocked as error:
         # 底库本身不成立（current 缺失）：这不是某一条需求的问题，整体失败。
         print(f"交付失败：{error}")
-        return 1
+        return Attempt(1, str(error))
 
     for result in report.delivered:
         mark = "  [!] 已标疑" if result.health.status == "suspect" else ""
@@ -743,4 +758,7 @@ def run_request_run_due(args: argparse.Namespace, store: DatasetStore) -> int:
     print(
         f"共 {len(report.delivered)} 交付 / {len(report.skipped)} 跳过 / {len(report.failed)} 失败"
     )
-    return 1 if report.failed else 0
+    if not report.failed:
+        return Attempt()
+    first = "；".join(f"{request_id}：{reason}" for request_id, reason in report.failed)
+    return Attempt(1, f"{len(report.failed)} 条失败 —— {first}")

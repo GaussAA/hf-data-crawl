@@ -365,7 +365,7 @@ def _source(raw: Any, base_dir: Path, origin: str) -> TableSource:
         raise FillError(f"{origin}: source.path 越出了需求目录：{str(given)!r}")
     if not table.is_file():
         raise FillError(f"{origin}: 输入表不存在或不是文件：{table}")
-    header_row = int(raw.get("header_row", 1))
+    header_row = _int(raw.get("header_row", 1), "source.header_row", origin)
     if header_row < 1:
         raise FillError(f"{origin}: header_row 从 1 起算")
     sheet = raw.get("sheet")
@@ -432,7 +432,7 @@ def _rule(name: str, raw: Any, origin: str) -> ColumnRule:
         fmt=None if raw.get("format") in (None, "") else str(raw["format"]),
         join=None if join in (None, "") else str(join),
         translate=bool(raw.get("translate", False)),
-        width=None if width in (None, "") else int(str(width)),
+        width=None if width in (None, "") else _int(width, f"{name}.width", origin),
         wrap=bool(raw.get("wrap", False)),
         append=bool(raw.get("append", False)),
     )
@@ -442,6 +442,19 @@ def _text(raw: Any, key: str, origin: str) -> str:
     if raw in (None, ""):
         raise FillError(f"{origin}: {key} 必填")
     return str(raw)
+
+
+def _int(raw: Any, key: str, origin: str) -> int:
+    """整数项：写错了要报成口径错误，而不是裸 ValueError。
+
+    `header_row: 不是数字` 原先直接 `int()`，抛出的 ValueError 既不是 FillError
+    也不是 SpecError，于是 `request new` 留半成品、`doctor` 整份崩、`run-due`
+    带栈中断——一处手误，三处都不干净。
+    """
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise FillError(f"{origin}: {key} 应是整数，实得 {raw!r}") from None
 
 
 # ---------------------------------------------------------------- 取值
@@ -471,7 +484,12 @@ def _format(value: Any, fmt: str | None) -> Any:
     if fmt == "gb":
         # 十进制 GB：与 HuggingFace 页面、README 自述（4.5TB）同一口径。
         # 用 1024³ 会系统性偏小 7%，对不上任何一处公开数字。
-        return round(float(value) / 1e9, 1)
+        try:
+            return round(float(value) / 1e9, 1)
+        except (TypeError, ValueError):
+            raise FillError(
+                f"format: gb 需要数字，实得 {value!r}——这一列在 spec 里指向了非数字字段？"
+            ) from None
     if fmt == "date":
         if isinstance(value, datetime):
             return value.date().isoformat()
@@ -479,7 +497,10 @@ def _format(value: Any, fmt: str | None) -> Any:
             return value.isoformat()
         return str(value)[:10]
     if fmt == "int":
-        return int(value)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            raise FillError(f"format: int 需要整数，实得 {value!r}") from None
     if fmt == "text":
         return str(value)
     if fmt == "prose":

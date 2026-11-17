@@ -34,10 +34,14 @@ from hf_data_crawl.delivery.delivery import (
 from hf_data_crawl.delivery.fields import CONTRACT_VERSION, DEFAULT_COLUMNS
 from hf_data_crawl.delivery.requirement import (
     DELIVERIES_DIR,
+    HISTORY_DIR,
     MANIFEST_NAME,
     SPEC_NAME,
     Kind,
     directory_name,
+    loads,
+    spec_body,
+    spec_body_digest,
     spec_digest,
 )
 from hf_data_crawl.ops.cli import main
@@ -122,14 +126,17 @@ def test_交付写出三件套(store: DatasetStore, tmp_path: Path) -> None:
     assert result.rows == 2
 
 
-def test_产物出土失败时口径快照已经落下(
+def test_换名失败时把本次新建的版本快照收回(
     store: DatasetStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """顺序是「先快照、后改名」。
+    """「先快照、后改名」的顺序不变，但**可处理的失败要回滚那一份快照**。
 
-    反过来（改名后快照）在那两步之间崩溃会留下「产物已出土、history 没有这版」：
-    `version_conflict` 靠 `history/vN.yaml` 判断版本号是否用过，于是这版静默隐身，
-    下次复用同一版本号不会报冲突。宁可多一条「从未交付」的快照记录。
+    顺序反过来的风险是：改名后崩溃会留下「产物已出土、history 没有这版」，于是这版
+    静默隐身、版本号能被复用。所以快照仍先落。
+
+    但落下的快照要有代价意识：它会让 `version_conflict` 认为 v1 已被占用，人改好
+    口径后必须跳到 v2——明明什么都没交出去。崩溃（来不及收）与失败（收得回）是两件
+    事：前者只能靠「先落」兜底，后者应当收回。判据是「这次运行有没有发布产物」。
     """
     root = tmp_path / "req"
     make_request(root)
@@ -142,9 +149,116 @@ def test_产物出土失败时口径快照已经落下(
     with pytest.raises(OSError):
         deliver(store, root, "REQ-0001", now=NOW)
 
-    assert (root / "REQ-0001" / "history" / "v1.yaml").exists(), (
-        "换名失败不代表口径没被用过：快照必须先落下，否则版本号复用查不出来"
+    assert not (root / "REQ-0001" / "history" / "v1.yaml").exists(), (
+        "没有任何档案声称用过 v1，就不该让 v1 变成「已占用」"
     )
+    assert delivery_dirs(root) == []
+
+
+def test_交付期间口径被改动不影响这次档案(
+    store: DatasetStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """交付只读一次 spec：校验、指纹、快照必须来自同一份字节。
+
+    原先 `load` / `spec_digest` / `snapshot_history` 各读一次文件。有人在跑的过程中
+    改了 spec，档案就会记下「校验的是旧版、快照与指纹的是新版」——两边都自洽，
+    合起来却是假的。这里让「执行完之后」那一刻把 spec 改掉，模拟最坏的重叠。
+    """
+    root = tmp_path / "req"
+    make_request(root)
+    spec_path = root / "REQ-0001" / SPEC_NAME
+    original = spec_path.read_bytes()
+
+    def tamper(*_args: Any) -> None:
+        body = yaml.safe_load(original.decode("utf-8"))
+        body["criteria"] = [{"metric": "下载量", "op": ">", "value": 800}]
+        spec_path.write_text(yaml.safe_dump(body, allow_unicode=True), encoding="utf-8")
+
+    monkeypatch.setattr("hf_data_crawl.delivery.delivery._refuse_unchanged", tamper)
+
+    result = deliver(store, root, "REQ-0001", now=NOW)
+
+    # 快照与档案都指向最初那份，而不是被改过的磁盘现状。
+    history = (root / "REQ-0001" / HISTORY_DIR / "v1.yaml").read_bytes()
+    assert history == original
+    manifest = json.loads((result.directory / MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert manifest["spec_sha256"] == spec_body_digest(
+        spec_body(loads(original.decode("utf-8"), spec_path))
+    )
+
+
+def test_索引写不出来不影响交付落盘(
+    store: DatasetStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """索引是台账的视图，不是交付的一部分。
+
+    交付已换名成功、然后索引写失败，如果因此报「交付失败」，人只会再跑一次，
+    再被重复闸门拦下——两个错叠在一起，现场就没人说得清了。
+    """
+    root = tmp_path / "req"
+    make_request(root)
+
+    def boom(_request_dir: Path) -> Path:
+        raise OSError("模拟索引写失败")
+
+    monkeypatch.setattr("hf_data_crawl.delivery.delivery.write_index", boom)
+
+    result = deliver(store, root, "REQ-0001", now=NOW)
+
+    assert (result.directory / MANIFEST_NAME).is_file()
+    assert "索引没写成" in capsys.readouterr().out
+
+
+def test_批量交付里一条炸了不带走其余需求(
+    store: DatasetStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """整批因为一条未预期异常中断，其余需求就永远轮不到——坏的报出来，好的照常出。"""
+    root = tmp_path / "req"
+    make_request(root, cadence="daily")
+    make_request(root, id="REQ-0002", title="另一份", cadence="daily")
+
+    original = deliver
+
+    def sometimes(
+        store_arg: DatasetStore, requests_root: Path, request_id: str, **kwargs: Any
+    ) -> Any:
+        if request_id == "REQ-0001":
+            raise ValueError("模拟未预期异常")
+        return original(store_arg, requests_root, request_id, **kwargs)
+
+    monkeypatch.setattr("hf_data_crawl.delivery.delivery.deliver", sometimes)
+
+    report = run_due(store, root, now=NOW)
+
+    assert [item.request_id for item in report.delivered] == ["REQ-0002"]
+    assert report.failed and report.failed[0][0] == "REQ-0001"
+    assert "ValueError" in report.failed[0][1]
+
+
+def test_护栏拦下的交付不占版本号(store: DatasetStore, tmp_path: Path) -> None:
+    """0 行被护栏拦下是最常见的失败：改完口径应当还能用同一个版本号重交。"""
+    root = tmp_path / "req"
+    make_request(root)
+
+    spec_path = root / "REQ-0001" / "spec.yaml"
+    body = yaml.safe_load(spec_path.read_text(encoding="utf-8"))
+    body["criteria"] = [{"metric": "下载量", "op": ">", "value": 10**9}]
+    spec_path.write_text(yaml.safe_dump(body, allow_unicode=True), encoding="utf-8")
+
+    with pytest.raises(DeliveryBlocked, match="低于 min_rows"):
+        deliver(store, root, "REQ-0001", now=NOW)
+
+    assert not (root / "REQ-0001" / "history" / "v1.yaml").exists(), (
+        "这次没有任何产物，不该让 v1 变成「已占用」"
+    )
+    # 改回口径、版本号不动，照样能交——失败不该逼人跳版本。
+    body["criteria"] = [{"metric": "下载量", "op": ">", "value": 1000}]
+    spec_path.write_text(yaml.safe_dump(body, allow_unicode=True), encoding="utf-8")
+    result = deliver(store, root, "REQ-0001", now=NOW)
+    assert result.rows == 2
 
 
 def test_manifest记下底库指纹与校验和(store: DatasetStore, tmp_path: Path) -> None:

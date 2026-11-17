@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import openpyxl
@@ -280,6 +281,31 @@ def test_缺需求成立性一节只提示不拦(tmp_path: Path, capsys: pytest.
 
     assert run(tmp_path, "request", "method", "REQ-0001", "--check") == 0
     assert "需求成立性" in capsys.readouterr().out
+
+
+def test_交付失败也留运行台账(tmp_path: Path) -> None:
+    """需求侧的失败原先只活在一次终端输出里，体检的「近 7 天失败」完全看不见。
+
+    这里用空底库触发一次必然失败：记录要落进 `runs/`，且 reason 说得出为什么。
+    """
+    make(tmp_path)
+
+    assert run(tmp_path, "request", "run", "REQ-0001") == 1
+
+    runs = list((tmp_path / "data" / "runs").glob("*-request-run.json"))
+    assert len(runs) == 1, "交付失败必须留痕，否则「这轮到底跑没跑过」没人答得上来"
+    body = json.loads(runs[0].read_text(encoding="utf-8"))
+    assert body["status"] == "failed"
+    assert body["reason"]
+
+
+def test_预演与预览不写运行台账(tmp_path: Path) -> None:
+    """`--dry-run` / `--preview` 是草稿：写进台账只会让「最近的失败运行」混进一堆草稿。"""
+    make(tmp_path)
+
+    assert run(tmp_path, "request", "run", "REQ-0001", "--dry-run") == 1
+
+    assert not list((tmp_path / "data" / "runs").glob("*-request-run.json"))
 
 
 def test_index命令重写交付索引(tmp_path: Path) -> None:

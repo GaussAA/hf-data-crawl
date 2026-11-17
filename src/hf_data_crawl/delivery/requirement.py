@@ -27,7 +27,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -37,6 +36,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from ..platform.atomic import write_bytes
 from .fields import projection_sql
 from .metrics import Metric, MetricKind, lookup
 
@@ -283,9 +283,23 @@ def load(path: Path, *, base_dir: Path | None = None) -> Spec:
     于是「那一版真的用过」的档案，恰恰打不开了。
     """
     try:
-        body = yaml.load(path.read_text(encoding="utf-8"), Loader=_StrictLoader)
+        text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         raise SpecError(f"找不到 {path}") from None
+    except OSError as error:
+        raise SpecError(f"{path} 读不出来：{error}") from None
+    return loads(text, path, base_dir=base_dir)
+
+
+def loads(text: str, path: Path, *, base_dir: Path | None = None) -> Spec:
+    """从**已经读进内存的文本**解析 spec。
+
+    与 `load` 分开，是为了让交付只读一次盘：口径指纹、版本快照、校验必须来自同一份
+    字节。原先交付里 `load` / `spec_digest` / `snapshot_history` 各读一次文件，中途
+    有人改 spec，就会得到「校验的是旧版、快照的是新版」这种谁也说不清的组合。
+    """
+    try:
+        body = yaml.load(text, Loader=_StrictLoader)
     except SpecError as error:
         raise SpecError(f"{path}: {error}") from None
     except yaml.YAMLError as error:
@@ -800,16 +814,22 @@ def skeleton(
     return text
 
 
-def snapshot_history(spec_path: Path, version: int) -> Path:
-    """把当前 spec 原样存一份到 `history/vN.yaml`，已存在则不动。
+def snapshot_history(spec_path: Path, version: int, *, content: bytes | None = None) -> Path:
+    """把 spec 原样存一份到 `history/vN.yaml`，已存在则不动。
 
     复制字节而非重新生成：重新生成会带上「今天」的默认值与格式，将来改了默认值，
     旧快照就会悄悄变样，而它本该是当时那一刻的忠实记录。
+
+    `content` 由调用方给出「这次真正加载的那份字节」——交付时不能事后再去磁盘读：
+    那中间若有人改过 spec，快照记下的就成了另一版，而档案会声称它就是用这一版跑的。
     """
     target = spec_path.parent / HISTORY_DIR / f"v{version}.yaml"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if not target.exists():
-        shutil.copyfile(spec_path, target)
+    if target.exists():
+        return target
+    payload = content if content is not None else spec_path.read_bytes()
+    # 原子写：半截的 vN.yaml 会让 `version_conflict` 与 `request diff` 一起炸掉，
+    # 而它们正是用来证明「这一版真的用过」的。
+    write_bytes(target, payload)
     return target
 
 
@@ -936,14 +956,18 @@ def spec_body_core(body: dict[str, Any]) -> dict[str, Any]:
 
 def spec_core_digest(spec_path: Path, *, base_dir: Path | None = None) -> str:
     """只算口径（不含展示项）的指纹。版本号占用与否按它判。"""
-    body = spec_body(load(spec_path, base_dir=base_dir))
+    return spec_core_digest_of(load(spec_path, base_dir=base_dir))
+
+
+def spec_core_digest_of(spec: Spec) -> str:
+    """已加载的 Spec 的口径指纹。交付里用它——省掉一次重新读盘。"""
     canonical = json.dumps(
-        spec_body_core(body), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        spec_body_core(spec_body(spec)), ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def version_conflict(spec_path: Path, version: int) -> str | None:
+def version_conflict(spec_path: Path, version: int, *, spec: Spec | None = None) -> str | None:
     """当前内容是否占用了**别的**口径的版本号。有冲突返回人读说明，否则 None。
 
     `history/vN.yaml` 是「那一版真的用过」的忠实记录。若它已存在、语义却与当前
@@ -952,6 +976,8 @@ def version_conflict(spec_path: Path, version: int) -> str | None:
     核对三个月——所以必须拦。
 
     比较用**口径指纹**（不含列宽/换行）：改排版不算改口径，不该逼人升版本。
+    `spec` 传入「这次真正加载的那份」时不再重读文件——交付里文件可能正被编辑，
+    读第二次就不是同一个东西了。
     """
     target = spec_path.parent / HISTORY_DIR / f"v{version}.yaml"
     if not target.is_file():
@@ -959,9 +985,12 @@ def version_conflict(spec_path: Path, version: int) -> str | None:
     # 两边都按需求目录解析相对路径：历史快照自己躺在 history/ 下，用它的父目录
     # 当基准，`input/清单.xlsx` 就会被读成 `history/input/清单.xlsx`。
     request_dir = spec_path.parent
-    if spec_core_digest(target, base_dir=request_dir) == spec_core_digest(
-        spec_path, base_dir=request_dir
-    ):
+    current = (
+        spec_core_digest_of(spec)
+        if spec is not None
+        else spec_core_digest(spec_path, base_dir=request_dir)
+    )
+    if spec_core_digest(target, base_dir=request_dir) == current:
         return None
     return (
         f"v{version} 已被 {HISTORY_DIR}/{target.name} 占用，当前 spec 的口径却与它不同 —— "

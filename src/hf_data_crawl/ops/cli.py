@@ -73,7 +73,12 @@ WRITE_COMMANDS = frozenset(
 SNAPSHOT_COMMANDS = frozenset({"report", "docs"})
 
 #: 需要持锁的命令全集。
-LOCKED_COMMANDS = WRITE_COMMANDS | SNAPSHOT_COMMANDS
+#: 需求交付也要独占：它读多张表出一个一致快照，且要写 `history/`、`deliveries/`。
+#: 与写命令放同一把锁，而不是自己另开一把——「同一时刻只有一个进程在动底库或档案」。
+REQUEST_COMMANDS = frozenset({"request-run", "request-run-due"})
+
+#: 拿到锁的命令：写命令互斥，生成命令等一个完整快照。需求交付同属此列。
+LOCKED_COMMANDS = WRITE_COMMANDS | SNAPSHOT_COMMANDS | REQUEST_COMMANDS
 
 #: 自己安排锁的命令：长耗时的网络抓取在锁外做，只把「并入正式表」包在短锁里。
 #: 它们仍在 WRITE_COMMANDS 里（启动检查/恢复未完成的派生照旧），但不走
@@ -615,14 +620,18 @@ def main(argv: list[str] | None = None, *, transport: Any = None) -> int:
         # run 要读多张表出一个一致快照，与 report / docs 同规矩——先等一会儿锁。
         if args.request_action in {"run", "run-due"}:
             wait = SNAPSHOT_LOCK_WAIT if args.lock_wait is None else args.lock_wait
-            try:
-                with exclusive(store.root, "request-run", wait):
-                    if args.request_action == "run":
-                        return run_request_run(args, store)
-                    return run_request_run_due(args, store)
-            except LockBusy as error:
-                print(f"交付失败：{error}")
-                return 1
+            # 预演与预览不记账：它们不产出交付，写进 runs/ 只会让「最近的失败运行」
+            # 混进一堆草稿。真正那次交付次次留痕，失败也留——需求侧的失败原先只活在
+            # 终端里，体检的「近 7 天失败」根本看不见（ADR-0003 审计发现）。
+            if getattr(args, "dry_run", False) or getattr(args, "preview", False):
+                try:
+                    with exclusive(store.root, "request-run", wait):
+                        return run_request_run(args, store).code
+                except LockBusy as error:
+                    print(f"交付失败：{error}")
+                    return 1
+            command = "request-run" if args.request_action == "run" else "request-run-due"
+            return _execute(store, command, lambda: _request_outcome(args, store), wait)
         return run_request(args)
     if args.command == "doctor":
         return run_doctor(store, lock_wait, requests_root=Path(args.requests_dir))
@@ -633,6 +642,19 @@ def main(argv: list[str] | None = None, *, transport: Any = None) -> int:
         return _execute(store, "docs", lambda: run_docs(args, store), lock_wait)
 
     return 1
+
+
+def _request_outcome(args: argparse.Namespace, store: DatasetStore) -> Outcome:
+    """把「交付一次 / 跑一批」收敛成一条运行记录。
+
+    原因用 `Attempt.reason`：那是「被哪道闸门拦住」的完整一句话。台账是机读面，
+    写「见上方说明」等于没写——几天后再看，终端早滚没了。
+    """
+    if args.request_action == "run":
+        attempt = run_request_run(args, store)
+    else:
+        attempt = run_request_run_due(args, store)
+    return Outcome(payload={"exit": attempt.code}, code=attempt.code, reason=attempt.reason)
 
 
 def _execute(
@@ -677,7 +699,8 @@ def _execute(
     write_run(store, command, started, outcome)
     # 失败只在这里说一次。原先 except 分支也打印一句，同一条原因出现两遍
     # （「失败：…」+「未完成：…」），而两处措辞还不一样。
-    if outcome.failed and outcome.reason:
+    # 需求交付自己已经把原因打得更细，台账那句不再重复一遍。
+    if outcome.failed and outcome.reason and command not in REQUEST_COMMANDS:
         print(f"{command} 未完成：{outcome.reason}")
     return outcome.code
 

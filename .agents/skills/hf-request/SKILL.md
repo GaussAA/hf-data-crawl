@@ -179,3 +179,6 @@ hf-data-crawl doctor
 - [ ] 换过输入表的，`fill.source.path` 指向 `input/v<n>/`，旧快照仍在
 - [ ] `manual` 列都有 `overrides.json` 或明确留空理由
 - [ ] 交付后 README 的「口径」「基于哪一版底库」「复现」三段能看懂
+- [ ] 被拦时：失败**不占版本号**，改好口径可以原版重交；但这次尝试已经进了 `runs/`
+      （`-request-run.json`），体检与日志里都查得到
+
