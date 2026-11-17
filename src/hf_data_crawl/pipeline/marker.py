@@ -154,6 +154,10 @@ def has_raw(store: DatasetStore, snapshot_date: date) -> bool:
     包含仅 card 补抓批次的日子：这类日子会通过 `bronze.day_frame` 的补位进入
     current 与 observations，恢复时跳过它才会制造不一致。空目录、只剩冷区清单
     的日子仍不算——主目录没有分块，重放不出任何东西。
+
+    这三行转发不要合并掉：它是恢复链与测试的替身点。判「这天还有没有可重放的
+    Raw」只需一个布尔，而直接 patch `raw.describe_day` 得先造一个 `RawDay`——
+    接口就是测试面，替身便宜的那个留着。
     """
     from .raw import describe_day
 

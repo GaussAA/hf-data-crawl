@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import tempfile
 from collections.abc import Iterable
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -125,6 +126,42 @@ def url_expr(column: str = "id") -> str:
     return f"'{DATASET_URL}' || {column} AS url"
 
 
+class FillKind(StrEnum):
+    """一列的「有内容」按哪种判据算。
+
+    **口径只有这一处**：`column_coverage` 走 SQL、交付 README 的本次结果覆盖走
+    Polars，两边都从 `fill_kind` 出发。原先各写一条 `isinstance(dtype, pl.List)`
+    分支，加一种 dtype 时改一边、漏一边，两个覆盖率就会说不同的话。
+    """
+
+    LIST = "list"
+    TEXT = "text"
+    OTHER = "other"
+
+
+def fill_kind(dtype: pl.DataType | type[pl.DataType]) -> FillKind:
+    """这一列属于哪种「有内容」判据。
+
+    空列表在这套库里表示「问过、答了没有」，对使用者与 NULL 一样不可用——只数
+    非 NULL 会把 `plain_tags` 报成 100%，而真正带自定义标签的只有两成多。
+    """
+    if isinstance(dtype, pl.List):
+        return FillKind.LIST
+    if dtype == pl.Utf8:
+        return FillKind.TEXT
+    return FillKind.OTHER
+
+
+def filled_count(series: pl.Series) -> int:
+    """一列里「有内容」的行数。判据见 `fill_kind`，两侧共用同一套分类。"""
+    kind = fill_kind(series.dtype)
+    if kind is FillKind.LIST:
+        return int((series.list.len() > 0).sum())
+    if kind is FillKind.TEXT:
+        return int((series.is_not_null() & (series != "")).sum())
+    return int(series.is_not_null().sum())
+
+
 def column_coverage(catalog: GoldCatalog, columns: Iterable[str]) -> dict[str, float]:
     """每列在 `datasets` 视图里「有内容」的行占比；0.0 表示整列为空。
 
@@ -134,7 +171,8 @@ def column_coverage(catalog: GoldCatalog, columns: Iterable[str]) -> dict[str, f
     而真正带了自定义标签的数据集只有两成多。
 
     表达式按视图列的**类型**生成，不靠运行时判断：DuckDB 的 `len()` 在绑定期就按
-    列类型选重载，对 `BIGINT` 列写 `len(col)` 是一条直接报错的 SQL。
+    列类型选重载，对 `BIGINT` 列写 `len(col)` 是一条直接报错的 SQL。分类本身来自
+    `fill_kind`——与 Polars 侧同一个判据，不是第二套。
 
     覆盖率只给「这一刻的底库」：补抓与上游都会让它漂，所以消费方（交付 README、
     `docs/DATA.md`）必须现算，不能抄进常量。
@@ -145,12 +183,12 @@ def column_coverage(catalog: GoldCatalog, columns: Iterable[str]) -> dict[str, f
     names = list(columns)
     exprs: list[str] = []
     for index, column in enumerate(names):
-        dtype = schema[column]
         # `count_if` 在 DuckDB 里是 `sum(CASE …)`，空输入（表还没有数据）返回 NULL
         # 而不是 0——直接 `float()` 会炸在「装好还没采集」这一步。
-        if isinstance(dtype, pl.List):
+        kind = fill_kind(schema[column])
+        if kind is FillKind.LIST:
             expr = f'coalesce(count_if(len("{column}") > 0), 0)'
-        elif dtype == pl.Utf8:
+        elif kind is FillKind.TEXT:
             expr = f'coalesce(count_if("{column}" IS NOT NULL AND "{column}" <> \'\'), 0)'
         else:
             expr = f'count("{column}")'

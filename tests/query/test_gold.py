@@ -17,7 +17,14 @@ from hf_data_crawl.pipeline import raw
 from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.platform.tables import CURRENT_SCHEMA
-from hf_data_crawl.query.gold import BOARDS, GoldCatalog, column_coverage
+from hf_data_crawl.query.gold import (
+    BOARDS,
+    FillKind,
+    GoldCatalog,
+    column_coverage,
+    fill_kind,
+    filled_count,
+)
 
 DAY1 = date(2026, 11, 1)
 DAY4 = date(2026, 11, 4)
@@ -591,3 +598,27 @@ def test_空底库的覆盖率是零而不是炸掉(tmp_path: Path) -> None:
         assert column_coverage(catalog, ["downloads"]) == {"downloads": 0.0}
     finally:
         catalog.close()
+
+
+def test_有内容的判据按类型分三种() -> None:
+    """空列表与空串都不算内容：空列表表示「问过、答了没有」。
+
+    SQL 侧（`column_coverage`）与 Polars 侧（交付 README 的本次结果覆盖）都从
+    `fill_kind` 出发，这条钉的是**分类**本身——加一种 dtype 而只改一边，两个
+    覆盖率就会开始说不同的话，而两边各自的测试都不会红。
+    """
+    assert fill_kind(pl.List(pl.Utf8)) is FillKind.LIST
+    assert fill_kind(pl.Utf8) is FillKind.TEXT
+    assert fill_kind(pl.Int64) is FillKind.OTHER
+
+    frame = pl.DataFrame(
+        {
+            "tags": [["a"], [], None],
+            "text": ["x", "", None],
+            "num": [1, None, 3],
+        }
+    )
+
+    assert filled_count(frame["tags"]) == 1
+    assert filled_count(frame["text"]) == 1
+    assert filled_count(frame["num"]) == 2
