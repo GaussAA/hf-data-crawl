@@ -269,7 +269,11 @@ EXTENDED_FIELDS: tuple[tuple[str, str, str], ...] = (
     ("citation", "作者给出的引用格式（BibTeX / 纯文本）", "极低（<0.5%，长文本）"),
     ("license_link", "许可证全文链接", "低（<1%）"),
     ("card_homepage", "项目主页", "极低（<0.1%）"),
-    ("card_description", "卡片正文的开头摘要，与 description 不是一回事", "极低（<0.1%）"),
+    (
+        "card_description",
+        "卡片 YAML 声明的一句话摘要（作者口径），与 description 不是一回事",
+        "极低（<0.1%）",
+    ),
     ("annotations_creators", "标注者类型（专家 / 众包 / 机器生成）", "低（约 1%）"),
     ("language_creators", "语料来源（原始采集 / 翻译 / 机器生成）", "低（约 1%）"),
     ("card_multilinguality", "卡片声明的多语言性；与 multilinguality 近重复", "低（约 4%）"),

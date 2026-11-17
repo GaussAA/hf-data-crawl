@@ -47,17 +47,20 @@ if TYPE_CHECKING:
 DEFAULT_SIZE_URL = "https://datasets-server.huggingface.co/size"
 
 #: 明确表示「这个数据集没有规模数据」的状态码。重试无意义。
-#: 永久缺失：重试也不会变。401/403 是权限，404 是「上游没有这份数据」。
 #:
-#: **500/501 不在这里**。它们是服务器端错误，重试有机会成功；归成「永久缺失」
-#: 等于把一次瞬时故障钉死——而 `--retry-unavailable` 一周才跑一次，那些库要被
-#: 空置到下周。实测首次全量抓取时 `unavailable` 占 25.4%，其中就混着这类。
-UNAVAILABLE_STATUS: frozenset[int] = frozenset({401, 403, 404})
+#: 401/403 是权限，404 是「上游确实没有」。**500/501 也在这里，尽管 HTTP 语义上
+#: 它们是服务器错误**——因为 HF 的 `/size` 接口用这两个码表示「不支持该数据集」，
+#: 而不是瞬时故障。
+#:
+#: 实测（2026-11-17）：抽样 15 个此前标记为 unavailable 的库，全部在 0.3–0.9 秒
+#: 返回 500/501/404，无一挂起、无一恢复；同批 `ok` 的库抽样 5 个全部 200。
+#: 曾按 HTTP 语义把它们挪进 `RETRYABLE_STATUS`，结果每个库空转 5 次重试 + 退避
+#: 约 31 秒，1,269 个这样的库折算 3.6 小时——那次「卡住」的真相就在这里。
+#: 要再动这一行，先重跑上面那个抽样。
+UNAVAILABLE_STATUS: frozenset[int] = frozenset({401, 403, 404, 500, 501})
 
-#: 可重试的状态码：429 限流、5xx 服务器错误。500（Internal Server Error）与
-#: 501（Not Implemented）原先是「永久缺失」，2026-11-17 修正：两者都是上游的
-#: 状态，不是这份数据的属性。
-RETRYABLE_STATUS: frozenset[int] = frozenset({429, 500, 501, 502, 503, 504})
+#: 可重试：429 限流与网关抖动（502/503/504）。这些才是真正的瞬时故障。
+RETRYABLE_STATUS: frozenset[int] = frozenset({429, 502, 503, 504})
 
 
 @dataclass(frozen=True)

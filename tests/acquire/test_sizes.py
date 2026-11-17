@@ -246,9 +246,14 @@ def test_畸形响应体记为临时失败() -> None:
 # ---------------------------------------------------------------- 失败分类
 
 
-@pytest.mark.parametrize("status", [401, 403, 404])
+@pytest.mark.parametrize("status", [401, 403, 404, 500, 501])
 def test_永久缺失不重试(status: int) -> None:
-    """重试永久缺失等于白烧预算——权限与「上游没有这份数据」都不会因重试改变。"""
+    """重试永久缺失等于白烧预算。
+
+    500/501 在这里是实测结论，不是疏忽：HF 的 `/size` 用它们表示「不支持」，
+    抽样 15 个这样的库全部 0.3–0.9 秒返回、无一恢复。挪进 `RETRYABLE_STATUS`
+    会让每个库空转 5 次重试 + 退避约 31 秒（1,269 个就是 3.6 小时）。
+    """
     transport = FakeSizeTransport({"acme/x": status})
 
     result = api(transport).fetch("acme/x", DAY)
@@ -257,24 +262,9 @@ def test_永久缺失不重试(status: int) -> None:
     assert len(transport.calls) == 1
 
 
-@pytest.mark.parametrize("status", [429, 500, 501, 502, 503, 504])
-def test_限流与服务器错误会重试(status: int) -> None:
-    """500/501 是上游状态，不是这份数据的属性。
-
-    原先它们被归进 `UNAVAILABLE_STATUS`，一次瞬时故障就把库钉成「永久缺失」，
-    要等一周后的 `--retry-unavailable` 才有人再看它一眼。实测首次全量抓取时
-    `unavailable` 占 25.4%，其中就混着这类。
-    """
-    transport = FakeSizeTransport({"acme/x": [status, payload(7)]})
-
-    result = api(transport).fetch("acme/x", DAY)
-
-    assert result.status == "ok"
-    assert len(transport.calls) == 2
-
-
 @pytest.mark.parametrize("status", [429, 502, 503, 504])
 def test_限流与网关抖动会重试(status: int) -> None:
+    """这些才是真正的瞬时故障。"""
     transport = FakeSizeTransport({"acme/x": [status, payload(7)]})
 
     result = api(transport).fetch("acme/x", DAY)

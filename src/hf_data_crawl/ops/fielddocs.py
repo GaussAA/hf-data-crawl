@@ -36,7 +36,8 @@ COMMON: dict[str, str] = {
     "main_size": "主分支的仓库字节数（含 LFS 指针指向的实际大小）",
     "xet_enabled": "是否使用 Xet 存储后端",
     "resource_group": "所属资源组；原值是复合结构，按 JSON 文本存储。**列表接口从不返回此字段**（实测请求了也拿不到），故整列为空",
-    "description": "仓库简介（作者填写，非卡片正文）",
+    "description": "数据集简介：卡片正文（README）的纯文本摘要，HF 会截断并附「见数据集页」；"
+    "不是作者填的一行简介；无正文则为空",
     "tags": "原始标签全集，形如 `license:mit`、`language:en`；维度列都由它拆出",
 }
 
@@ -86,7 +87,8 @@ FIELD_DOCS: dict[str, dict[str, str]] = {
         "license_name": "卡片声明的许可证名称",
         "license_link": "许可证全文链接",
         "citation": "作者给出的引用格式（BibTeX 或纯文本）",
-        "card_description": "**卡片正文**的开头摘要，与 `description` 字段不是一回事",
+        "card_description": "卡片 YAML 里 `description:` 键写的摘要（作者口径），极少数库声明；"
+        "与 `description` 不是一回事",
         "card_tags": "卡片 YAML 里声明的标签（作者口径，非平台规范化）",
         "card_task_categories": "卡片声明的任务大类",
         "card_languages": "卡片声明的语言",
