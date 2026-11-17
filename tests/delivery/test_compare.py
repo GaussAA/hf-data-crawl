@@ -245,3 +245,16 @@ def test_空值与空列表不算改动但一侧有值才算(tmp_path: Path) -> 
     assert tags.changed == 0
     assert likes.changed == 1
     assert likes.samples == (("b", "（空）", "5"),)
+
+
+def test_认不出的形态当场报错(tmp_path: Path) -> None:
+    """三种形态若掉进旧 `else`，会拿 parquet 的口径去比一张 xlsx，而且不报错。
+
+    manifest 是档案的事实来源；认不出的 kind 说明有人手改过或版本不匹配，两种都
+    不该猜。分派改成穷尽之后，加新形态时这里会立刻红，而不是静默走错路。
+    """
+    left = make_delivery(tmp_path, "left", "future", ["data.parquet"])
+    right = make_delivery(tmp_path, "right", "future", ["data.parquet"])
+
+    with pytest.raises(CompareError, match="形态认不出来"):
+        compare_deliveries(left, right)

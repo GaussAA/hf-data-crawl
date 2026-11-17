@@ -31,7 +31,7 @@ import polars as pl
 from .backfill import FillError, parse_reference
 from .delivery import read_manifest
 from .header import HeaderError
-from .requirement import MANIFEST_NAME
+from .requirement import MANIFEST_NAME, Kind
 from .sheet import read_header
 
 #: 每列给出的样例条数。再多就成了又一份表，人不会看。
@@ -89,16 +89,29 @@ def _manifest(directory: Path) -> dict[str, Any]:
 
 
 def compare_deliveries(left_dir: Path, right_dir: Path) -> Comparison:
-    """比两份交付目录。形态不同直接拒绝——「换了形态」不是口径变更，是另一件事。"""
+    """比两份交付目录。形态不同直接拒绝——「换了形态」不是口径变更，是另一件事。
+
+    分派是**穷尽**的：新加一种形态时这里会当场报错，而不是静默掉进最后那条 `else`
+    拿 parquet 的口径去比一张 xlsx。想让形态只在一处登记（`Form(execute, compare)`）
+    走不通：比对器住在本模块，而执行体已被 `delivery` 点名导入，互相 import 会成环。
+    取舍写在 GLOSSARY #104。
+    """
     left_body, right_body = _manifest(left_dir), _manifest(right_dir)
-    if left_body.get("kind") != right_body.get("kind"):
-        raise CompareError(
-            f"两份交付形态不同（{left_body.get('kind')} → {right_body.get('kind')}），无从逐列比较"
-        )
-    kind = str(left_body.get("kind"))
-    if kind == "backfill":
+    left_kind, right_kind = left_body.get("kind"), right_body.get("kind")
+    if left_kind != right_kind:
+        raise CompareError(f"两份交付形态不同（{left_kind} → {right_kind}），无从逐列比较")
+    try:
+        kind = Kind(str(left_kind))
+    except ValueError as error:
+        # manifest 是档案的事实来源；认不出的 kind 说明有人手改过或版本不匹配，
+        # 两种都不该猜。
+        raise CompareError(f"manifest 里的形态认不出来：{left_kind!r}") from error
+
+    if kind is Kind.BACKFILL:
         return _compare_workbooks(left_body, right_body, left_dir, right_dir)
-    return _compare_frames(left_dir, right_dir)
+    if kind is Kind.QUERY:
+        return _compare_frames(left_dir, right_dir)
+    raise CompareError(f"{kind.value} 型交付还没有比对实现")
 
 
 # ---------------------------------------------------------------- 查询型
