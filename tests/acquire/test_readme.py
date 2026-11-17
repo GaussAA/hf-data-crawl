@@ -243,7 +243,7 @@ def test_每次请求都先买票() -> None:
         def acquire(self) -> None:
             Spy.calls += 1
 
-    readme_api._limiter = Spy()  # noqa: SLF001 - 只想确认调用次序，不重建限速器
+    readme_api._limiter = Spy()  # type: ignore[assignment]  # noqa: SLF001 - 只想确认调用次序，不重建限速器
     readme_api.fetch("acme/x", DAY)
 
     assert Spy.calls == 1

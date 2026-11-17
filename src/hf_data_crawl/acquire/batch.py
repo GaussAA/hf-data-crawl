@@ -56,10 +56,18 @@ class FetchResult(Protocol):
     def row(self) -> dict[str, Any]: ...
 
 
-def collect_rows(
+#: `collect_rows` 具体结果类型（`SizeResult` / `FileResult` / `ReadmeResult`）。
+#:
+#: 必须泛型化而不是统一写成 `FetchResult`：`Callable` 的参数是**逆变**的，
+#: 一个 `Callable[[ReadmeResult], None]` 不能赋给 `Callable[[FetchResult], None]`
+#: ——mypy 会判 `readme.py` 里的 `on_result=tally` 不兼容。约束到 `FetchResult`
+#: 上既保住「必须有 status/row」的要求，又让每个调用方拿到自己的类型。
+
+
+def collect_rows[R: FetchResult](
     *,
     pending: Sequence[str],
-    fetch: Callable[[str], FetchResult],
+    fetch: Callable[[str], R],
     schema: dict[str, PolarsType],
     workers: int = 16,
     flush: Callable[[pl.DataFrame], object] | None = None,
@@ -67,8 +75,8 @@ def collect_rows(
     progress: Callable[[int, int], None] | None = None,
     heartbeat: Callable[[int, int], None] | None = None,
     retain: bool = True,
-    on_result: Callable[[FetchResult], None] | None = None,
-) -> tuple[list[FetchResult], pl.DataFrame]:
+    on_result: Callable[[R], None] | None = None,
+) -> tuple[list[R], pl.DataFrame]:
     """并发跑完 `pending`，返回 (逐条结果, 汇总表)。
 
     有两点容易写错：
@@ -92,7 +100,7 @@ def collect_rows(
     if not retain and flush is None:
         raise ValueError("retain=False 必须同时给 flush，否则结果无处可去")
 
-    results: list[FetchResult] = []
+    results: list[R] = []
     rows: list[dict[str, Any]] = []
     buffer: list[dict[str, Any]] = []
     total = len(pending)
