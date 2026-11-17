@@ -1648,3 +1648,20 @@
        要按区间展开逐日（几百天的全量重放会多几百次 `has_raw` 目录探测）。
     - **反向验证**：把 `write_marker` 那行去掉，`test_清空之前先写下范围标记` 立刻红
        （清空那一刻磁盘上没有任何标记）。
+
+104. **形态的两条轴，与为什么没合成一张表**（2026-11-17，架构复检 #2 落地）：
+     `EXECUTORS` 只登记「怎么执行」，「怎么比对」另在 `compare.py` 里一句
+     `kind == "backfill"` 字符串分派。第三种形态会静默掉进 else，拿 parquet 的口径去比
+     一张 xlsx——它不报错，只会说「这里没有 data.parquet」。
+
+    - **做法**：分派改成穷尽——先 `Kind(manifest 里的 kind)`（认不出即 CompareError），
+      再对两个成员逐个 `is` 判断，末尾留一条 `raise`。加新形态时当场红，不是静默走错。
+    - **为什么不合成 `Form(execute, compare)` 一张表**：比对器住在 `compare.py`，而它
+      依赖 `delivery`（读 manifest）；执行体又已被 `delivery` 点名导入。让执行体 import
+      compare 会成环（`delivery → query_exec → compare → delivery`），架构测试立刻红。
+      要合表得先搬走约两百行比对逻辑与 `Comparison` 这类结果类型，代价约为本次其它
+      改动的数倍，而收益只是「一处登记」。
+    - **代价**：形态仍是两个登记处。第三个形态要改 `compare.py` 一处——但它会被这条
+      穷尽分派**逼着**改，而不是漏改。
+    - **反向验证**：把末尾那行 `raise` 退回 `return _compare_frames(...)`，新测试立刻红，
+      且报错变成「left 里没有 data.parquet / data.csv」——正是这条要防的误导。
