@@ -30,7 +30,9 @@ import polars as pl
 
 from .backfill import FillError, parse_reference
 from .delivery import read_manifest
+from .header import HeaderError
 from .requirement import MANIFEST_NAME
+from .sheet import read_header
 
 #: 每列给出的样例条数。再多就成了又一份表，人不会看。
 SAMPLE_SIZE = 3
@@ -232,23 +234,23 @@ def _cells(directory: Path, body: dict[str, Any]) -> tuple[dict[str, dict[str, s
     header_row = int(source.get("header_row") or 1)
     source_sheet = source.get("sheet")
 
+    # 读的是**自己的产物**，不是对方给的输入表：产物是交付出去的文件，人可能手工动过，
+    # 所以取缓存值（`data_only=True`）而不是公式文本。输入表那侧相反，见 `sheet.read_value`。
     workbook = openpyxl.load_workbook(product, data_only=True)
     sheet = (
         workbook[source_sheet] if source_sheet in workbook.sheetnames else workbook.worksheets[0]
     )
-    header = [
-        _text(sheet.cell(row=header_row, column=column).value)
-        for column in range(1, sheet.max_column + 1)
-    ]
-    while header and not header[-1]:
-        header.pop()
-    if key_column not in header:
+    try:
+        parsed = read_header(sheet, header_row=header_row)
+    except HeaderError as error:
+        raise CompareError(f"{directory.name} 的产物表头读不出来：{error}") from error
+    if key_column not in parsed.columns:
         raise CompareError(f"{directory.name} 的产物里没有标识列 {key_column!r}")
-    key_index = header.index(key_column)
+    key_index = parsed.columns[key_column]
 
     rows: dict[str, dict[str, str]] = {}
     for row in range(header_row + 1, sheet.max_row + 1):
-        key = _identifier(sheet.cell(row=row, column=key_index + 1).value)
+        key = _identifier(sheet.cell(row=row, column=key_index).value)
         if not key:
             continue
         # 归一化会把 `https://huggingface.co/datasets/a/b` 与 `a/b` 压成同一个键。
@@ -260,11 +262,10 @@ def _cells(directory: Path, body: dict[str, Any]) -> tuple[dict[str, dict[str, s
                 f"（第 {row} 行与前面某行指向同一个库，可能是两种 URL 写法）"
             )
         rows[key] = {
-            name: _text(sheet.cell(row=row, column=index + 1).value)
-            for index, name in enumerate(header)
-            if name
+            name: _text(sheet.cell(row=row, column=column).value)
+            for name, column in parsed.columns.items()
         }
-    return rows, [name for name in header if name]
+    return rows, list(parsed.names)
 
 
 def _compare_workbooks(

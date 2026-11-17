@@ -9,7 +9,6 @@ from pathlib import Path
 from ..platform.runs import Outcome
 from ..platform.store import DatasetStore
 from . import compare, specdiff
-from .backfill import FillError, header_of
 from .delivery import (
     DeliveryBlocked,
     DeliveryResult,
@@ -20,7 +19,7 @@ from .delivery import (
     read_manifest,
     run_due,
 )
-from .header import header_change
+from .header import HeaderError, header_change
 from .method import METHOD_DIR, METHOD_DOC, METHOD_INDEX, problems
 from .method import sync as sync_method
 from .metrics import lookup
@@ -44,6 +43,7 @@ from .requirement import (
     version_conflict,
 )
 from .requirement import load as load_spec
+from .sheet import header_of
 
 
 def run_export_wide(args: argparse.Namespace, store: DatasetStore) -> Outcome:
@@ -307,15 +307,15 @@ def _request_input(root: Path, args: argparse.Namespace) -> int:
     sheet = args.sheet or fill.source.sheet
     header_row = args.header_row or fill.source.header_row
     try:
-        new_header = header_of(given, sheet=sheet, header_row=header_row)
-    except (FillError, OSError) as error:
+        parsed = header_of(given, sheet=sheet, header_row=header_row)
+    except (HeaderError, OSError) as error:
         print(f"失败：读不出新表表头——{error}")
         return 1
-    if fill.source.key_column not in new_header:
+    if fill.source.key_column not in parsed.columns:
         print(
             f"失败：新表第 {header_row} 行没有标识列 {fill.source.key_column!r}，接进来也没法用。"
         )
-        print(f"  现有列：{'、'.join(new_header[:10])}{'…' if len(new_header) > 10 else ''}")
+        print(f"  现有列：{'、'.join(parsed.names[:10])}{'…' if len(parsed.names) > 10 else ''}")
         return 1
 
     target = request_dir / INPUT_DIR / f"v{_next_input_version(request_dir)}" / given.name
@@ -328,16 +328,16 @@ def _request_input(root: Path, args: argparse.Namespace) -> int:
     try:
         old_header = header_of(
             fill.source.path, sheet=fill.source.sheet, header_row=fill.source.header_row
-        )
-    except (FillError, OSError):
+        ).names
+    except (HeaderError, OSError):
         old_header = ()
         print("  [!] 当前输入表读不出表头（文件或 sheet 有问题），只报新表结构")
 
     relative = target.relative_to(request_dir).as_posix()
     print(f"已收进 {relative}（{given.stat().st_size:,} 字节，原件未改动）")
-    _print_header_change(old_header, new_header)
+    _print_header_change(old_header, parsed.names)
 
-    missing = [item.name for item in fill.columns if item.name not in new_header]
+    missing = [item.name for item in fill.columns if item.name not in parsed.columns]
     if missing:
         print(
             f"  [!] spec 声明了 {len(missing)} 列、新表里没有：{'、'.join(missing[:8])}"

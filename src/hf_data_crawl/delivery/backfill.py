@@ -68,12 +68,13 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-import openpyxl
 from openpyxl.styles import Alignment, Font
 
 from ..platform.atomic import replace
 from ..platform.store import DatasetStore
 from ..query.gold import GoldCatalog
+from .header import HeaderError
+from .sheet import key_rows, open_sheet, read_header, read_value
 from .stamp import SourceStamp, file_stamp, stamp
 
 #: HF 的标签是英文枚举，回填进中文表要归一；词表外的新枚举原样保留，不硬猜。
@@ -550,50 +551,12 @@ def load_overrides(path: Path | None) -> dict[str, dict[str, Any]]:
 # ---------------------------------------------------------------- 表格读写
 
 
-def _open_sheet(spec: FillSpec) -> tuple[Any, Any]:
-    workbook = openpyxl.load_workbook(spec.source.path)
-    name = spec.source.sheet or workbook.sheetnames[0]
-    if name not in workbook.sheetnames:
-        raise FillError(f"{spec.source.path}: 没有 sheet {name!r}（现有 {workbook.sheetnames}）")
-    return workbook, workbook[name]
-
-
-def _column_index(sheet: Any, header_row: int) -> dict[str, int]:
-    """列名 → 列号。空列名的占位列跳过，重名报错。"""
-    index: dict[str, int] = {}
-    for column in range(1, sheet.max_column + 1):
-        value = sheet.cell(row=header_row, column=column).value
-        if value in (None, ""):
-            continue
-        name = str(value).strip()
-        if name in index:
-            raise FillError(f"表头第 {header_row} 行有重名列 {name!r}，无法定位")
-        index[name] = column
-    return index
-
-
-def header_of(path: Path, *, sheet: str | None = None, header_row: int = 1) -> tuple[str, ...]:
-    """读一张表的列名，按表头顺序。
-
-    受理新输入时用它比对字段：那一刻还没有 spec，`from_mapping` 那套校验用不上，
-    手上只有一份文件。空列名的占位列照旧跳过——与执行体定位列的口径保持一致，
-    否则「比对时说有这一列、交付时说没有」。
-    """
-    workbook = openpyxl.load_workbook(path)
-    name = sheet or workbook.sheetnames[0]
-    if name not in workbook.sheetnames:
-        raise FillError(f"{path}: 没有 sheet {name!r}（现有 {workbook.sheetnames}）")
-    return tuple(_column_index(workbook[name], header_row))
-
-
-def _data_rows(sheet: Any, key_column: int, header_row: int) -> list[int]:
-    """标识列非空的行，即数据区。表尺寸常报到几百行，空行不能算进去。"""
-    rows: list[int] = []
-    for row in range(header_row + 1, sheet.max_row + 1):
-        value = sheet.cell(row=row, column=key_column).value
-        if value not in (None, ""):
-            rows.append(row)
-    return rows
+def _value(sheet: Any, row: int, column: int) -> Any:
+    """读单元格，并把「这里是公式」翻成回填自己的失败语义。"""
+    try:
+        return read_value(sheet, row, column)
+    except HeaderError as error:
+        raise FillError(str(error)) from error
 
 
 def run(
@@ -612,26 +575,31 @@ def run(
     执行体只管把活干完、把账报清：输入从需求目录内的快照读，产物只落到暂存目录，
     全程不与外部路径发生关系。
     """
-    workbook, sheet = _open_sheet(spec)
     header_row = spec.source.header_row
-    index = _column_index(sheet, header_row)
-    if spec.source.key_column not in index:
-        raise FillError(
-            f"表头第 {header_row} 行没有 {spec.source.key_column!r} 列（现有：{'、'.join(list(index)[:8])}…）"
-        )
-    key_column = index[spec.source.key_column]
-    rows = _data_rows(sheet, key_column, header_row)
-    if not rows:
+    try:
+        workbook, sheet = open_sheet(spec.source.path, sheet=spec.source.sheet)
+        parsed = read_header(sheet, header_row=header_row)
+        if spec.source.key_column not in parsed.columns:
+            raise FillError(
+                f"表头第 {header_row} 行没有 {spec.source.key_column!r} 列"
+                f"（现有：{'、'.join(parsed.names[:8])}…）"
+            )
+        key_column = parsed.columns[spec.source.key_column]
+        pairs = key_rows(sheet, header_row=header_row, key_column=key_column)
+    except HeaderError as error:
+        raise FillError(str(error)) from error
+    if not pairs:
         raise FillError(
             f"{spec.source.path}: 标识列 {spec.source.key_column!r} 全空，没有可处理的行"
         )
+    rows = [row for row, _key in pairs]
+    raw_keys = [key for _row, key in pairs]
 
     declared = [item.name for item in spec.columns]
     for name in declared:
-        if name not in index:
+        if name not in parsed.columns:
             raise FillError(f"表里没有 {name!r} 列——spec 与表头对不上，先核对列名")
 
-    raw_keys = [str(sheet.cell(row=row, column=key_column).value).strip() for row in rows]
     resolved, bad = resolve_ids(raw_keys)
     ids = [item for item in resolved if item is not None]
     runner = catalog or GoldCatalog(store)
@@ -647,8 +615,8 @@ def run(
             missing.append(raw)
         for rule in spec.columns:
             tally = tallies[rule.name]
-            column = index[rule.name]
-            existing = sheet.cell(row=excel_row, column=column).value
+            column = parsed.columns[rule.name]
+            existing = _value(sheet, excel_row, column)
             if existing not in (None, "") and not spec.overwrite:
                 # 原有内容优先：人家手填的，可能比底库新，也可能有底库没有的判断。
                 tally.kept += 1
@@ -671,11 +639,20 @@ def run(
     manual_columns = [
         (item.name, item.reason or "") for item in spec.columns if item.kind == "manual"
     ]
-    undeclared = [name for name in index if name not in set(declared)]
+    undeclared = [name for name in parsed.columns if name not in set(declared)]
 
     if not dry_run:
         _annotate(
-            sheet, header_row, index, declared, tallies, spec, len(rows), missing, request_id, title
+            sheet,
+            header_row,
+            parsed.columns,
+            declared,
+            tallies,
+            spec,
+            len(rows),
+            missing,
+            request_id,
+            title,
         )
         anchor = _anchor(stamp_value)
         _fix_properties(workbook, anchor)
@@ -702,7 +679,7 @@ def run(
         manual=manual_columns,
         stamp=stamp_value,
         files=files,
-        header=tuple(index),
+        header=parsed.names,
     )
 
 
@@ -766,7 +743,7 @@ def _fix_properties(workbook: Any, anchor: datetime) -> None:
 def _annotate(
     sheet: Any,
     header_row: int,
-    index: dict[str, int],
+    columns: dict[str, int],
     declared: list[str],
     tallies: dict[str, ColumnTally],
     spec: FillSpec,
@@ -818,7 +795,7 @@ def _annotate(
     for item in spec.columns:
         if not (item.wrap or item.width):
             continue
-        column = index[item.name]
+        column = columns[item.name]
         if item.width:
             sheet.column_dimensions[
                 sheet.cell(row=header_row, column=column).column_letter
