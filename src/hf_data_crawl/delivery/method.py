@@ -371,20 +371,46 @@ def skeleton(request_id: str, title: str, kind: str) -> str:
 PREMISE_HEADING = "## 需求成立性"
 
 
+#: 新脚本第一次进索引时 `sync` 写的占位。它是一句提醒，不该是一句终点：
+#: 带着「待补」交付，档案钉住的就只是一份指纹，而「这个脚本为什么存在」永远缺着。
+PENDING_MARK = "待补"
+
+
 def advisories(request_dir: Path) -> list[str]:
-    """不阻断交付、但值得回头补一句的提醒（目前只有「需求成立性」一节）。"""
+    """不阻断交付、但值得回头补一句的提醒。
+
+    两件事：METHOD.md 缺「需求成立性」，以及脚本索引里还留着「待补」占位。
+    都不拦交付——拦下来只会让人先抄一句话过闸；但每一次 `request method` 都要
+    看得见，否则那句「逼人回来说清楚」就只是注释里的话。
+    """
+    found: list[str] = []
     doc = request_dir / METHOD_DIR / METHOD_DOC
     try:
         text = doc.read_text(encoding="utf-8")
     except OSError:
-        return []
-    if PREMISE_HEADING in text:
-        return []
-    return [
-        f"{METHOD_DIR}/{METHOD_DOC} 没有「{PREMISE_HEADING}」一节："
-        "这条需求是症状还是成因、照做会不会丢证据，将来没人能回答。"
-        f"（补一节即可，不影响交付。）"
+        text = ""
+    if PREMISE_HEADING not in text:
+        found.append(
+            f"{METHOD_DIR}/{METHOD_DOC} 没有「{PREMISE_HEADING}」一节："
+            "这条需求是症状还是成因、照做会不会丢证据，将来没人能回答。"
+            "（补一节即可，不影响交付。）"
+        )
+
+    try:
+        entries = _entries(_load_index(request_dir), _index_path(request_dir))
+    except MethodError:
+        entries = ()
+    pending = [
+        entry.name
+        for entry in entries
+        if PENDING_MARK in entry.purpose or PENDING_MARK in (entry.run or "")
     ]
+    if pending:
+        found.append(
+            f"{METHOD_DIR}/{METHOD_INDEX} 里有 {len(pending)} 个脚本还是「{PENDING_MARK}」占位"
+            f"（{'、'.join(pending)}）：用途与跑法没写，档案钉住的只是一份指纹。"
+        )
+    return found
 
 
 def _empty_index() -> dict[str, Any]:

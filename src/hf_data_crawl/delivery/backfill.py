@@ -208,6 +208,11 @@ class FillReport:
     #: 本次追加到原表右侧的列，按写入顺序。输入表的表头与它分开记，
     #: 「对方给了什么」和「我们加了什么」才分得清。
     appended: tuple[str, ...] = ()
+    #: 判读表里对不上任何一行的标识。`overrides.json` 写错一个库名，值就静默不生效，
+    #: 而「空着」和「没判」在产物里长得一模一样——只能在这里点名。
+    override_unknown_ids: tuple[str, ...] = ()
+    #: 判读表里对不上任何声明列的键。同理：列名拼错，整列判读白写。
+    override_unknown_columns: tuple[str, ...] = ()
 
     def written(self) -> int:
         return sum(item.written for item in self.tallies.values())
@@ -699,6 +704,14 @@ def run(
         (item.name, item.reason or "") for item in spec.columns if item.kind == "manual"
     ]
     undeclared = [name for name in index if name not in set(declared)]
+    declared_names = {item.name for item in spec.columns}
+    # 判读表对不上账的两件事：键不是这一批的库、列不是 spec 声明的列。后者尤其阴——
+    # 列名拼错时整列判读白写，产物上只表现为「这一列空着」，与「没判」无法区分。
+    known_ids = {item for item in resolved if item}
+    unknown_ids = tuple(sorted(key for key in overrides if key not in known_ids))
+    unknown_columns = tuple(
+        sorted({column for values in overrides.values() for column in values} - declared_names)
+    )
 
     if not dry_run:
         _annotate(
@@ -740,6 +753,8 @@ def run(
         files=files,
         header=header,
         appended=tuple(appended),
+        override_unknown_ids=unknown_ids,
+        override_unknown_columns=unknown_columns,
     )
 
 

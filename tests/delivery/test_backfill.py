@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -374,6 +375,39 @@ def test_布尔列按词表译成是不是(tmp_path: Path) -> None:
 
     assert render(spec.columns[0], ROW, spec) == "是"
     assert render(spec.columns[0], {**ROW, "has_readme": False}, spec) == "否"
+
+
+def test_判读表对不上账的条目要点名(tmp_path: Path) -> None:
+    """写错库名或列名时，产物上只表现为「这一格空着」——与「没判」长得一模一样。
+
+    REQ-0002 当年专门写了个 `verify_overrides.py` 补这件事；它应该是引擎的能力。
+    """
+    overrides = tmp_path / "overrides.json"
+    overrides.write_text(
+        json.dumps(
+            {
+                "acme/ds-1": {"下载量": 99},
+                "acme/typo": {"下载量": 1},
+                "acme/ds-2": {"不存在列": "x"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    # 清单里要有 ds-2，否则它也会被算成「对不上」，测不出「库在、列拼错」那一种。
+    book = build_book(tmp_path / "in.xlsx", ["acme/ds-1", "acme/ds-2"])
+    spec = load_spec(
+        write_spec(
+            tmp_path / "spec.yaml",
+            book=book,
+            out=tmp_path / "out.xlsx",
+            body='overrides: overrides.json\ncolumns:\n  "下载量": {field: downloads}',
+        )
+    )
+
+    report = run_it(spec, [ROW], tmp_path=tmp_path)
+
+    assert report.override_unknown_ids == ("acme/typo",)
+    assert report.override_unknown_columns == ("不存在列",)
 
 
 def test_简介压平但不改写措辞(tmp_path: Path) -> None:

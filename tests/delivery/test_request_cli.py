@@ -308,6 +308,33 @@ def test_预演与预览不写运行台账(tmp_path: Path) -> None:
     assert not list((tmp_path / "data" / "runs").glob("*-request-run.json"))
 
 
+def test_预演与预览同时给出被拒(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """两个开关说的是不同的「只看不写」；同时给出时谁先谁后都是猜。"""
+    make(tmp_path)
+
+    assert run(tmp_path, "request", "run", "REQ-0001", "--dry-run", "--preview") == 1
+
+    assert "选一个" in capsys.readouterr().out
+
+
+def test_show区分交过的版本与只有快照的版本(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """失败尝试也会留下快照（崩溃窗口靠它兜底），但那一版从没交付过。
+
+    两者混着列，读的人会以为每一版都真的交过——「可复现」的前提就不成立了。
+    """
+    path = make(tmp_path)
+    (path.parent / "history").mkdir()
+    (path.parent / "history" / "v1.yaml").write_bytes(path.read_bytes())
+
+    assert run(tmp_path, "request", "show", "REQ-0001") == 0
+
+    out = capsys.readouterr().out
+    assert "历史版本：v1" in out
+    assert "没有对应交付" in out
+
+
 def test_index命令重写交付索引(tmp_path: Path) -> None:
     """补建历史索引不该靠再交付一份——那正是这次治理要断掉的循环。"""
     path = make(tmp_path)

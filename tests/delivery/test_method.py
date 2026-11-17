@@ -286,3 +286,25 @@ def test_stamp只钉声明过的中间件(tmp_path: Path) -> None:
     stamp = method.stamp(folder, method.read(folder), ())
 
     assert stamp["inputs"] == {}
+
+
+def test_脚本用途仍是待补时给提示而不拦(tmp_path: Path) -> None:
+    """`sync` 给新脚本写「（待补：…）」占位，那是提醒，不是终点。
+
+    带着占位交付，档案钉住的就只是一份指纹；但把它做成硬拦，最先发生的永远是
+    「先抄一句把闸门过了」。所以：`problems` 放行，`advisories` 要点名。
+    """
+    _, folder = request_dir(tmp_path)
+    build_method(folder)
+    add_script(folder)
+    method.sync(folder, request_id="REQ-0001", title="测试需求", kind="query")
+
+    purpose = index_of(folder)["scripts"][0]["purpose"]
+    assert method.PENDING_MARK in purpose
+    assert method.problems(folder) == [], "占位不该拦交付"
+    assert any("待补" in text for text in method.advisories(folder))
+
+    edit_index(
+        folder, purpose="读 README 判训练阶段", run="uv run python method/scripts/pull_readme.py"
+    )
+    assert not any("待补" in text for text in method.advisories(folder))

@@ -80,6 +80,12 @@ def _definition(
             "appended": list(report.appended),
             # 与 `input.path` 同口径：记 spec 里的相对路径，不记 basename。
             "overrides": fill.overrides_relative,
+            # 判读表对不上账的部分也记进档案：写错库名或列名时，产物上只表现为
+            # 「这一格空着」，与「没判」无法区分——只能靠这行字点名。
+            "overrides_unmatched": {
+                "ids": list(report.override_unknown_ids),
+                "columns": list(report.override_unknown_columns),
+            },
             "overwrite": fill.overwrite,
             "stamp_note": fill.stamp_note,
             "columns": [
@@ -139,6 +145,20 @@ def _lines(
         lines.append(
             f"- 追加列 {len(report.appended)} 列（原表没有，写在最右侧，原表原有列一字未动）："
             + "、".join(f"`{name}`" for name in report.appended)
+        )
+    if report.override_unknown_ids:
+        lines.append(
+            f"- [!] 判读表里 {len(report.override_unknown_ids)} 个标识对不上这批清单"
+            "（库名拼错或不在表里，这些值没有生效）："
+            + "、".join(f"`{name}`" for name in report.override_unknown_ids[:8])
+            + ("…" if len(report.override_unknown_ids) > 8 else "")
+        )
+    if report.override_unknown_columns:
+        lines.append(
+            f"- [!] 判读表里 {len(report.override_unknown_columns)} 个列名不在 spec 声明里"
+            "（列名拼错，整列判读白写）："
+            + "、".join(f"`{name}`" for name in report.override_unknown_columns[:8])
+            + ("…" if len(report.override_unknown_columns) > 8 else "")
         )
     lines += [
         "",

@@ -610,9 +610,19 @@ def _request_show(root: Path, request_id: str) -> int:
             print(f"  {line}")
         print()
 
+    runs = deliveries_of(path.parent)
+    delivered_versions = {(read_manifest(run) or {}).get("spec_version") for run in runs}
     versions = history_versions(path)
     if versions:
         print(f"历史版本：{'、'.join(f'v{version}' for version in versions)}")
+        # 「快照在」不等于「交过」：失败尝试也会留下快照（崩溃窗口靠它兜底），
+        # 两者的区别只有台账知道。混着列，读的人会以为每一版都真的交过。
+        never = [version for version in versions if version not in delivered_versions]
+        if never:
+            print(
+                f"  其中 {'、'.join(f'v{version}' for version in never)} 没有对应交付"
+                "（失败尝试留下的快照，可删）"
+            )
     else:
         print("历史版本：（尚未快照，首次交付时自动留存）")
 
@@ -659,6 +669,10 @@ def run_request_run(args: argparse.Namespace, store: DatasetStore) -> Attempt:
     返回 `Attempt` 而不只是退出码：调用方要把「被哪道闸门拦住」写进 `runs/`。
     """
     root = Path(args.requests_dir)
+    # 两个开关说的是不同的「只看不写」，同时给出来时谁先谁后都是猜；直接让人选一个。
+    if args.dry_run and args.preview:
+        print("失败：--dry-run 与 --preview 选一个——前者只算不写，后者把产物落进草稿区。")
+        return Attempt(1, "--dry-run 与 --preview 同时给出，语义冲突")
     try:
         request_dir = resolve_dir(root, args.id)
         spec = load_spec(request_dir / SPEC_NAME)
@@ -689,6 +703,7 @@ def run_request_run(args: argparse.Namespace, store: DatasetStore) -> Attempt:
     if spec.cadence is Cadence.ONCE and done and not args.force:
         print(f"{spec.id} 是一次性需求，已于 {done[-1].name} 交付过。")
         print("  确实要再交一份（比如对方要求重出），加 --force。")
+        print("  但同底库、同内容的第二次会被重复闸门拦下——要出新东西，先让底库或口径真的变。")
         return Attempt(1, f"一次性需求已于 {done[-1].name} 交付过，未加 --force")
 
     try:
