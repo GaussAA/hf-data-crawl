@@ -92,6 +92,11 @@ class EnrichSummary:
     with_structure: int = 0
 
 
+#: 按下载量取头部时默认取多少名。CLI 的同名参数与 `sizes` 的默认值都指向这里：
+#: 两处各写 20_000 时，改一边不报错，而 CLI 传的是它自己那个数。
+DEFAULT_TOP = 20_000
+
+
 class Enricher:
     """按下载量取头部若干名，补抓卡片字段并入表。"""
 
@@ -100,7 +105,7 @@ class Enricher:
         self._store = store
 
     def run(
-        self, snapshot_date: date, *, top: int = 20_000, limit: int = MAX_LIMIT
+        self, snapshot_date: date, *, top: int = DEFAULT_TOP, limit: int = MAX_LIMIT
     ) -> EnrichSummary:
         started = time.monotonic()
         page_budget = max(1, math.ceil(top / max(1, limit)))

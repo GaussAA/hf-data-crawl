@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..acquire import MAX_LIMIT, PROBE_DAILY_LIMIT
+from ..acquire import DEFAULT_TOP, MAX_LIMIT, PROBE_DAILY_LIMIT
 from ..acquire.commands import (
     run_collect,
     run_enrich,
@@ -284,7 +284,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     enrich = subparsers.add_parser("enrich", help="按下载量取头部，补抓 cardData")
     enrich.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
-    enrich.add_argument("--top", type=int, default=20_000, help="补抓前多少名")
+    enrich.add_argument("--top", type=int, default=DEFAULT_TOP, help="补抓前多少名")
     enrich.add_argument(
         "--ids",
         default=None,
@@ -297,7 +297,7 @@ def build_parser() -> argparse.ArgumentParser:
     sizes.add_argument(
         "--top",
         type=int,
-        default=20_000,
+        default=DEFAULT_TOP,
         help="按下载量取前多少名；0 表示全量（按 current 实际行数，随底库增长自动适配）",
     )
     sizes.add_argument(
@@ -369,7 +369,7 @@ def build_parser() -> argparse.ArgumentParser:
     readme.add_argument(
         "--top",
         type=int,
-        default=20_000,
+        default=DEFAULT_TOP,
         help="按下载量取前多少名；0 表示全量（按 current 实际行数，随底库增长自动适配）",
     )
     readme.add_argument("--ids", default=None, help="只抓这些 id（逗号分隔），忽略 --top")

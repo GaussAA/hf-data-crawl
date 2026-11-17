@@ -332,3 +332,26 @@ def test_补跑过去日期后后缀重放把底库带回最新(root: Path) -> N
 
     assert code == 0
     assert downloads() == 999, "补跑过去日期后 current 不能回退到那一天"
+
+
+def test_按下载量取头部的默认名次只有一个来源() -> None:
+    """CLI 的 `--top` 默认值与切片的默认值必须是同一个常量。
+
+    两处各写 20_000 时改一边不报错：CLI 传的是它自己那个数，切片默认值只在直接
+    调用时生效，两者悄悄分叉而没有任何测试会红。三个命令共用这一个名次，
+    所以它属于 acquire，不属于命令行。
+    """
+    import inspect
+
+    from hf_data_crawl.acquire import DEFAULT_TOP
+    from hf_data_crawl.acquire.enrich import Enricher
+    from hf_data_crawl.acquire.sizes import SizeFetcher
+    from hf_data_crawl.ops.cli import build_parser
+
+    parser = build_parser()
+    for command in ("enrich", "fetch-sizes", "fetch-readme"):
+        args = parser.parse_args(["--data-dir", "unused", command])
+        assert args.top == DEFAULT_TOP, f"{command} 的 --top 默认值与 DEFAULT_TOP 不一致"
+
+    for run in (Enricher.run, SizeFetcher.run):
+        assert inspect.signature(run).parameters["top"].default == DEFAULT_TOP
