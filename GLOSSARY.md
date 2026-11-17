@@ -1557,3 +1557,17 @@
       （`hf-compact` 每日 00:30、`hf-archive` 周一 05:00，注册在
       `scripts/setup-schedule.ps1`），刻意不放进 `daily.ps1` 以免抢写锁。只读日常链
       会得出「治理没在跑」的错误结论——调度事实分散在两处，这条是踩过之后记下的。
+
+99. **Bronze 加只读回看入口，而不是给它留 7 天**（2026-11-17，问「bronze 与 raw
+    的保留天数要不要对齐」）：Bronze 是 Raw 的当日解析缓存，`prune` 每天只留最新一天。
+    历史那几天的原始标量因此只能重算——但 `build` 会写正式目录并顺手 `prune`，
+    等于为了看一眼而改数据。
+
+    - **做法**：`hf-data-crawl bronze --date` 从 Raw 现算（`day_frame_from_raw`），
+      只读、不落盘、不加锁、不写 `runs/` 台账。它与 `build` 共用 `_with_supplements`
+      （补抓批次按 id 补位），不会出现「某天的补抓库在一条路径里算、另一条里不算」。
+    - **为什么不改成保留 7 天**：2 GB 的当日解析缓存换不到新信息——属性史在 `silver`、
+      指标史在 `observations`、最新态在 `current`；历史 Bronze 独有的只有 `raw` 与
+      `page_file` 两列，而原始响应由 cold 基线承载。真正的需求是「能看」，不是「常驻」。
+    - **测试**：`test_从Raw现算的当日帧与落盘结果一致`、`test_现算回看不落盘`、
+      `test_命令行回看某天的_bronze`（顺带钉住「不写 runs 台账」）。

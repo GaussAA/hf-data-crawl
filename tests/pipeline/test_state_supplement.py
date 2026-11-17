@@ -181,3 +181,30 @@ def test_同日幂等重跑不误报(store: DatasetStore, capsys: pytest.Capture
     state.update(store, DAY, frame=frame)
 
     assert "观测行数骤降" not in capsys.readouterr().out
+
+
+def test_从Raw现算的当日帧与落盘结果一致(store: DatasetStore) -> None:
+    """`day_frame_from_raw` 是「回看某天」的入口，口径必须与 `build` 一模一样。
+
+    它不读 Bronze 分区，而是按 `build` 的口径从 Raw 展开——历史那几天的分区早被
+    `prune` 删掉，只能这么算。两者若各写一套补位规则，就会出现「某天的补抓库在
+    一条路径里算、另一条路径里不算」。
+    """
+    write(store, record("acme/in-part"))
+    write(store, record("acme/only-card"), label=CARD_LABEL)
+    bronze.build(store, DAY)
+
+    from_raw = bronze.day_frame_from_raw(store, DAY)
+    on_disk = bronze.day_frame(store, DAY)
+
+    assert from_raw.equals(on_disk)
+
+
+def test_现算回看不落盘(store: DatasetStore) -> None:
+    """看一眼某天不该改数据目录——`build` 会写正式目录并顺手 prune。"""
+    write(store, record("acme/in-part"))
+
+    frame = bronze.day_frame_from_raw(store, DAY)
+
+    assert frame.height == 1
+    assert not store.path("bronze", DAY).exists()

@@ -153,17 +153,44 @@ def day_frame(store: DatasetStore, snapshot_date: date) -> pl.DataFrame:
     此前只有 `state` 补位，于是 203 个库进了 current 却没进 silver，`datasets` 宽视图
     里它们的 tags / description 全是 null——不报错，只是查不出来。
     """
-    today = store.read("bronze", snapshot_date)
+    return _with_supplements(store, snapshot_date, store.read("bronze", snapshot_date))
+
+
+def day_frame_from_raw(store: DatasetStore, snapshot_date: date) -> pl.DataFrame:
+    """从 Raw 现算当日帧，不落盘。
+
+    与 `day_frame` 的差别只在第一步读哪里：这里按 `build` 的口径从 Raw 展开，而不是
+    读已落盘的 Bronze 分区。给「回看某一天」用——Bronze 只保留最新一天，历史分区的
+    早被 `prune` 删掉；而 `build` 会写正式目录并顺手 prune，等于为了看一眼而改数据。
+
+    补位规则与 `day_frame` 共用同一个 `_with_supplements`：两处各写一份，迟早出现
+    「某天的补抓库在一条路径里算、另一条路径里不算」。
+    """
+    files = raw.bronze_files(store, snapshot_date)
+    frame = frame_from_files(files, snapshot_date) if files else None
+    return _with_supplements(
+        store,
+        snapshot_date,
+        frame if frame is not None else pl.DataFrame(schema=BRONZE_SCHEMA),
+    )
+
+
+def _with_supplements(
+    store: DatasetStore, snapshot_date: date, frame: pl.DataFrame
+) -> pl.DataFrame:
+    """按 id 补上只在补抓批次里出现的库；扫描帧里已有的记录一律不动。"""
     files = raw.supplement_files(store, snapshot_date)
     if not files:
-        return today
+        return frame
     extra = frame_from_files(files, snapshot_date)
     if extra is None:
-        return today
-    unseen = extra.join(today.select("id"), on="id", how="anti")
+        return frame
+    if frame.height == 0:
+        return extra
+    unseen = extra.join(frame.select("id"), on="id", how="anti")
     if unseen.height == 0:
-        return today
-    return pl.concat([today, unseen.select(today.columns)], how="vertical")
+        return frame
+    return pl.concat([frame, unseen.select(frame.columns)], how="vertical")
 
 
 def build(store: DatasetStore, snapshot_date: date) -> int:

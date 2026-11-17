@@ -31,7 +31,7 @@ from ..delivery.commands import (
     run_request_run,
     run_request_run_due,
 )
-from ..pipeline.commands import run_build
+from ..pipeline.commands import run_bronze_view, run_build
 from ..pipeline.recovery import check_and_recover
 from ..platform import (
     ARCHIVE_AFTER_DAYS,
@@ -456,6 +456,17 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--out", default=None, help="输出路径，默认 data/reports/dashboard.html")
     report.add_argument("--top", type=int, default=20, help="每张榜单条数")
 
+    # 只读、不落盘、不加锁：给「回看某一天」用。Bronze 只保留最新一天，
+    # 历史分区的早被 prune 删掉，而 build 会写正式目录并顺手 prune。
+    bronze = subparsers.add_parser(
+        "bronze",
+        help="按日期从 Raw 现算 Bronze 并打印（只读、不落盘、可导出；仅限 Raw 里还在的日期）",
+    )
+    bronze.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
+    bronze.add_argument("--id", default=None, help="只看这一个数据集（打印关键列）")
+    bronze.add_argument("--limit", type=int, default=5, help="打印前 N 行，默认 5")
+    bronze.add_argument("--out", default=None, help="把整表写到这个路径（.parquet 或 .csv）")
+
     docs = subparsers.add_parser("docs", help="生成 data 目录说明（结构·文件·字段含义）")
     docs.add_argument("--out", default=None, help="输出路径，默认 docs/DATA.md")
 
@@ -549,6 +560,10 @@ def main(argv: list[str] | None = None, *, transport: Any = None) -> int:
         return _execute(store, "export-wide", lambda: run_export_wide(args, store), lock_wait)
     if args.command == "query":
         return run_query(args, store)
+    if args.command == "bronze":
+        # 只读 Raw、不落盘、不改派生层：与 query 同待遇，不进数据锁、不写 runs 台账
+        # （「看一眼某天」不该挤掉采集记录的位置）。
+        return run_bronze_view(args, store).code
     if args.command == "request":
         # new / list / show 只读写 requests/，不碰数据目录，不参与数据锁；
         # run 要读多张表出一个一致快照，与 report / docs 同规矩——先等一会儿锁。

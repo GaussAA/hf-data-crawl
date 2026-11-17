@@ -32,6 +32,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `reconcile` | 全量对账：按 `createdAt` 稳定序扫全站，产出新增/删除/转私有/改名/sha 变更 | 是 |
 | `build` | 重建派生层：默认只重放近 7 天热区，`--stale` 只修派生滞后的日子及其后，`--full` 全量重放 | 否 |
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
+| `bronze` | 按日期从 Raw 现算 Bronze 并打印／导出（只读、不落盘、不写台账）。Bronze 只保留最新一天，历史那几天只能这样回看——**仅限 Raw 里还在的日期**（`archive` 前的 30 天窗口）；已压入冷区的日期回不来，cold 基线按 id 跨天去重、不是某天的快照 | 否 |
 | `request` | 需求与交付管理：`new` 建需求、`list` 看全部、`show` 看口径与台账、`method` 校验过程记录并重算脚本索引、`input` 收新版输入表、`diff` 比两版口径、`compare` 比两次交付、`run` 交付一次（`--dry-run` 预演）、`run-due` 跑到期的 | 否 |
 | `report` | 生成单文件榜单页（离线可看） | 否 |
 | `doctor` | 体检：调度新鲜度、底库行龄、层间勾稽、派生凭证、产物新鲜度、断日与残留文件；异常写 `ALERT.txt` 并追加体检流水 | 否 |
@@ -54,6 +55,7 @@ hf-data-crawl build        [--stale | --full]                            # 默�
 hf-data-crawl compact      [--older-than-days 7] [--date YYYY-MM-DD]  # 冷区跨天压缩
 hf-data-crawl prune        [--dry-run]                              # 清理备份（只动 backup/）
 hf-data-crawl query        [--board NAME] [--limit 50] [--sql "..."]   # NAME 见「内置榜单」；省略则 growth
+hf-data-crawl bronze       [--date YYYY-MM-DD] [--id 作者/名称] [--limit 5] [--out PATH]  # 回看某天的原始标量
 hf-data-crawl report       [--out PATH] [--top 20]
 hf-data-crawl archive      [--older-than-days 30] [--date YYYY-MM-DD]
 hf-data-crawl docs         [--out PATH]           # 默认 docs/DATA.md

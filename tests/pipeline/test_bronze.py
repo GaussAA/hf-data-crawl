@@ -13,9 +13,15 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 from typing import Any
 
+import pytest
+
+from hf_data_crawl.ops.cli import main
+from hf_data_crawl.pipeline import raw
 from hf_data_crawl.pipeline.bronze import to_row
+from hf_data_crawl.platform.store import DatasetStore
 
 DAY = date(2026, 11, 16)
 
@@ -72,3 +78,28 @@ def test_原始行完整保留以便回溯() -> None:
 
     assert row is not None
     assert "unknown_field" in row["raw"]
+
+
+def test_命令行回看某天的_bronze(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """`bronze --date` 是历史日期的唯一回看入口：Bronze 只留最新一天。
+
+    它不写 runs 台账——「看一眼」不是一轮运行，挤掉采集记录的位置就没人查了。
+    """
+    store = DatasetStore(tmp_path / "data")
+    raw.write(
+        store,
+        snapshot_date=DAY,
+        page_index=1,
+        records=[{"id": "acme/ds-0", "downloads": 7}],
+        meta={},
+    )
+
+    code = main(
+        ["--data-dir", str(store.root), "bronze", "--date", DAY.isoformat(), "--limit", "2"]
+    )
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "1 行" in out
+    assert "acme/ds-0" in out
+    assert not (store.root / "runs").exists()
