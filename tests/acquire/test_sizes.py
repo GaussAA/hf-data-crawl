@@ -246,15 +246,31 @@ def test_畸形响应体记为临时失败() -> None:
 # ---------------------------------------------------------------- 失败分类
 
 
-@pytest.mark.parametrize("status", [401, 403, 404, 500, 501])
+@pytest.mark.parametrize("status", [401, 403, 404])
 def test_永久缺失不重试(status: int) -> None:
-    """重试永久缺失等于白烧预算——30% 的候选都是这一类。"""
+    """重试永久缺失等于白烧预算——权限与「上游没有这份数据」都不会因重试改变。"""
     transport = FakeSizeTransport({"acme/x": status})
 
     result = api(transport).fetch("acme/x", DAY)
 
     assert result.status == "unavailable"
     assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize("status", [429, 500, 501, 502, 503, 504])
+def test_限流与服务器错误会重试(status: int) -> None:
+    """500/501 是上游状态，不是这份数据的属性。
+
+    原先它们被归进 `UNAVAILABLE_STATUS`，一次瞬时故障就把库钉成「永久缺失」，
+    要等一周后的 `--retry-unavailable` 才有人再看它一眼。实测首次全量抓取时
+    `unavailable` 占 25.4%，其中就混着这类。
+    """
+    transport = FakeSizeTransport({"acme/x": [status, payload(7)]})
+
+    result = api(transport).fetch("acme/x", DAY)
+
+    assert result.status == "ok"
+    assert len(transport.calls) == 2
 
 
 @pytest.mark.parametrize("status", [429, 502, 503, 504])
@@ -407,7 +423,7 @@ def test_重试开关只跳过已成功的() -> None:
 
 
 def test_不可用的也落库以免下轮重烧() -> None:
-    transport = FakeSizeTransport({"acme/a": 500, "acme/b": payload(3)})
+    transport = FakeSizeTransport({"acme/a": 404, "acme/b": payload(3)})
 
     summary, frame = run_batch(transport, ["acme/a", "acme/b"])
 
