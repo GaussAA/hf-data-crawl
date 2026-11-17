@@ -47,7 +47,9 @@ ALERT_NAME = "ALERT.txt"
 #: 日增量按天跑，留一天半的余量；对账已改为每日，同口径留一天半——
 #: 再松就会把「昨天那轮没跑成」当成正常，而这正是底库变旧的开始。
 COLLECT_MAX_AGE = timedelta(hours=36)
-RECONCILE_MAX_AGE = timedelta(hours=36)
+#: 全量对账的时限。日报里 `reconcile` 带 `--max-pages 600`（整站约 1127 页），
+#: 两天才走完一轮；按 36 小时判会每天亮一次「对账过期」的假红。
+RECONCILE_MAX_AGE = timedelta(hours=48)
 #: 回看多少天的 Raw 是否断日。
 GAP_WINDOW_DAYS = 14
 #: 临时文件超过这个年纪才算残留；正在写的文件只会存在几秒。
