@@ -12,12 +12,14 @@ from ..platform.runs import Outcome
 from ..platform.store import DatasetStore
 from . import compare, specdiff
 from .delivery import (
+    PRUNED_NAME,
     DeliveryBlocked,
     DeliveryResult,
     Preview,
     deliver,
     deliveries_of,
     preview,
+    prune,
     read_manifest,
     run_due,
     write_index,
@@ -121,7 +123,137 @@ def run_request(args: argparse.Namespace) -> int:
         return _request_compare(root, args)
     if args.request_action == "index":
         return _request_index(root, args.id)
+    if args.request_action == "usage":
+        return _request_usage(root, args.term)
+    if args.request_action == "prune":
+        return _request_prune(root, args)
     return _request_show(root, args.id)
+
+
+def _request_prune(root: Path, args: argparse.Namespace) -> int:
+    """清掉旧交付的产物字节；manifest、README 与它们的 sha256 一份不动。
+
+    产物可以重算，台账不能重建——所以这里删的只有 `manifest.result.files` 点名的
+    那些文件，删掉的每一样都写进 `deliveries/PRUNED.json`。
+    """
+    if args.keep < 1:
+        print("失败：--keep 至少是 1——当前有效那条的产物永远留着。")
+        return 1
+    if args.id:
+        try:
+            targets = [resolve_dir(root, args.id)]
+        except SpecError as error:
+            print(f"失败：{error}")
+            return 1
+    else:
+        targets = request_dirs(root)
+    if not targets:
+        print(f"{root} 下还没有需求。")
+        return 1
+
+    pruned_any = False
+    for request_dir in targets:
+        if not deliveries_of(request_dir):
+            continue
+        report = prune(request_dir, keep=args.keep, dry_run=args.dry_run)
+        if not report.pruned:
+            if not args.id:
+                continue
+            print(f"{report.request_id}：最近 {report.kept} 条之外没有可清理的产物。")
+            continue
+        pruned_any = True
+        verb = "将清理" if args.dry_run else "已清理"
+        print(f"{report.request_id}（保留最近 {report.kept} 条的产物）")
+        for batch in report.pruned:
+            names = "、".join(str(item["name"]) for item in batch.files)
+            print(f"  {verb} {batch.name}  {batch.freed:,} 字节  {names}")
+        if not args.dry_run:
+            write_index(request_dir)
+            print(
+                f"  合计 {len(report.pruned)} 条 / {report.freed:,} 字节；"
+                f"{DELIVERIES_DIR}/{PRUNED_NAME} 记了它们的 sha256，INDEX 标「已清理」"
+            )
+        else:
+            print(f"  合计 {len(report.pruned)} 条 / {report.freed:,} 字节（--dry-run 未动磁盘）")
+    if not pruned_any:
+        print("没有可清理的产物：每条需求保留条数之外的产物都已不在。")
+    return 0
+
+
+def _request_usage(root: Path, term: str) -> int:
+    """反查一个词条/库列被哪些需求用到。
+
+    为什么要有：改一个词条的定义（或淘汰一个库列）时，最该先回答的是「谁会受影响」。
+    口径散在各需求的 `spec.yaml` 里，没有这张反查表就只能靠 `grep`，而 `grep` 会把
+    注释里提过一句的也算上，也不会告诉你那份需求最近交的是哪一版。
+    """
+    try:
+        metric = lookup(term)
+    except ValueError:
+        metric = None
+    field_name = metric.field if metric else term
+    names = {term, field_name} | ({metric.term} if metric else set())
+    if metric:
+        print(f"{metric.term}（库列 `{metric.field}`）—— {metric.definition}")
+    else:
+        print(f"按库列名 `{term}` 反查（词表里没有这个叫法，只比列名与模板占位）")
+
+    hits = 0
+    requests = 0
+    for request_dir in request_dirs(root):
+        try:
+            spec = load_spec(request_dir / SPEC_NAME)
+        except SpecError as error:
+            print(f"[!] {request_dir.name}：{error}")
+            continue
+        sites: list[str] = []
+        if spec.kind is Kind.QUERY:
+            for index, item in enumerate(spec.criteria, 1):
+                if item.metric in names or _metric_field(item.metric) == field_name:
+                    sites.append(f"条件 {index}：{item.metric} {item.op} {item.value}")
+            for key in spec.order_by:
+                if key.metric in names or _metric_field(key.metric) == field_name:
+                    sites.append(f"排序：{key.metric} {'降序' if key.descending else '升序'}")
+            for name in spec.output.columns:
+                if name in names:
+                    sites.append(f"输出列：{name}")
+        else:
+            fill = spec.fill
+            for item in fill.columns if fill else ():
+                if item.field in names or item.name in names:
+                    sites.append(
+                        f"列「{item.name}」← {'field ' + str(item.field) if item.field else item.kind}"
+                    )
+                elif item.template and any(f"{{{name}}}" in item.template for name in names):
+                    sites.append(f"列「{item.name}」← 模板 `{item.template}`")
+        if not sites:
+            continue
+        requests += 1
+        hits += len(sites)
+        runs = deliveries_of(request_dir)
+        last = read_manifest(runs[-1]) if runs else None
+        tail = (
+            f"最近交付 {runs[-1].name}（v{last.get('spec_version')}）"
+            if runs and last
+            else "从未交付"
+        )
+        print(f"\n{spec.id}  {spec.title}  · v{spec.version} · {spec.kind.value} · {tail}")
+        for line in sites:
+            print(f"  {line}")
+
+    if not hits:
+        print("没有需求用到它——可以放心改定义；若刚改过而这里仍为空，检查 spec 是否保存。")
+        return 1
+    print(f"\n共 {requests} 份需求、{hits} 处引用。改定义前，这些是必须复核的清单。")
+    return 0
+
+
+def _metric_field(term: str) -> str | None:
+    """词条名 → 库列名；认不出来返回 None（纯列名本来就没有词条）。"""
+    try:
+        return lookup(term).field
+    except ValueError:
+        return None
 
 
 def _request_index(root: Path, request_id: str | None) -> int:

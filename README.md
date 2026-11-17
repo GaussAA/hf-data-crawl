@@ -33,7 +33,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `build` | 重建派生层：默认只重放近 7 天热区，`--stale` 只修派生滞后的日子及其后，`--full` 全量重放 | 否 |
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
 | `bronze` | 按日期从 Raw 现算 Bronze 并打印／导出（只读、不落盘、不写台账）。Bronze 只保留最新一天，历史那几天只能这样回看——**仅限 Raw 里还在的日期**（`archive` 前的 30 天窗口）；已压入冷区的日期回不来，cold 基线按 id 跨天去重、不是某天的快照 | 否 |
-| `request` | 需求与交付管理：`new` 建需求、`list` 看全部、`show` 看口径与台账、`method` 校验过程记录并重算脚本索引、`input` 收新版输入表、`diff` 比两版口径、`compare` 比两次交付、`run` 交付一次（`--dry-run` 只算不写、`--preview` 落草稿区可打开看）、`run-due` 跑到期的、`index` 重写交付索引 | 否 |
+| `request` | 需求与交付管理：`new` 建需求、`list` 看全部、`show` 看口径与台账、`method` 校验过程记录并重算脚本索引、`input` 收新版输入表、`diff` 比两版口径、`compare` 比两次交付、`run` 交付一次（`--dry-run` 只算不写、`--preview` 落草稿区可打开看）、`run-due` 跑到期的、`index` 重写交付索引、`usage` 反查词条影响面、`prune` 清旧产物字节 | 否 |
 | `report` | 生成单文件榜单页（离线可看） | 否 |
 | `doctor` | 体检：调度新鲜度、底库行龄、层间勾稽、派生凭证、产物新鲜度、断日与残留文件；异常写 `ALERT.txt` 并追加体检流水 | 否 |
 | `archive` | 归档早于 N 天的 Raw 分区：合并小分块并去重，先验证 Bronze 逐行相等，原文件移入 `backup/raw/` | 否 |
@@ -70,6 +70,8 @@ hf-data-crawl request      compare REQ-0001 [A B]    # 比两次交付的逐列�
 hf-data-crawl request      run REQ-0001 [--force] [--dry-run] [--preview]   # --dry-run 只算不写；--preview 落 scratch/preview/ 可打开看
 hf-data-crawl request      run-due                  # 只跑到期的（计划任务用）
 hf-data-crawl request      index [REQ-0001]         # 重写 deliveries/INDEX.md；不写则全部重写
+hf-data-crawl request      usage 下载量               # 反查：这个词条/库列被哪些需求用到、最近交的哪版
+hf-data-crawl request      prune [REQ-0001] [--keep 1] [--dry-run]   # 清旧交付的产物字节，档案与 sha256 留着
 ```
 
 `--kind backfill` 时 `--source` 必填：该文件会被复制进 `<需求目录>/input/`，原件不动，
@@ -278,6 +280,16 @@ requests/REQ-0001-query-高热度数据集清单/
 但每次正式交付都会写一条 `runs/<时刻>-request-run.json`，失败也写——「这轮到底跑过没有、
 被什么拦住」不再只活在终端里。体检的 `delivery_anchors` 逐份对账输入快照与历史版本，
 删掉或改过都会被点名。取舍见 [ADR-0004](docs/adr/0004-failure-semantics.md)。
+
+**产物可清、台账不可清**：`request prune` 只删旧交付的产物字节，manifest 与 README
+一份不动，删掉的每一样都写进 `deliveries/PRUNED.json`（连同 sha256），`INDEX` 标「已清理」。
+当前有效那条永远留、`--keep` 至少 1。想清之前先 `--dry-run` 看会掉多少。
+体检的 `delivery_products` 盯的是**账实相符**（说清理了却还在 / 记录与 sha256 不符），
+产物没留存只记个数——它是可重算的副本，不是台账。取舍见
+[ADR-0005](docs/adr/0005-delivery-retention.md)。
+
+**改词条前先查影响面**：`request usage 下载量` 列出所有引用它的需求（条件、排序、输出列、
+回填列），以及各自最近交的版本。口径散在各需求目录里，`grep` 只会把注释里提过一句的也算上。
 
 **目录名 = `REQ-xxxx-<kind>-<标题短名>`**：编号保唯一与排序，`kind` 一眼看出执行路径，
 标题短名不用打开文件就知道这单是什么。命令始终用编号（`request run REQ-0002`），

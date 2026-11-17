@@ -23,7 +23,13 @@ import polars as pl
 
 from ..acquire.reconcile import PROBE_DEGRADE_AFTER
 from ..acquire.sizes import stale_ids
-from ..delivery.delivery import deliveries_of, index_problem, method, read_manifest
+from ..delivery.delivery import (
+    deliveries_of,
+    index_problem,
+    method,
+    pruned_facts,
+    read_manifest,
+)
 from ..delivery.fields import (
     COLUMN_SOURCES,
     COLUMN_TYPES,
@@ -1304,6 +1310,76 @@ def _delivery_anchors(ctx: RunContext) -> Finding:
     return Finding(False, f"交付锚点：{checked} 份需求的输入快照与历史版本都与档案对得上")
 
 
+def _delivery_products(ctx: RunContext) -> Finding:
+    """产物留存：清理记录必须「账上有、盘上无」，台账不能与自己对不上。
+
+    产物是**可重算的副本**，不是台账本身——没留存不是错（早期交付的产物早就
+    手工删过，重算即可）。真正会骗人的是账实不符：
+
+    - 清理记录里的 sha256 与档案不一致 → 说不清清掉的是哪一份；
+    - 说清理了、文件却还在 → 磁盘没回收，或上次清理中断；
+    - 当前有效那条被列进清理清单 → `INDEX` 指着的「当前有效」打不开。
+
+    没留存的产物只记个数，报在通过的那一行里——它是状态，不是故障。
+    """
+    requests_root = ctx.requests_root
+    if requests_root is None:
+        return Finding(False, "产物留存：未指定需求目录，本次未检查")
+    if not requests_root.is_dir():
+        return Finding(False, f"产物留存：{requests_root} 不存在，本次未检查")
+
+    checked = 0
+    absent = 0
+    bad: list[str] = []
+    for request_dir in request_dirs(requests_root):
+        directories = deliveries_of(request_dir)
+        if not directories:
+            continue
+        checked += 1
+        facts = pruned_facts(request_dir)
+        current = directories[-1]
+        if current.name in facts:
+            bad.append(f"{request_dir.name}：当前有效的 {current.name} 产物被清理了")
+        for directory in directories:
+            body = read_manifest(directory) or {}
+            files = (body.get("result") or {}).get("files") or []
+            entry = facts.get(directory.name)
+            recorded = {
+                str(item.get("name")): item.get("sha256")
+                for item in (entry or {}).get("files") or []
+                if isinstance(item, dict)
+            }
+            for item in files:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "")
+                present = (directory / name).is_file()
+                if entry is None:
+                    if not present:
+                        absent += 1
+                    continue
+                if name not in recorded:
+                    bad.append(
+                        f"{request_dir.name}/{directory.name}：{name} 没记进清理清单，"
+                        "清理与档案对不上"
+                    )
+                    continue
+                if recorded[name] != item.get("sha256"):
+                    bad.append(
+                        f"{request_dir.name}/{directory.name}：{name} 的清理记录与档案 sha256 不一致"
+                    )
+                elif present:
+                    bad.append(
+                        f"{request_dir.name}/{directory.name}：{name} 说清理了却还在"
+                        "（上次清理中断？重跑 `request prune` 即可）"
+                    )
+
+    if bad:
+        return Finding(True, f"产物留存：{len(bad)} 处账实不符 —— " + "；".join(bad[:5]))
+    note = f"；{absent} 个产物未留存（可重算，不影响台账）" if absent else ""
+    return Finding(False, f"产物留存：{checked} 份需求的清理记录与档案一致{note}")
+
+
 def _spec_version_consistency(ctx: RunContext) -> Finding:
     """口径改了却没升版本：档案会指着一份「当时说过、现在已经不是」的定义。
 
@@ -1395,6 +1471,7 @@ CHECKS: tuple[Check, ...] = (
     Check("spec_version", _spec_version_consistency),
     Check("delivery_index", _delivery_index),
     Check("delivery_anchors", _delivery_anchors),
+    Check("delivery_products", _delivery_products),
 )
 
 #: 只在非快照模式跑：快照模式下本次体检已持写锁，再去抢锁会自己跟自己冲突。

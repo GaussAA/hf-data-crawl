@@ -42,6 +42,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -698,9 +699,10 @@ def index_lines(request_dir: Path) -> list[str]:
         f"- 可复现性：`✓` 代码干净、`✗` 有未提交改动、`?` 该条档案里没有这项记录"
         f"（{AUDIT_NAME} 里的历史结论会覆盖 `?`）",
         "",
-        "| 时刻 | 版本 | 行数 | 列数 | 性质 | 可复现 | 产物 sha256 | 底库 md5 | 代码 commit |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| 时刻 | 版本 | 行数 | 列数 | 性质 | 可复现 | 产物 | 产物 sha256 | 底库 md5 | 代码 commit |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
+    pruned = pruned_facts(request_dir)
     previous: dict[str, Any] | None = None
     for directory in directories:
         body = read_manifest(directory) or {}
@@ -717,10 +719,18 @@ def index_lines(request_dir: Path) -> list[str]:
             if known.get("reproducible") is False
             else _reproducible(body)
         )
+        # 产物那一列要分清三件事：还在、按留存策略清掉、没留存（早期手工删过）。
+        # 后两者都「打不开」，但原因不同——混成同一个符号，读的人会以为清理漏了。
+        if directory.name in pruned:
+            product = "已清理"
+        elif all((directory / str(item.get("name"))).is_file() for item in files) if files else False:
+            product = "✓"
+        else:
+            product = "未留存"
         lines.append(
             f"| {directory.name} | v{body.get('spec_version', '?')} | {result.get('rows', '?')} "
             f"| {len(result.get('columns') or [])} | {_nature(request_dir, body, previous)} | {mark} "
-            f"| {digest} | {source} | {commit} |"
+            f"| {product} | {digest} | {source} | {commit} |"
         )
         previous = body
     lines += [
@@ -729,6 +739,125 @@ def index_lines(request_dir: Path) -> list[str]:
         "",
     ]
     return lines
+
+
+#: 产物留存清单：哪些交付的产物字节被清理了、它们的 sha256 是多少。
+#: 交付目录是**不可变台账**，所以清理只动产物字节，绝不动 manifest / README；
+#: 清掉的每一样都记在这里，档案仍能自证「那一份长什么样」。
+PRUNED_NAME = "PRUNED.json"
+
+
+@dataclass(frozen=True)
+class PrunedBatch:
+    """一条被清理的交付。`files` 里的 sha256 来自它自己的 manifest。"""
+
+    name: str
+    files: tuple[dict[str, Any], ...] = ()
+    freed: int = 0
+
+
+@dataclass(frozen=True)
+class PruneReport:
+    request_id: str
+    kept: int
+    pruned: tuple[PrunedBatch, ...] = ()
+    #: 被跳过的目录（没有 manifest，或产物本来就缺）——不静默，列出来。
+    skipped: tuple[str, ...] = ()
+
+    @property
+    def freed(self) -> int:
+        return sum(item.freed for item in self.pruned)
+
+
+def pruned_facts(request_dir: Path) -> dict[str, Any]:
+    """读 `deliveries/PRUNED.json`；没有、坏了都当空——它只是附加账，不该拦住任何命令。"""
+    path = request_dir / DELIVERIES_DIR / PRUNED_NAME
+    try:
+        body = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    pruned = body.get("pruned")
+    return pruned if isinstance(pruned, dict) else {}
+
+
+def prune(
+    request_dir: Path,
+    *,
+    keep: int = 1,
+    moment: datetime | None = None,
+    dry_run: bool = False,
+) -> PruneReport:
+    """清掉旧交付的产物字节，只留最近 `keep` 条；manifest 与 README 一份不动。
+
+    为什么可以清：产物是「交付出去的那份文件」的重算副本，而 manifest 记着它的
+    sha256、README 记着怎么复现。台账的价值在「当时交了什么」，不在于把每一版
+    Excel 都永久留一份——有 daily 需求之后，那就是每月几十 MB 的无句点增长。
+
+    为什么当前那条永不清：它是 `INDEX` 指向的「当前有效」，也是人最常打开的那份。
+    """
+    directories = deliveries_of(request_dir)
+    keep = max(1, keep)
+    targets = directories[:-keep]
+    facts = pruned_facts(request_dir)
+    stamp = (moment or datetime.now().astimezone()).isoformat(timespec="seconds")
+    batches: list[PrunedBatch] = []
+    skipped: list[str] = []
+    for directory in targets:
+        body = read_manifest(directory)
+        if body is None:
+            skipped.append(directory.name)
+            continue
+        files = (body.get("result") or {}).get("files") or []
+        removed: list[dict[str, Any]] = []
+        freed = 0
+        for item in files:
+            path = directory / str(item.get("name") or "")
+            if not path.is_file():
+                continue
+            freed += path.stat().st_size
+            removed.append(
+                {
+                    "name": path.name,
+                    "bytes": path.stat().st_size,
+                    "sha256": item.get("sha256") or _sha256(path),
+                }
+            )
+        if not removed:
+            continue
+        batches.append(PrunedBatch(name=directory.name, files=tuple(removed), freed=freed))
+        if dry_run:
+            continue
+        # 先记账、再删字节：反过来（先删后记）在两步之间崩溃，会留下「产物没了、
+        # 也没人说是清理掉的」——那正是这套留存机制要防的「看起来坏了」。
+        facts[directory.name] = {"pruned_at": stamp, "files": removed}
+        write_bytes(
+            request_dir / DELIVERIES_DIR / PRUNED_NAME,
+            (
+                json.dumps(
+                    {"version": 1, "updated_at": stamp, "pruned": facts},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n"
+            ).encode("utf-8"),
+        )
+        for item in removed:
+            (directory / str(item["name"])).unlink(missing_ok=True)
+
+    return PruneReport(
+        request_id="-".join(request_dir.name.split("-")[:2]),
+        kept=min(keep, len(directories)),
+        pruned=tuple(batches),
+        skipped=tuple(skipped),
+    )
+
+
+def _sha256(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 def write_index(request_dir: Path) -> Path:

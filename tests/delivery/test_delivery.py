@@ -20,6 +20,7 @@ from support import write_method
 
 from hf_data_crawl.delivery import method
 from hf_data_crawl.delivery.commands import deliveries_of
+from hf_data_crawl.delivery.compare import CompareError, compare_deliveries
 from hf_data_crawl.delivery.contract import DeliveryUnchanged
 from hf_data_crawl.delivery.delivery import (
     EXECUTORS,
@@ -28,6 +29,8 @@ from hf_data_crawl.delivery.delivery import (
     due_state,
     index_problem,
     preview,
+    prune,
+    pruned_facts,
     run_due,
     write_index,
 )
@@ -961,6 +964,60 @@ def seed_manifest(root: Path, name: str, **fields: Any) -> Path:
     body.update(fields)
     (directory / MANIFEST_NAME).write_text(json.dumps(body), encoding="utf-8")
     return directory
+
+
+def test_清理只删旧产物且当前那条永不动(tmp_path: Path) -> None:
+    """产物是可重算的副本；台账（manifest / README）一份不动，清掉的 sha256 记进清单。"""
+    root = tmp_path / "req"
+    older = seed_manifest(root, "20261101T000000")
+    newer = seed_manifest(
+        root,
+        "20261102T000000",
+        source={"current_md5": "bbb"},
+        result={"rows": 2, "columns": ["id"], "files": [{"name": "d.parquet", "sha256": "s2"}]},
+    )
+    for directory in (older, newer):
+        (directory / "d.parquet").write_bytes(b"payload")
+        (directory / "README.md").write_text("说明", encoding="utf-8")
+
+    report = prune(root / "REQ-0001", keep=1, moment=NOW)
+
+    assert [item.name for item in report.pruned] == ["20261101T000000"]
+    assert report.freed == 7
+    assert not (older / "d.parquet").exists(), "旧产物应被清掉"
+    assert (older / MANIFEST_NAME).exists() and (older / "README.md").exists(), "档案一份不动"
+    assert (newer / "d.parquet").exists(), "当前有效那条的产物永远留着"
+    facts = pruned_facts(root / "REQ-0001")
+    assert facts["20261101T000000"]["files"][0]["sha256"] == "s1"
+
+
+def test_清理干跑不动磁盘(tmp_path: Path) -> None:
+    root = tmp_path / "req"
+    older = seed_manifest(root, "20261101T000000")
+    seed_manifest(root, "20261102T000000", source={"current_md5": "bbb"})
+    (older / "d.parquet").write_bytes(b"payload")
+
+    report = prune(root / "REQ-0001", keep=1, moment=NOW, dry_run=True)
+
+    assert [item.name for item in report.pruned] == ["20261101T000000"]
+    assert (older / "d.parquet").exists(), "--dry-run 只报不动"
+    assert pruned_facts(root / "REQ-0001") == {}
+
+
+def test_清理后索引与比对都记得住账(tmp_path: Path) -> None:
+    """清理不是「文件丢了」：索引标已清理，比对给出去哪看 sha256 的话。"""
+    root = tmp_path / "req"
+    older = seed_manifest(root, "20261101T000000")
+    seed_manifest(root, "20261102T000000", source={"current_md5": "bbb"})
+    (older / "d.parquet").write_bytes(b"payload")
+
+    prune(root / "REQ-0001", keep=1, moment=NOW)
+    write_index(root / "REQ-0001")
+
+    text = (root / "REQ-0001" / DELIVERIES_DIR / "INDEX.md").read_text(encoding="utf-8")
+    assert "| 已清理 |" in text
+    with pytest.raises(CompareError, match="留存策略"):
+        compare_deliveries(older, root / "REQ-0001" / DELIVERIES_DIR / "20261102T000000")
 
 
 def test_索引把重钉与内容变化分开(tmp_path: Path) -> None:

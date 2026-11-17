@@ -335,6 +335,54 @@ def test_show区分交过的版本与只有快照的版本(
     assert "没有对应交付" in out
 
 
+def test_usage按词条反查需求(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """改一个词条的定义前，先看清谁会受影响；口径散在 spec 里，grep 认不出语义。"""
+    make(tmp_path)
+
+    assert run(tmp_path, "request", "usage", "下载量") == 0
+    out = capsys.readouterr().out
+    assert "REQ-0001" in out
+    assert "条件" in out, "要指出具体引用点，不只报个需求号"
+
+    assert run(tmp_path, "request", "usage", "查无此词") == 1
+
+
+def test_prune命令清旧产物但留当前与档案(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """产物是可重算的副本；清掉旧的那些，manifest / README 与当前那条一份不动。"""
+    path = make(tmp_path)
+    deliveries = path.parent / "deliveries"
+    for name in ("20261101T000000", "20261102T000000"):
+        directory = deliveries / name
+        directory.mkdir(parents=True)
+        (directory / "d.parquet").write_bytes(b"payload")
+        (directory / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "spec_version": 1,
+                    "result": {
+                        "rows": 1,
+                        "columns": ["id"],
+                        "files": [{"name": "d.parquet", "sha256": name}],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    assert run(tmp_path, "request", "prune", "REQ-0001") == 0
+    assert not (deliveries / "20261101T000000" / "d.parquet").exists()
+    assert (deliveries / "20261102T000000" / "d.parquet").exists(), "当前有效那条永远留着"
+    assert (deliveries / "PRUNED.json").is_file()
+    assert (deliveries / "20261101T000000" / "manifest.json").is_file(), "档案一份不动"
+    assert "已清理" in (deliveries / "INDEX.md").read_text(encoding="utf-8")
+
+    # `--keep` 至少 1：当前有效那条不能清。
+    assert run(tmp_path, "request", "prune", "REQ-0001", "--keep", "0") == 1
+    assert "至少是 1" in capsys.readouterr().out
+
+
 def test_index命令重写交付索引(tmp_path: Path) -> None:
     """补建历史索引不该靠再交付一份——那正是这次治理要断掉的循环。"""
     path = make(tmp_path)

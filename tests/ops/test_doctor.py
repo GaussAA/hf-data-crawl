@@ -896,6 +896,103 @@ def test_输入快照被改过要在体检里报出来(tmp_path: Path) -> None:
     assert "与档案指纹不符" in hits[0]
 
 
+def _seed_delivery(root: Path, name: str, *, sha: str = "s1") -> Path:
+    """造一条最小交付：目录 + manifest + 一个产物文件。"""
+    folder = root / "REQ-0001-backfill-清单"
+    directory = folder / "deliveries" / name
+    directory.mkdir(parents=True, exist_ok=True)
+    (folder / "spec.yaml").write_text(
+        "id: REQ-0001\ntitle: 清单\nrequester: 大帅\nversion: 1\n", encoding="utf-8"
+    )
+    (directory / "manifest.json").write_text(
+        json.dumps(
+            {
+                "spec_version": 1,
+                "result": {
+                    "rows": 1,
+                    "columns": ["id"],
+                    "files": [{"name": "d.xlsx", "sha256": sha}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (directory / "d.xlsx").write_bytes(b"payload")
+    return directory
+
+
+def test_说清理了却还在要报(tmp_path: Path) -> None:
+    """清理中断或手工删了一半，账实就不符了；重跑 `request prune` 能修，但得先看见。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    root = tmp_path / "req"
+    older = _seed_delivery(root, "20261101T000000")
+    _seed_delivery(root, "20261102T000000")
+    (older.parent / "PRUNED.json").write_text(
+        json.dumps(
+            {
+                "pruned": {
+                    "20261101T000000": {
+                        "pruned_at": "2026-11-17T00:00:00+08:00",
+                        "files": [{"name": "d.xlsx", "bytes": 7, "sha256": "s1"}],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    texts = [item.text for item in diagnose(store, NOW, requests_root=root) if item.problem]
+
+    hits = [text for text in texts if "产物留存" in text]
+    assert len(hits) == 1
+    assert "说清理了却还在" in hits[0]
+
+
+def test_当前有效那条被清掉要报(tmp_path: Path) -> None:
+    """INDEX 指着「当前有效」，产物却按留存策略没了——人一打开就是空目录。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    root = tmp_path / "req"
+    current = _seed_delivery(root, "20261102T000000")
+    (current / "d.xlsx").unlink()
+    (current.parent / "PRUNED.json").write_text(
+        json.dumps(
+            {
+                "pruned": {
+                    "20261102T000000": {
+                        "pruned_at": "2026-11-17T00:00:00+08:00",
+                        "files": [{"name": "d.xlsx", "bytes": 7, "sha256": "s1"}],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    texts = [item.text for item in diagnose(store, NOW, requests_root=root) if item.problem]
+
+    hits = [text for text in texts if "产物留存" in text]
+    assert len(hits) == 1
+    assert "产物被清理了" in hits[0]
+
+
+def test_产物没留存不算故障(tmp_path: Path) -> None:
+    """产物是可重算的副本：早期交付用手工删过，重算即可，不该让体检长期发红。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    root = tmp_path / "req"
+    directory = _seed_delivery(root, "20261101T000000")
+    (directory / "d.xlsx").unlink()
+
+    findings = [item for item in diagnose(store, NOW, requests_root=root)]
+    hits = [item for item in findings if "产物留存" in item.text]
+
+    assert len(hits) == 1
+    assert hits[0].problem is False
+    assert "未留存" in hits[0].text
+
+
 def test_探测成片失败要报出来(tmp_path: Path) -> None:
     """探测失败落成 unknown，处置是「先别动」——状态原地不动，界面上看不出异常。"""
     store = DatasetStore(tmp_path / "data")

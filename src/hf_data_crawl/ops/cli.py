@@ -215,6 +215,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="算一遍并把产物写进 <需求目录>/scratch/preview/，可打开看，但不新增交付",
     )
     request_sub.add_parser("run-due", help="跑所有到期的需求（计划任务用）")
+    request_usage = request_sub.add_parser(
+        "usage", help="反查一个词条/库列被哪些需求用到：改定义前先看影响面"
+    )
+    request_usage.add_argument("term", help="词条名（如 下载量）或库列名（如 downloads）")
+    request_prune = request_sub.add_parser(
+        "prune", help="清掉旧交付的产物字节：档案与 sha256 都留着，只回收磁盘"
+    )
+    request_prune.add_argument("id", nargs="?", default=None, help="需求号；不写则全部")
+    request_prune.add_argument(
+        "--keep", type=int, default=1, help="保留最近几条的产物（默认 1；当前有效那条永远保留）"
+    )
+    request_prune.add_argument(
+        "--dry-run", action="store_true", help="只报会清掉什么、能省多少，不动磁盘"
+    )
     request_index = request_sub.add_parser(
         "index", help="重写 deliveries/INDEX.md：列出每条交付的性质、可复现性与当前有效"
     )

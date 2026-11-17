@@ -29,7 +29,7 @@ import openpyxl
 import polars as pl
 
 from .backfill import FillError, parse_reference
-from .delivery import read_manifest
+from .delivery import pruned_facts, read_manifest
 from .header import HeaderError
 from .requirement import MANIFEST_NAME, Kind
 from .sheet import read_header
@@ -97,6 +97,14 @@ def compare_deliveries(left_dir: Path, right_dir: Path) -> Comparison:
     取舍写在 GLOSSARY #105。
     """
     left_body, right_body = _manifest(left_dir), _manifest(right_dir)
+    # 产物可能已按留存策略清掉字节（`PRUNED.json` 记着 sha256）。那不是「文件丢了」，
+    # 而是「账还在、副本已收」，报错要说清朝哪儿看，别让人以为交付坏了。
+    for directory in (left_dir, right_dir):
+        if directory.name in pruned_facts(directory.parent.parent):
+            raise CompareError(
+                f"{directory.name} 的产物已按留存策略清理（只剩 sha256，见 PRUNED.json）——"
+                "要逐列比对，先按 manifest 复现一份，或改用与未清理的那次比"
+            )
     left_kind, right_kind = left_body.get("kind"), right_body.get("kind")
     if left_kind != right_kind:
         raise CompareError(f"两份交付形态不同（{left_kind} → {right_kind}），无从逐列比较")

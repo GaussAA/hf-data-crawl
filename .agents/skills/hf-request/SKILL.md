@@ -123,11 +123,13 @@ hf-data-crawl request run REQ-0001 --preview  # 只想先看产物：落 scratch
 | 场景 | 命令 | 要点 |
 | --- | --- | --- |
 | 改口径 | 改 spec → `version` +1 → `request diff <id>` | 版本号不可复用，没升版会被拦 |
+| 改词条定义 | `request usage <词条>` 先看影响面 | 列出引用点与各需求最近交的版本 |
 | 换输入表 | `request input <id> --add 新表` → 改 `fill.source.path` → 升版 | 旧快照留在 `input/v<n>/` |
 | 看两版口径差 | `request diff <id> [vA] [vB]` | 默认最近两版；只比决定产物的部分 |
-| 看两次交付差 | `request compare <id> [A] [B]` | 逐列报改值格数并抽样 |
+| 看两次交付差 | `request compare <id> [A] [B]` | 逐列报改值格数并抽样；已清理的会指路 sha256 |
 | 重建交付索引 | `request index <id>` | 只重写 `deliveries/INDEX.md`，不动任何一条交付 |
-| 体检 | `hf-data-crawl doctor` | 看「需求自包含」「口径版本」「交付索引」三项 |
+| 回收磁盘 | `request prune <id> [--keep N] [--dry-run]` | 只清旧产物字节；档案、当前有效那条与 sha256 都留着 |
+| 体检 | `hf-data-crawl doctor` | 看「需求自包含」「口径版本」「交付索引」「交付锚点」「产物留存」 |
 
 变更后**必须**在 `method/METHOD.md` 里记一句「换了什么、为什么换」。这句话是
 六个月后唯一能解释这次变更的东西，不是可选项。
@@ -169,6 +171,8 @@ hf-data-crawl request compare REQ-0001 [A B]
 hf-data-crawl request run REQ-0001 [--dry-run] [--preview] [--force]
 hf-data-crawl request run-due
 hf-data-crawl request index [REQ-0001]
+hf-data-crawl request usage 下载量                # 反查：改词条前先看谁在用
+hf-data-crawl request prune [REQ-0001] [--keep 1] [--dry-run]   # 清旧产物字节，档案与 sha256 留着
 hf-data-crawl doctor
 ```
 
