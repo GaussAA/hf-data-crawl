@@ -21,6 +21,7 @@ from typing import Any
 
 import polars as pl
 
+from ..acquire.reconcile import REPORT_KEEP, REPORT_MAX_BYTES
 from ..delivery.fields import CONTRACT_VERSION, DEFAULT_COLUMNS, EXTENDED_FIELDS, EXTENDED_NOTE
 from ..pipeline.raw import BRONZE_LABELS, CARD_LABEL
 from ..platform.store import DatasetStore
@@ -424,7 +425,8 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "",
         "### `reports/` —— 给人看的",
         "",
-        "对账差异清单（保留最近 8 份）与榜单页 `dashboard.html`。",
+        f"对账差异清单（保留最近 {REPORT_KEEP} 份，且总量不超过 "
+        f"{REPORT_MAX_BYTES // (1024 * 1024)} MB）与榜单页 `dashboard.html`。",
         "它们不参与任何派生，删掉不影响数据，存在的意义就是「让人能核对」。",
         "",
         "### `exports/` —— 给人用的",

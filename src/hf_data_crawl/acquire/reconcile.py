@@ -508,11 +508,24 @@ class Reconciler:
 #: `current` 的状态与 `observations` 里，清单只是当时的可读副本。
 REPORT_KEEP = 30
 
+#: 对账差异清单的总字节上限。份数管「回溯窗口」，字节管「别把磁盘吃光」：
+#: 首次全量对账那天的单份清单实测 50.5 MB（全库都在差异里），30 份这样的文件就是
+#: 1.5 GB——而日常对账只有几十 KB。两个判据缺一个，就会在某类日子上翻车。
+REPORT_MAX_BYTES = 200 * 1024 * 1024
+
 _REPORT_PATTERN = re.compile(r"^reconcile-\d{4}-\d{2}-\d{2}\.csv$")
 
 
-def prune_reports(report_dir: Path, keep: int = REPORT_KEEP) -> list[Path]:
-    """只保留日期最新的 `keep` 份对账清单，返回被删的文件。
+def prune_reports(
+    report_dir: Path,
+    keep: int = REPORT_KEEP,
+    max_bytes: int = REPORT_MAX_BYTES,
+) -> list[Path]:
+    """保留最新 `keep` 份且总字节不超过 `max_bytes`，返回被删的文件。
+
+    两道判据各自防一种翻车：`keep` 防「无限追加」，`max_bytes` 防「份数对了、每份
+    都五十兆」。先按份数删，再按总字节从最旧的删起——顺序反过来会先删掉几天前的
+    小文件，只为给今天的大文件腾地方。
 
     只认 `reconcile-YYYY-MM-DD.csv` 这个文件名：同目录的榜单页、用户放进来的
     其他文件一概不碰。按文件名里的日期排序，不看 mtime（复制目录后会变）。
@@ -521,7 +534,13 @@ def prune_reports(report_dir: Path, keep: int = REPORT_KEEP) -> list[Path]:
         (path for path in report_dir.iterdir() if _REPORT_PATTERN.match(path.name)),
         key=lambda path: path.name,
     )
-    stale = reports[: max(0, len(reports) - max(1, keep))]
-    for path in stale:
+    dropped = reports[: max(0, len(reports) - max(1, keep))]
+    kept = [path for path in reports if path not in set(dropped)]
+    total = sum(path.stat().st_size for path in kept)
+    while kept and total > max_bytes:
+        oldest = kept.pop(0)
+        total -= oldest.stat().st_size
+        dropped.append(oldest)
+    for path in dropped:
         path.unlink(missing_ok=True)
-    return stale
+    return dropped

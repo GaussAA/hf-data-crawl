@@ -1,6 +1,6 @@
 # data 目录说明
 
-> 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-17 14:38，**请勿手工编辑**。
+> 本文件由 `uv run hf-data-crawl docs` 生成于 2026-11-17 15:06，**请勿手工编辑**。
 > 表结构与行数由代码和实际文件算出；字段含义维护在 `src/hf_data_crawl/ops/fielddocs.py`。
 > 改完代码后重新生成即可，`tests/ops/test_docs.py` 会在忘记生成时报错。
 
@@ -413,7 +413,7 @@ mtime 一复制就变，靠它排序会让「Raw 是唯一事实来源」名不�
 
 ### `reports/` —— 给人看的
 
-对账差异清单（保留最近 8 份）与榜单页 `dashboard.html`。
+对账差异清单（保留最近 30 份，且总量不超过 200 MB）与榜单页 `dashboard.html`。
 它们不参与任何派生，删掉不影响数据，存在的意义就是「让人能核对」。
 
 ### `exports/` —— 给人用的
