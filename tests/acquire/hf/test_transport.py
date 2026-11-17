@@ -111,3 +111,71 @@ def test_关掉空闲连接复用也能建客户端() -> None:
     client = HttpxTransport(proxy=LOCAL_PROXY, max_keepalive=0)._get_client()
 
     assert client is not None
+
+
+def test_一次失败就丢掉连接池_重试不会撞进坏池(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """代理掉线留下的坏池必须扔掉，否则重试会永久挂住。
+
+    2026-11-18 实测 `fetch-readme`：代理一掉，12 个线程同时断连；重试撞进同一个
+    池子后全部停在 `PoolRequest.wait_for_connection()`——httpcore 1.0.9 调用它时
+    不传 timeout，连接又被记成「已借出」不归还，于是永久等下去。现场只有心跳、
+    没有错误行，CPU 与 TCP 连接双静止，与「跑得慢」无从分辨。
+
+    `close()` 会顺带唤醒池里等待的请求，所以换池不只是防下一次，还能解半死状态。
+    """
+    created: list[httpx.Client] = []
+    real_client = httpx.Client
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectError("代理断了", request=request)
+        return httpx.Response(200, json={"ok": True})
+
+    def factory(**kwargs: Any) -> httpx.Client:
+        kwargs.pop("proxy", None)
+        client = real_client(transport=httpx.MockTransport(handler), **kwargs)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(transport_module.httpx, "Client", factory)
+    transport = HttpxTransport(proxy=LOCAL_PROXY)
+
+    with pytest.raises(TransportError):
+        transport.get("https://example.test/x", {}, {})
+
+    assert len(created) == 1
+    assert created[0].is_closed, "失败后旧池必须关掉，留着就等于留着坏状态"
+
+    # 第二次请求必须在一张新池上跑，且能成功——这就是「重试有意义」的判据。
+    response = transport.get("https://example.test/x", {}, {})
+    assert response.status == 200
+    assert len(created) == 2
+    transport.close()
+
+
+def test_关闭失败不盖住原始错误(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`close()` 自身抛错时，调用方看到的仍应是那条连接错误。"""
+    real_client = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("代理断了", request=request)
+
+    class ExplodingClient(httpx.Client):
+        def close(self) -> None:
+            raise OSError("关不掉")
+
+    def factory(**kwargs: Any) -> httpx.Client:
+        kwargs.pop("proxy", None)
+        return ExplodingClient(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(transport_module.httpx, "Client", factory)
+    transport = HttpxTransport(proxy=LOCAL_PROXY)
+
+    with pytest.raises(TransportError, match="ConnectError"):
+        transport.get("https://example.test/x", {}, {})
+
+    assert real_client is not None

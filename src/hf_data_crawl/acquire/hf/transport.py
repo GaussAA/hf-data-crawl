@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 from typing import Any
@@ -59,11 +60,28 @@ class HttpxTransport:
                 self._client = httpx.Client(**options)
             return self._client
 
-    def close(self) -> None:
+    def _discard_client(self) -> None:
+        """丢掉当前 Client 及其连接池。
+
+        代理掉线时同一刻有十几个请求一起出错（2026-11-18 实测 `fetch-readme`：
+        12 个线程同时收到断连）。httpcore 的池子在这种批量失败之后不可再信：
+        连接被记成「已借出」却不归还，而 `PoolRequest.wait_for_connection()` 的
+        `timeout` 默认 `None`、httpcore 1.0.9 调用它时也不传——于是后续重试全部
+        永久停在这一行。现场症状是 **CPU 与 TCP 连接双静止**，日志只有心跳，
+        与「跑得慢」无从分辨。
+
+        换池的代价只是一次握手，比整条链卡死便宜得多。`close()` 同时会唤醒
+        池里等待的请求（httpcore 给它们置异常），所以顺带能把半死状态解开。
+        """
         with self._lock:
             client, self._client = self._client, None
         if client is not None:
-            client.close()
+            # 关闭失败不该盖住调用方真正的失败原因（原始异常更有诊断价值）。
+            with contextlib.suppress(Exception):
+                client.close()
+
+    def close(self) -> None:
+        self._discard_client()
 
     def get(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> HfResponse:
         request_headers = dict(headers)
@@ -76,6 +94,10 @@ class HttpxTransport:
             # 统一成 TransportError，让上层只依赖一种失败类型，且无需 import httpx。
             # InvalidURL 不是 HTTPError 的子类（实测 MRO：InvalidURL → Exception），
             # 漏掉它会绕过重试与失败留痕。
+            #
+            # **先换池再抛**：这次的失败可能已经弄脏了连接池，若不换，上层的重试
+            # 会撞进同一个坏池并永久挂住——那正是 2026-11-18 两次卡死的形状。
+            self._discard_client()
             raise TransportError(f"{type(error).__name__}: {error}") from error
         return HfResponse(
             status=response.status_code,
