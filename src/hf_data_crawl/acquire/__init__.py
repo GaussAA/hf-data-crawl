@@ -14,10 +14,17 @@ from typing import TYPE_CHECKING
 
 from .enrich import DEFAULT_TOP
 from .hf.api import MAX_LIMIT
+from .preview import DEFAULT_RATE as DEFAULT_PREVIEW_RATE
 from .preview import PREVIEW_TOP
 from .reconcile import PROBE_DAILY_LIMIT
 
 if TYPE_CHECKING:
     from .hf.api import Transport as Transport
 
-__all__ = ["DEFAULT_TOP", "MAX_LIMIT", "PREVIEW_TOP", "PROBE_DAILY_LIMIT"]
+__all__ = [
+    "DEFAULT_PREVIEW_RATE",
+    "DEFAULT_TOP",
+    "MAX_LIMIT",
+    "PREVIEW_TOP",
+    "PROBE_DAILY_LIMIT",
+]

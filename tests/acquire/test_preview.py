@@ -18,6 +18,7 @@ from hf_data_crawl.acquire.preview import (
     TRUNCATION_MARK,
     HfPreviewApi,
     PreviewFetcher,
+    Throttled,
 )
 from hf_data_crawl.platform.tables import PREVIEW_SCHEMA
 
@@ -54,7 +55,7 @@ def _error(status: int) -> HfResponse:
 
 
 def _api(transport: ScriptedTransport, **kwargs: Any) -> HfPreviewApi:
-    return HfPreviewApi(transport, sleeper=lambda _seconds: None, **kwargs)
+    return HfPreviewApi(transport, rate=0, sleeper=lambda _seconds: None, **kwargs)
 
 
 def test_取回三行并记下_config_与_split() -> None:
@@ -177,3 +178,38 @@ def test_没有viewer也落一行不可用记下来() -> None:
     assert frame.height == 1
     assert frame["status"].to_list() == ["unavailable"]
     assert frame["rows"].to_list() == [None]
+
+
+def test_被限流时整轮中止并保留已取到的行() -> None:
+    """429 按 IP 封：继续打只会把封禁拖长，所以整轮停。
+
+    已取到的行仍然有效（并入后下次跑只用补剩下的），但这一轮不算跑完——摘要里
+    `aborted` 为真，调用方据此返回非零退出码。
+    """
+    transport = ScriptedTransport(
+        _ok({"text": "甲"}),
+        _ok({"text": "乙"}),
+        _error(429),
+        _ok({"text": "丙"}),
+        _ok({"text": "丁"}),
+    )
+    fetcher = PreviewFetcher(_api(transport), workers=1)
+    summary, frame = fetcher.run(DAY, ["a/1", "a/2", "a/3", "a/4", "a/5"])
+
+    assert summary.aborted is True
+    assert summary.fetched >= 2
+    assert frame.height == summary.fetched
+
+
+def test_限流不重试而是立刻抛出() -> None:
+    """`/rows` 的 429 是 CloudFront 按 IP 限流，逐条退避只会把封禁拖长。
+
+    这条钉着「只打一次」：若哪天有人把 429 放回 `RETRYABLE_STATUS`，请求数与
+    封禁时长都会翻几倍，而其它测试都不会红。
+    """
+    transport = ScriptedTransport(_error(429))
+
+    with pytest.raises(Throttled):
+        _api(transport).fetch("a/b", DAY)
+
+    assert len(transport.calls) == 1

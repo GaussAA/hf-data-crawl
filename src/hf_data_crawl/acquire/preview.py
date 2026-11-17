@@ -45,12 +45,17 @@ import polars as pl
 from ..platform.coerce import as_int
 from ..platform.tables import PREVIEW_SCHEMA, url_for
 from .hf.api import Transport, TransportError
+from .readme import RateLimiter
 
 #: 默认取几行。样例的用途是「看一眼」，三条足够看出列与值的形状。
 DEFAULT_ROWS = 3
 
+#: 默认每秒放行几个请求。`/rows` 比 `/size` 敏感得多：实测 8 并发无节制跑一阵之后，
+#: 200 个库全部 429、吞吐掉到 0.5 req/s。主动匀速是唯一稳的做法（教训同 readme）。
+DEFAULT_RATE = 4.0
+
 #: 默认抓多少个库。样例要的是「有代表性的一批」，不是全站；一万个体量下
-#: 截断后约 10 MB，跑一轮十来分钟。
+#: 截断后约 10 MB。
 PREVIEW_TOP = 10_000
 
 #: `/rows` 的 `length` 上限；再大要自己翻页，那样就不是样例了。
@@ -67,8 +72,17 @@ DEFAULT_PREVIEW_URL = "https://datasets-server.huggingface.co/rows"
 #: `/rows` 用 404 表示「这个库没有 viewer」，401 表示受限或不存在——都是永久缺失。
 UNAVAILABLE_STATUS = frozenset({401, 404})
 
-#: 429/5xx 是瞬时的，退避重试。
-RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+#: 5xx 是瞬时的，退避重试。429 不在此列：CloudFront 的限流是**按 IP** 的，撞上之后
+#: 每个线程各自退避只会把封禁拖长（实测 8 并发跑了一阵后，200 个库全部 429、
+#: 吞吐掉到 0.5 req/s）。故 429 直接中止整轮，让人降速重跑。
+RETRYABLE_STATUS = frozenset({500, 502, 503, 504})
+
+#: 撞到限流。整轮立即停：继续请求只会延长封禁。
+THROTTLED_STATUS = 429
+
+
+class Throttled(RuntimeError):
+    """被上游限流（429）。整轮中止，已取到的行仍然可以并入。"""
 
 
 @dataclass(frozen=True)
@@ -82,13 +96,17 @@ class PreviewResult:
 
 @dataclass(frozen=True)
 class PreviewSummary:
-    """一轮抓取的计数。`unavailable` 会落库（下轮跳过），`failed` 不会。"""
+    """一轮抓取的计数。`unavailable` 会落库（下轮跳过），`failed` 不会。
+
+    `aborted` 表示中途撞上限流：已取到的行有效，但这一轮不算跑完。
+    """
 
     fetched: int = 0
     unavailable: int = 0
     failed: int = 0
     truncated: int = 0
     elapsed_seconds: float = 0.0
+    aborted: bool = False
 
 
 class HfPreviewApi:
@@ -101,6 +119,7 @@ class HfPreviewApi:
         rows: int = DEFAULT_ROWS,
         config: str = "default",
         split: str = "train",
+        rate: float = DEFAULT_RATE,
         base_url: str = DEFAULT_PREVIEW_URL,
         max_retries: int = 3,
         retry_base_delay: float = 2.0,
@@ -114,10 +133,13 @@ class HfPreviewApi:
         self._max_retries = max_retries
         self._retry_base_delay = retry_base_delay
         self._sleeper = sleeper or time.sleep
+        # 主动匀速，而不是「撞 429 再退避」：与 readme 同一个教训（见 `RateLimiter`）。
+        self._limiter = RateLimiter(rate)
 
     def fetch(self, dataset_id: str, snapshot_date: date) -> PreviewResult:
         attempt = 0
         while True:
+            self._limiter.acquire()
             try:
                 response = self._transport.get(
                     self._base_url,
@@ -139,6 +161,9 @@ class HfPreviewApi:
 
             if response.status == 200:
                 return _success(dataset_id, snapshot_date, self._config, self._split, response.body)
+            if response.status == THROTTLED_STATUS:
+                # 按 IP 限流：继续请求只会把封禁拖长，故整轮中止而不是逐条退避。
+                raise Throttled(f"{dataset_id} 被限流（429）")
             if response.status in RETRYABLE_STATUS and attempt < self._max_retries:
                 self._sleeper(self._backoff(attempt))
                 attempt += 1
@@ -260,13 +285,21 @@ class PreviewFetcher:
         results: list[PreviewResult] = []
         total = len(dataset_ids)
         done = 0
+        aborted = False
         with ThreadPoolExecutor(max_workers=self._workers) as pool:
             futures = [pool.submit(self._api.fetch, item, snapshot_date) for item in dataset_ids]
-            for future in as_completed(futures):
-                results.append(future.result())
-                done += 1
-                if self._progress is not None:
-                    self._progress(done, total)
+            try:
+                for future in as_completed(futures):
+                    results.append(future.result())
+                    done += 1
+                    if self._progress is not None:
+                        self._progress(done, total)
+            except Throttled:
+                # 按 IP 限流：剩下的请求立刻取消，继续打只会延长封禁。
+                # 已取到的行仍然有效，交给调用方并入。
+                aborted = True
+                for pending in futures:
+                    pending.cancel()
 
         rows = [item.row for item in results if item.row]
         summary = PreviewSummary(
@@ -275,6 +308,7 @@ class PreviewFetcher:
             failed=sum(1 for item in results if item.status == "error"),
             truncated=sum(1 for item in rows if item.get("truncated")),
             elapsed_seconds=time.monotonic() - started,
+            aborted=aborted,
         )
         return summary, _frame(rows)
 

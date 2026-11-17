@@ -373,13 +373,28 @@ def run_fetch_preview(
         print("没有可抓的库：size 表里没有 status=ok 的记录，先跑 `fetch-sizes`。")
         return Outcome({"fetched": 0})
 
-    print(f"取样例：{len(candidates)} 个库 × 最多 {args.rows} 行")
+    # 已经定过的库不再问：`ok` 与 `unavailable` 都是终局，`error` 才是可救的。
+    # 有这一条就不用暂存分片，中断后重跑同一命令即可从断点续抓。
+    done: set[str] = set()
+    existing = store.read("preview")
+    if existing.height:
+        done = set(existing.filter(pl.col("status").is_in(["ok", "unavailable"]))["id"].to_list())
+    pending = [item for item in candidates if item not in done]
+    if not pending:
+        print(f"无需抓取：{len(candidates)} 个候选都已定局（preview 表 {existing.height} 行）。")
+        return Outcome({"fetched": 0})
+    if len(pending) < len(candidates):
+        print(f"跳过 {len(candidates) - len(pending)} 个已定局的库，本轮抓 {len(pending)} 个")
+    candidates = pending
+
+    print(f"取样例：{len(candidates)} 个库 × 最多 {args.rows} 行，匀速 {args.rate} req/s")
     fetcher = PreviewFetcher(
         api=HfPreviewApi(
             transport=_open_transport(transport),
             rows=args.rows,
             config=args.config,
             split=args.split,
+            rate=args.rate,
         ),
         workers=args.workers,
         progress=_progress_line,
@@ -393,6 +408,13 @@ def run_fetch_preview(
             store.upsert("preview", frame)
 
     _print_preview(summary, store.read("preview").height)
+    if summary.aborted:
+        message = (
+            f"被限流（429）中止：已并入 {frame.height} 行，其余未抓。"
+            f"降低 --rate（当前 {args.rate}）或稍后重跑"
+        )
+        print(f"失败：{message}")
+        return Outcome(summary, code=1, reason=message)
     return Outcome(summary)
 
 
