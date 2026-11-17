@@ -24,6 +24,19 @@ RANK: dict[str, int] = {
     "ops": 4,
 }
 
+#: 切片之间**登记在案**的依赖边。`RANK` 只保证方向合法且无环，它允许
+#: `delivery -> acquire`（3 > 2）——而这条边在语义上是反的：数据流里 `acquire`
+#: 在 `delivery` 上游，`delivery` 也从不消费 `acquire`。所以「方向合法」不等于
+#: 「关系合理」：实际存在的边得单独登记，新增一条就要在这里过一目。
+EDGES: dict[str, set[str]] = {
+    "platform": set(),
+    "pipeline": {"platform"},
+    "acquire": {"pipeline", "platform"},
+    "query": {"pipeline", "platform"},
+    "delivery": {"query", "platform"},
+    "ops": {"delivery", "query", "acquire", "pipeline", "platform"},
+}
+
 
 def _module_name(path: Path) -> str:
     parts = list(path.relative_to(SRC.parent).with_suffix("").parts)
@@ -51,13 +64,21 @@ def _resolve(path: Path, node: ast.ImportFrom) -> list[str]:
 
 
 def _imported_names(path: Path) -> list[tuple[int, str, str]]:
-    """(行号, 来源模块, 被导入的名字)。用于检查跨切片导入是否用了私有名。"""
+    """(行号, 来源模块, 被导入的名字)。用于检查跨切片导入是否用了私有名。
+
+    `import pkg.slice._impl` 与 `from pkg.slice import _impl` 是同一件事的两种
+    写法：只认 `ImportFrom`，规则就有一半是漏的——绕过去不需要动一个字符的语义。
+    """
     tree = ast.parse(path.read_text(encoding="utf-8"))
     found: list[tuple[int, str, str]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             base = _base_module(path, node)
             found.extend((node.lineno, base, alias.name) for alias in node.names)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                head, _, tail = alias.name.rpartition(".")
+                found.append((node.lineno, head, tail))
     return found
 
 
@@ -112,6 +133,43 @@ def test_slices_only_depend_downwards() -> None:
                 relative = path.relative_to(SRC)
                 violations.append(f"{relative}:{lineno} {mine} -> {theirs}")
     assert violations == [], "\n".join(violations)
+
+
+def _actual_edges() -> dict[str, set[str]]:
+    """从源码汇总切片之间真实存在的依赖边。"""
+    edges: dict[str, set[str]] = {name: set() for name in RANK}
+    for path in _sources():
+        mine = _slice_of(_module_name(path))
+        if mine is None:
+            continue
+        for _, target in _imports(path):
+            theirs = _slice_of(target)
+            if theirs is not None and theirs != mine:
+                edges[mine].add(theirs)
+    return edges
+
+
+def _edge_diff(actual: dict[str, set[str]]) -> str:
+    lines: list[str] = []
+    for name in sorted(RANK):
+        for theirs in sorted(actual[name] - EDGES[name]):
+            lines.append(f"未登记：{name} -> {theirs}（先想清楚合理与否，再写进 EDGES）")
+        for theirs in sorted(EDGES[name] - actual[name]):
+            lines.append(f"已消失：{name} -> {theirs}（有意删除就同步 EDGES）")
+    return "\n".join(lines)
+
+
+def test_跨切片依赖边与登记表一致() -> None:
+    """`RANK` 只挡向上与同档，挡不住语义反过来的边。
+
+    `delivery -> acquire` 方向合法（3 > 2），却从不存在也不该存在——数据流里
+    `acquire` 在 `delivery` 上游。哪天有人图省事从 `delivery` 抓一个 `acquire`
+    的逻辑，只靠 `RANK` 的那条规则会全绿。真实存在的边因此单独登记：新增一条
+    就在这里写下来，删掉一条也同步，否则表会退化成一张没人看的清单。
+    """
+    actual = _actual_edges()
+
+    assert actual == EDGES, _edge_diff(actual)
 
 
 def test_platform_depends_on_nothing_else() -> None:
@@ -203,17 +261,24 @@ def test_档案层只认契约不认形态() -> None:
         path = SRC / name
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if not isinstance(node, ast.ImportFrom):
-                continue
-            module = _base_module(path, node)
-            # `from . import fill_exec` 是登记，允许；`from .fill_exec import X`
-            # 与绝对导入 `from hf_data_crawl.delivery.fill_exec import X` 都不是。
-            if not module.startswith(f"{package}."):
-                continue
-            short = module.removeprefix(f"{package}.")
-            if short in forbidden:
-                imported = ", ".join(alias.name for alias in node.names)
-                violations.append(f"{name}:{node.lineno} from {module} import {imported}")
+            if isinstance(node, ast.ImportFrom):
+                module = _base_module(path, node)
+                # `from . import fill_exec` 是登记，允许；`from .fill_exec import X`
+                # 与绝对导入 `from hf_data_crawl.delivery.fill_exec import X` 都不是。
+                if not module.startswith(f"{package}."):
+                    continue
+                short = module.removeprefix(f"{package}.")
+                if short in forbidden:
+                    imported = ", ".join(alias.name for alias in node.names)
+                    violations.append(f"{name}:{node.lineno} from {module} import {imported}")
+            elif isinstance(node, ast.Import):
+                # `import hf_data_crawl.delivery.backfill` 一样把档案层绑死在执行体上，
+                # 效果与 `from ... import X` 无异；只遍历 ImportFrom 就漏了另外一半。
+                for alias in node.names:
+                    if not alias.name.startswith(f"{package}."):
+                        continue
+                    if alias.name.removeprefix(f"{package}.") in forbidden:
+                        violations.append(f"{name}:{node.lineno} import {alias.name}")
 
     assert violations == [], "\n".join(violations)
 
@@ -242,3 +307,45 @@ def test_不使用动态导入绕开依赖检查() -> None:
                 found.append(f"{path.relative_to(SRC)}:{node.lineno}")
 
     assert found == [], "动态导入会绕开切片与环检查：" + "、".join(found)
+
+
+def test_普通import语句也逃不过私有名检查(tmp_path: Path) -> None:
+    """`import pkg.slice._impl` 不走 `from`，只遍历 ImportFrom 的实现会整条跳过。"""
+    probe = tmp_path / "probe.py"
+    probe.write_text("import hf_data_crawl.acquire._session\n", encoding="utf-8")
+
+    assert (1, "hf_data_crawl.acquire", "_session") in _imported_names(probe)
+
+
+def _module_exists(parts: list[str]) -> bool:
+    """`SRC/<parts...>` 是否真的是个模块（.py 或包）。"""
+    base = SRC.joinpath(*parts)
+    return base.with_suffix(".py").is_file() or (base / "__init__.py").is_file()
+
+
+def test_组合根只经各切片的公开入口() -> None:
+    """`ops/cli.py` 只许 import `<切片>` 或 `<切片>.commands`。
+
+    「唯一组合根」原先只写在 docstring 里：多抓一个 `<切片>.recovery` 不会有任何
+    测试变红，于是「只调公开 run_*」是一句没有机制的话。`pipeline.recovery` 是
+    登记在案的唯一例外——`pipeline/__init__.py` 为避环不导出 `check_and_recover`。
+    """
+    path = SRC / "ops" / "cli.py"
+    violations: list[str] = []
+    for lineno, target in _imports(path):
+        if not target.startswith(PACKAGE):
+            continue
+        parts = target.split(".")[1:]
+        if not parts or parts[0] == "ops":
+            continue
+        # `from ..platform import DatasetStore` 里的 DatasetStore 不是模块，`_imports`
+        # 会把每个别名都当作可能的子模块；只有真实存在的子模块才算越界。
+        if not _module_exists(parts) or len(parts) == 1:
+            continue
+        if parts[1:] == ["commands"]:
+            continue
+        if parts[0] == "pipeline" and parts[1:] == ["recovery"]:
+            continue
+        violations.append(f"{path.name}:{lineno} import {target}")
+
+    assert violations == [], "组合根只能走 <切片> 与 <切片>.commands：\n" + "\n".join(violations)

@@ -12,10 +12,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .enrich import DEFAULT_TOP
 from .hf.api import MAX_LIMIT
 from .reconcile import PROBE_DAILY_LIMIT
 
 if TYPE_CHECKING:
     from .hf.api import Transport as Transport
 
-__all__ = ["MAX_LIMIT", "PROBE_DAILY_LIMIT"]
+__all__ = ["DEFAULT_TOP", "MAX_LIMIT", "PROBE_DAILY_LIMIT"]

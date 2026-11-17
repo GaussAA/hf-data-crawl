@@ -54,6 +54,7 @@ from .batch import (
 from .batch import (
     staging_root as _staging_root,
 )
+from .enrich import DEFAULT_TOP
 from .hf.api import Transport, TransportError
 
 if TYPE_CHECKING:
@@ -227,7 +228,7 @@ class SizeFetcher:
         snapshot_date: date,
         *,
         dataset_ids: Iterable[str] | None = None,
-        top: int = 20_000,
+        top: int = DEFAULT_TOP,
         retry_unavailable: bool = False,
         existing: pl.DataFrame | None = None,
         refresh: Iterable[str] = (),

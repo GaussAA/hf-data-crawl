@@ -157,7 +157,7 @@ def run_collect(
                 f"补跑 {summary.snapshot_date} 后重放后缀 {len(days)} 天，把底库带回最新"
                 "（单日派生会把 current 写成那天的状态）"
             )
-            rebuild.rebuild_from_raw(store, days=days)
+            rebuild.rebuild_from_raw(store, since=summary.snapshot_date)
     return Outcome(summary)
 
 

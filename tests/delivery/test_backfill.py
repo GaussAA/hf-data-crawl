@@ -18,13 +18,12 @@ import pytest
 from hf_data_crawl.delivery.backfill import (
     FillError,
     FillSpec,
-    header_of,
     parse_reference,
     render,
     run,
 )
 from hf_data_crawl.delivery.delivery import SourceStamp
-from hf_data_crawl.delivery.header import header_change, header_digest
+from hf_data_crawl.delivery.header import header_digest
 from hf_data_crawl.delivery.requirement import SpecError
 from hf_data_crawl.delivery.requirement import load as load_request
 from hf_data_crawl.platform.store import DatasetStore
@@ -694,29 +693,26 @@ def test_追加列的表头没有加进输入表头指纹(tmp_path: Path) -> Non
 # ---------------------------------------------------------------- 输入表头
 
 
-def test_表头指纹认列名也认顺序() -> None:
-    """只按列名集合算，挪个次序就看不出来了——而次序变了，人看表会串行。"""
-    assert header_digest(("URL", "名称")) == header_digest(("URL", "名称"))
-    assert header_digest(("URL", "名称")) != header_digest(("名称", "URL"))
-    assert header_digest(("URL", "名称")) != header_digest(("URL", "名称", "下载量"))
+def test_输入表头重名时按回填的失败语义报出来(tmp_path: Path) -> None:
+    """重名规则住在 `header.py`，回填只负责把它翻成 `FillError`。
 
-
-def test_表头差异分加列减列与挪位() -> None:
-    change = header_change(("URL", "名称", "下载量"), ("URL", "下载量", "名称", "新增"))
-    assert change["added"] == ["新增"]
-    assert change["removed"] == []
-    assert change["reordered"] is True
-
-    assert header_change(("a", "b"), ("a", "b")) == {
-        "added": [],
-        "removed": [],
-        "reordered": False,
-    }
-
-
-def test_读表头按列名顺序且跳过空列(tmp_path: Path) -> None:
+    读表头现在只有一处实现（`delivery/sheet.py`），受理与执行体共用；这条守的是
+    「规则真的生效」+「报出来的是回填调用方认识的那种错」——而不是一个没人接住的
+    `HeaderError` 一路冒到 `_execute` 的 catch-all 里。
+    """
     book = build_book(tmp_path / "in.xlsx", ["acme/ds-1"])
+    workbook = openpyxl.load_workbook(book)
+    worksheet = workbook["数据"]
+    worksheet.cell(row=2, column=2, value=HEADERS[0])
+    workbook.save(book)
+    fill = load_spec(
+        write_spec(
+            tmp_path / "spec.yaml",
+            book=book,
+            out=tmp_path / "out.xlsx",
+            body='columns:\n  "下载量": {field: downloads}',
+        )
+    )
 
-    assert header_of(book, header_row=2) == tuple(HEADERS)
-    with pytest.raises(FillError, match="没有 sheet"):
-        header_of(book, sheet="不存在的表", header_row=2)
+    with pytest.raises(FillError, match="重名列"):
+        run_it(fill, [ROW], tmp_path=tmp_path)

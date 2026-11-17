@@ -21,7 +21,7 @@ import duckdb
 import polars as pl
 
 from ..platform import atomic
-from ..query.gold import GoldCatalog, column_coverage, share_text
+from ..query.gold import GoldCatalog, column_coverage, filled_count, share_text
 from .contract import EXECUTORS, DeliveryBlocked, Payload, RunContext
 from .fields import (
     COLUMN_NOTES,
@@ -181,8 +181,10 @@ def detail_lines(
 def _coverage_lines(frame: pl.DataFrame) -> list[str]:
     """本次结果的列覆盖：哪几列整列为空、哪几列几乎为空。
 
-    口径与 `query.gold.column_coverage` 一致：非 NULL，且列表非空——空列表表示
-    「问过、答了没有」，对使用者与空值同样不可用。
+    判据来自 `query.gold.filled_count`，与 `column_coverage` 共用同一套分类
+    （`fill_kind`）：非 NULL，且列表非空、文本非空串——空列表表示「问过、答了
+    没有」，对使用者与空值同样不可用。原先这里自己抄了一条 dtype 分支，加一种
+    类型时两边会各改一半。
     """
     if frame.height == 0:
         return [
@@ -194,14 +196,7 @@ def _coverage_lines(frame: pl.DataFrame) -> list[str]:
         ]
     pairs: list[tuple[str, float]] = []
     for column in frame.columns:
-        series = frame[column]
-        if isinstance(series.dtype, pl.List):
-            filled = int((series.list.len() > 0).sum())
-        elif series.dtype == pl.Utf8:
-            filled = int((series.is_not_null() & (series != "")).sum())
-        else:
-            filled = int(series.is_not_null().sum())
-        pairs.append((column, filled / frame.height))
+        pairs.append((column, filled_count(frame[column]) / frame.height))
 
     empty = [column for column, share in pairs if share == 0]
     lowest = sorted((item for item in pairs if item[1] > 0), key=lambda item: item[1])[:5]

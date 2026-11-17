@@ -17,8 +17,8 @@ import pytest
 from hf_data_crawl.pipeline import raw
 from hf_data_crawl.pipeline.marker import (
     STALE_THRESHOLD_SECONDS,
-    Marker,
     clear_marker,
+    load_marker,
     marker_path,
     write_marker,
 )
@@ -39,7 +39,7 @@ def test_标记文件创建(tmp_path: Path) -> None:
 
     # 验证内容
     content = json.loads(path.read_text(encoding="utf-8"))
-    assert content["snapshot_date"] == "2026-11-07"
+    assert (content["since"], content["until"]) == ("2026-11-07", "2026-11-07")
     assert "started_at" in content
 
     # 验证时间戳格式
@@ -113,20 +113,8 @@ def test_超时标记触发恢复(tmp_path: Path) -> None:
     # 创建超时的标记（时间设为很久以前）
     path = marker_path(store, snapshot_date)
     old_time = datetime.now(UTC) - timedelta(seconds=STALE_THRESHOLD_SECONDS + 60)
-    entry = Marker(
-        snapshot_date=snapshot_date,
-        started_at=old_time.isoformat(timespec="seconds"),
-    )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "snapshot_date": entry.snapshot_date.isoformat(),
-                "started_at": entry.started_at,
-            }
-        ),
-        encoding="utf-8",
-    )
+    write_marker(store, snapshot_date, started_at=old_time.isoformat(timespec="seconds"))
 
     # 触发恢复
     recovered = check_and_recover(store)
@@ -485,3 +473,77 @@ def test_重放抛异常时留下标记供下次立即重试(
     assert recovered == []
     assert path.exists()
     assert "保留标记" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- 范围标记
+
+
+def test_旧的逐日标记文件仍能读(tmp_path: Path) -> None:
+    """升级成区间格式后，磁盘上已有的 `snapshot_date` 标记不能被当成损坏扔掉。
+
+    生产机上那份文件是上一版写的：当成损坏删掉，就等于「这天的派生残留永远没人清」。
+    """
+    store = DatasetStore(tmp_path / "data")
+    day = date(2026, 11, 7)
+    path = marker_path(store, day)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"snapshot_date": day.isoformat(), "started_at": "2026-11-07T00:00:00+00:00"}),
+        encoding="utf-8",
+    )
+
+    entry = load_marker(path)
+
+    assert entry is not None
+    assert (entry.since, entry.until) == (day, day)
+
+
+def test_范围标记吞掉它覆盖的逐日标记(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """同一次崩溃会留下范围标记 + 在飞那天的逐日标记。
+
+    范围先处理、逐日那个跟着删：否则同一段后缀会被重放两遍，而第二遍的起点还更晚。
+    """
+    store = DatasetStore(tmp_path / "data")
+    store.state_dir.mkdir(parents=True, exist_ok=True)
+    old = (datetime.now(UTC) - timedelta(seconds=STALE_THRESHOLD_SECONDS + 60)).isoformat(
+        timespec="seconds"
+    )
+    day1, day2 = date(2026, 11, 1), date(2026, 11, 2)
+    write_marker(store, day1, until=day2, started_at=old)
+    write_marker(store, day2, started_at=old)
+    replayed: list[date] = []
+    monkeypatch.setattr("hf_data_crawl.pipeline.marker.has_raw", lambda *_: True)
+    monkeypatch.setattr(
+        "hf_data_crawl.pipeline.recovery.rebuild_from_raw",
+        lambda _store, since: replayed.append(since),
+    )
+
+    recovered = check_and_recover(store)
+
+    assert replayed == [day1], "整段只重放一次，起点是最早那天"
+    assert recovered == [day1, day2]
+    assert list(store.state_dir.glob("marker-*.marker")) == []
+
+
+def test_范围里没有_Raw_的日子只清残留(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """冷区压掉的日子没有 Raw 可重放：清掉半成品分区，但不把整段重放拒掉。"""
+    store = DatasetStore(tmp_path / "data")
+    store.state_dir.mkdir(parents=True, exist_ok=True)
+    day1, day2 = date(2026, 11, 1), date(2026, 11, 2)
+    stale = (datetime.now(UTC) - timedelta(seconds=STALE_THRESHOLD_SECONDS + 60)).isoformat(
+        timespec="seconds"
+    )
+    write_marker(store, day1, until=day2, started_at=stale)
+    cleared: list[date] = []
+    monkeypatch.setattr("hf_data_crawl.pipeline.marker.has_raw", lambda _store, day: day == day2)
+    monkeypatch.setattr(
+        "hf_data_crawl.pipeline.marker.clear_day", lambda _store, day: cleared.append(day)
+    )
+    monkeypatch.setattr(
+        "hf_data_crawl.pipeline.recovery.rebuild_from_raw", lambda _store, since: None
+    )
+
+    recovered = check_and_recover(store)
+
+    assert cleared == [day1, day2]
+    assert recovered == [day1, day2]

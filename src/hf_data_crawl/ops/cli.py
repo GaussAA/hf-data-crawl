@@ -1,4 +1,4 @@
-"""命令行入口：收集 15 个子命令的参数并分派到各切片的公开处理函数。
+"""命令行入口：收集各子命令的参数并分派到各切片的公开处理函数。
 
 本模块是唯一的组合根：独占锁、派生崩溃恢复与运行台账都在这里统一施加。
 写命令与 report/docs 经 `_execute` 写 runs/（失败也写并带原因）；
@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from ..acquire import MAX_LIMIT, PROBE_DAILY_LIMIT
+from ..acquire import DEFAULT_TOP, MAX_LIMIT, PROBE_DAILY_LIMIT
 from ..acquire.commands import (
     run_collect,
     run_enrich,
@@ -284,7 +284,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     enrich = subparsers.add_parser("enrich", help="按下载量取头部，补抓 cardData")
     enrich.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
-    enrich.add_argument("--top", type=int, default=20_000, help="补抓前多少名")
+    enrich.add_argument("--top", type=int, default=DEFAULT_TOP, help="补抓前多少名")
     enrich.add_argument(
         "--ids",
         default=None,
@@ -297,7 +297,7 @@ def build_parser() -> argparse.ArgumentParser:
     sizes.add_argument(
         "--top",
         type=int,
-        default=20_000,
+        default=DEFAULT_TOP,
         help="按下载量取前多少名；0 表示全量（按 current 实际行数，随底库增长自动适配）",
     )
     sizes.add_argument(
@@ -379,7 +379,7 @@ def build_parser() -> argparse.ArgumentParser:
     readme.add_argument(
         "--top",
         type=int,
-        default=20_000,
+        default=DEFAULT_TOP,
         help="按下载量取前多少名；0 表示全量（按 current 实际行数，随底库增长自动适配）",
     )
     readme.add_argument("--ids", default=None, help="只抓这些 id（逗号分隔），忽略 --top")
@@ -591,13 +591,10 @@ def main(argv: list[str] | None = None, *, transport: Any = None) -> int:
     if args.command == "doctor":
         return run_doctor(store, lock_wait, requests_root=Path(args.requests_dir))
     if args.command == "docs":
-        # docs 不写 runs/，但同样要在一致快照上生成；拿不到锁就明确失败。
-        try:
-            with exclusive(store.root, "docs", lock_wait):
-                return run_docs(args, store)
-        except LockBusy as error:
-            print(f"docs 失败：{type(error).__name__}: {error}")
-            return 1
+        # 与 report 同路：加锁与落台账都交给 `_execute`。缺字段说明时退出码为 1，
+        # 失败因此也会留在 runs/ 里——原先这里自己开一次锁并直接返回，等于在
+        # `_execute` 之外又造了一条「有加锁、没台账」的路径。
+        return _execute(store, "docs", lambda: run_docs(args, store), lock_wait)
 
     return 1
 

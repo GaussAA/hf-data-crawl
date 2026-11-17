@@ -56,10 +56,10 @@ def run_build(args: argparse.Namespace, store: DatasetStore) -> Outcome:
         if since is None:
             print("派生层与 Raw 已对齐（逐日戳记一致），无需重建。")
             return Outcome({"snapshot_date": None, "mode": "already-aligned", "days": 0})
-        days = replay_suffix(store, since)
+        days = replay_suffix(store, since)  # 只为先报一句会重放几天，集合由 rebuild 自己算
         # 说清楚为什么不是只修那一天：后缀闭合是正确性要求，不是保守做法。
         print(f"检出派生滞后：自 {since} 起重放 {len(days)} 天（含其后所有有 Raw 的日子）")
-        summary = rebuild_from_raw(store, days=days)
+        summary = rebuild_from_raw(store, since=since)
     else:
         summary = rebuild_from_raw(store, window_days=None if args.full else REPLAY_WINDOW_DAYS)
     _print_build(summary)

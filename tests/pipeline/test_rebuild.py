@@ -80,7 +80,7 @@ def test_归档日参与重放且与全量结果一致(store: DatasetStore) -> N
 
     assert discover_raw_dates(store) == [DAY1, DAY2, archive_day]
 
-    local = rebuild_from_raw(store, days=replay_suffix(store, archive_day))
+    local = rebuild_from_raw(store, since=archive_day)
     local_current = state.read_current(store)
     local_observations = store.read_all("observations")
 
@@ -338,7 +338,8 @@ def test_非法窗口立即报错(tmp_path: Path) -> None:
 # ---------------------------------------------------------------- 定点重放
 #
 # Raw 被重写（归档重分片、补采追加、手工修数据）之后，派生层不会自己更新。
-# 定点重放是修法，但它必须后缀闭合：只放一天会让 current 回退到那天的值。
+# 定点重放是修法：调用方只给起始日，后缀由 rebuild 自己算——曾经它收一个现成的
+# 日期列表，于是「漏了中间几天」在类型上写得出来，而后果是 current 静默回退。
 
 
 def test_重放范围必须后缀闭合(store: DatasetStore) -> None:
@@ -346,12 +347,24 @@ def test_重放范围必须后缀闭合(store: DatasetStore) -> None:
     assert replay_suffix(store, DAY1) == [DAY1, DAY2]
 
 
+def test_定点重放自己补到最新一天(store: DatasetStore) -> None:
+    """给一个起始日，就要一直放到最新 Raw 日——这是调用方唯一能表达的东西。
+
+    曾经调用方传的是日期列表，`days=[DAY1]` 也收：结果 DAY1 之后那天的属性变更
+    被吃掉、`current` 退回 DAY1，两个数字都变小而没有任何报错。
+    """
+    summary = rebuild_from_raw(store, since=DAY1)
+
+    assert summary.mode == "target"
+    assert summary.dates == [DAY1, DAY2]
+
+
 def test_只重放最新一天不改动结果(store: DatasetStore) -> None:
     """最新日收尾时，重放结果与逐日推进逐字节一致——这是定点重放合法的最小形。"""
     expected_current = state.read_current(store)
     expected_obs = store.read_all("observations")
 
-    summary = rebuild_from_raw(store, days=[DAY2])
+    summary = rebuild_from_raw(store, since=DAY2)
 
     assert summary.mode == "target"
     assert summary.dates == [DAY2]
@@ -365,15 +378,15 @@ def test_定点重放只清自己的分区(tmp_path: Path) -> None:
     seed(store, DAY1, [record(1, 100)])
     seed(store, DAY2, [record(1, 180)])
 
-    rebuild_from_raw(store, days=[DAY2])
+    rebuild_from_raw(store, since=DAY2)
 
     assert store.path("silver", DAY1).exists()
 
 
-def test_给空日期集合时什么都不做(store: DatasetStore) -> None:
+def test_起始日之后没有_Raw_时什么都不做(store: DatasetStore) -> None:
     expected = state.read_current(store)
 
-    summary = rebuild_from_raw(store, days=[])
+    summary = rebuild_from_raw(store, since=date(2026, 11, 3))
 
     assert summary.dates == []
     assert state.read_current(store).equals(expected)
@@ -563,3 +576,28 @@ def test_状态写回丢弃时点名(tmp_path: Path, capsys: pytest.CaptureFixtu
     assert summary.cold_gaps == 1
     assert "状态写回丢了 1 个 id" in out
     assert "acme/ds-3" in out
+
+
+def test_清空之前先写下范围标记(store: DatasetStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """先声明再动手。
+
+    原先标记是逐日写的，而 `clear_derived` 一次删掉 N 天分区：崩在「已清空、还没
+    开始派生」那一段，磁盘上没有任何标记，`build --stale` 还会说「已对齐」。
+    """
+    from hf_data_crawl.pipeline import rebuild as rebuild_module
+
+    seen: list[tuple[bool, bool]] = []
+    original = rebuild_module.clear_derived
+
+    def spy(_store: DatasetStore, **kwargs: object) -> None:
+        markers = list(_store.state_dir.glob("marker-*.marker"))
+        seen.append((bool(markers), any("_" in path.stem for path in markers)))
+        original(_store, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rebuild_module, "clear_derived", spy)
+
+    rebuild_from_raw(store, window_days=None)
+
+    assert seen and seen[0][0], "清空之前必须已经有标记可依"
+    assert seen[0][1], "一天一个标记不够，范围要写成一段"
+    assert list(store.state_dir.glob("marker-*.marker")) == [], "跑完不该留残留"

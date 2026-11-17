@@ -141,6 +141,11 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
 DEFAULT_COLUMNS: tuple[str, ...] = tuple(column for _, columns in GROUPS for column in columns)
 
 #: 每列一句人话定义。会进交付 README 与数据说明，所以要说清口径与歧义。
+#:
+#: 其中 12 列与 `ops/fielddocs.py` 的 `COMMON` 同名：那边是内部表的数据字典
+#: （讲管道语义），这里是交付面的客户口径。两份不同是**有意的**——`delivery`(3)
+#: 也不能 import `ops`(4)，合并只能合到这里，那会让数据字典反过来依赖交付契约。
+#: 改一列时两边都要看一眼，理由与判据见 GLOSSARY #107。
 COLUMN_NOTES: dict[str, str] = {
     "id": "数据集唯一标识（作者/名称），也是交付结果的排序兜底键",
     "url": "Hugging Face 数据集页面地址，可直接点开",

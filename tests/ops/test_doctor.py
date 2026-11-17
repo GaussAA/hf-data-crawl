@@ -13,7 +13,16 @@ import polars as pl
 
 from hf_data_crawl.acquire.hf.api import HfResponse
 from hf_data_crawl.ops.cli import main
-from hf_data_crawl.ops.doctor import ALERT_NAME, Finding, RunContext, diagnose, sync_alert
+from hf_data_crawl.ops.doctor import (
+    ALERT_NAME,
+    CHECKS,
+    LOCK_STATE,
+    Finding,
+    RunContext,
+    _snapshot_dependent,
+    diagnose,
+    sync_alert,
+)
 from hf_data_crawl.ops.health import read as read_health
 from hf_data_crawl.pipeline import lineage
 from hf_data_crawl.pipeline.lineage import path_of as lineage_path
@@ -1326,3 +1335,25 @@ def test_正在跑的抓取分片不报(tmp_path: Path) -> None:
     finding = next(item for item in diagnose(store, NOW) if item.text.startswith("抓取暂存"))
 
     assert not finding.problem
+
+
+def test_体检项登记表的码唯一且非空() -> None:
+    """码是历史记录的主键：重复了会把两项检查算成一项，空了则断代。"""
+    codes = [check.code for check in (*CHECKS, LOCK_STATE)]
+
+    assert all(codes), "每条检查都要有码"
+    assert len(codes) == len(set(codes)), "码不能重复"
+
+
+def test_降级不会丢掉已经贴上的码() -> None:
+    """`_snapshot_dependent` 曾经重新构造 `Finding`，把 code 与 degraded 一起丢掉。
+
+    今天靠「先包快照依赖、后贴码」的顺序遮着；顺序一改就是静默丢字段，台账里那条
+    记录的码变空，而连续天数正是按码数的——归零看起来和「已经修好了」一模一样。
+    """
+    marked = Finding(True, "raw 断日", code="raw_gaps")
+
+    downgraded = _snapshot_dependent(marked)
+
+    assert downgraded.snapshot_dependent is True
+    assert downgraded.code == "raw_gaps"
