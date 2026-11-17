@@ -14,7 +14,7 @@ from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 
 from . import marker
-from .rebuild import rebuild_from_raw, replay_suffix
+from .rebuild import rebuild_from_raw
 
 if TYPE_CHECKING:
     from ..platform.store import DatasetStore
@@ -77,14 +77,14 @@ def _rederive(store: DatasetStore, snapshot_date: date) -> bool:
 
     只重算一天会把 `current` 覆盖成那一天的值：`state._rebuild_current` 用当日帧
     替换同名 id 的全部标量列与 `last_seen_at`。若崩溃那天不是最新 Raw 日，
-    「自愈」的结果是当前态整体回退——比不修更坏。后缀重放（见
-    `rebuild.replay_suffix`）保证最后一天是最新日，`current` 收敛到正确值。
+    「自愈」的结果是当前态整体回退——比不修更坏。后缀重放（`rebuild_from_raw` 收到
+    `since` 后自己算的那段）保证最后一天是最新日，`current` 收敛到正确值。
 
     失败时记下现场但不抛异常，一个坏日期不阻塞其余写命令；返回值让
     `check_and_recover` 把标记留下，下一次写命令立即重试。
     """
     try:
-        rebuild_from_raw(store, days=replay_suffix(store, snapshot_date))
+        rebuild_from_raw(store, since=snapshot_date)
     except Exception as error:
         # 不抛是架构选择，但「静默跳过一天」不能没有现场：打印带日期与异常
         # 类型的一行，由 scripts/_common.ps1 收进 logs/，排障时能看出哪天没修好。

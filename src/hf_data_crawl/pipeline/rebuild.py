@@ -18,14 +18,17 @@ build 要重放几百天。
 
 重放集合必须后缀闭合
 --------------------
-除了默认窗口，还支持指定一组日期重放（`days`，供 `build --stale` 用）。这组日期
-**必须后缀闭合**：选了 D 日，就要把 D 之后所有有 Raw 的日子一起重放。
+除了默认窗口，还支持「从某一天起修好」（`since`，供 `build --stale`、崩溃恢复与
+补采后用）。选了 D 日，就要把 D 之后所有有 Raw 的日子一起重放。
 
 原因是派生不是逐日独立的：`silver` 的「变了才追加」要拿「早于该日最近一行」当锚点，
 `observations` 同理，而 `current` 是拿当日帧**覆盖**同名 id 的全量当前态。只重放一天
 D 而不重放 D 之后的日，会得到「D 之后新增的属性变更被吃掉」与「current 的指标
-回退到 D」——两者都不报错，只是数字变小。`replay_suffix` 就是这条约束的唯一实现，
-调用方不要自己拼日期列表。
+回退到 D」——两者都不报错，只是数字变小。
+
+**这条约束不进调用方的手**：`rebuild_from_raw` 收 `since`（一个日期），后缀由它自己
+算。曾经它也收过一个现成的日期列表，三个调用方各自 `replay_suffix(...)` 一下再传进来
+——规则只有一份，但「记得去调它」挂在三个人的记性上，而漏掉中间某一天的后果是静默的。
 
 等价性由 `tests/pipeline/test_rebuild.py` 的三向契约钉死：局部重放 == 全量重放 == 逐日
 正常跑。三者都读「早于该日的历史」，冷区不动，热区自然收敛到同一结果。
@@ -99,13 +102,18 @@ def _authority_intact(store: DatasetStore) -> bool:
 
 
 def replay_suffix(store: DatasetStore, since: date) -> list[date]:
-    """从 `since` 起（含）到最新 Raw 日的全部日期——重放集合唯一合法的构造方式。
+    """从 `since` 起（含）到最新 Raw 日的全部日期。
 
-    只重放 `since` 那一天是不够的：`silver` 与 `observations` 要靠「早于该日的
-    最近一行」判定变化，`current` 又拿当日帧覆盖同名 id，少放中间任何一天，
-    后面的变更判定就会拿错锚点、当前态也会回退到那一日的值。
+    只给「动手前想先报一句会重放几天」的调用方用。真正开跑时把 `since` 交给
+    `rebuild_from_raw`，它按同一条规则自己算——别把这个列表再传回去，那正是
+    接口曾经允许、后来收掉的那条路。
     """
-    return [day for day in discover_raw_dates(store) if day >= since]
+    return _suffix(discover_raw_dates(store), since)
+
+
+def _suffix(dates: list[date], since: date) -> list[date]:
+    """`since` 之后（含）的所有 Raw 日。重放集合唯一的构造规则。"""
+    return [day for day in dates if day >= since]
 
 
 def divergent_since(store: DatasetStore) -> date | None:
@@ -123,16 +131,15 @@ def _select_replay(
     dates: list[date],
     *,
     window_days: int | None,
-    days: list[date] | None,
+    since: date | None,
 ) -> tuple[str, list[date]] | None:
     """定出这次重放的日期集合与模式；无事可做时返回 None。"""
-    if days is not None:
-        wanted = set(days)
-        picked = [day for day in dates if day in wanted]
+    if since is not None:
+        picked = _suffix(dates, since)
         if not picked:
             return None
         if not _authority_intact(store):
-            # 指定日期同样依赖冷区权威层：它俩没了，局部重放照样会抹掉历史。
+            # 定点重放同样依赖冷区权威层：它俩没了，局部重放照样会抹掉历史。
             return "recovery", dates
         return "target", picked
 
@@ -155,14 +162,15 @@ def rebuild_from_raw(
     store: DatasetStore,
     *,
     window_days: int | None = REPLAY_WINDOW_DAYS,
-    days: list[date] | None = None,
+    since: date | None = None,
 ) -> RebuildSummary:
     """重建派生层；默认只重放热区，`window_days=None` 表示全量重放。
 
-    `days` 给定时按这组日期重放，与 `window_days` 互斥（给了 `days` 就忽略窗口）。
-    调用方必须用 `replay_suffix` 构造它——见模块 docstring 的后缀闭合约束。
+    `since` 给定时改成「从这一天起修好」：`since`（含）到最新 Raw 日整段重放，
+    与 `window_days` 二选一——给了 `since` 就忽略窗口。后缀闭合由本函数自己保证，
+    调用方只给一个日期，给不出「缺了中间几天」的集合。
     """
-    if days is None and window_days is not None and window_days < 1:
+    if since is None and window_days is not None and window_days < 1:
         raise ValueError(f"window_days 必须 >= 1 或设为 None（全量），实得 {window_days}")
     dates = discover_raw_dates(store)
     if not dates:
@@ -170,7 +178,7 @@ def rebuild_from_raw(
             dates=[], bronze_rows=0, silver_rows=0, observations=0, current_rows=0
         )
 
-    selected = _select_replay(store, dates, window_days=window_days, days=days)
+    selected = _select_replay(store, dates, window_days=window_days, since=since)
     if selected is None:
         return RebuildSummary(
             dates=[], bronze_rows=0, silver_rows=0, observations=0, current_rows=0
