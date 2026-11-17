@@ -99,7 +99,24 @@ def collect_rows(
     completed = 0
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        waiting = {pool.submit(fetch, dataset_id) for dataset_id in pending}
+        # 滑动窗口，而不是把 `pending` 一次性全部 submit。
+        #
+        # `--top 0`（全量）时 pending 有 111 万个 id：一次性提交会创建 111 万个
+        # Future，`wait()` 每次都要遍历整个集合，CPU 被吃满而请求根本发不出去
+        # （2026-11-17 实测：运行 9 分钟 0 条完成、CPU 99.8%、staging 无新增）。
+        # 6 万条时还能忍，百万级直接卡死。窗口取「并发数的 8 倍」并封顶 4096：
+        # 留足并发，又不让集合膨胀到百万级。
+        window = min(max(max(1, workers) * 8, 64), 4096)
+        cursor = 0
+        waiting: set[Any] = set()
+
+        def fill() -> None:
+            nonlocal cursor
+            while len(waiting) < window and cursor < total:
+                waiting.add(pool.submit(fetch, pending[cursor]))
+                cursor += 1
+
+        fill()
         while waiting:
             finished, waiting = wait(
                 waiting, timeout=STALL_HEARTBEAT_SECONDS, return_when=FIRST_COMPLETED
@@ -128,6 +145,7 @@ def collect_rows(
 
                 if progress is not None and (completed % 100 == 0 or completed == total):
                     progress(completed, total)
+            fill()
 
     # 流式模式下尾巴不足一批，也必须写出去——否则最后几十条永远停在内存里。
     if not retain and buffer and flush is not None:
