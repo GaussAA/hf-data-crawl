@@ -436,6 +436,16 @@ def preview(
     )
     # 预演不拦，但要把「正式交付会被拦」说清楚：否则人会以为跑通了就能交。
     notes: list[str] = []
+    # 草稿可能来自一份还没提交的改动：它长得像交付，但正式交时会被脏闸门拦下。
+    # 不写这一句，人拿着草稿去对数字，最后发现「怎么交不出去」。
+    state = method.worktree_state()
+    if state.get("checked") and not state.get("clean"):
+        paths = state.get("paths") or []
+        notes.append(
+            "这份草稿来自有未提交改动的代码"
+            f"（{'、'.join(paths[:3])}{' 等' if len(paths) > 3 else ''}）：正式交付会被脏闸门拦下，"
+            "产物也可能与提交后的不同。"
+        )
     try:
         _check_guard(spec, payload.rows)
     except DeliveryBlocked as error:

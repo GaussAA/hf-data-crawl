@@ -922,6 +922,24 @@ def test_预览会写出正式交付会被拦下的原因(store: DatasetStore, t
     ).read_text(encoding="utf-8")
 
 
+def test_预览会说明草稿来自脏代码(
+    store: DatasetStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """草稿长得像交付，但正式交时会被脏闸门拦下——不写这一句，人会拿它去对数字。"""
+    root = tmp_path / "req"
+    make_request(root)
+    monkeypatch.setattr(
+        "hf_data_crawl.delivery.method.worktree_state",
+        lambda: {"checked": True, "clean": False, "paths": ["src/x.py"], "note": ""},
+    )
+
+    result = preview(store, root, "REQ-0001")
+
+    assert any("未提交改动" in note for note in result.notes)
+    note = (root / "REQ-0001" / "scratch" / "preview" / "PREVIEW.md").read_text(encoding="utf-8")
+    assert "未提交改动" in note
+
+
 def test_交付成功后草稿区被清掉(store: DatasetStore, tmp_path: Path) -> None:
     """客已交完，草稿留着只会让人以为「这里还有一份可能要交的东西」。"""
     root = tmp_path / "req"
