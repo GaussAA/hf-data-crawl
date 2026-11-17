@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-11-17T17:29:08+08:00",
+  "updated_at": "2026-11-17T17:51:45+08:00",
   "scripts": [
     {
       "name": "columns.py",
@@ -14,7 +14,7 @@
       "outputs": [
         "stdout：四桶清单、逐列覆盖率、spec 核对结论"
       ],
-      "sha256": "481b27e173dc81c64ea74dd37ba363b130beaab04ad59309e4485d237cbdba82"
+      "sha256": "821a1dbba2c2317d33ec4f41cd2ce84b656a8e1a4d5d2beec804c718832758a3"
     },
     {
       "name": "verify_table.py",

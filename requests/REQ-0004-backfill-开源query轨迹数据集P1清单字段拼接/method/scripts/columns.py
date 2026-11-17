@@ -87,6 +87,30 @@ def filled(frame: pl.DataFrame, column: str) -> int:
     return int(series.is_not_null().sum())
 
 
+#: 有值但不拼的列：各有理由，且理由能用数据当场复核（复核见 `_evidence`）。
+#: 「D 桶全拼」是默认，破例这三列，是因为它们要么塞不进一格，要么与已拼的列
+#: 逐行同一个数——重复两列挨着放，读表的人只会问「到底信哪个」。
+SKIPPED: dict[str, str] = {
+    "server_configs": "逐 config 的明细 JSON，一格塞不下也读不了；要看明细去底库同名列表",
+    "server_num_bytes_original": "与 server_num_bytes_parquet 逐行同值（同批实测），重复",
+    "total_bytes": "与 main_size 逐行同值（除 1 个文件树截断的库），重复",
+}
+
+
+def _evidence(frame: pl.DataFrame) -> list[str]:
+    """把 SKIPPED 里「重复」的断言当场验一遍，不靠人记得当时比过。"""
+    lines: list[str] = []
+    pairs = {
+        "server_num_bytes_original": "server_num_bytes_parquet",
+        "total_bytes": "main_size",
+    }
+    for left, right in pairs.items():
+        both = frame.filter(pl.col(left).is_not_null() & pl.col(right).is_not_null())
+        same = both.filter(pl.col(left) == pl.col(right)).height
+        lines.append(f"  {left} == {right}：{same}/{both.height} 行（都为空的 {frame.height - both.height} 行不计）")
+    return lines
+
+
 def main() -> int:
     spec = load_request(REQUEST_DIR / "spec.yaml")
     fill = spec.fill
@@ -123,8 +147,13 @@ def main() -> int:
 
     print("\n## D 桶：拼进来的列（覆盖率 = 这 28 行里有内容的比例）")
     for column in buckets["D"]:
+        if column in SKIPPED:
+            print(f"  {column:24s} {counts[column]:2d}/{len(ids)}  × 不拼：{SKIPPED[column]}")
+            continue
         mark = "✓" if column in declared else "[!] spec 没声明"
         print(f"  {column:24s} {counts[column]:2d}/{len(ids)}  {mark}")
+    print("\n## 不拼的理由复核（D 桶里的破例项）")
+    print("\n".join(_evidence(frame)))
 
     print("\n## C 桶：这批整列为空，不拼")
     print("  " + "、".join(buckets["C"]))
@@ -140,18 +169,25 @@ def main() -> int:
     if not covered:
         problems.append("四桶合计与底库列数不一致")
     for column in buckets["D"]:
+        if column in SKIPPED:
+            continue
         if column not in declared:
             problems.append(f"底库有值但 spec 没拼：{column}")
     for column in declared:
         if column not in buckets["D"]:
             problems.append(f"spec 声明了 {column}，但它不在 D 桶（无值 / 属 A、B、C）")
+        elif column in SKIPPED:
+            problems.append(f"spec 声明的 {column} 在「不拼」名单里，两者只能留一个")
 
     if problems:
         print("\n[!] spec 与底库对不上：")
         for item in problems:
             print(f"  - {item}")
         return 1
-    print(f"\n[ok] spec 声明的 {len(declared)} 个底库列 == D 桶；交付前口径与底库一致")
+    print(
+        f"\n[ok] spec 声明的 {len(declared)} 个底库列 == D 桶 − 不拼 {len(SKIPPED)} 列；"
+        "交付前口径与底库一致"
+    )
     return 0
 
 
