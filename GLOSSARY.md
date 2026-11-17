@@ -1571,3 +1571,26 @@
       `page_file` 两列，而原始响应由 cold 基线承载。真正的需求是「能看」，不是「常驻」。
     - **测试**：`test_从Raw现算的当日帧与落盘结果一致`、`test_现算回看不落盘`、
       `test_命令行回看某天的_bronze`（顺带钉住「不写 runs 台账」）。
+
+100. **切片依赖边要显式登记：方向合法不等于关系合理**（2026-11-17，画架构图时发现）：
+     `RANK` 挡的是「向上 import」与「同档互相 import」，它不判断一条合法的下行边在
+     语义上说不说得通。`delivery`(3) → `acquire`(2) 方向合法，但数据流里 `acquire`
+     在 `delivery` 上游，`delivery` 也从不消费它；有人图省事从 `delivery` 抓一段
+     `acquire` 的逻辑，原先那几条规则会全绿。
+
+    - **做法**：`tests/test_architecture.py` 增加 `EDGES`——每片登记它**真实** import
+      的切片（共 12 条边），`test_跨切片依赖边与登记表一致` 逐条比对。新增一条跨切片
+      import 必须在 `EDGES` 写一行，删掉一条也要同步，否则表会退化成没人看的清单。
+    - **代价**：每次新增跨切片 import 多一行 diff。这是有意的摩擦：把「顺手 import」
+      变成「过一目」。若哪天嫌它碍事，删掉它之前先想清楚有没有别的机制在守同一件事。
+    - **反向验证**：把 `from ..acquire import session` 临时插进 `delivery/commands.py`，
+      `test_slices_only_depend_downwards` 仍绿，登记表那条红——这正是它存在的理由。
+    - **同一次补的另外两处洞**：① `_imported_names()` 只遍历 `ast.ImportFrom`，写成
+      `import hf_data_crawl.delivery.backfill` 即可绕过「跨切片不许私有名」与「档案层
+      只认契约」两条规则；② `ops/cli.py` 的「只调公开 `run_*`」原先只写在 docstring 里，
+      现在由 `test_组合根只经各切片的公开入口` 守，`pipeline.recovery` 是登记在案的
+      唯一例外（`check_and_recover` 因避环不从 `pipeline/__init__.py` 导出）。
+    - **刻意没做**：没动 `RANK` 本身，也没把 `derive_day` 的触发从 `collect` /
+      `reconcile` 挪到组合根。后者能让 `acquire` 落到 `pipeline` 之下、次序与数据流
+      一致，但要连带改 marker 恢复、lineage 戳记与 `build` 的既有语义，换来的是编号
+      好看而不是故障面变小。取舍写在 `docs/adr/0002-slice-dependency-edge-registry.md`。
