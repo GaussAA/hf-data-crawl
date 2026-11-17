@@ -576,3 +576,28 @@ def test_状态写回丢弃时点名(tmp_path: Path, capsys: pytest.CaptureFixtu
     assert summary.cold_gaps == 1
     assert "状态写回丢了 1 个 id" in out
     assert "acme/ds-3" in out
+
+
+def test_清空之前先写下范围标记(store: DatasetStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """先声明再动手。
+
+    原先标记是逐日写的，而 `clear_derived` 一次删掉 N 天分区：崩在「已清空、还没
+    开始派生」那一段，磁盘上没有任何标记，`build --stale` 还会说「已对齐」。
+    """
+    from hf_data_crawl.pipeline import rebuild as rebuild_module
+
+    seen: list[tuple[bool, bool]] = []
+    original = rebuild_module.clear_derived
+
+    def spy(_store: DatasetStore, **kwargs: object) -> None:
+        markers = list(_store.state_dir.glob("marker-*.marker"))
+        seen.append((bool(markers), any("_" in path.stem for path in markers)))
+        original(_store, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rebuild_module, "clear_derived", spy)
+
+    rebuild_from_raw(store, window_days=None)
+
+    assert seen and seen[0][0], "清空之前必须已经有标记可依"
+    assert seen[0][1], "一天一个标记不够，范围要写成一段"
+    assert list(store.state_dir.glob("marker-*.marker")) == [], "跑完不该留残留"

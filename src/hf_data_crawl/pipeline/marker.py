@@ -29,18 +29,20 @@
 - 性能开销小（只在启动时检查一次）
 - 能检测并自愈大部分不一致
 
-不覆盖的场景
------------
-本模块只保证「哪天派到一半崩了」能被发现。真正没被覆盖的窗口在它之外：
-`rebuild` 会先把重放窗口内的分区整体清掉，再逐日派生，而标记是**逐日**写的——
-清空之后、第一天标记写下之前，或任意两天之间（`clear_marker(D)` 与
-`write_marker(D+1)` 之间）被杀，磁盘上没有任何待恢复标记，且 Raw 指纹没变，
-`build --stale` 会报「已对齐」。`tests/pipeline/test_marker_atomicity.py` 钉的是
-「单日」这一层的原子性；跨日那一层由 `rebuild` 的入口守卫负责。
+标记描述的是一段闭区间
+------------------------
+一个标记写着 `[since, until]`：逐日派生写 `[D, D]`，重建写 `[D1, Dn]`。
 
-（原先这里写的是「派生完成、标记删除前崩溃 → 下次启动看不到标记、不会清理」，
-与代码正好相反：`clear_marker` 是最后一步，崩溃在它之前标记必然还在，下次启动
-必然看见并重放。错误描述会诱导人以为该窗口需要额外保护，从而漏掉上面那个真的。）
+原先只有「一天」这一维，于是 `rebuild` 的破坏性窗口落在标记之外：它先把重放窗口内
+的分区整体清掉，再逐日派生，而标记是逐日写的——清空之后、第一天标记写下之前被杀，
+磁盘上就没有任何待恢复标记，且 Raw 指纹没变，`build --stale` 会报「已对齐」。旧注释
+把这段责任推给「`rebuild` 的入口守卫」，而那个守卫只判「观测与当前态非空」，是前提
+检查，不是崩溃恢复。
+
+现在 `rebuild_from_raw` 在 `clear_derived` **之前**写下整段范围，跑完才删；恢复时范围
+标记优先，它覆盖的逐日标记一并清掉，不会为同一次崩溃重复重放。
+
+旧的逐日标记文件（字段名 `snapshot_date`）仍能读，按 `[D, D]` 解释。
 """
 
 from __future__ import annotations
@@ -62,48 +64,73 @@ STALE_THRESHOLD_SECONDS = 600  # 10 分钟
 
 @dataclass(frozen=True)
 class Marker:
-    """派生中标记。"""
+    """派生中标记：一段**闭区间** `[since, until]`。
 
-    snapshot_date: date
+    逐日派生写 `[D, D]`（与原先「一天一个文件」同形）；重建写整段，因为它的破坏性
+    窗口比一天大得多：一次 `clear_derived` 会删掉 N 天的分区。
+    """
+
+    since: date
+    until: date
     started_at: str  # ISO 8601 UTC 时间戳
 
 
-def marker_path(store: DatasetStore, snapshot_date: date) -> Path:
-    """标记文件路径。"""
-    return store.state_dir / f"marker-{snapshot_date.isoformat()}.marker"
+def marker_path(store: DatasetStore, since: date, until: date | None = None) -> Path:
+    """标记文件路径。单日沿用旧文件名，已有的标记文件不用搬。"""
+    until = until or since
+    name = since.isoformat() if until == since else f"{since.isoformat()}_{until.isoformat()}"
+    return store.state_dir / f"marker-{name}.marker"
 
 
 def write_marker(
-    store: DatasetStore, snapshot_date: date, *, started_at: str | None = None
+    store: DatasetStore,
+    since: date,
+    *,
+    until: date | None = None,
+    started_at: str | None = None,
 ) -> None:
-    """标记开始派生某一天。
+    """标记开始派生某一天（或某一段）。
 
     `started_at` 由恢复链在重放失败时传回原值：保留旧的超时点，下一次写命令
     就能立刻重试，而不是重新计满 `STALE_THRESHOLD_SECONDS`。
     """
     marker = Marker(
-        snapshot_date=snapshot_date,
+        since=since,
+        until=until or since,
         started_at=started_at or datetime.now(UTC).isoformat(timespec="seconds"),
     )
     content = json.dumps(
-        {"snapshot_date": marker.snapshot_date.isoformat(), "started_at": marker.started_at},
+        {
+            "since": marker.since.isoformat(),
+            "until": marker.until.isoformat(),
+            "started_at": marker.started_at,
+        },
         ensure_ascii=False,
     )
-    write_text(marker_path(store, snapshot_date), content)
+    write_text(marker_path(store, marker.since, marker.until), content)
 
 
-def clear_marker(store: DatasetStore, snapshot_date: date) -> None:
+def clear_marker(store: DatasetStore, since: date, until: date | None = None) -> None:
     """清除派生标记（派生完成）。"""
-    marker_path(store, snapshot_date).unlink(missing_ok=True)
+    marker_path(store, since, until).unlink(missing_ok=True)
 
 
 def load_marker(path: Path) -> Marker | None:
-    """加载标记文件；损坏返回 None。"""
+    """加载标记文件；损坏返回 None。
+
+    兼容更早的逐日格式（字段名是 `snapshot_date`）：那时一天一个文件，区间取
+    `[D, D]` 即可，不必让磁盘上已有的标记失效。
+    """
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-        snapshot_date = date.fromisoformat(payload["snapshot_date"])
-        started_at = payload["started_at"]
-        return Marker(snapshot_date=snapshot_date, started_at=started_at)
+        if "snapshot_date" in payload:
+            day = date.fromisoformat(payload["snapshot_date"])
+            return Marker(since=day, until=day, started_at=payload["started_at"])
+        return Marker(
+            since=date.fromisoformat(payload["since"]),
+            until=date.fromisoformat(payload["until"]),
+            started_at=payload["started_at"],
+        )
     except (json.JSONDecodeError, KeyError, ValueError, OSError):
         return None
 

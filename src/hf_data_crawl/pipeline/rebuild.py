@@ -202,6 +202,11 @@ def rebuild_from_raw(
     # 的时候（一次性清 7 天再重写）结构性失效——2026-11-16 审计实锤。
     observation_before = {day: _observation_rows(store, day) for day in replay}
 
+    # 清空之前先写下「本次会动哪些天」。逐日标记只覆盖得了「派生到一半」，
+    # 覆盖不了「已清空、尚未开始」与「两天之间」——那两段原先谁都不认账，
+    # 而 `build --stale` 还会说「已对齐」。范围就是上面算出来的重放集合。
+    marker.write_marker(store, replay[0], until=replay[-1])
+
     clear_derived(store, hot_dates=None if full else set(replay))
 
     bronze_rows = 0
@@ -224,6 +229,8 @@ def rebuild_from_raw(
             shrinks.append((snapshot, *day.observation_shrink))
 
     restore(store, retained)
+
+    marker.clear_marker(store, replay[0], until=replay[-1])
 
     return RebuildSummary(
         dates=list(replay),
