@@ -591,6 +591,98 @@ def test_表里没有声明的列要报错而不是静默跳过(tmp_path: Path) 
         run_it(spec, [ROW], tmp_path=tmp_path)
 
 
+# ---------------------------------------------------------------- 追加列
+
+
+def test_追加列写在原表最右侧而原有列一格不动(tmp_path: Path) -> None:
+    """对方只给了三列，却要「把能拿到的字段都拼进来」：新增的列往右长，
+    原来的表头与内容一格不动——原表是对方的表，不是我们的草稿纸。"""
+    book = build_book(tmp_path / "in.xlsx", ["acme/ds-1"])
+    spec = load_spec(
+        write_spec(
+            tmp_path / "spec.yaml",
+            book=book,
+            out=tmp_path / "out.xlsx",
+            body='columns:\n  "作者": {field: author, append: true}\n  "点赞量": {field: likes, append: true}',
+        )
+    )
+
+    report = run_it(spec, [ROW], tmp_path=tmp_path)
+
+    out = openpyxl.load_workbook(tmp_path / "out.xlsx")["数据"]
+    assert len(HEADERS) == 7
+    assert [out.cell(row=2, column=column).value for column in (8, 9)] == ["作者", "点赞量"]
+    assert out.cell(row=3, column=8).value == "acme"
+    assert out.cell(row=3, column=9).value == 7
+    assert [out.cell(row=2, column=column).value for column in range(1, 8)] == HEADERS
+    assert report.appended == ("作者", "点赞量")
+
+
+def test_追加列不算进输入表头(tmp_path: Path) -> None:
+    """档案里 `header` 要答的是「对方那张表长什么样」。把它和追加列混在一起，
+    「原表本来有没有这一列」就再也说不清了。"""
+    book = build_book(tmp_path / "in.xlsx", ["acme/ds-1"])
+    spec = load_spec(
+        write_spec(
+            tmp_path / "spec.yaml",
+            book=book,
+            out=tmp_path / "out.xlsx",
+            body='columns:\n  "作者": {field: author, append: true}',
+        )
+    )
+
+    report = run_it(spec, [ROW], tmp_path=tmp_path)
+
+    assert report.header == tuple(HEADERS)
+    assert "作者" in report.appended
+
+
+def test_追加列也能由判读表提供值(tmp_path: Path) -> None:
+    """新增的列若需要人判，照样走 `manual` + overrides，引擎不因为它是新列就松口。"""
+    book = build_book(tmp_path / "in.xlsx", ["acme/ds-1"])
+    (tmp_path / "ov.json").write_text(
+        '{"acme/ds-1": {"是否有测试集": "有 test"}}', encoding="utf-8"
+    )
+    spec = load_spec(
+        write_spec(
+            tmp_path / "spec.yaml",
+            book=book,
+            out=tmp_path / "out.xlsx",
+            body=(
+                "overrides: ov.json\n"
+                'columns:\n  "是否有测试集": {manual: 须看 splits, append: true}'
+            ),
+        )
+    )
+
+    report = run_it(spec, [ROW], tmp_path=tmp_path)
+
+    out = openpyxl.load_workbook(tmp_path / "out.xlsx")["数据"]
+    assert out.cell(row=2, column=8).value == "是否有测试集"
+    assert out.cell(row=3, column=8).value == "有 test"
+    assert report.tallies["是否有测试集"].from_override == 1
+
+
+def test_追加列的表头没有加进输入表头指纹(tmp_path: Path) -> None:
+    """同一份输入表 + 同一份 spec，两次交付的产物与档案必须一致；
+    而「输入表头」这一项无论追加多少列，始终只描述对方给的那份表。"""
+    book = build_book(tmp_path / "in.xlsx", ["acme/ds-1"])
+    spec = load_spec(
+        write_spec(
+            tmp_path / "spec.yaml",
+            book=book,
+            out=tmp_path / "out.xlsx",
+            body='columns:\n  "作者": {field: author, append: true}',
+        )
+    )
+
+    first = run_it(spec, [ROW], tmp_path=tmp_path)
+    second = run_it(spec, [ROW], tmp_path=tmp_path)
+
+    assert first.header == second.header == tuple(HEADERS)
+    assert header_digest(first.header) == header_digest(tuple(HEADERS))
+
+
 # ---------------------------------------------------------------- 输入表头
 
 

@@ -666,6 +666,32 @@ def test_回填档案记下逐列口径与覆盖(store: DatasetStore, tmp_path: 
     assert body["fill"]["columns"][0]["field"] == "downloads"
 
 
+def test_回填档案记下追加列而输入表头只描述对方那张表(store: DatasetStore, tmp_path: Path) -> None:
+    """对方只给两列、需求要「把能拿到的字段都拼进来」时，档案必须分开答两件事：
+    对方那张表长什么样（`input.header`）、我们往右加了什么（`appended`）。"""
+    root = tmp_path / "req"
+    book = make_book(tmp_path / "in.xlsx", ["acme/ds-1", "acme/ds-2"])
+    make_backfill_request(
+        root,
+        book,
+        fill={
+            "source": {"path": f"input/{book.name}", "header_row": 2, "key_column": "URL"},
+            "output": {"name": "已补全.xlsx"},
+            "columns": {
+                "下载量": {"field": "downloads"},
+                "点赞量": {"field": "likes", "append": True},
+            },
+        },
+    )
+
+    result = deliver(store, root, "REQ-0002", now=NOW)
+
+    body = json.loads((result.directory / MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert body["fill"]["appended"] == ["点赞量"]
+    assert body["fill"]["input"]["header"]["columns"] == ["URL", "下载量", "训练阶段"]
+    assert "追加列 1 列" in (result.directory / "README.md").read_text(encoding="utf-8")
+
+
 def test_回填与查询共用护栏(store: DatasetStore, tmp_path: Path) -> None:
     root = tmp_path / "req"
     book = make_book(tmp_path / "in.xlsx", ["acme/ds-1", "acme/ds-2"])

@@ -75,6 +75,9 @@ def _definition(
                 "key_column": fill.source.key_column,
             },
             "output": fill.output_name,
+            # 追加列单列一段：`input.header` 说的是对方那张表，`appended` 说的是
+            # 我们往右加了什么。两者混成一份，「原表长什么样」就再也答不出来。
+            "appended": list(report.appended),
             # 与 `input.path` 同口径：记 spec 里的相对路径，不记 basename。
             "overrides": fill.overrides_relative,
             "overwrite": fill.overwrite,
@@ -129,6 +132,15 @@ def _lines(
         f"- 声明 {len(fill.columns)} 列，本轮写入 {report.written()} 格，"
         f"原有内容保留 {sum(item.kept for item in report.tallies.values())} 格，"
         f"空 {sum(item.empty for item in report.tallies.values())} 格",
+    ]
+    if report.appended:
+        # 追加列是本次产物的结构变化，不是填充量变化；混进上面那行数字里，
+        # 「表比上次多了几列」就没人看得见。
+        lines.append(
+            f"- 追加列 {len(report.appended)} 列（原表没有，写在最右侧，原表原有列一字未动）："
+            + "、".join(f"`{name}`" for name in report.appended)
+        )
+    lines += [
         "",
         "### 逐列规则",
         "",
@@ -146,7 +158,8 @@ def _lines(
             "manual": f"人工判读：{item.reason}",
         }[item.kind]
         lines.append(
-            f"| {item.name} | {origin} | {tally.written} | {tally.from_override} "
+            f"| {item.name}{'（新增）' if item.name in report.appended else ''} "
+            f"| {origin} | {tally.written} | {tally.from_override} "
             f"| {tally.kept} | {tally.empty} |"
         )
     lines.append("")
@@ -160,7 +173,9 @@ def _lines(
         lines += [f"### 未命中底库 {len(report.missing_ids)} 条", "", f"{sample}{tail}", ""]
     if report.undeclared:
         lines += [
-            "### 未声明的列（保持空白）",
+            # 「保持空白」只说对了一半：对方表里未声明的列可能本来就有内容
+            # （序号、名称、URL 这类），引擎一个都没碰——「不动」才是判据。
+            "### 未声明的列（不填、原样保留）",
             "",
             "、".join(report.undeclared[:20]),
             "",

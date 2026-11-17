@@ -46,16 +46,20 @@ fill:
     数据模态:   {field: modalities, join: "、", translate: true}
     论文URL:   {template: "https://arxiv.org/abs/{arxiv_ids}"}
     训练阶段:   {manual: README 未明写训练阶段}
+    # 对方表里没有的列：显式写 append 才会追加到最右侧，见下面第 6 条
+    点赞量:     {field: likes, append: true}
   overrides: overrides.json  # 可选，人工判读结果（同样在需求目录里）
 ```
 
-五条只写不说的规矩：
+六条只写不说的规矩：
 
 1. **绝不改原件，也不外写产物**：输入只读、产物只进交付档案。
 2. **输入必须自包含**：相对路径且不得越出需求目录，绝对路径直接拒绝。
 3. **默认不覆盖已有内容**：只填空格。要覆盖须显式 `overwrite: true`。
 4. **未声明的列一律不碰**，并在报告里列出来，让人看得见还剩多少活。
 5. **未命中底库的行不编值**，整行留空并点名。
+6. **加列要显式声明**：列名对不上表头默认报错（拼错一列不能被当成新列）；确实要
+   新增的列写 `append: true`，追加在原表最右一列的右边，原表原有列一字不动。
 """
 
 from __future__ import annotations
@@ -63,6 +67,7 @@ from __future__ import annotations
 import json
 import re
 import zipfile
+from copy import copy
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -140,6 +145,10 @@ class ColumnRule:
     translate: bool = False
     width: int | None = None
     wrap: bool = False
+    #: 这一列允许表里原本没有：没有就追加到原表最右侧。为什么不默认允许——
+    #: 列名拼错时会从「报错」退化成「多出一列全空的格」，而全空的列没人看得出来
+    #: 是错了还是本来没有。
+    append: bool = False
 
 
 @dataclass(frozen=True)
@@ -193,7 +202,11 @@ class FillReport:
     files: list[dict[str, Any]] = field(default_factory=list)
     #: 输入表的列名，按表头顺序。档案要用它回答「当时那张表长什么样」——
     #: 只记 sha256 的话，换了一列确实对不上，可对不上在哪一列没人知道。
+    #: **追加列不算在内**：它是本次产物新增的，不是对方表原来有的。
     header: tuple[str, ...] = ()
+    #: 本次追加到原表右侧的列，按写入顺序。输入表的表头与它分开记，
+    #: 「对方给了什么」和「我们加了什么」才分得清。
+    appended: tuple[str, ...] = ()
 
     def written(self) -> int:
         return sum(item.written for item in self.tallies.values())
@@ -420,6 +433,7 @@ def _rule(name: str, raw: Any, origin: str) -> ColumnRule:
         translate=bool(raw.get("translate", False)),
         width=None if width in (None, "") else int(str(width)),
         wrap=bool(raw.get("wrap", False)),
+        append=bool(raw.get("append", False)),
     )
 
 
@@ -627,9 +641,28 @@ def run(
         )
 
     declared = [item.name for item in spec.columns]
-    for name in declared:
-        if name not in index:
-            raise FillError(f"表里没有 {name!r} 列——spec 与表头对不上，先核对列名")
+    # 表头要在追加列之前拍下来：档案里「对方那张表长什么样」说的是对方给的表，
+    # 不是我们交付的那张。追加列单独记进 `appended`。
+    header = tuple(index)
+    appended: list[str] = []
+    next_column = sheet.max_column + 1
+    last_column = max(index.values())
+    for rule in spec.columns:
+        if rule.name in index:
+            continue
+        if not rule.append:
+            raise FillError(
+                f"表里没有 {rule.name!r} 列——spec 与表头对不上，先核对列名；"
+                "确实要新增这一列，就在规则里写 append: true"
+            )
+        index[rule.name] = next_column
+        appended.append(rule.name)
+        if not dry_run:
+            # 追加列的表头沿用原表头的字体与底色：新列挂在右侧，样式却不一样，
+            # 看起来就像后来贴上去的，而它确实是后来加的——但不必在视觉上强调。
+            _copy_header_style(sheet, header_row, last_column, next_column)
+            sheet.cell(row=header_row, column=next_column, value=rule.name)
+        next_column += 1
 
     raw_keys = [str(sheet.cell(row=row, column=key_column).value).strip() for row in rows]
     resolved, bad = resolve_ids(raw_keys)
@@ -702,8 +735,24 @@ def run(
         manual=manual_columns,
         stamp=stamp_value,
         files=files,
-        header=tuple(index),
+        header=header,
+        appended=tuple(appended),
     )
+
+
+def _copy_header_style(sheet: Any, header_row: int, source: int, target: int) -> None:
+    """把原表最后一列表头的样式抄给追加列。
+
+    只抄视觉属性的副本（`copy`）而不是把样式对象直接赋过去：openpyxl 的样式
+    对象是工作簿内共享的，赋值会让两列共用一个 font/fill——改一处两处一起变。
+    """
+    origin = sheet.cell(row=header_row, column=source)
+    cell = sheet.cell(row=header_row, column=target)
+    cell.font = copy(origin.font)
+    cell.fill = copy(origin.fill)
+    cell.border = copy(origin.border)
+    cell.alignment = copy(origin.alignment)
+    cell.number_format = origin.number_format
 
 
 def _digest(path: Path) -> str:

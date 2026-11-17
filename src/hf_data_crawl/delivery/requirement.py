@@ -758,6 +758,8 @@ fill:
   #   template 按底库列拼字符串，占位符缺值就整格留空，不拼半截链接
   #   const    常量
   #   manual   引擎不猜，值留空、原因进「补全说明」页；真值从 overrides 来
+  # 对方表里没有的列要显式写 append: true，追加到原表最右侧；不写就按
+  # 「列名对不上」报错——拼错一列不该悄悄多出一列空格。
   columns:
     "数据集名称": {field: id}
     "下载量": {field: downloads}
@@ -869,6 +871,8 @@ def spec_body(spec: Spec) -> dict[str, Any]:
             "notes": [list(item) for item in fill.notes],
             "stamp_note": fill.stamp_note,
             "columns": [
+                # `append` 只在真写了才进指纹：给它补一个默认的 False，会让
+                # 从来不用这个开关的需求也凭空换一次口径指纹。
                 {
                     "name": item.name,
                     "kind": item.kind,
@@ -881,6 +885,7 @@ def spec_body(spec: Spec) -> dict[str, Any]:
                     "translate": item.translate,
                     "width": item.width,
                     "wrap": item.wrap,
+                    **({"append": True} if item.append else {}),
                 }
                 for item in fill.columns
             ],
