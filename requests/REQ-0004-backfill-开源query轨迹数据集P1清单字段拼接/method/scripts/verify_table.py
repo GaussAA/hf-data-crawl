@@ -44,7 +44,9 @@ def header_of(sheet: Any, header_row: int) -> list[str]:
     return [str(cell.value).strip() if cell.value is not None else "" for cell in sheet[header_row]]
 
 
-def check_input(path: Path, sheet_name: str | None, header_row: int, key_column: str) -> tuple[list[str], int]:
+def check_input(
+    path: Path, sheet_name: str | None, header_row: int, key_column: str
+) -> tuple[list[str], int]:
     """输入快照查三件事：表头、序号连续、名称与 URL 是否指向同一个库。"""
     problems: list[str] = []
     sheet = open_sheet(path, sheet_name)
@@ -98,7 +100,9 @@ def check_product(directory: Path, fill: Any, rows: int) -> list[str]:
             )
 
     declared = [item.name for item in fill.columns]
-    actual = [out.cell(row=header_row, column=width + 1 + offset).value for offset in range(len(declared))]
+    actual = [
+        out.cell(row=header_row, column=width + 1 + offset).value for offset in range(len(declared))
+    ]
     if actual != declared:
         problems.append(f"追加列表头与 spec 顺序不一致：{actual}")
 
@@ -127,7 +131,9 @@ def check_manifest(directory: Path, fill: Any, rows: int) -> list[str]:
         problems.append(f"manifest 记的行数是 {body.get('result', {}).get('rows')}，应为 {rows}")
     declared = [item.name for item in fill.columns]
     if (body.get("fill") or {}).get("appended") != declared:
-        problems.append(f"manifest 的 appended 与 spec 不一致：{(body.get('fill') or {}).get('appended')}")
+        problems.append(
+            f"manifest 的 appended 与 spec 不一致：{(body.get('fill') or {}).get('appended')}"
+        )
     header = ((body.get("fill") or {}).get("input") or {}).get("header") or {}
     if header.get("columns") != list(ORIGINAL):
         problems.append(f"manifest 的输入表头应只有原表三列，实得 {header.get('columns')}")
@@ -136,7 +142,9 @@ def check_manifest(directory: Path, fill: Any, rows: int) -> list[str]:
     current = stamp(DatasetStore(REPO_ROOT / "data")).current_md5
     if delivered != current:
         # 不判失败：底库每天在涨，交付那一刻的数值本来就不该被回溯。
-        print(f"[~] 底库已变（交付时 {delivered[:8]}…，现在 {current[:8]}…）：数值列是交付那一刻的快照")
+        print(
+            f"[~] 底库已变（交付时 {delivered[:8]}…，现在 {current[:8]}…）：数值列是交付那一刻的快照"
+        )
     else:
         print("底库指纹：与交付时一致")
     return problems
@@ -150,7 +158,10 @@ def main(argv: list[str]) -> int:
         return 1
 
     problems, rows = check_input(
-        REQUEST_DIR / fill.source.relative, fill.source.sheet, fill.source.header_row, fill.source.key_column
+        REQUEST_DIR / fill.source.relative,
+        fill.source.sheet,
+        fill.source.header_row,
+        fill.source.key_column,
     )
     if len(argv) > 1:
         directory = Path(argv[1])

@@ -60,8 +60,7 @@ def read_ids(path: Path, sheet: str | None, header_row: int, key_column: str) ->
     workbook = openpyxl.load_workbook(path)
     worksheet = workbook[sheet] if sheet else workbook[workbook.sheetnames[0]]
     header = [
-        str(cell.value).strip() if cell.value is not None else ""
-        for cell in worksheet[header_row]
+        str(cell.value).strip() if cell.value is not None else "" for cell in worksheet[header_row]
     ]
     column = header.index(key_column) + 1
     ids: list[str] = []
@@ -107,7 +106,9 @@ def _evidence(frame: pl.DataFrame) -> list[str]:
     for left, right in pairs.items():
         both = frame.filter(pl.col(left).is_not_null() & pl.col(right).is_not_null())
         same = both.filter(pl.col(left) == pl.col(right)).height
-        lines.append(f"  {left} == {right}：{same}/{both.height} 行（都为空的 {frame.height - both.height} 行不计）")
+        lines.append(
+            f"  {left} == {right}：{same}/{both.height} 行（都为空的 {frame.height - both.height} 行不计）"
+        )
     return lines
 
 
@@ -142,8 +143,10 @@ def main() -> int:
         buckets["C" if counts[column] == 0 else "D"].append(column)
 
     covered = 74 == len(buckets["A"]) + len(buckets["B"]) + len(buckets["C"]) + len(buckets["D"])
-    print(f"底库 {len(frame.columns)} 列 → A {len(buckets['A'])} · B {len(buckets['B'])} · "
-          f"C {len(buckets['C'])} · D {len(buckets['D'])}（四桶互斥且合计等于总数：{covered}）")
+    print(
+        f"底库 {len(frame.columns)} 列 → A {len(buckets['A'])} · B {len(buckets['B'])} · "
+        f"C {len(buckets['C'])} · D {len(buckets['D'])}（四桶互斥且合计等于总数：{covered}）"
+    )
 
     print("\n## D 桶：拼进来的列（覆盖率 = 这 28 行里有内容的比例）")
     for column in buckets["D"]:

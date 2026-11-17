@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-11-17T17:51:45+08:00",
+  "updated_at": "2026-11-17T18:46:14+08:00",
   "scripts": [
     {
       "name": "columns.py",
@@ -14,7 +14,7 @@
       "outputs": [
         "stdout：四桶清单、逐列覆盖率、spec 核对结论"
       ],
-      "sha256": "821a1dbba2c2317d33ec4f41cd2ce84b656a8e1a4d5d2beec804c718832758a3"
+      "sha256": "579b46c2b2e51362a4c9c01393001ee208422be50d791dbd907dd9cecd4933c7"
     },
     {
       "name": "verify_table.py",
@@ -28,7 +28,7 @@
       "outputs": [
         "stdout：输入行数、表头、产物列数、底库指纹是否漂移、自检结论"
       ],
-      "sha256": "dc038084f7ece60f194136761abdd4dcde21b509a0f902c74e46c3fd35c14af9"
+      "sha256": "69d7325866175115747c925e2c0776d28651540b0e27c8d4eb7da0b92d002a4a"
     }
   ]
 }
