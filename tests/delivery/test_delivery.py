@@ -241,6 +241,33 @@ def test_批量交付里一条炸了不带走其余需求(
     assert "ValueError" in report.failed[0][1]
 
 
+def test_关闭的需求在批量里记跳过且不交付(store: DatasetStore, tmp_path: Path) -> None:
+    """`run-due` 是没人盯着的路径：关闭的需求要明确跳过，不该每天报一次失败。"""
+    root = tmp_path / "req"
+    make_request(root, cadence="daily")
+    (root / "REQ-0001" / "STATUS.json").write_text(
+        '{"status": "closed", "reason": "对方只要 v1"}', encoding="utf-8"
+    )
+
+    report = run_due(store, root, now=NOW)
+
+    assert [item[0] for item in report.skipped] == ["REQ-0001"]
+    assert "已关闭" in report.skipped[0][1]
+    assert report.failed == [] and report.delivered == []
+
+
+def test_直接调deliver也不放行已关闭的需求(store: DatasetStore, tmp_path: Path) -> None:
+    """`request run` 拦了一道，档案层再兜一层：别的调用方不该绕过这个状态。"""
+    root = tmp_path / "req"
+    make_request(root)
+    (root / "REQ-0001" / "STATUS.json").write_text(
+        '{"status": "closed", "reason": "换供应商"}', encoding="utf-8"
+    )
+
+    with pytest.raises(DeliveryBlocked, match="已关闭"):
+        deliver(store, root, "REQ-0001", now=NOW)
+
+
 def test_护栏拦下的交付不占版本号(store: DatasetStore, tmp_path: Path) -> None:
     """0 行被护栏拦下是最常见的失败：改完口径应当还能用同一个版本号重交。"""
     root = tmp_path / "req"

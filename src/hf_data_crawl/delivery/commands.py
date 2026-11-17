@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from ..platform.atomic import write_bytes
@@ -34,11 +36,13 @@ from .requirement import (
     INPUT_DIR,
     MANIFEST_NAME,
     SPEC_NAME,
+    STATUS_NAME,
     Cadence,
     Kind,
     Mode,
     Spec,
     SpecError,
+    closed_note,
     compile_sql,
     directory_name,
     history_versions,
@@ -127,7 +131,62 @@ def run_request(args: argparse.Namespace) -> int:
         return _request_usage(root, args.term)
     if args.request_action == "prune":
         return _request_prune(root, args)
+    if args.request_action == "close":
+        return _request_close(root, args)
+    if args.request_action == "reopen":
+        return _request_reopen(root, args)
     return _request_show(root, args.id)
+
+
+def _request_close(root: Path, args: argparse.Namespace) -> int:
+    """关掉一份需求：不删任何东西，只是告诉交付链「这单不用再跑了」。
+
+    状态写在 `requests/<id>/STATUS.json`，不进 spec——关闭是运营状态，不是口径；
+    写进 spec 要么动口径指纹，要么重排人写的 YAML，两样都不值当。
+    """
+    try:
+        request_dir = resolve_dir(root, args.id)
+        spec = load_spec(request_dir / SPEC_NAME)
+    except SpecError as error:
+        print(f"失败：{error}")
+        return 1
+    reason = (args.reason or "").strip()
+    if not reason:
+        print("失败：写一句关闭原因（--reason）——半年后只看到「已关闭」，没人知道为什么。")
+        return 1
+    write_bytes(
+        request_dir / STATUS_NAME,
+        (
+            json.dumps(
+                {
+                    "status": "closed",
+                    "reason": reason,
+                    "closed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n"
+        ).encode("utf-8"),
+    )
+    print(f"{spec.id} 已关闭：{reason}")
+    print("  台账与产物一份没动；`request run` / `run-due` 不再跑它。要恢复用 `request reopen`。")
+    return 0
+
+
+def _request_reopen(root: Path, args: argparse.Namespace) -> int:
+    try:
+        request_dir = resolve_dir(root, args.id)
+        spec = load_spec(request_dir / SPEC_NAME)
+    except SpecError as error:
+        print(f"失败：{error}")
+        return 1
+    if closed_note(request_dir) is None:
+        print(f"{spec.id} 本来就是开着的，无需恢复。")
+        return 0
+    (request_dir / STATUS_NAME).unlink(missing_ok=True)
+    print(f"{spec.id} 已恢复：`request run` / `run-due` 会重新把它算进来。")
+    return 0
 
 
 def _request_prune(root: Path, args: argparse.Namespace) -> int:
@@ -673,6 +732,9 @@ def _request_list(root: Path) -> int:
             f"  {spec.kind.value} · {spec.cadence.value} · v{spec.version} · "
             f"交付 {len(runs)} 次 · 最后 {last}"
         )
+        note = closed_note(path.parent)
+        if note is not None:
+            print(f"  已关闭：{note}")
         print(f"  目录：{path.parent.name}")
         print(f"  口径：{criteria_text(spec)}")
     return 0
@@ -715,6 +777,9 @@ def _request_show(root: Path, request_id: str) -> int:
         return 1
 
     print(f"{spec.id}  {spec.title}")
+    note = closed_note(path.parent)
+    if note is not None:
+        print(f"  状态：已关闭 —— {note}（`request reopen` 可恢复）")
     print(f"  提出人：{spec.requester}")
     if spec.purpose:
         print(f"  用途：{spec.purpose}")
@@ -811,6 +876,12 @@ def run_request_run(args: argparse.Namespace, store: DatasetStore) -> Attempt:
     except SpecError as error:
         print(f"失败：{error}")
         return Attempt(1, str(error))
+
+    note = closed_note(request_dir)
+    if note is not None:
+        print(f"{spec.id} 已关闭：{note}")
+        print("  交付链不再跑它；确实要出数据，先 `request reopen`。")
+        return Attempt(1, f"需求已关闭：{note}")
 
     if args.dry_run:
         # 预演不写盘、也不占「once 已交付」的名额——它本来就是给人先看一眼的。

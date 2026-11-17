@@ -129,6 +129,7 @@ hf-data-crawl request run REQ-0001 --preview  # 只想先看产物：落 scratch
 | 看两次交付差 | `request compare <id> [A] [B]` | 逐列报改值格数并抽样；已清理的会指路 sha256 |
 | 重建交付索引 | `request index <id>` | 只重写 `deliveries/INDEX.md`，不动任何一条交付 |
 | 回收磁盘 | `request prune <id> [--keep N] [--dry-run]` | 只清旧产物字节；档案、当前有效那条与 sha256 都留着 |
+| 关停 / 恢复 | `request close <id> --reason …` / `request reopen <id>` | 只写 `STATUS.json`，档案不动；`run-due` 记跳过而不是失败 |
 | 体检 | `hf-data-crawl doctor` | 看「需求自包含」「口径版本」「交付索引」「交付锚点」「产物留存」 |
 
 变更后**必须**在 `method/METHOD.md` 里记一句「换了什么、为什么换」。这句话是

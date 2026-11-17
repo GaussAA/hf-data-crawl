@@ -229,6 +229,13 @@ def build_parser() -> argparse.ArgumentParser:
     request_prune.add_argument(
         "--dry-run", action="store_true", help="只报会清掉什么、能省多少，不动磁盘"
     )
+    request_close = request_sub.add_parser(
+        "close", help="关掉一份需求：不再跑 run / run-due，台账与产物一份不动"
+    )
+    request_close.add_argument("id", help="需求号")
+    request_close.add_argument("--reason", required=True, help="为什么关（必填，写给人看）")
+    request_reopen = request_sub.add_parser("reopen", help="恢复一份已关闭的需求")
+    request_reopen.add_argument("id", help="需求号")
     request_index = request_sub.add_parser(
         "index", help="重写 deliveries/INDEX.md：列出每条交付的性质、可复现性与当前有效"
     )

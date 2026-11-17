@@ -383,6 +383,36 @@ def test_prune命令清旧产物但留当前与档案(
     assert "至少是 1" in capsys.readouterr().out
 
 
+def test_关闭的需求不交付也不报错(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """关闭是运营决定，不是故障：run 明确拒绝并指路 reopen。"""
+    make(tmp_path)
+    assert run(tmp_path, "request", "close", "REQ-0001", "--reason", "对方只要 v1") == 0
+
+    assert run(tmp_path, "request", "run", "REQ-0001") == 1
+    out = capsys.readouterr().out
+    assert "已关闭" in out and "--dry-run" not in out
+
+
+def test_关闭必须写理由否则不落盘(tmp_path: Path) -> None:
+    """半年后只看到「已关闭」，没人知道为什么——那这句状态就只是噪音。"""
+    path = make(tmp_path)
+
+    assert run(tmp_path, "request", "close", "REQ-0001", "--reason", "  ") == 1
+    assert not (path.parent / "STATUS.json").exists()
+
+
+def test_恢复后又能交付(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path = make(tmp_path)
+    run(tmp_path, "request", "close", "REQ-0001", "--reason", "换供应商")
+
+    assert run(tmp_path, "request", "reopen", "REQ-0001") == 0
+    assert not (path.parent / "STATUS.json").exists()
+    capsys.readouterr()
+
+    assert run(tmp_path, "request", "list") == 0
+    assert "已关闭" not in capsys.readouterr().out
+
+
 def test_index命令重写交付索引(tmp_path: Path) -> None:
     """补建历史索引不该靠再交付一份——那正是这次治理要断掉的循环。"""
     path = make(tmp_path)

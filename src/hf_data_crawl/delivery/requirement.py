@@ -52,6 +52,27 @@ INPUT_DIR = "input"
 #: 每次交付目录里的三件套。`data.*` 是字节（不进 git），后两个是说明（进 git）。
 MANIFEST_NAME = "manifest.json"
 README_NAME = "README.md"
+#: 需求状态（开着 / 已关闭）。**不进 spec**：关闭是运营状态，不是口径——写进 spec
+#: 要么改口径指纹、要么重排人写的 YAML，两样都不值当。
+STATUS_NAME = "STATUS.json"
+
+
+def read_status(request_dir: Path) -> dict[str, Any]:
+    """读需求状态；没有、坏了都当「开着」——状态是附加账，不该拦住任何命令。"""
+    try:
+        body = json.loads((request_dir / STATUS_NAME).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def closed_note(request_dir: Path) -> str | None:
+    """已关闭时返回一句「为什么关」；开着返回 None。"""
+    body = read_status(request_dir)
+    if body.get("status") != "closed":
+        return None
+    reason = str(body.get("reason") or "").strip()
+    return reason or "（未写原因）"
 
 
 def _slug(title: str, limit: int = 24) -> str:

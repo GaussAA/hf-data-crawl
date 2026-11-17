@@ -67,6 +67,7 @@ from .requirement import (
     Kind,
     Spec,
     SpecError,
+    closed_note,
     resolve_dir,
     snapshot_history,
     spec_body,
@@ -284,6 +285,11 @@ def deliver(
     """跑一次交付。任何护栏不通过都抛 `DeliveryBlocked`，且不留任何目录。"""
     request_dir = resolve_dir(requests_root, request_id)
     spec_path = request_dir / SPEC_NAME
+    # 关闭的需求不该从任何路径交付出去：`request run` 已经拦了一道，这里再兜一层，
+    # 免得别的调用方（测试、脚本、将来的批量入口）绕过去。
+    note = closed_note(request_dir)
+    if note is not None:
+        raise DeliveryBlocked(f"{request_id}: 已关闭（{note}）——要出数据先 `request reopen`")
     # 口径**只读一次**：校验、指纹、版本快照都从这份字节来。原先三处各读一次文件，
     # 中途有人改 spec，就会得到「校验的是旧版、快照的是新版」——档案从此说不清
     # 自己到底跑的是哪一版。
@@ -723,7 +729,9 @@ def index_lines(request_dir: Path) -> list[str]:
         # 后两者都「打不开」，但原因不同——混成同一个符号，读的人会以为清理漏了。
         if directory.name in pruned:
             product = "已清理"
-        elif all((directory / str(item.get("name"))).is_file() for item in files) if files else False:
+        elif (
+            all((directory / str(item.get("name"))).is_file() for item in files) if files else False
+        ):
             product = "✓"
         else:
             product = "未留存"
@@ -1212,6 +1220,11 @@ def run_due(
             failed.append((spec_path.parent.name, str(error)))
             continue
         request_id = spec.id
+        # 关闭是「这单不用再跑了」：跳过而不是失败——它不是故障，是运营决定。
+        note = closed_note(spec_path.parent)
+        if note is not None:
+            skipped.append((spec.id, f"已关闭：{note}"))
+            continue
 
         due, reason = due_state(spec, spec_path.parent, moment)
         if not due:
