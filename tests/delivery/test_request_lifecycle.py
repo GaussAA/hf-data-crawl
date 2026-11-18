@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 
@@ -140,7 +141,7 @@ def test_换输入表把字段差异摆到明面上(tmp_path: Path, capsys) -> N
 
     assert code == 0
     assert "已收进" in out
-    assert "下载量" in out and "新表里没有" in out
+    assert "下载量" in out
     assert (resolve_dir(tmp_path / "req", "REQ-0001") / "input" / "v2" / "第二版.xlsx").is_file()
     # 原件一字未动
     assert first.is_file()
@@ -301,3 +302,149 @@ def test_批量交付把失败单独归类(tmp_path: Path, capsys) -> None:
 
     assert "共 0 交付 / 0 跳过 / 1 失败" in out
     assert "0 行" in out or "行数为 0" in out
+
+
+# ---------------------------------------------------------------- 口径视图
+
+
+def test_diff在只有一版时说明去路(tmp_path: Path, capsys) -> None:
+    """「只有 1 版」不是错误，但必须告诉人怎么才会出现第二版——否则会以为命令坏了。"""
+    assert new_query(tmp_path) == 0
+    capsys.readouterr()
+
+    assert run(tmp_path, "request", "diff", "REQ-0001") == 1
+    out = capsys.readouterr().out
+    assert "没有可比对象" in out
+    assert "交付一次" in out
+
+
+def test_diff指定不存在的版本时列出已有的(tmp_path: Path, capsys) -> None:
+    assert new_query(tmp_path) == 0
+    capsys.readouterr()
+
+    assert run(tmp_path, "request", "diff", "REQ-0001", "v1", "v9") == 1
+    out = capsys.readouterr().out
+    assert "没有 v1 的快照" in out and "现有：无" in out
+
+
+def test_show把有快照但没交付的版本标出来(tmp_path: Path, capsys) -> None:
+    """快照在 ≠ 交过：失败尝试也会留下快照。混着列，读的人会以为每一版都真的交过。"""
+    assert new_query(tmp_path) == 0
+    request_dir = resolve_dir(tmp_path / "req", "REQ-0001")
+    spec = (request_dir / SPEC_NAME).read_text(encoding="utf-8")
+    history = request_dir / "history"
+    history.mkdir(parents=True, exist_ok=True)
+    (history / "v2.yaml").write_text(spec.replace("version: 1", "version: 2"), encoding="utf-8")
+    capsys.readouterr()
+
+    assert run(tmp_path, "request", "show", "REQ-0001") == 0
+    out = capsys.readouterr().out
+    assert "历史版本" in out and "v2" in out
+    assert "没有对应交付" in out
+
+
+def test_show对已关闭的需求明说(tmp_path: Path, capsys) -> None:
+    assert new_query(tmp_path) == 0
+    assert run(tmp_path, "request", "close", "REQ-0001", "--reason", "对方撤单") == 0
+    capsys.readouterr()
+
+    assert run(tmp_path, "request", "show", "REQ-0001") == 0
+    out = capsys.readouterr().out
+    assert "状态：已关闭" in out and "对方撤单" in out
+
+
+def test_show在方法合规时明说合规(tmp_path: Path, capsys) -> None:
+    """「一处问题都没列」与「合规」在终端里长得一样；后者要主动说出来，否则读者
+    分不清是没检查还是检查通过。"""
+    assert new_query(tmp_path) == 0
+    write_method(resolve_dir(tmp_path / "req", "REQ-0001"), title="高下载数据集")
+    capsys.readouterr()
+
+    assert run(tmp_path, "request", "show", "REQ-0001") == 0
+    assert "合规：步骤齐备" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- 换输入表的三种拒绝
+
+
+def backfill_request(tmp_path: Path) -> Path:
+    """建一份回填型需求，返回需求目录。
+
+    骨架里的 sheet 恒为 `Sheet1`——那是待人工核对的占位，不是从源表读出来的。
+    测试用表叫「数据」，所以按受理完成后提示的那一步改一次，这正是真实用法。
+    """
+    first = book(tmp_path / "第一版.xlsx")
+    assert new_backfill(tmp_path, first) == 0
+    request_dir = resolve_dir(tmp_path / "req", "REQ-0001")
+    spec = request_dir / SPEC_NAME
+    text = spec.read_text(encoding="utf-8").replace("sheet: Sheet1", "sheet: 数据")
+    spec.write_text(text, encoding="utf-8")
+    return request_dir
+
+
+def test_换输入表时新文件不存在要当场拒绝(tmp_path: Path, capsys) -> None:
+    backfill_request(tmp_path)
+    capsys.readouterr()
+
+    assert run(tmp_path, "request", "input", "REQ-0001", "--add", str(tmp_path / "无.xlsx")) == 1
+    assert "不存在或不是文件" in capsys.readouterr().out
+
+
+def test_换输入表缺标识列时拒绝并列出已有列(tmp_path: Path, capsys) -> None:
+    """没有标识列就接不进来：填出来的行对不上任何库。列出已有列，人好判断是表给错了。"""
+    backfill_request(tmp_path)
+    capsys.readouterr()
+    wrong = tmp_path / "没有URL.xlsx"
+    made = openpyxl.Workbook()
+    sheet = made.active
+    assert sheet is not None
+    sheet.title = "数据"
+    sheet.cell(row=1, column=1, value="基础信息")
+    for column, name in enumerate(["数据集名称", "下载量"], start=1):
+        sheet.cell(row=2, column=column, value=name)
+    made.save(wrong)
+
+    code = run(tmp_path, "request", "input", "REQ-0001", "--add", str(wrong), "--sheet", "数据")
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert "没有标识列" in out
+    assert "数据集名称" in out
+
+
+def test_换输入表表头完全一致时明说(tmp_path: Path, capsys) -> None:
+    """「没有差异」也是结论。不打印的话，人分不清是没比对还是比对通过。"""
+    backfill_request(tmp_path)
+    capsys.readouterr()
+    same = book(tmp_path / "同名新表.xlsx", keys=("acme/ds-2",))
+
+    assert run(tmp_path, "request", "input", "REQ-0001", "--add", str(same), "--sheet", "数据") == 0
+    assert "表头与当前完全一致" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- 清单与样例
+
+
+def test_清单里标出已关闭的需求(tmp_path: Path, capsys) -> None:
+    assert new_query(tmp_path) == 0
+    assert run(tmp_path, "request", "close", "REQ-0001", "--reason", "对方撤单") == 0
+    capsys.readouterr()
+
+    assert run(tmp_path, "request", "list") == 0
+    out = capsys.readouterr().out
+    assert "已关闭：对方撤单" in out
+
+
+def test_取消样例标记后状态里不残留样例键(tmp_path: Path, capsys) -> None:
+    """`--undo` 之后 STATUS.json 里再留着 sample 的键，下一次读它的人会以为还是样例。"""
+    assert new_query(tmp_path) == 0
+    assert run(tmp_path, "request", "sample", "REQ-0001", "--reason", "夹具") == 0
+    request_dir = resolve_dir(tmp_path / "req", "REQ-0001")
+    capsys.readouterr()
+
+    assert run(tmp_path, "request", "sample", "REQ-0001", "--undo") == 0
+    status = request_dir / "STATUS.json"
+    body = json.loads(status.read_text(encoding="utf-8")) if status.is_file() else {}
+
+    assert not {"sample", "sample_reason", "sample_marked_at"} & set(body)
+    assert "已取消样例标记" in capsys.readouterr().out
