@@ -69,6 +69,17 @@ TRUNCATION_MARK = "…（截断）"
 
 DEFAULT_PREVIEW_URL = "https://datasets-server.huggingface.co/rows"
 
+#: `config` 传 `auto` 时先问这个端点要真实的 config 名。
+DEFAULT_SPLITS_URL = "https://datasets-server.huggingface.co/splits"
+
+#: `--config auto`：让每个库自己去问「你的 config 叫什么」。
+#:
+#: 原先一律传 `default`，但**多数库的 config 不叫 default**：`openai/gsm8k` 是
+#: `main`、`allenai/c4` 是 `en`、`Salesforce/wikitext` 是 `wikitext-2-raw-v1`。
+#: 更糟的是传错名字不会得到 422「config 不存在」，而是 429/500——于是它看起来
+#: 像限流，实际是参数错（2026-11-18 实测：top 20 里 9 个「临时失败」全是这一类）。
+AUTO_CONFIG = "auto"
+
 #: `/rows` 用 404 表示「这个库没有 viewer」，401 表示受限或不存在——都是永久缺失。
 UNAVAILABLE_STATUS = frozenset({401, 404})
 
@@ -117,7 +128,7 @@ class HfPreviewApi:
         transport: Transport,
         *,
         rows: int = DEFAULT_ROWS,
-        config: str = "default",
+        config: str = AUTO_CONFIG,
         split: str = "train",
         rate: float = DEFAULT_RATE,
         base_url: str = DEFAULT_PREVIEW_URL,
@@ -136,7 +147,67 @@ class HfPreviewApi:
         # 主动匀速，而不是「撞 429 再退避」：与 readme 同一个教训（见 `RateLimiter`）。
         self._limiter = RateLimiter(rate)
 
+    def _resolve(self, dataset_id: str, snapshot_date: date) -> tuple[str, str] | PreviewResult:
+        """确定这个库的 (config, split)；确定不了就返回一个终态结果。
+
+        `config != auto` 时原样返回，不发请求。
+
+        `auto` 要问一次 `/splits`：`/rows` 的 `config` 是必填的，而各库的 config
+        名五花八门（`openai/gsm8k` 是 `main`、`allenai/c4` 是 `en`）。传错不会收到
+        「config 不存在」，而是 429/500，所以只能先问。
+
+        **三种失败要分开**（2026-11-18 实测各自都真出现过）：
+        - 401/404：这个库没有 viewer → `unavailable`，下轮不再问
+        - 429/5xx/网络错误：上游一时不可用 → `error`，下轮重试。原先这里一律记
+          `unavailable`，于是 `openai/gsm8k` 明明有 `main/train` 也被钉成「无 viewer」
+        - `splits: []` 且 `pending` 非空：正在生成 → `error`，下次再来
+        """
+        if self._config != AUTO_CONFIG:
+            return (self._config, self._split)
+        self._limiter.acquire()
+        try:
+            response = self._transport.get(
+                DEFAULT_SPLITS_URL, {"dataset": dataset_id}, {"Accept": "application/json"}
+            )
+        except TransportError:
+            return PreviewResult(dataset_id, "error")
+        if response.status == THROTTLED_STATUS:
+            # `/splits` 撞限流也要整轮中止，不能静默记成 error——否则这一头在
+            # 吞 429、另一头继续打，实测连吞 26 个才由 `/rows` 发现（2026-11-18）。
+            raise Throttled(f"{dataset_id} 被限流（429）")
+        if response.status in UNAVAILABLE_STATUS:
+            return _unavailable(dataset_id, snapshot_date, self._config, self._split)
+        if response.status != 200:
+            return PreviewResult(dataset_id, "error")
+        try:
+            payload = orjson.loads(response.body)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return PreviewResult(dataset_id, "error")
+        if not isinstance(payload, dict):
+            return PreviewResult(dataset_id, "error")
+
+        splits = payload.get("splits")
+        pending = payload.get("pending")
+        if isinstance(splits, list) and splits:
+            # 优先 `train`，没有就取第一条：样例要的是「这个库长什么样」，不是某个
+            # 特定 split 的完整性。
+            for item in splits:
+                if isinstance(item, dict) and item.get("split") == "train":
+                    return (str(item.get("config")), "train")
+            first = splits[0]
+            if isinstance(first, dict) and first.get("config"):
+                return (str(first["config"]), str(first.get("split") or "train"))
+            return PreviewResult(dataset_id, "error")
+        if isinstance(pending, list) and pending:
+            # viewer 正在生成，过一阵就有了。
+            return PreviewResult(dataset_id, "error")
+        return _unavailable(dataset_id, snapshot_date, self._config, self._split)
+
     def fetch(self, dataset_id: str, snapshot_date: date) -> PreviewResult:
+        resolved = self._resolve(dataset_id, snapshot_date)
+        if isinstance(resolved, PreviewResult):
+            return resolved
+        config, split = resolved
         attempt = 0
         while True:
             self._limiter.acquire()
@@ -145,8 +216,8 @@ class HfPreviewApi:
                     self._base_url,
                     {
                         "dataset": dataset_id,
-                        "config": self._config,
-                        "split": self._split,
+                        "config": config,
+                        "split": split,
                         "offset": 0,
                         "length": self._rows,
                     },
@@ -160,7 +231,7 @@ class HfPreviewApi:
                 continue
 
             if response.status == 200:
-                return _success(dataset_id, snapshot_date, self._config, self._split, response.body)
+                return _success(dataset_id, snapshot_date, config, split, response.body)
             if response.status == THROTTLED_STATUS:
                 # 按 IP 限流：继续请求只会把封禁拖长，故整轮中止而不是逐条退避。
                 raise Throttled(f"{dataset_id} 被限流（429）")
@@ -170,7 +241,7 @@ class HfPreviewApi:
                 continue
             if response.status in UNAVAILABLE_STATUS:
                 # 永久缺失：记下来，下轮不再为它烧一次请求。
-                return _unavailable(dataset_id, snapshot_date, self._config, self._split)
+                return _unavailable(dataset_id, snapshot_date, config, split)
             return PreviewResult(dataset_id, "error")
 
     def _backoff(self, attempt: int) -> float:

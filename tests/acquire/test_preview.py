@@ -55,6 +55,13 @@ def _error(status: int) -> HfResponse:
 
 
 def _api(transport: ScriptedTransport, **kwargs: Any) -> HfPreviewApi:
+    """默认 `config="default"`：这些用例验的是 `/rows` 的处理。
+
+    生产默认已是 `auto`（先问 `/splits` 要真实 config 名），但那会多发一个请求，
+    让 `ScriptedTransport` 的脚本错位。config 解析本身由
+    `test_自动解析_config_与_split` 单独覆盖。
+    """
+    kwargs.setdefault("config", "default")
     return HfPreviewApi(transport, rate=0, sleeper=lambda _seconds: None, **kwargs)
 
 
@@ -213,3 +220,75 @@ def test_限流不重试而是立刻抛出() -> None:
         _api(transport).fetch("a/b", DAY)
 
     assert len(transport.calls) == 1
+
+
+# ------------------------------------------------------------ config 自动解析
+
+
+def _splits_body(splits: list[dict[str, Any]], pending: list[dict[str, Any]] | None = None) -> bytes:
+    return json.dumps(
+        {"splits": splits, "pending": pending or [], "failed": []}
+    ).encode()
+
+
+def test_自动解析_config_与_split() -> None:
+    """`config=auto` 先问 `/splits` 要真实 config 名，再拿它去问 `/rows`。
+
+    多数库的 config 不叫 `default`（`openai/gsm8k` 是 `main`、`allenai/c4` 是
+    `en`），而传错名字收到的是 429/500 而不是「config 不存在」——所以只能先问。
+    """
+    splits = HfResponse(
+        status=200,
+        headers={},
+        body=_splits_body(
+            [
+                {"dataset": "a/b", "config": "main", "split": "test"},
+                {"dataset": "a/b", "config": "main", "split": "train"},
+            ]
+        ),
+    )
+    transport = ScriptedTransport(splits, _ok({"text": "甲"}))
+    result = _api(transport, config="auto").fetch("a/b", DAY)
+
+    assert result.status == "ok"
+    assert result.row is not None
+    assert (result.row["config"], result.row["split"]) == ("main", "train")
+    # 一次 `/splits`、一次 `/rows`
+    assert len(transport.calls) == 2
+    assert transport.calls[1]["config"] == "main"
+
+
+def test_splits_撞限流也要整轮中止() -> None:
+    """`/splits` 的 429 不能静默记成 error。
+
+    原先这里返回 `error`，于是这一头吞掉限流、另一头继续打，实测连吞 26 个才由
+    `/rows` 发现（2026-11-18），缓存窗口被白白烧掉。
+    """
+    transport = ScriptedTransport(_error(429))
+
+    with pytest.raises(Throttled):
+        _api(transport, config="auto").fetch("a/b", DAY)
+
+
+def test_没有_splits_也没有_pending_记永久缺失() -> None:
+    splits = HfResponse(status=200, headers={}, body=_splits_body([]))
+    transport = ScriptedTransport(splits)
+    result = _api(transport, config="auto").fetch("a/b", DAY)
+
+    assert result.status == "unavailable"
+
+
+def test_viewer_还在生成记临时失败以便重试() -> None:
+    """`splits: []` 配 `pending` 非空 = 正在生成，与「没有 viewer」是两件事。
+
+    实测 `tasl-lab/uniocc` 就是这个状态；若记成永久缺失，等它生成好了也不会再问。
+    """
+    splits = HfResponse(
+        status=200,
+        headers={},
+        body=_splits_body([], [{"dataset": "a/b", "config": "default"}]),
+    )
+    transport = ScriptedTransport(splits)
+    result = _api(transport, config="auto").fetch("a/b", DAY)
+
+    assert result.status == "error"

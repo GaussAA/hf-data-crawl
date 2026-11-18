@@ -466,7 +466,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     preview.add_argument("--ids", default=None, help="只抓这些 id（逗号分隔），忽略 --top")
     preview.add_argument("--rows", type=int, default=3, help="每个库取几行（默认 3，上限 100）")
-    preview.add_argument("--config", default="default", help="viewer 的 config 名（默认 default）")
+    preview.add_argument(
+        "--config",
+        default="auto",
+        help="viewer 的 config 名（默认 auto：先查 /splits 取真实的那个；多数库不叫 default）",
+    )
     preview.add_argument("--split", default="train", help="viewer 的 split 名（默认 train）")
     preview.add_argument(
         "--rate",
