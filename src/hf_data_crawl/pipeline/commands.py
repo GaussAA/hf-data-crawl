@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 
@@ -95,7 +98,7 @@ def run_bronze_view(args: argparse.Namespace, store: DatasetStore) -> Outcome:
         target = Path(args.out)
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.suffix.lower() == ".csv":
-            frame.write_csv(target)
+            _write_csv(frame, target)
         else:
             frame.write_parquet(target)
         print(f"{day}：{frame.height:,} 行 × {len(frame.columns)} 列 → {target}")
@@ -116,6 +119,35 @@ def run_bronze_view(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     if frame.height > args.limit:
         print(f"  ……共 {frame.height:,} 行；用 --limit 多看几行，或 --out 导出整表。")
     return Outcome({"date": day.isoformat(), "rows": frame.height})
+
+
+def _write_csv(frame: pl.DataFrame, target: Path) -> None:
+    """CSV 放不下 list / struct：嵌套列按 JSON 文本写，信息不丢、表格软件也读得懂。
+
+    直接把 frame 交给 `write_csv` 会抛 `ComputeError: CSV format does not support
+    nested data`——bronze 的 `tags`、`raw` 从来如此，而这条分支此前没有任何测试
+    走到（2026-11-18 补覆盖率时才撞见）。
+
+    走 `to_dicts()` 而非 `map_elements`：后者在 struct 列上传进来的是 polars 的
+    内部对象，`json.dumps` 直接 TypeError。代价是整表进内存，故这条只服务「人工
+    回看某一天」，大批量导出走 parquet 分支。
+    """
+    if not any(dtype.is_nested() for dtype in frame.schema.values()):
+        frame.write_csv(target)
+        return
+    columns = frame.columns
+    with target.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns)
+        writer.writeheader()
+        for row in frame.to_dicts():
+            writer.writerow({key: _csv_cell(value) for key, value in row.items()})
+
+
+def _csv_cell(value: Any) -> Any:
+    """嵌套值转 JSON 文本；标量原样交给 csv 模块。"""
+    if isinstance(value, list | tuple | dict):
+        return json.dumps(value, ensure_ascii=False)
+    return value
 
 
 def _print_build(summary: RebuildSummary) -> None:
