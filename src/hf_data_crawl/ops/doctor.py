@@ -594,10 +594,14 @@ def _contract_coverage(ctx: RunContext) -> Finding:
     empty_columns = [column for column in DEFAULT_COLUMNS if counted[column] == rows]
     if not empty_columns:
         worst = max(DEFAULT_COLUMNS, key=lambda column: counted[column])
+        # 报**有值的行数**而不是空值百分比：`pretty_name` 常常只有个位数行有值，
+        # 取整后会印成「100% 为空」，与同一句里的「31 列都有值」自相矛盾
+        # ——2026-11-18 实测就这么印过一次。
+        filled = rows - int(counted[worst])
         return Finding(
             False,
             f"交付面取值：{len(DEFAULT_COLUMNS)} 列都有值"
-            f"（最空的是 {worst}，{_share_text(counted[worst] / rows)} 为空）",
+            f"（最空的是 {worst}，{filled:,} / {rows:,} 行有值）",
         )
 
     blocked: list[str] = []
