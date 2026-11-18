@@ -1,9 +1,9 @@
 # 核心工具（ruff / mypy / pytest / 文档校验）一律走 uv 锁定的本地环境，
 # 版本与 uv.lock、GitHub Actions 完全一致；只有与项目依赖无关的文本检查
 # 才用远端 hook，钩子版本不会悄悄漂移。
-# 但本地与 CI 并非「完全同一动作」：ruff / format 钩子带 --fix 会改写文件，
-# CI 只做只读检查，两者都覆盖全仓（`.`）。提交前跑一遍 `uv run ruff check .`
-# 与 `uv run ruff format --check .`，别指望钩子改完就必然过 CI。
+# 但本地与 CI 并非「完全同一动作」：ruff 钩子带 --fix 会改写文件，CI 只做只读检查。
+# `ruff format` 现已覆盖 *.md（见下），`ruff check` 仍只认 *.py——ruff 不读 md 里的
+# 代码块。要完全对齐，提交前跑一遍 `uv run ruff check .` 与 `uv run ruff format --check .`。
 repos:
   - repo: local
     hooks:
@@ -16,7 +16,12 @@ repos:
         name: ruff format
         entry: uv run ruff format
         language: system
-        types: [python]
+        # 也管 Markdown 里的 ```python 代码块：CI 跑的是 `ruff format --check .`，
+        # 钩子若只管 *.py，文档示例就能静默飘出格式——2026-11-18 一次提交正是这样
+        # 在 CI 上见红，而本地十个钩子全过（#125「同一把尺子」的第二个形态）。
+        # `ruff check` 实测不读 md（对 GLOSSARY.md 报 "No Python files found"），
+        # 所以只有这一项需要放宽范围。
+        files: \.(py|md)$
       - id: mypy
         name: mypy (src + tests)
         entry: uv run mypy

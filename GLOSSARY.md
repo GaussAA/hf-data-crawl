@@ -2127,11 +2127,11 @@
     整个换成陈旧集合**：
 
     ```python
-    stale = stale_ids(current, size)      # ← 内部 join(how="inner")
+    stale = stale_ids(current, size)  # ← 内部 join(how="inner")
     refresh = set(stale.head(N)["id"])
     if not refresh:
-        return Outcome(...)               # ← 没有陈旧就直接收工
-    ordered = ordered.filter(is_in(refresh))   # ← 候选只剩陈旧
+        return Outcome(...)  # ← 没有陈旧就直接收工
+    ordered = ordered.filter(is_in(refresh))  # ← 候选只剩陈旧
     ```
 
     而 `stale_ids` 的 `join` 是 `inner`：**新库在 `size` 表里根本没有行，天然不在结果里**。
