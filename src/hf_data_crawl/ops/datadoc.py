@@ -266,10 +266,27 @@ def missing_docs() -> list[tuple[str, str]]:
 
 
 def render(store_root: Path, now: datetime | None = None) -> str:
-    """生成整份文档。"""
+    """生成整份文档：按章节拼装。
+
+    每章一个函数，改一段措辞不必在四百行里找位置；拼装顺序即阅读顺序。
+    """
     stamp = (now or datetime.now()).strftime("%Y-%m-%d %H:%M")
     # 覆盖率按当前底库现算：写死在源码或文档里的百分比，读者无法判断它是哪天的。
     extended_coverage = _extended_coverage(store_root)
+    lines: list[str] = []
+    lines += _overview(stamp, store_root)
+    lines += _tables(store_root)
+    lines += _others()
+    lines += _pitfalls()
+    lines += _page_fields(store_root)
+    lines += _grain(store_root)
+    lines += _wide(store_root, extended_coverage)
+    lines += _probe(store_root)
+    return "\n".join(lines)
+
+
+def _overview(stamp: str, store_root: Path) -> list[str]:
+    """抬头与目录总览：文档说什么、data/ 长什么样。"""
     lines: list[str] = [
         "# data 目录说明",
         "",
@@ -323,7 +340,12 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "## 三、各张表",
         "",
     ]
+    return lines
 
+
+def _tables(store_root: Path) -> list[str]:
+    """第三章：逐表列出路径、来源、分区、现状与每个字段的含义。"""
+    lines: list[str] = []
     for name, spec in TABLES.items():
         story = _TABLE_STORY.get(name)
         lines += [
@@ -353,8 +375,16 @@ def render(store_root: Path, now: datetime | None = None) -> str:
             note = describe(name, column) or "**待补**"
             lines.append(f"| `{column}` | {_type_name(dtype)} | {note} |")
         lines.append("")
+    return lines
 
-    lines += [
+
+def _others() -> list[str]:
+    """第四章：不属于任何表、却决定表可不可信的那些文件。
+
+    篇幅长是有意的：这是一段连续散文，按 `###` 小标题顺读即可。再拆成多个函数
+    只会把段落编号，不会降低阅读成本——真正的边界是小标题，不是函数。
+    """
+    lines: list[str] = [
         "## 四、不属于表的东西",
         "",
         "目录里还有一批文件，它们不是任何一张表的成分，却决定那些表可不可信。",
@@ -465,8 +495,16 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "正常跑完即为空 |",
         "",
     ]
+    return lines
 
-    lines += [
+
+def _pitfalls() -> list[str]:
+    """第五章：空值的三种写法与逐条容易误读的口径。
+
+    同上一章：逐条编号的口径清单，顺序即阅读顺序。拆开反而要在多个函数间
+    对齐编号，得不偿失。
+    """
+    lines: list[str] = [
         "",
         "## 五、几个容易误解的地方",
         "",
@@ -564,6 +602,13 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "    `current.status`，**别拿「这张表里有行」当在架证据**。理由：删掉就再也说不清它当年",
         "    是什么样；代价只是各表行数略多于在架库数，且 `reconcile` 已把状态标在 `current` 里。",
         "",
+    ]
+    return lines
+
+
+def _page_fields(store_root: Path) -> list[str]:
+    """第六章：HF 页面卡片上的数字对应哪个字段、覆盖多少。"""
+    lines: list[str] = [
         "## 六、HF 页面上的数字，在表里是哪个字段",
         "",
         "数据集页面上那两张卡片（行数、文件大小）不是同一个来源，对应到表里也是不同字段。",
@@ -587,6 +632,13 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "",
         "页面上的卡片只在有数据时才显示——我们抓不到，通常意味着上游也没算出来。",
         "",
+    ]
+    return lines
+
+
+def _grain(store_root: Path) -> list[str]:
+    """第七章：各表行数为什么不一样——粒度不同，不是缺数据。"""
+    lines: list[str] = [
         "## 七、各表行数为什么不一样",
         "",
         f"`current` 的 {_total_rows(store_root, 'current'):,} 行是全站数据集总数。看到别的表"
@@ -602,6 +654,13 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "以 `current` 为主表 `LEFT JOIN` 其余各表即可——所有表的 id 都能在 `current` 里找到；",
         "不想自己拼 join 时，直接导出第八节那份宽表即可。",
         "",
+    ]
+    return lines
+
+
+def _wide(store_root: Path, extended_coverage: dict[str, float]) -> list[str]:
+    """第八章：宽表导出的契约、列数与扩展字段的实测覆盖。"""
+    lines: list[str] = [
         "## 八、宽表导出（可重建，不是事实源）",
         "",
         "`hf-data-crawl export-wide` 按**默认交付字段契约**把 `gold.datasets` 视图",
@@ -654,6 +713,13 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "写入先落同目录临时文件，校验视图列、导出列与行数后才原子替换；任一项",
         "不符就撤销，不会让半截文件顶替上一版。`--out` 只接受数据目录内的路径。",
         "",
+    ]
+    return lines
+
+
+def _probe(store_root: Path) -> list[str]:
+    """第九章：列表接口拿不到什么，实测边界在哪。"""
+    lines: list[str] = [
         "## 九、实测：列表接口拿不到什么",
         "",
         "2026-11-07 对 383 万条 Raw 记录做全量普查，并逐项探接口。结论是：",
@@ -694,7 +760,7 @@ def render(store_root: Path, now: datetime | None = None) -> str:
         "临时失败不落库，重跑本命令即由断点续跑补回，不必整批重来。",
         "",
     ]
-    return "\n".join(lines)
+    return lines
 
 
 def _total_rows(root: Path, name: str) -> int:
