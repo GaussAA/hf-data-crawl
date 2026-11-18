@@ -55,6 +55,30 @@ def test_缓存目录确实被_git_忽略() -> None:
         assert result.returncode == 0, f"{directory}/ 未被 git 忽略"
 
 
+def test_覆盖率产物也被忽略() -> None:
+    """coverage.py 写的是文件，扫 `.*_cache` 目录的那条规则管不到。
+
+    2026-11-18 引入 pytest-cov 时补的：`--cov` 一跑就在根下留 `.coverage`，
+    而 `TOOL_CACHES` 只登记目录。不单独钉住，迟早有人 `git add -A` 把它带进提交
+    ——那正是 `.workbuddy/` 踩过的那类事故。
+    """
+    for path in (
+        ".coverage",
+        ".coverage.desktop.1234",
+        "coverage.xml",
+        "htmlcov/index.html",
+    ):
+        result = subprocess.run(
+            ["git", "check-ignore", "-q", "--no-index", path],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, f"{path} 未被 git 忽略"
+
+
 def test_工作区新出现的缓存目录必须登记() -> None:
     """工具悄悄生成了新缓存目录，不能从清单旁边溜过去。"""
     actual = {

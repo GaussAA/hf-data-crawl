@@ -46,6 +46,13 @@ runs/
 .ruff_cache/
 .mypy_cache/
 
+# 覆盖率产物（coverage.py）。`.coverage` 是文件不是目录，故不在 `TOOL_CACHES`
+# 里——那条契约只扫根下 `.*_cache` 目录，文件型产物在这里单独登记。
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
 # 本机 agent 记忆与工作树（本地状态，不入库）。注意是 `.agents/*` 而非 `.agents/`：
 # 整目录排除后，git 不会进入该目录，下面的白名单也就不可能生效。
 .agents/*

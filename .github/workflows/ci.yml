@@ -30,7 +30,10 @@ jobs:
         run: uv sync --locked
 
       - name: Run tests
-        run: uv run pytest --tb=short -v
+        # 覆盖率是观测指标，不是闸门：不加 `--cov-fail-under`，CI 不会因覆盖率低而红。
+        # 也不进 pre-commit（每次提交多跑一遍全量 + 统计，代价不值）。
+        # 为什么这样定，见 CODING_STANDARDS.md「覆盖率的口径」。
+        run: uv run pytest --tb=short -v --cov=hf_data_crawl --cov-report=term-missing
 
       - name: Run ruff check
         run: uv run ruff check .

@@ -36,6 +36,7 @@ dev = [
     "pre-commit>=4.0.0",
     "pyright==1.1.408",
     "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
     "pytest-xdist>=3.8",
     "ruff>=0.17.3",
     "types-openpyxl>=3.1.5.20261017",
@@ -75,3 +76,22 @@ venvPath = "."
 venv = ".venv"
 pythonVersion = "3.13"
 typeCheckingMode = "standard"
+
+[tool.coverage.run]
+# 以包名计，与 CI 的 `--cov=hf_data_crawl` 同源；editable 安装下两者等价。
+# 只覆盖 src，不把 tests 算进分母——测试覆盖测试自己会稀释真实数字。
+source = ["hf_data_crawl"]
+# 本项目大量判据是「走这条或那条」，只算行覆盖会漏掉没走到的分支。
+# 首次打开会看到比行覆盖低不少的数字，那是真实值，不是回归。
+branch = true
+
+[tool.coverage.report]
+# 缺失行号必须打出来：覆盖率的价值在「哪没测到」，不在那个百分比。
+show_missing = true
+skip_covered = false
+precision = 1
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

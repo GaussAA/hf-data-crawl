@@ -49,6 +49,10 @@ platform < pipeline < {acquire, query} < delivery < ops
 - **mypy 与 pyright 是两把尺子，不是重复**：`pyarrow` 有内联注解却缺 `py.typed`，
   mypy 整包当 Any、pyright 读得到——涉及 pyarrow（百万行表的流式读写）的改动，
   只跑 mypy 等于没查。详见 GLOSSARY #125。
+- **覆盖率是观测，不是闸门**：CI 的 test 步骤跑 `--cov=hf_data_crawl`，但不设
+  `--cov-fail-under`，pre-commit 也不含这一项。它答的是「哪块没人看过」，没有正确
+  阈值，设死只会诱导为数字补空测试；口径与 `branch = true` 的理由见
+  `CODING_STANDARDS.md`。
 - **测试名与 docstring 用中文**，沿用现状；机械规则见 `CODING_STANDARDS.md`。
   文档里写「一定 / 必然」时，先问有没有一条能打红的测试。
 

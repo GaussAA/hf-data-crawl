@@ -15,7 +15,21 @@
 | 类型（补充） | `uv run pyright` | `src`（`[tool.pyright] include`） |
 | 静态 | `uv run ruff check .` / `uv run ruff format --check .` | 全仓 |
 | 测试 | `uv run pytest -q` | 全量 |
+| 覆盖率（观测） | `uv run pytest --cov=hf_data_crawl --cov-report=term-missing` | `src`（`[tool.coverage.run]`） |
 | 文档链接 | `python scripts/check_docs_links.py` | 全仓 Markdown |
+
+**覆盖率的口径（2026-11-18 引入）**
+
+覆盖率是观测指标，不是闸门：CI 跑 `--cov` 打出缺失行号，但不设
+`--cov-fail-under`，pre-commit 也不含这一项。理由是它回答的问题与 lint 不同——
+lint 判「这行对不对」，覆盖率答「哪块没人看过」；后者没有正确的阈值，设死只会
+诱导为数字补空测试。
+
+引入它先为定位盲区：拿到基线后，对「判据密集却无测试」的模块逐个补，
+要设闸门时按模块写进 CI 的 job 级参数，不做全仓一刀切。
+
+`branch = true` 是有意的：本项目大量判据是二选一的分支，只算行覆盖会把
+「`if` 只走了 true」记成已覆盖。
 
 类型错误必须改真实类型（显式注解、Protocol、让类型承载不变式），
 不得用 `type: ignore` 或临时豁免绕过。
