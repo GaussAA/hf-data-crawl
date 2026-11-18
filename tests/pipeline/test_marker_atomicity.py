@@ -355,13 +355,18 @@ def test_只有卡片批次时按可重放处理(tmp_path: Path, monkeypatch) ->
 
 
 def test_阈值边界(tmp_path: Path) -> None:
-    """测试阈值边界：刚好达到阈值应触发，未达到不触发。"""
+    """测试阈值边界：刚好达到阈值应触发，未达到不触发。
+
+    判定用注入的同一时刻，不用实时时钟：从写标记到调用之间有毫秒到数秒的间隔，
+    卡在 ±1 秒的边界会随机翻转（2026-11-19 在 pre-commit 的并发跑里实测到）。
+    """
     store = DatasetStore(tmp_path)
+    anchor = datetime.now(UTC)
 
     # 刚好达到阈值 + 1 秒
     snapshot_date1 = date(2026, 11, 7)
     path1 = marker_path(store, snapshot_date1)
-    time1 = datetime.now(UTC) - timedelta(seconds=STALE_THRESHOLD_SECONDS + 1)
+    time1 = anchor - timedelta(seconds=STALE_THRESHOLD_SECONDS + 1)
     path1.parent.mkdir(parents=True, exist_ok=True)
     path1.write_text(
         json.dumps(
@@ -376,7 +381,7 @@ def test_阈值边界(tmp_path: Path) -> None:
     # 刚好未达到阈值 - 1 秒
     snapshot_date2 = date(2026, 11, 8)
     path2 = marker_path(store, snapshot_date2)
-    time2 = datetime.now(UTC) - timedelta(seconds=STALE_THRESHOLD_SECONDS - 1)
+    time2 = anchor - timedelta(seconds=STALE_THRESHOLD_SECONDS - 1)
     path2.parent.mkdir(parents=True, exist_ok=True)
     path2.write_text(
         json.dumps(
@@ -388,7 +393,7 @@ def test_阈值边界(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    recovered = check_and_recover(store)
+    recovered = check_and_recover(store, now=anchor)
 
     # 只有超过阈值的被恢复
     assert recovered == [snapshot_date1]

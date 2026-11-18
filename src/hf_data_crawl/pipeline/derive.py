@@ -97,49 +97,45 @@ def derive_day(
     # 标记开始派生
     write_marker(store, snapshot_date)
 
-    try:
-        bronze_rows = bronze.build(store, snapshot_date)
-        # 当日帧只读一次，交给 silver 与 state 共用：两次调用会把补抓批次
-        # （11-07 有 1,350 个卡片文件）完整解压两遍，而两处要的是同一份帧。
-        today = bronze.day_frame(store, snapshot_date)
-        silver_rows = silver.build(
-            store,
-            snapshot_date,
-            frame=today,
-            latest_state=carry.silver if carry is not None else None,
-        )
-        card_rows: int | None = None
-        config_rows: int | None = None
-        if enrich:
-            card_rows, config_rows = card.build(store, snapshot_date)
-        update = state.update(
-            store,
-            snapshot_date,
-            frame=today,
-            carry=carry.state if carry is not None else None,
-            observation_before=observation_before,
-        )
-        lineage.stamp(
-            store,
-            snapshot_date,
-            bronze_rows=bronze_rows,
-            silver_rows=silver_rows,
-            observations=store.read("observations", snapshot_date).height,
-        )
-        # 运行态已经读完当天的 Bronze，旧分区不再有读者，且随时能从 Raw 重建。
-        bronze.prune(store)
+    bronze_rows = bronze.build(store, snapshot_date)
+    # 当日帧只读一次，交给 silver 与 state 共用：两次调用会把补抓批次
+    # （11-07 有 1,350 个卡片文件）完整解压两遍，而两处要的是同一份帧。
+    today = bronze.day_frame(store, snapshot_date)
+    silver_rows = silver.build(
+        store,
+        snapshot_date,
+        frame=today,
+        latest_state=carry.silver if carry is not None else None,
+    )
+    card_rows: int | None = None
+    config_rows: int | None = None
+    if enrich:
+        card_rows, config_rows = card.build(store, snapshot_date)
+    update = state.update(
+        store,
+        snapshot_date,
+        frame=today,
+        carry=carry.state if carry is not None else None,
+        observation_before=observation_before,
+    )
+    lineage.stamp(
+        store,
+        snapshot_date,
+        bronze_rows=bronze_rows,
+        silver_rows=silver_rows,
+        observations=store.read("observations", snapshot_date).height,
+    )
+    # 运行态已经读完当天的 Bronze，旧分区不再有读者，且随时能从 Raw 重建。
+    bronze.prune(store)
 
-        result = DayResult(
-            bronze_rows=bronze_rows,
-            silver_rows=silver_rows,
-            state=update,
-            card_rows=card_rows,
-            config_rows=config_rows,
-        )
+    result = DayResult(
+        bronze_rows=bronze_rows,
+        silver_rows=silver_rows,
+        state=update,
+        card_rows=card_rows,
+        config_rows=config_rows,
+    )
 
-        # 派生成功，清除标记
-        clear_marker(store, snapshot_date)
-        return result
-    except Exception:
-        # 派生失败，保留标记（供下次启动恢复）
-        raise
+    # 派生成功才清标记：中途异常直接上抛，标记留给下次启动按原逻辑恢复。
+    clear_marker(store, snapshot_date)
+    return result

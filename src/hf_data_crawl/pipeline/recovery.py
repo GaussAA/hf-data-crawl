@@ -46,18 +46,22 @@ def _span(entry: marker.Marker) -> list[date]:
     ]
 
 
-def check_and_recover(store: DatasetStore) -> list[date]:
+def check_and_recover(store: DatasetStore, *, now: datetime | None = None) -> list[date]:
     """检查所有派生标记，恢复未完成的派生。返回**确实恢复成功**的日期列表。
 
     标记是闭区间：逐日派生写 `[D, D]`，`rebuild` 写整段。范围标记先处理——它覆盖的
     逐日标记属于同一次崩溃，逐个再恢复一遍只是把同一段后缀重放 N 次。
+
+    `now` 只为测试可注入：阈值判定取「调用那一刻」，而测试写完标记与调用之间
+    会有毫秒到数秒的间隔——把边界卡在阈值 ±1 秒的用例会随机翻转（2026-11-19
+    在 pre-commit 的并发跑里实测到）。
     """
     if not store.state_dir.exists():
         return []
 
     recovered: list[date] = []
     covered: list[marker.Marker] = []
-    now = datetime.now(UTC)
+    moment = now or datetime.now(UTC)
 
     entries: list[tuple[Path, marker.Marker]] = []
     for path in store.state_dir.glob("marker-*.marker"):
@@ -75,7 +79,7 @@ def check_and_recover(store: DatasetStore) -> list[date]:
         if any(span.since <= entry.since and entry.until <= span.until for span in covered):
             path.unlink(missing_ok=True)
             continue
-        elapsed = _elapsed_since(entry.started_at, now)
+        elapsed = _elapsed_since(entry.started_at, moment)
         if elapsed is None:
             path.unlink(missing_ok=True)
             continue

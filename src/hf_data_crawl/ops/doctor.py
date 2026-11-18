@@ -581,13 +581,13 @@ def _artifact_freshness(ctx: RunContext) -> Finding:
             notes.append(f"{label}读取失败")
             continue
         covered = _covered(frame, current_ids)
-        share_text = _share_text(covered / len(current_ids))
+        share_note = _share_text(covered / len(current_ids))
         newest = frame["snapshot_date"].max()
         # `Series.max()` 的类型标注是宽联合（date / bytes / …），先收窄再用。
         if not isinstance(newest, date):
-            notes.append(f"{label}覆盖 {share_text}（日期缺失）")
+            notes.append(f"{label}覆盖 {share_note}（日期缺失）")
             continue
-        notes.append(f"{label}覆盖 {share_text}（最新 {newest}）")
+        notes.append(f"{label}覆盖 {share_note}（最新 {newest}）")
         limit_days = TABLE_MAX_AGE_DAYS.get(name, ARTIFACT_MAX_AGE_DAYS)
         age_days = (today - newest).days
         if age_days > limit_days:

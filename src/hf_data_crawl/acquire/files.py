@@ -52,7 +52,7 @@ import polars as pl
 from ..platform.coerce import as_int
 from ..platform.tables import FILES_SCHEMA, url_for
 from .batch import collect_rows
-from .hf.api import DEFAULT_BASE_URL, HfResponse, Transport, TransportError
+from .hf.api import DEFAULT_BASE_URL, RETRYABLE_STATUS, HfResponse, Transport, TransportError
 
 #: tree 接口每页硬上限；显式带上 limit，免得哪天上游默认值变了口径跟着漂。
 TREE_LIMIT = 1000
@@ -64,8 +64,9 @@ EMPTY_PAGE_GRACE = 3
 #: 明确表示「这个库没有可看的树」的状态码，重试无意义。
 UNAVAILABLE_STATUS: frozenset[int] = frozenset({401, 403, 404})
 
-#: 限流与网关抖动，值得退避重试。
-RETRYABLE_STATUS: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+#: 限流与网关抖动的判据与数据集列表接口共用一份，见 `hf.api.RETRYABLE_STATUS`。
+#: 不在这里另写：同一组状态码抄两遍，改一处漏一处不会报错，只会让两类请求
+#: 悄悄按不同规则重试。
 
 _NEXT_LINK = re.compile(r'<([^>]+)>\s*;\s*rel="?next"?', re.IGNORECASE)
 

@@ -46,7 +46,7 @@ import polars as pl
 
 from ..platform.tables import README_SCHEMA, url_for
 from .batch import collect_rows
-from .hf.api import HfResponse, Transport, TransportError
+from .hf.api import RETRYABLE_STATUS, HfResponse, Transport, TransportError
 
 DEFAULT_BASE_URL = "https://huggingface.co"
 
@@ -64,8 +64,7 @@ ABSENT_STATUS: frozenset[int] = frozenset({404})
 #: 而同一令牌读 `ok` 组建库全部 200——是数据属性，不是凭据问题。
 DENIED_STATUS: frozenset[int] = frozenset({401, 403})
 
-#: 限流与网关抖动：值得退避重试。
-RETRYABLE_STATUS: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+#: 限流与网关抖动的判据与数据集列表接口共用一份，见 `hf.api.RETRYABLE_STATUS`。
 
 
 class RateLimiter:
