@@ -273,13 +273,17 @@ def test_压缩级别按登记表传给写盘(tmp_path: Path, monkeypatch: pytes
 
 def test_merge_by_id同id替换其余保留(store: DatasetStore) -> None:
     """语义与 `upsert` 一致：同 id 整体换掉，其余原样，批内同 id 取最后一条。"""
-    store.write("size", sizes(size_row("acme/a", 1), size_row("acme/b", 2)))
+    # 旧表三行、只替换一行：总行数 4 与「替换数 1 + 新批 2」不同，故这条断言
+    # 能分清「数留下来的」与「数被替换掉的」。用两行旧表时两者碰巧相等，
+    # 2026-11-18 那个返回值缺陷正是这样躲过了 22 条测试。
+    store.write("size", sizes(size_row("acme/a", 1), size_row("acme/b", 2), size_row("acme/d", 4)))
 
     total = store.merge_by_id("size", sizes(size_row("acme/b", 20), size_row("acme/c", 3)))
 
-    assert total == 3
+    assert total == 4
     by_id = {row["id"]: row["num_rows"] for row in store.read("size").iter_rows(named=True)}
-    assert by_id == {"acme/a": 1, "acme/b": 20, "acme/c": 3}
+    assert by_id == {"acme/a": 1, "acme/b": 20, "acme/c": 3, "acme/d": 4}
+    assert store.read("size").height == 4, "返回值与文件行数必须一致"
 
 
 def test_merge_by_id新行接在末尾不排序(store: DatasetStore) -> None:

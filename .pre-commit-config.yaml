@@ -23,6 +23,18 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      # mypy 与 pyright 不是二选一，是两把不同的尺子。
+      # 2026-11-18 的教训：pyarrow 26 有内联类型注解，却没有 `py.typed` 标记，
+      # mypy 因此把整个包当 Any（`ignore_missing_imports` 更进一步把它静音），
+      # pyright 却能读到那些注解。于是「十个钩子全过」的提交在 CI 的 pyright
+      # 上见红 16 处——本地绿、远端红，最难查的一类偏差。
+      # 钩子时间会多约 40 秒，比一次推送后再补一个修复提交便宜。
+      - id: pyright
+        name: pyright (src)
+        entry: uv run pyright
+        language: system
+        pass_filenames: false
+        always_run: true
       - id: docs-links
         name: docs links
         entry: uv run python scripts/check_docs_links.py

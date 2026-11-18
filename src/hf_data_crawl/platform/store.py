@@ -13,7 +13,7 @@ from pathlib import Path
 
 import polars as pl
 import pyarrow as pa
-import pyarrow.compute as pc
+import pyarrow.dataset as pads
 import pyarrow.parquet as pq
 
 from .atomic import _temp_for, replace, write_parquet
@@ -166,16 +166,29 @@ class DatasetStore:
             # 与新旧两半拼进同一个文件时类型必须逐列相同。
             arrow = fresh.to_arrow().cast(schema)
             replaced = pa.array(fresh["id"].to_list(), type=schema.field("id").type)
-            options: dict[str, object] = {"compression": "zstd"}
-            if spec.compression_level is not None:
-                options["compression_level"] = spec.compression_level
-            sink = pq.ParquetWriter(temp, schema, **options)
-            kept = 0
+            # 判据写成一条 dataset 表达式而非 `pyarrow.compute` 三步：
+            # `pc.is_in` / `pc.invert` / `pc.sum` 是 Cython 运行时生成的属性，
+            # pyarrow 的类型注解里没有它们，pyright 会一并报「未知属性」。
+            # 表达式这条路两边都认，且取反与计数都能就地表达。
+            replace_ids = pads.field("id").isin(replaced)
+            sink = pq.ParquetWriter(
+                temp,
+                schema,
+                compression="zstd",
+                # 逐项传参而不是 `**options: dict[str, object]`：后者会把每个
+                # 关键字都收成 `object`，pyright 逐条报「不能赋给 str/bool」。
+                compression_level=spec.compression_level,
+            )
+            survivors_total = 0
             try:
                 for batch in old.iter_batches(batch_size=50_000):
-                    mask = pc.invert(pc.is_in(batch.column("id"), value_set=replaced))
-                    kept += int(pc.sum(mask).as_py() or 0)
-                    sink.write_batch(batch.filter(mask))
+                    survivors = batch.filter(~replace_ids)
+                    # 数「留下来的」，不数「被替换掉的」。两者都写着像对的，
+                    # 但后者要另加旧表总行数才能还原，写成 `dropped + fresh`
+                    # 会在旧表行数恰好等于两倍替换数时蒙对——小测试根本抓不住，
+                    # 2026-11-18 就是靠 113 万行的实跑才露出来。
+                    survivors_total += survivors.num_rows
+                    sink.write_batch(survivors)
                 for piece in arrow.to_batches(max_chunksize=50_000):
                     sink.write_batch(piece)
             finally:
@@ -184,7 +197,7 @@ class DatasetStore:
         finally:
             old.close()
         replace(temp, target)
-        return kept + fresh.height
+        return survivors_total + fresh.height
 
 
 def _align_frame(frame: pl.DataFrame, schema: dict[str, PolarsType]) -> pl.DataFrame:

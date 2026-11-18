@@ -61,6 +61,10 @@ files = ["src", "tests"]
 # pyarrow 不发 `py.typed`、PyPI 也没有官方 stubs（2026-11-18 查证），而存储层要用它
 # 做流式读写：百万行表整块进 `pl.DataFrame` 会把内存顶穿。与其在每处 import 上挂
 # `type: ignore`，不如在这一处声明「这个包没有类型信息可用」。
+#
+# 但**这不代表 pyarrow 无人把关**：它其实带内联注解，只是缺 `py.typed` 标记，
+# mypy 因此整包视作 Any，pyright 却能读到。所以涉及 pyarrow 的代码以 pyright 为准
+# ——2026-11-18 正是漏了这一步，十个钩子全过、CI 的 pyright 报 16 处。
 module = ["pyarrow.*"]
 ignore_missing_imports = true
 
