@@ -89,6 +89,22 @@ def read_status(request_dir: Path) -> dict[str, Any]:
     return body if isinstance(body, dict) else {}
 
 
+def write_status(request_dir: Path, **fields: Any) -> dict[str, Any]:
+    """更新 `STATUS.json`：合并现有键，再原子写。
+
+    合并而不是覆盖：关闭状态与样例标记是两件独立的事实，后写的那次不该把前一次抹掉。
+    放在 `requirement` 而非命令层，是因为「状态是需求的一部分」，受理、关闭、恢复
+    与复开都要写它——只留一个入口，合并语义才不会在不同命令里各解一遍。
+    """
+    body = read_status(request_dir)
+    body.update(fields)
+    write_bytes(
+        request_dir / STATUS_NAME,
+        (json.dumps(body, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+    )
+    return body
+
+
 def closed_note(request_dir: Path) -> str | None:
     """已关闭时返回一句「为什么关」；开着返回 None。"""
     body = read_status(request_dir)

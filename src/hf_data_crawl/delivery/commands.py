@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from ..platform.atomic import write_bytes
 from ..platform.runs import Outcome
@@ -28,6 +26,7 @@ from .delivery import (
     write_index,
 )
 from .header import HeaderError, header_change
+from .intake import IntakeError, create_request
 from .method import METHOD_DIR, METHOD_DOC, METHOD_INDEX, advisories, problems
 from .method import sync as sync_method
 from .metrics import lookup
@@ -46,7 +45,6 @@ from .requirement import (
     SpecError,
     closed_note,
     compile_sql,
-    directory_name,
     history_versions,
     is_sample,
     read_handoffs,
@@ -54,9 +52,9 @@ from .requirement import (
     request_dirs,
     resolve_dir,
     sample_note,
-    skeleton,
     spec_digest,
     version_conflict,
+    write_status,
 )
 from .requirement import load as load_spec
 from .sheet import header_of
@@ -195,20 +193,6 @@ def _request_handoff(root: Path, args: argparse.Namespace) -> int:
     return 0
 
 
-def _write_status(request_dir: Path, **fields: Any) -> dict[str, Any]:
-    """更新 `STATUS.json`：合并现有键，再原子写。
-
-    合并而不是覆盖：关闭状态与样例标记是两件独立的事实，后写的那次不该把前一次抹掉。
-    """
-    body = read_status(request_dir)
-    body.update(fields)
-    write_bytes(
-        request_dir / STATUS_NAME,
-        (json.dumps(body, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
-    )
-    return body
-
-
 def _request_close(root: Path, args: argparse.Namespace) -> int:
     """关掉一份需求：不删任何东西，只是告诉交付链「这单不用再跑了」。
 
@@ -225,7 +209,7 @@ def _request_close(root: Path, args: argparse.Namespace) -> int:
     if not reason:
         print("失败：写一句关闭原因（--reason）——半年后只看到「已关闭」，没人知道为什么。")
         return 1
-    _write_status(
+    write_status(
         request_dir,
         status="closed",
         reason=reason,
@@ -289,7 +273,7 @@ def _request_sample(root: Path, args: argparse.Namespace) -> int:
         print(f"{spec.id} 已取消样例标记：影响面统计会重新把它算进来。")
         return 0
     reason = (args.reason or "开发与验证用，不是真实需求").strip()
-    _write_status(
+    write_status(
         request_dir,
         sample=True,
         sample_reason=reason,
@@ -764,89 +748,27 @@ def _request_method(root: Path, request_id: str, *, check: bool) -> int:
 
 
 def _request_new(args: argparse.Namespace, root: Path) -> int:
-    """建需求：目录语义化，外部输入表当场复制进目录，之后与外部再无瓜葛。"""
-    kind = Kind(args.kind)
-    header_row = getattr(args, "header_row", None)
-    if header_row is not None:
-        if kind is not Kind.BACKFILL:
-            print("失败：--header-row 只对 kind=backfill 有意义——查询型没有输入表。")
-            return 1
-        if header_row < 1:
-            print("失败：--header-row 从 1 起算。")
-            return 1
-    folder = root / directory_name(args.id, args.title, kind)
-    # 目录名带语义后缀，判重不能只看同名目录，得看编号前缀——否则同一个
-    # REQ-0002 换个标题就能再建一份，编号的唯一性就废了。
-    taken = (
-        [
-            path
-            for path in root.iterdir()
-            if path.is_dir() and (path.name == args.id or path.name.startswith(f"{args.id}-"))
-        ]
-        if root.is_dir()
-        else []
-    )
-    if taken or folder.exists():
-        names = "、".join(path.name for path in taken) or folder.name
-        print(
-            f"失败：需求号 {args.id} 已有目录（{names}）。要改口径请直接编辑它并把 version 加一。"
-        )
-        return 1
-
-    given: Path | None = None
-    if kind is Kind.BACKFILL:
-        if not args.source:
-            print("失败：kind=backfill 需要 --source 指向对方给的原始表格（文件须已存在）。")
-            return 1
-        given = Path(args.source).expanduser()
-        if not given.is_file():
-            print(f"失败：输入表不存在或不是文件：{given}")
-            return 1
-
-    folder.mkdir(parents=True)
-    snapshot: Path | None = None
+    """建需求：把参数交给受理用例，本层只管打印。"""
     try:
-        if given is not None:
-            # 取材一次，取完即断：外部文件之后被删被改，都影响不到这份需求。
-            snapshot = folder / INPUT_DIR / given.name
-            snapshot.parent.mkdir(parents=True, exist_ok=True)
-            write_bytes(snapshot, given.read_bytes())
-        target = folder / SPEC_NAME
-        target.write_text(
-            skeleton(
-                request_id=args.id,
-                title=args.title,
-                requester=args.requester,
-                purpose=args.purpose,
-                cadence=Cadence(args.cadence),
-                kind=kind,
-                source_path=given.name if given else "",
-                header_row=args.header_row,
-            ),
-            encoding="utf-8",
+        created = create_request(
+            root,
+            request_id=args.id,
+            title=args.title,
+            requester=args.requester,
+            purpose=args.purpose,
+            cadence=Cadence(args.cadence),
+            kind=Kind(args.kind),
+            source=getattr(args, "source", None),
+            header_row=getattr(args, "header_row", None),
+            sample=getattr(args, "sample", False),
         )
-        # 建完立刻按真规矩读一遍：不合法就整目录收走，好过等下次 run 才发现。
-        load_spec(target)
-        # 过程记录一并建好骨架：新需求从第一天起就有 method/ 这个坑位，
-        # 不必等人想起来该记「怎么做的」——想不起来，是这类记录最常见的死法。
-        sync_method(folder, request_id=args.id, title=args.title, kind=kind.value)
-        if getattr(args, "sample", False):
-            # 样例标记从建目录那一刻就写下：等它有了交付再补，那之前的台账就已经
-            # 把夹具当真实需求算过一次影响面了。
-            _write_status(
-                folder,
-                sample=True,
-                sample_reason="开发与验证用，不是真实需求（--sample 创建）",
-                sample_marked_at=datetime.now().astimezone().isoformat(timespec="seconds"),
-            )
-    except (SpecError, OSError) as error:
-        shutil.rmtree(folder, ignore_errors=True)
+    except IntakeError as error:
         print(f"失败：{error}")
         return 1
 
-    print(f"已建需求：{folder}（{kind.value}）")
-    if snapshot is not None:
-        print(f"  输入快照：{snapshot}（原件未改动；此后本需求不再依赖外部文件）")
+    print(f"已建需求：{created.folder}（{created.kind.value}）")
+    if created.snapshot is not None:
+        print(f"  输入快照：{created.snapshot}（原件未改动；此后本需求不再依赖外部文件）")
         print(
             "  下一步：核对 fill.source 的 sheet / header_row / key_column 与逐列规则，"
             "改完把 version 加一，先跑 `request run <id> --dry-run`"
