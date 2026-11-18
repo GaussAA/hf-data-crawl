@@ -579,6 +579,57 @@ def _commit() -> str | None:
 #: 提交号，而这正是 2026-11-17 REQ-0004 五次交付里两次「重钉」的成因。
 CODE_PATHS: tuple[str, ...] = ("src", "pyproject.toml", "uv.lock")
 
+#: 算代码指纹时跳过的目录：它们是缓存的副产物，内容取决于机器与运行时刻，
+#: 算进去只会让「同一份代码」在两次运行间漂移。
+_CACHE_PARTS: frozenset[str] = frozenset(
+    {"__pycache__", ".mypy_cache", ".ruff_cache", ".pytest_cache"}
+)
+
+
+def _repo_root() -> Path | None:
+    """从本文件往上找 `.git`；找不到就是「不在 checkout 里」，如实返回 None。"""
+    start = Path(__file__).resolve().parent
+    for candidate in (start, *start.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def code_fingerprint(root: Path | None = None) -> str | None:
+    """`CODE_PATHS` 的内容指纹：跨机器可比，且不受提交号/工作区状态影响。
+
+    为什么要有：`env.commit` 是**本机**事实。换一台机器，同一个 commit 号可能对应
+    不同的代码（cherry-pick / rebase），没有 git 时更取不到；脏着交付时 commit 更是
+    说谎。这里按内容算：路径（相对仓库根）+ 字节（CRLF 归一成 LF），排序后喂进
+    sha256。同一份代码在 Windows 与 Linux 上算出来相同，改一个字符就会变。
+
+    取不到（不在 checkout、路径都不存在）时返回 None——不编一个看起来像指纹的值。
+    """
+    base = root if root is not None else _repo_root()
+    if base is None:
+        return None
+    hasher = hashlib.sha256()
+    found = False
+    for name in CODE_PATHS:
+        path = base / name
+        if path.is_file():
+            files = [path]
+        elif path.is_dir():
+            files = sorted(item for item in path.rglob("*") if item.is_file())
+        else:
+            continue
+        for file in files:
+            if any(part in _CACHE_PARTS for part in file.parts) or file.suffix == ".pyc":
+                continue
+            relative = file.relative_to(base).as_posix()
+            payload = file.read_bytes().replace(b"\r\n", b"\n")
+            hasher.update(relative.encode("utf-8"))
+            hasher.update(b"\0")
+            hasher.update(len(payload).to_bytes(8, "big"))
+            hasher.update(payload)
+            found = True
+    return hasher.hexdigest() if found else None
+
 
 def dirty_paths() -> list[str]:
     """工作区里改动过的代码路径；不是 git 仓库、取不到状态时返回空列表。
@@ -634,11 +685,18 @@ def worktree_state() -> dict[str, Any]:
 
 
 def env() -> dict[str, Any]:
-    """脚本依赖的环境。不复制源码，只钉版本——变了就由 doctor 报出来。"""
+    """脚本依赖的环境。不复制源码，只钉版本——变了就由 doctor 报出来。
+
+    `commit` 是**本机**事实：换一台机器、换一个人，同一个 commit 号也可能对应不同的
+    代码（cherry-pick / rebase），没有 git 时更是取不到。`code_sha256` 补的正是这一
+    块：它算 `CODE_PATHS` 里每个文件的内容，跨机器可比，也不在乎工作区脏不脏——
+    交付那一刻真正跑的是什么，它说得清。
+    """
     return {
         "package": _package_version(),
         "contract_version": CONTRACT_VERSION,
         "commit": _commit(),
+        "code_sha256": code_fingerprint(),
     }
 
 

@@ -991,6 +991,8 @@ def test_档案记下代码是否干净(store: DatasetStore, tmp_path: Path) -> 
 
     body = json.loads((result.directory / MANIFEST_NAME).read_text(encoding="utf-8"))
     assert body["worktree"] == {"checked": True, "clean": True, "paths": [], "note": ""}
+    # 同一份档案还要能跨机器回答「跑的是哪份代码」：commit 是本机事实，内容指纹才是。
+    assert len(str(body["method"]["env"]["code_sha256"])) == 64
 
 
 # ---------------------------------------------------------------- 交付索引

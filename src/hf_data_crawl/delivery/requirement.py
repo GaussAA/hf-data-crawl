@@ -55,6 +55,29 @@ README_NAME = "README.md"
 #: 需求状态（开着 / 已关闭）。**不进 spec**：关闭是运营状态，不是口径——写进 spec
 #: 要么改口径指纹、要么重排人写的 YAML，两样都不值当。
 STATUS_NAME = "STATUS.json"
+#: 外发记录：一行一次「哪一版给了谁」。只增不改，坏了某一行也不影响其余行。
+HANDOFF_NAME = "HANDOFF.jsonl"
+
+
+def read_handoffs(request_dir: Path) -> list[dict[str, Any]]:
+    """读外发记录。逐行解析、坏行跳过——它是附加账，不该因为一行坏了就全读不出。"""
+    path = request_dir / HANDOFF_NAME
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    entries: list[dict[str, Any]] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            body = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(body, dict):
+            entries.append(body)
+    return entries
 
 
 def read_status(request_dir: Path) -> dict[str, Any]:
@@ -781,7 +804,7 @@ fill:
   source:
     path: "input/{source_name}"    # 受理时复制进来的输入快照；绝不指向外部文件
     sheet: Sheet1            # 不写则取第一个 sheet
-    header_row: 2            # 列名所在行；其上可有多行分组标题
+    header_row: {header_row}            # 列名所在行；其上可有多行分组标题
     key_column: URL          # 用列名定位，不用列号
   output:
     name: 清单-已补全.xlsx    # 交付档案里的文件名；只给文件名，带路径会被拒
@@ -812,6 +835,7 @@ def skeleton(
     cadence: Cadence = Cadence.ONCE,
     kind: Kind = Kind.QUERY,
     source_path: str = "",
+    header_row: int | None = None,
 ) -> str:
     """生成一份带注释的 spec 骨架。注释是给人看的，所以不走 YAML dump。
 
@@ -829,6 +853,9 @@ def skeleton(
         # 骨架只写文件名：输入表由 `request new` 复制进 input/，spec 里不留任何
         # 绝对路径，整个需求目录才能搬走。文件必须真实存在，新建完的回读才过得去。
         values["{source_name}"] = Path(source_path).name if source_path else "清单.xlsx"
+        # 默认 2 是「第 1 行分组、第 2 行列名」那种表；多数表第 1 行就是列名，
+        # 受理时定下来比事后在骨架里改更不容易漏。
+        values["{header_row}"] = str(2 if header_row is None else header_row)
     text = _FILL_SKELETON if kind is Kind.BACKFILL else _SKELETON
     for placeholder, value in values.items():
         text = text.replace(placeholder, value)

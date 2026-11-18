@@ -413,6 +413,125 @@ def test_恢复后又能交付(tmp_path: Path, capsys: pytest.CaptureFixture[str
     assert "已关闭" not in capsys.readouterr().out
 
 
+def test_新建回填需求可当场定下表头行(tmp_path: Path) -> None:
+    """骨架默认 2（第 1 行分组、第 2 行列名）；多数表第 1 行就是列名，受理时定更稳。"""
+    book = tmp_path / "源表.xlsx"
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.cell(row=1, column=1, value="URL")
+    sheet.cell(row=1, column=2, value="名称")
+    workbook.save(book)
+
+    assert (
+        run(
+            tmp_path,
+            "request",
+            "new",
+            "REQ-0100",
+            "--title",
+            "回填一份清单",
+            "--requester",
+            "张三",
+            "--kind",
+            "backfill",
+            "--source",
+            str(book),
+            "--header-row",
+            "1",
+        )
+        == 0
+    )
+    spec = load(resolve_dir(tmp_path / "req", "REQ-0100") / "spec.yaml")
+    assert spec.fill is not None
+    assert spec.fill.source.header_row == 1
+
+
+def test_表头行只对回填型有意义(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """查询型没有输入表；静默接受这个参数，等于让人以为它生效了。"""
+    assert (
+        run(
+            tmp_path,
+            "request",
+            "new",
+            "REQ-0101",
+            "--title",
+            "查询",
+            "--requester",
+            "张三",
+            "--header-row",
+            "1",
+        )
+        == 1
+    )
+    assert "只对 kind=backfill" in capsys.readouterr().out
+
+
+def seed_delivery(path: Path, name: str = "20261101T000000", version: int = 1) -> Path:
+    """造一条最小交付（目录 + manifest）：外发记录要读得到版本号。"""
+    directory = path.parent / "deliveries" / name
+    directory.mkdir(parents=True)
+    (directory / "manifest.json").write_text(
+        json.dumps({"spec_version": version, "result": {"rows": 1, "files": []}}),
+        encoding="utf-8",
+    )
+    return directory
+
+
+def test_外发记录追加一行并显示在台账里(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """档案回答「交了什么」，不回答「给了谁」；同一份发给多个消费方时，这是唯一答案。"""
+    path = make(tmp_path)
+    seed_delivery(path)
+
+    assert run(tmp_path, "request", "handoff", "REQ-0001", "--to", "王五", "--note", "邮件") == 0
+    capsys.readouterr()
+
+    lines = (path.parent / "HANDOFF.jsonl").read_text(encoding="utf-8").splitlines()
+    body = json.loads(lines[0])
+    assert body["to"] == "王五" and body["delivery"] == "20261101T000000"
+    assert body["version"] == 1 and body["note"] == "邮件"
+
+    assert run(tmp_path, "request", "show", "REQ-0001") == 0
+    out = capsys.readouterr().out
+    assert "外发记录：1 次" in out and "王五" in out
+
+
+def test_外发必须先有交付(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    make(tmp_path)
+
+    assert run(tmp_path, "request", "handoff", "REQ-0001", "--to", "王五") == 1
+    assert "还没有交付" in capsys.readouterr().out
+
+
+def test_外发记录必须写收件人(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path = make(tmp_path)
+    seed_delivery(path)
+
+    assert run(tmp_path, "request", "handoff", "REQ-0001", "--to", "  ") == 1
+    assert not (path.parent / "HANDOFF.jsonl").exists()
+    assert "收件人" in capsys.readouterr().out
+
+
+def test_外发指定不存在的交付被拒(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path = make(tmp_path)
+    seed_delivery(path)
+
+    assert (
+        run(
+            tmp_path,
+            "request",
+            "handoff",
+            "REQ-0001",
+            "--to",
+            "王五",
+            "--delivery",
+            "19990101T000000",
+        )
+        == 1
+    )
+    assert "找不到交付" in capsys.readouterr().out
+
+
 def test_index命令重写交付索引(tmp_path: Path) -> None:
     """补建历史索引不该靠再交付一份——那正是这次治理要断掉的循环。"""
     path = make(tmp_path)

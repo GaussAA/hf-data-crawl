@@ -32,6 +32,7 @@ from .method import sync as sync_method
 from .metrics import lookup
 from .requirement import (
     DELIVERIES_DIR,
+    HANDOFF_NAME,
     HISTORY_DIR,
     INPUT_DIR,
     MANIFEST_NAME,
@@ -46,6 +47,7 @@ from .requirement import (
     compile_sql,
     directory_name,
     history_versions,
+    read_handoffs,
     request_dirs,
     resolve_dir,
     skeleton,
@@ -135,7 +137,56 @@ def run_request(args: argparse.Namespace) -> int:
         return _request_close(root, args)
     if args.request_action == "reopen":
         return _request_reopen(root, args)
+    if args.request_action == "handoff":
+        return _request_handoff(root, args)
     return _request_show(root, args.id)
+
+
+def _request_handoff(root: Path, args: argparse.Namespace) -> int:
+    """记一笔「哪一版给了谁」。只追加，不改档案——外发是事实，不是口径。
+
+    `HANDOFF.jsonl` 一行一次；坏行只影响那一行（`read_handoffs` 逐行解析）。
+    为什么要记：档案能回答「谁提的、基于什么、交了什么」，回答不了「上周发的那版
+    给谁了」——同一份需求发给多个消费方时，这张表就是唯一的答案。
+    """
+    try:
+        request_dir = resolve_dir(root, args.id)
+        spec = load_spec(request_dir / SPEC_NAME)
+    except SpecError as error:
+        print(f"失败：{error}")
+        return 1
+    recipient = (args.to or "").strip()
+    if not recipient:
+        print("失败：--to 必填——外发记录没有收件人，等于没记。")
+        return 1
+    runs = deliveries_of(request_dir)
+    if not runs:
+        print(f"{spec.id} 还没有交付，没什么可外发的。先 `request run`。")
+        return 1
+    if args.delivery:
+        chosen = [run for run in runs if run.name == args.delivery]
+        if not chosen:
+            names = "、".join(run.name for run in runs[-3:])
+            print(f"失败：找不到交付 {args.delivery}（最近三条：{names}）。")
+            return 1
+        directory = chosen[0]
+    else:
+        directory = runs[-1]
+    body = read_manifest(directory) or {}
+    entry = {
+        "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "delivery": directory.name,
+        "version": body.get("spec_version"),
+        "to": recipient,
+        "note": (args.note or "").strip(),
+    }
+    with (request_dir / HANDOFF_NAME).open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    version = f"v{entry['version']}" if entry["version"] is not None else "版本未知"
+    print(f"{spec.id} 已记外发：{directory.name}（{version}）→ {recipient}")
+    if entry["note"]:
+        print(f"  备注：{entry['note']}")
+    return 0
 
 
 def _request_close(root: Path, args: argparse.Namespace) -> int:
@@ -638,6 +689,14 @@ def _request_method(root: Path, request_id: str, *, check: bool) -> int:
 def _request_new(args: argparse.Namespace, root: Path) -> int:
     """建需求：目录语义化，外部输入表当场复制进目录，之后与外部再无瓜葛。"""
     kind = Kind(args.kind)
+    header_row = getattr(args, "header_row", None)
+    if header_row is not None:
+        if kind is not Kind.BACKFILL:
+            print("失败：--header-row 只对 kind=backfill 有意义——查询型没有输入表。")
+            return 1
+        if header_row < 1:
+            print("失败：--header-row 从 1 起算。")
+            return 1
     folder = root / directory_name(args.id, args.title, kind)
     # 目录名带语义后缀，判重不能只看同名目录，得看编号前缀——否则同一个
     # REQ-0002 换个标题就能再建一份，编号的唯一性就废了。
@@ -685,6 +744,7 @@ def _request_new(args: argparse.Namespace, root: Path) -> int:
                 cadence=Cadence(args.cadence),
                 kind=kind,
                 source_path=given.name if given else "",
+                header_row=args.header_row,
             ),
             encoding="utf-8",
         )
@@ -847,6 +907,17 @@ def _request_show(root: Path, request_id: str) -> int:
         print(f"  当前有效：{runs[-1].name}（`deliveries/INDEX.md` 的第一行同此）")
     for run in runs:
         print(f"  {run.name}{manifest_summary(run)}")
+
+    handoffs = read_handoffs(path.parent)
+    if handoffs:
+        print(f"外发记录：{len(handoffs)} 次（{HANDOFF_NAME}）")
+        for entry in handoffs[-3:]:
+            version = f"v{entry.get('version')}" if entry.get("version") is not None else "v?"
+            note = f" · {entry['note']}" if entry.get("note") else ""
+            print(
+                f"  {entry.get('at', '时间未知')}  {entry.get('delivery', '?')}（{version}）"
+                f"→ {entry.get('to', '?')}{note}"
+            )
     return 0
 
 

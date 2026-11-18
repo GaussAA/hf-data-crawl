@@ -33,7 +33,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `build` | 重建派生层：默认只重放近 7 天热区，`--stale` 只修派生滞后的日子及其后，`--full` 全量重放 | 否 |
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
 | `bronze` | 按日期从 Raw 现算 Bronze 并打印／导出（只读、不落盘、不写台账）。Bronze 只保留最新一天，历史那几天只能这样回看——**仅限 Raw 里还在的日期**（`archive` 前的 30 天窗口）；已压入冷区的日期回不来，cold 基线按 id 跨天去重、不是某天的快照 | 否 |
-| `request` | 需求与交付管理：`new` 建需求、`list` 看全部、`show` 看口径与台账、`method` 校验过程记录并重算脚本索引、`input` 收新版输入表、`diff` 比两版口径、`compare` 比两次交付、`run` 交付一次（`--dry-run` 只算不写、`--preview` 落草稿区可打开看）、`run-due` 跑到期的、`index` 重写交付索引、`usage` 反查词条影响面、`prune` 清旧产物字节、`close`/`reopen` 关停与恢复 | 否 |
+| `request` | 需求与交付管理：`new` 建需求（回填可当场定表头行）、`list` 看全部、`show` 看口径与台账、`method` 校验过程记录并重算脚本索引、`input` 收新版输入表、`diff` 比两版口径、`compare` 比两次交付、`run` 交付一次（`--dry-run` 只算不写、`--preview` 落草稿区可打开看）、`run-due` 跑到期的、`index` 重写交付索引、`usage` 反查词条影响面、`prune` 清旧产物字节、`close`/`reopen` 关停与恢复、`handoff` 记外发 | 否 |
 | `report` | 生成单文件榜单页（离线可看） | 否 |
 | `doctor` | 体检：调度新鲜度、底库行龄、层间勾稽、派生凭证、产物新鲜度、断日与残留文件；异常写 `ALERT.txt` 并追加体检流水 | 否 |
 | `archive` | 归档早于 N 天的 Raw 分区：合并小分块并去重，先验证 Bronze 逐行相等，原文件移入 `backup/raw/` | 否 |
@@ -74,6 +74,7 @@ hf-data-crawl request      usage 下载量               # 反查：这个词条
 hf-data-crawl request      prune [REQ-0001] [--keep 1] [--dry-run]   # 清旧交付的产物字节，档案与 sha256 留着
 hf-data-crawl request      close REQ-0001 --reason 对方只要 v1        # 关停：不再跑 run / run-due，档案不动
 hf-data-crawl request      reopen REQ-0001                          # 恢复：重新纳入交付链
+hf-data-crawl request      handoff REQ-0001 --to 某团队 [--delivery 时刻] [--note …]   # 记一笔「哪一版给了谁」
 ```
 
 `--kind backfill` 时 `--source` 必填：该文件会被复制进 `<需求目录>/input/`，原件不动，
@@ -298,6 +299,11 @@ requests/REQ-0001-query-高热度数据集清单/
 记「跳过」而不是失败。`request reopen <id>` 恢复。关闭是运营状态，不进 `spec.yaml`：
 写进去要么动口径指纹、要么重排人手写的 YAML，两样都不值当。
 
+**外发也记账**：`request handoff <id> --to 某团队 [--delivery 时刻] [--note …]` 往
+`requests/<id>/HANDOFF.jsonl` 追加一行（时刻、交付目录、版本、收件人、备注），
+`request show` 会列最近三次。档案回答「交了什么」，这张表回答「给了谁」——同一份需求
+发给多个消费方时，这是唯一的答案。只追加、不改档案；坏行只影响那一行。
+
 **目录名 = `REQ-xxxx-<kind>-<标题短名>`**：编号保唯一与排序，`kind` 一眼看出执行路径，
 标题短名不用打开文件就知道这单是什么。命令始终用编号（`request run REQ-0002`），
 目录改动不必跟着改命令；改标题也不搬目录，正式名字以 `spec.yaml` 为准。
@@ -321,8 +327,11 @@ sha256，于是「基于哪一版清单」和「基于哪一版底库」一样�
 就视同「还没有方法」，照样拦。
 
 环境这一层**不复制、只钉住**：脚本 import 的底库代码在 `src/`，往每个需求目录塞一份
-只会得到 N 份迟早各不相同的副本。`manifest.method.env` 记下包版本、契约版本与提交号，
-变了就对不上账——与用 `current_md5` 钉底库是同一手法。
+只会得到 N 份迟早各不相同的副本。`manifest.method.env` 记下包版本、契约版本、提交号，
+以及一个 **`code_sha256`（`src/` + `pyproject.toml` + `uv.lock` 的内容指纹）**：提交号是
+本机事实（换机器、cherry-pick 都会变，没有 git 更取不到），内容指纹则跨机器可比，
+脏着交付时也照样说得清「那一刻跑的是哪份代码」。变了就对不上账——与用 `current_md5`
+钉底库是同一手法。
 
 `spec.yaml` 里 `kind: query` 带 `criteria` / `order_by` / `output`，`kind: backfill`
 带 `fill:`（输入表、逐列取值方式）。`delivery/requirement.py` 负责读与校验，`delivery/delivery.py`

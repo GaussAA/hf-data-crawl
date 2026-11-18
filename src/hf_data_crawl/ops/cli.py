@@ -194,6 +194,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="kind=backfill 必填：对方给的原始表格路径（必须已存在，且引擎绝不改动它）",
     )
+    request_new.add_argument(
+        "--header-row",
+        type=int,
+        default=None,
+        help="kind=backfill：列名在第几行（骨子里默认 2；多数表第 1 行就是列名）",
+    )
     request_sub.add_parser("list", help="列出全部需求与交付概况")
     request_show = request_sub.add_parser("show", help="查看一份需求的口径、历史版本与交付台账")
     request_show.add_argument("id", help="需求号")
@@ -236,6 +242,15 @@ def build_parser() -> argparse.ArgumentParser:
     request_close.add_argument("--reason", required=True, help="为什么关（必填，写给人看）")
     request_reopen = request_sub.add_parser("reopen", help="恢复一份已关闭的需求")
     request_reopen.add_argument("id", help="需求号")
+    request_handoff = request_sub.add_parser(
+        "handoff", help="记一笔「哪一版给了谁」：只追加，不改档案"
+    )
+    request_handoff.add_argument("id", help="需求号")
+    request_handoff.add_argument("--to", required=True, help="给了谁（必填）")
+    request_handoff.add_argument(
+        "--delivery", default=None, help="哪一次交付（目录名）；默认最新一次"
+    )
+    request_handoff.add_argument("--note", default="", help="备注：渠道、附件、对方的反馈等")
     request_index = request_sub.add_parser(
         "index", help="重写 deliveries/INDEX.md：列出每条交付的性质、可复现性与当前有效"
     )

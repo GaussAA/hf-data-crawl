@@ -130,6 +130,7 @@ hf-data-crawl request run REQ-0001 --preview  # 只想先看产物：落 scratch
 | 重建交付索引 | `request index <id>` | 只重写 `deliveries/INDEX.md`，不动任何一条交付 |
 | 回收磁盘 | `request prune <id> [--keep N] [--dry-run]` | 只清旧产物字节；档案、当前有效那条与 sha256 都留着 |
 | 关停 / 恢复 | `request close <id> --reason …` / `request reopen <id>` | 只写 `STATUS.json`，档案不动；`run-due` 记跳过而不是失败 |
+| 外发一笔 | `request handoff <id> --to 某团队 [--note …]` | 只追加 `HANDOFF.jsonl`；`show` 列最近三次 |
 | 体检 | `hf-data-crawl doctor` | 看「需求自包含」「口径版本」「交付索引」「交付锚点」「产物留存」 |
 
 变更后**必须**在 `method/METHOD.md` 里记一句「换了什么、为什么换」。这句话是
@@ -174,6 +175,8 @@ hf-data-crawl request run-due
 hf-data-crawl request index [REQ-0001]
 hf-data-crawl request usage 下载量                # 反查：改词条前先看谁在用
 hf-data-crawl request prune [REQ-0001] [--keep 1] [--dry-run]   # 清旧产物字节，档案与 sha256 留着
+hf-data-crawl request close REQ-0001 --reason …   # 关停；reopen 恢复
+hf-data-crawl request handoff REQ-0001 --to 某团队   # 记一笔「哪一版给了谁」
 hf-data-crawl doctor
 ```
 

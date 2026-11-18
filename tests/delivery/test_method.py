@@ -308,3 +308,48 @@ def test_脚本用途仍是待补时给提示而不拦(tmp_path: Path) -> None:
         folder, purpose="读 README 判训练阶段", run="uv run python method/scripts/pull_readme.py"
     )
     assert not any("待补" in text for text in method.advisories(folder))
+
+
+def test_代码指纹按内容算且不受换行风格影响(tmp_path: Path) -> None:
+    """`commit` 是本机事实；产物真正依赖的是**代码字节**，换机器也得认得出同一份。"""
+    root = tmp_path / "repo"
+    (root / "src" / "pkg").mkdir(parents=True)
+    (root / "src" / "pkg" / "a.py").write_bytes(b"x = 1\n")
+    (root / "pyproject.toml").write_text("name = 'x'\n", encoding="utf-8")
+
+    first = method.code_fingerprint(root)
+    assert first is not None and len(first) == 64
+
+    (root / "src" / "pkg" / "a.py").write_bytes(b"x = 1\r\n")
+    assert method.code_fingerprint(root) == first, "CRLF 不该算成另一份代码"
+
+    (root / "src" / "pkg" / "a.py").write_bytes(b"x = 2\n")
+    assert method.code_fingerprint(root) != first, "改一个字符必须变"
+
+
+def test_代码指纹跳过缓存目录(tmp_path: Path) -> None:
+    """`__pycache__` 与 `.pyc` 是运行副产物，算进去会让连续两次交付指纹不同。"""
+    root = tmp_path / "repo"
+    (root / "src" / "pkg" / "__pycache__").mkdir(parents=True)
+    (root / "src" / "pkg" / "a.py").write_bytes(b"x = 1\n")
+    before = method.code_fingerprint(root)
+
+    (root / "src" / "pkg" / "__pycache__" / "a.cpython-313.pyc").write_bytes(b"junk")
+
+    assert method.code_fingerprint(root) == before
+
+
+def test_不在checkout里时如实返回None(tmp_path: Path) -> None:
+    """取不到就记 None——档案里最怕「像真的」的假值。"""
+    empty = tmp_path / "nothing"
+    empty.mkdir()
+
+    assert method.code_fingerprint(empty) is None
+
+
+def test_env带上代码指纹() -> None:
+    """manifest.method.env 里除了 commit，还要有可跨机器比对的 code_sha256。"""
+    body = method.env()
+
+    assert "code_sha256" in body
+    assert body["code_sha256"] is None or len(str(body["code_sha256"])) == 64
