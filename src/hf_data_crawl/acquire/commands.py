@@ -8,6 +8,7 @@ from datetime import date
 from typing import Any
 
 import polars as pl
+import pyarrow.parquet as pq
 
 from ..pipeline import readme_fields, rebuild, state
 from ..platform.env import load_env_file
@@ -240,6 +241,13 @@ def resolve_size_top(args_top: int, candidates: int, refresh: set[str]) -> int:
 #: `--ids` 一次最多点多少名。这是「补几个库」的手工活，不是批量重跑：
 #: 没有上限时，一条手滑的 `--ids` 就能把全站请求一遍。
 IDS_LIMIT = 200
+
+#: `parse-readme` 一次读多少条正文。
+#:
+#: 正文中位 4 KB、均值约 3.6 KB，两万条约占 80 MB：大到能摊薄逐批判开销，又小到
+#: 不会把内存推到危险区。此前是整表 `store.read("readme")`——全量 2.8 GB 正文一次
+#: 入内存，2026-11-18 在 16 GB 机器上跑到 3.6 GB 就被迫刹车。
+PARSE_BATCH_ROWS = 20_000
 
 
 def split_ids(raw: str) -> list[str]:
@@ -583,7 +591,12 @@ def run_fetch_readme(
         merged, paths = read_staged_dir(store, README_STAGING_DIR, README_SCHEMA)
         if merged.height:
             # 临时失败不许抹掉已拿到的全文；absent / denied 是明确结论，可以覆盖。
-            store.upsert("readme", keep_previous_ok(store.read("readme"), merged))
+            #
+            # 只读 `id` 与 `status`：`keep_previous_ok` 的判据就这两列。整表读入会
+            # 把正文（全量 2.8 GB）一起搬进内存，收尾峰值十几 GB——2026-11-18 实测
+            # 16 GB 机器直接 OOM，只能靠一次性脚本绕路。合并本身也走流式。
+            previous = store.read("readme", columns=["id", "status"])
+            store.merge_by_id("readme", keep_previous_ok(previous, merged))
         clear_staged_dir(store, paths, README_STAGING_DIR)
 
     _print_readme(summary, store.read("readme").height)
@@ -735,31 +748,46 @@ def run_parse_readme(
     只处理 `status=ok` 的行：`absent`（仓库没有 README）与 `denied`（权限）都
     没有正文可抽。抽不到一律 null，别用空串冒充「有」。
     """
-    readme = store.read("readme")
-    if readme.height == 0:
+    target = store.path("readme")
+    total_records = pq.ParquetFile(target).metadata.num_rows if target.exists() else 0
+    if total_records == 0:
         print("readme 表为空，先跑 `hf-data-crawl fetch-readme`。")
         return Outcome({"error": "empty"}, code=1, reason="readme 表为空")
 
-    usable = readme.filter(pl.col("status") == "ok")
-    print(f"解析 {usable.height:,} 条 README 正文（共 {readme.height:,} 条记录）")
+    # 「有多少条 ok」只需要 status 一列。整表读入会把正文（全量 2.8 GB）一起搬进
+    # 内存，而这里只想知道要解析多少条——2026-11-18 实测整表读入到 3.6 GB 后被迫刹车。
+    statuses = store.read("readme", columns=["status"])
+    ok_total = int((statuses["status"] == "ok").sum())
+    print(f"解析 {ok_total:,} 条 README 正文（共 {total_records:,} 条记录）")
 
-    rows: list[dict[str, Any]] = []
-    for item in usable.iter_rows(named=True):
-        fields = readme_fields.extract_fields(item.get("text"))
-        rows.append(
-            {
-                "id": item["id"],
-                "url": item["url"],
-                "snapshot_date": item["snapshot_date"],
-                "source_sha": item["source_sha"],
-                **fields,
-            }
-        )
+    # 逐批读正文：一批只驻留 `PARSE_BATCH_ROWS` 条，抽完即弃。抽出的字段是短字符串，
+    # 累积起来只有几十 MB，故帧可以攒到最后一次写。
+    parquet = pq.ParquetFile(target)
+    frames: list[pl.DataFrame] = []
+    try:
+        for batch in parquet.iter_batches(batch_size=PARSE_BATCH_ROWS):
+            chunk = pl.from_arrow(batch)
+            assert isinstance(chunk, pl.DataFrame), "record batch 读出来必须是 DataFrame"
+            usable = chunk.filter(pl.col("status") == "ok")
+            if usable.height == 0:
+                continue
+            rows: list[dict[str, Any]] = [
+                {
+                    "id": item["id"],
+                    "url": item["url"],
+                    "snapshot_date": item["snapshot_date"],
+                    "source_sha": item["source_sha"],
+                    **readme_fields.extract_fields(item.get("text")),
+                }
+                for item in usable.iter_rows(named=True)
+            ]
+            frames.append(pl.DataFrame(rows, schema=README_FIELDS_SCHEMA))
+    finally:
+        # Windows 下不关句柄，后续写盘或替换会报 WinError 5（2026-11-18 实测）。
+        parquet.close()
 
     frame = (
-        pl.DataFrame(rows, schema=README_FIELDS_SCHEMA)
-        if rows
-        else pl.DataFrame(schema=README_FIELDS_SCHEMA)
+        pl.concat(frames, how="vertical") if frames else pl.DataFrame(schema=README_FIELDS_SCHEMA)
     )
     if frame.height:
         with exclusive(store.root, "parse-readme:write", lock_wait):

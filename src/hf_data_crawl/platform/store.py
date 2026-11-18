@@ -7,12 +7,16 @@ Raw 落盘在 `pipeline.raw`，状态标记在 `pipeline.state`，规模与文�
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 
 import polars as pl
+import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
 
-from .atomic import write_parquet
+from .atomic import _temp_for, replace, write_parquet
 from .tables import PolarsType, table
 
 __all__ = ["DatasetStore"]
@@ -53,12 +57,23 @@ class DatasetStore:
             return any(self._root.glob(spec.glob()))
         return self.path(name, dt).exists()
 
-    def read(self, name: str, dt: date | None = None) -> pl.DataFrame:
-        """读一张表（或一个分区），缺列补空、多列丢弃；不存在时返回空帧。"""
+    def read(
+        self, name: str, dt: date | None = None, *, columns: Sequence[str] | None = None
+    ) -> pl.DataFrame:
+        """读一张表（或一个分区），缺列补空、多列丢弃；不存在时返回空帧。
+
+        给 `columns` 时只读这几列，**不做 schema 对齐**：它存在的意义就是「只要
+        少量列时别把几 GB 的正文读进来」。2026-11-18 实测：`fetch-readme` 收尾
+        只想判断「旧表里哪些 id 已经是 ok」，却因整表读入把峰值推到十几 GB。
+        """
         spec = table(name)
         target = self.path(name, dt)
         if not target.exists():
+            if columns is not None:
+                return pl.DataFrame(schema={col: spec.schema[col] for col in columns})
             return pl.DataFrame(schema=spec.schema)
+        if columns is not None:
+            return pl.read_parquet(target, columns=list(columns))
         return _align_frame(pl.read_parquet(target), spec.schema)
 
     def read_all(self, name: str) -> pl.DataFrame:
@@ -110,6 +125,66 @@ class DatasetStore:
         )
         self.write(name, merged.sort("id"))
         return merged.height
+
+    def merge_by_id(self, name: str, frame: pl.DataFrame) -> int:
+        """把一批行并入单文件大表：同 id 整体替换，其余原样保留，新行接在末尾。
+
+        与 `upsert` 只差两点，但这两点正是它存在的理由：
+
+        - **不把旧表读进内存**：逐批 copy 旧文件（跳过被替换的 id），再写新行。
+        - **不排序**：`upsert` 的 `merged.sort("id")` 要整表复制一遍。
+
+        `upsert` 是「read 全表 → filter → concat → sort → write」，峰值约为表体积的
+        三倍。对 `readme` 这种一百万行、正文 2.8 GB 的表，等于十几 GB——2026-11-18
+        本机 16 GB 内存实测直接 OOM，只能靠一次性脚本绕路。这里是同一件事的流式写法。
+
+        代价是行序变成「旧行按原序 + 新行追加」，不再按 id 排序。消费者是 SQL 与
+        parquet 扫描，都不依赖物理顺序；要守的只有「同 id 只留一行」。
+
+        只支持单文件表：分区表按 dt 分片，替换范围与分区无关，流式合并没有意义
+        （也容易写错），故直接拒绝。
+        """
+        spec = table(name)
+        if spec.partitioned:
+            raise ValueError(f"{name} 是分区表，merge_by_id 只用于单文件表")
+        target = self.path(name)
+        if frame.height == 0:
+            return pq.ParquetFile(target).metadata.num_rows if target.exists() else 0
+
+        fresh = frame.unique(subset=["id"], keep="last", maintain_order=True).select(
+            list(spec.schema)
+        )
+        if not target.exists():
+            write_parquet(fresh, target, compression_level=spec.compression_level)
+            return fresh.height
+
+        old = pq.ParquetFile(target)
+        temp = _temp_for(target)
+        try:
+            schema = old.schema_arrow
+            # 列类型以**磁盘上的**为准：polars 的 Utf8 转 arrow 可能得到 large_string，
+            # 与新旧两半拼进同一个文件时类型必须逐列相同。
+            arrow = fresh.to_arrow().cast(schema)
+            replaced = pa.array(fresh["id"].to_list(), type=schema.field("id").type)
+            options: dict[str, object] = {"compression": "zstd"}
+            if spec.compression_level is not None:
+                options["compression_level"] = spec.compression_level
+            sink = pq.ParquetWriter(temp, schema, **options)
+            kept = 0
+            try:
+                for batch in old.iter_batches(batch_size=50_000):
+                    mask = pc.invert(pc.is_in(batch.column("id"), value_set=replaced))
+                    kept += int(pc.sum(mask).as_py() or 0)
+                    sink.write_batch(batch.filter(mask))
+                for piece in arrow.to_batches(max_chunksize=50_000):
+                    sink.write_batch(piece)
+            finally:
+                # Windows 下句柄不关，`replace` 会报 WinError 5（2026-11-18 实测）。
+                sink.close()
+        finally:
+            old.close()
+        replace(temp, target)
+        return kept + fresh.height
 
 
 def _align_frame(frame: pl.DataFrame, schema: dict[str, PolarsType]) -> pl.DataFrame:

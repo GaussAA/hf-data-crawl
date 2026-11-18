@@ -57,6 +57,13 @@ ignore = ["E501"]
 python_version = "3.13"
 files = ["src", "tests"]
 
+[[tool.mypy.overrides]]
+# pyarrow 不发 `py.typed`、PyPI 也没有官方 stubs（2026-11-18 查证），而存储层要用它
+# 做流式读写：百万行表整块进 `pl.DataFrame` 会把内存顶穿。与其在每处 import 上挂
+# `type: ignore`，不如在这一处声明「这个包没有类型信息可用」。
+module = ["pyarrow.*"]
+ignore_missing_imports = true
+
 
 [tool.pyright]
 include = ["src"]

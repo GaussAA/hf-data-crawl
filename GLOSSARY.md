@@ -2003,3 +2003,29 @@
     **一条通则**：任何「等资源」的调用都要问三句——它有没有超时、超时会不会被吞、
     失败之后那个资源还值不值得复用。空闲长了的连接不值得，批量失败之后的池子也不值得：
     换掉它们的代价只是一次握手，不换的代价是十几小时的链路静默或降到三十分之一。
+
+124. **大表的合并与派生都别整块进内存**（2026-11-18，README 全量落库之后）：
+    `readme` 长到 1,146,925 行、正文 2.8 GB 那天，两条老路同时露馅：
+    `fetch-readme` 收尾是 `keep_previous_ok(store.read("readme"), merged)` 再
+    `upsert`——而 `upsert` 内部又 `read` 一遍、再 `concat` + `sort` + `write`，
+    峰值约为表体积的**三倍**（十几 GB），本机 16 GB 内存直接 OOM；
+    `parse-readme` 一上来 `store.read("readme")`，78 万条正文占 3.6 GB 后被迫刹车。
+
+    **修法两条，缺一不可**：
+
+    - `DatasetStore.read(name, columns=[...])`：只要少量列时按列读。`keep_previous_ok`
+      的判据只有 `id` 与 `status`，没有任何理由把正文搬进内存。
+    - `DatasetStore.merge_by_id`：逐批 copy 旧文件、按 id 掩掉被替换的行、追加新行、
+      `replace()` 原子替换。它**故意不排序**——`sort("id")` 要整表复制一遍，而消费者
+      是 SQL 与 parquet 扫描，不看物理顺序；要守的只有「同 id 只留一行」。
+
+    实测：`parse-readme` 峰值 3.6 GB → **808 MB**，结果逐字段一致；`fetch-readme`
+    在 1.13M 行表上合并一次约 91 秒（主要是 zstd 12 重压），内存平稳。
+
+    **两个 Windows 上的坑**：`pq.ParquetFile` 与 `pq.ParquetWriter` 的句柄不关，
+    `os.replace` 会报 `WinError 5`——写入方先关 sink 再替换，读取方 `finally` 里关。
+    这类错误发生在收尾，前面的活全白做，所以句柄要用 `try/finally` 兜住。
+
+    **一条通则**：凡是「百万行 × 几 GB」的表，任何 read-modify-write 之前先问三句——
+    要读哪些列、能不能逐批、结果要不要排序。三问都不问，就会在收尾那一步把内存顶穿，
+    而且症状是「跑到最后才崩」，最像不可捉摸的偶发。

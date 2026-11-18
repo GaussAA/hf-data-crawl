@@ -266,3 +266,80 @@ def test_压缩级别按登记表传给写盘(tmp_path: Path, monkeypatch: pytes
 
     target.write("current", pl.DataFrame(schema=CURRENT_SCHEMA))
     assert captured["level"] is None
+
+
+# ---------------------------------------------------- merge_by_id（流式合并）
+
+
+def test_merge_by_id同id替换其余保留(store: DatasetStore) -> None:
+    """语义与 `upsert` 一致：同 id 整体换掉，其余原样，批内同 id 取最后一条。"""
+    store.write("size", sizes(size_row("acme/a", 1), size_row("acme/b", 2)))
+
+    total = store.merge_by_id("size", sizes(size_row("acme/b", 20), size_row("acme/c", 3)))
+
+    assert total == 3
+    by_id = {row["id"]: row["num_rows"] for row in store.read("size").iter_rows(named=True)}
+    assert by_id == {"acme/a": 1, "acme/b": 20, "acme/c": 3}
+
+
+def test_merge_by_id新行接在末尾不排序(store: DatasetStore) -> None:
+    """不排序是有意的：`upsert` 的 `sort("id")` 要整表复制一遍。
+
+    消费者是 SQL 与 parquet 扫描，都不看物理顺序；换来的是「百万行表不必进内存」。
+    """
+    store.write("size", sizes(size_row("acme/c", 3), size_row("acme/a", 1)))
+
+    store.merge_by_id("size", sizes(size_row("acme/b", 2)))
+
+    assert store.read("size")["id"].to_list() == ["acme/c", "acme/a", "acme/b"]
+
+
+def test_merge_by_id空批不碰文件(store: DatasetStore) -> None:
+    store.write("size", sizes(size_row("acme/a", 1)))
+    before = store.path("size").stat().st_mtime_ns
+
+    assert store.merge_by_id("size", pl.DataFrame(schema=SIZE_SCHEMA)) == 1
+    assert store.path("size").stat().st_mtime_ns == before, "空批不该重写文件"
+
+
+def test_merge_by_id表不存在时直接写出(store: DatasetStore) -> None:
+    assert store.merge_by_id("size", sizes(size_row("acme/a", 1))) == 1
+    assert store.read("size").height == 1
+
+
+def test_merge_by_id拒绝分区表(store: DatasetStore) -> None:
+    """分区表按 dt 分片，替换范围与分区无关；流式合并只会写错，故拒绝。"""
+    with pytest.raises(ValueError, match="分区表"):
+        store.merge_by_id("observations", pl.DataFrame(schema=OBSERVATIONS_SCHEMA))
+
+
+def test_merge_by_id后仍只有一份且可被视图读到(store: DatasetStore) -> None:
+    """重复合并同一批不该把表撑大——这是「流式跳过」最容易写错的地方。"""
+    store.write("size", sizes(size_row("acme/a", 1), size_row("acme/b", 2)))
+    payload = sizes(size_row("acme/b", 20))
+
+    store.merge_by_id("size", payload)
+    store.merge_by_id("size", payload)
+
+    assert store.read("size").height == 2
+    assert store.read("size").filter(pl.col("id") == "acme/b")["num_rows"].to_list() == [20]
+
+
+# ------------------------------------------------------- read（按需读列）
+
+
+def test_read按列读取不加载其余列(store: DatasetStore) -> None:
+    """只要有少量列时，别把几 GB 的正文一起读进来（2026-11-18 OOM 的根源）。"""
+    store.write("size", sizes(size_row("acme/a", 1)))
+
+    frame = store.read("size", columns=["id", "status"])
+
+    assert frame.columns == ["id", "status"]
+    assert frame.height == 1
+
+
+def test_read按列读取且表不存在时给出该列空帧(store: DatasetStore) -> None:
+    frame = store.read("size", columns=["id", "status"])
+
+    assert frame.height == 0
+    assert frame.columns == ["id", "status"]

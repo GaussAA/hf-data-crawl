@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -22,6 +23,7 @@ import polars as pl
 import pytest
 
 from hf_data_crawl.acquire.batch import STAGING_ROOT, staged_shards
+from hf_data_crawl.acquire.commands import run_parse_readme
 from hf_data_crawl.acquire.hf.api import HfResponse, TransportError
 from hf_data_crawl.acquire.readme import (
     README_STAGING_DIR,
@@ -454,3 +456,82 @@ def test_全文视图可查但不进默认宽表(store_with_data: DatasetStore) 
 def test_暂存目录按链路分开() -> None:
     assert README_STAGING_DIR != ".staging/sizes"
     assert README_STAGING_DIR.startswith(STAGING_ROOT)
+
+
+# ------------------------------------------------- parse-readme：逐批读正文
+
+
+def _readme_row(dataset_id: str, status: str, text: str | None, sha: str) -> dict[str, Any]:
+    return {
+        "id": dataset_id,
+        "url": f"https://huggingface.co/datasets/{dataset_id}",
+        "snapshot_date": DAY,
+        "source_sha": sha,
+        "status": status,
+        "bytes": len(text.encode()) if text else 0,
+        "text": text,
+    }
+
+
+def test_解析只处理ok行且抽出侧栏字段(store_with_data: DatasetStore) -> None:
+    """`absent` / `denied` 没有正文可抽，不该在派生表里留行。"""
+    store = store_with_data
+    body = "- **Homepage:** https://example.test/paper\n- **Paper:** [A Paper](https://arxiv.org/abs/1)\n"
+    store.write(
+        "readme",
+        pl.DataFrame(
+            [
+                _readme_row("acme/ds-1", "ok", body, "sha-1"),
+                _readme_row("acme/ds-2", "absent", None, "sha-2"),
+                _readme_row("acme/ds-3", "denied", None, "sha-3"),
+            ],
+            schema=README_SCHEMA,
+        ),
+    )
+
+    outcome = run_parse_readme(argparse.Namespace(), store)
+
+    assert outcome.payload["parsed"] == 1
+    fields = store.read("readme_fields")
+    assert fields.height == 1
+    assert fields.row(0, named=True)["id"] == "acme/ds-1"
+    assert fields.row(0, named=True)["homepage"] == "https://example.test/paper"
+
+
+def test_解析不再整表读入正文(
+    store_with_data: DatasetStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """整表读入是 OOM 的根源：`readme` 只允许按列读，正文靠逐批读。
+
+    2026-11-18 实测：`parse-readme` 一上来 `store.read("readme")`，78 万条正文
+    占 3.6 GB，机器只剩 1.9 GB 时被迫停。这条钉住「别再整表读」——
+    改回去这里立刻红。
+    """
+    store = store_with_data
+    store.write(
+        "readme",
+        pl.DataFrame(
+            [_readme_row("acme/ds-1", "ok", "# 标题\n正文\n", "sha-1")], schema=README_SCHEMA
+        ),
+    )
+
+    called: list[tuple[str, tuple[str, ...] | None]] = []
+    original = DatasetStore.read
+
+    def spy(
+        self: DatasetStore,
+        name: str,
+        dt: date | None = None,
+        *,
+        columns: Any = None,
+    ) -> pl.DataFrame:
+        called.append((name, tuple(columns) if columns is not None else None))
+        return original(self, name, dt, columns=columns)
+
+    monkeypatch.setattr(DatasetStore, "read", spy)
+
+    run_parse_readme(argparse.Namespace(), store)
+
+    readme_calls = [columns for name, columns in called if name == "readme"]
+    assert readme_calls, "应当按列读过 readme"
+    assert all(columns is not None for columns in readme_calls), "readme 不得整表读入"
