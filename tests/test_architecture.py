@@ -349,3 +349,20 @@ def test_组合根只经各切片的公开入口() -> None:
         violations.append(f"{path.name}:{lineno} import {target}")
 
     assert violations == [], "组合根只能走 <切片> 与 <切片>.commands：\n" + "\n".join(violations)
+
+
+def test_参数表只声明参数不承担执行() -> None:
+    """`ops/parsers.py` 只许 import 常量与枚举，不许碰各切片的执行函数。
+
+    上一条规则只盯着 `cli.py` 一个文件；参数表若偷偷 import `run_*`，它就变成
+    第二个组合根，而没有任何测试会说话。参数表与「谁加锁、谁记账」分开的全部
+    意义，就在于前者不承担执行——所以这条边界同样要落成机制。
+    """
+    path = SRC / "ops" / "parsers.py"
+    offenders = [
+        f"{path.name}:{lineno} from {base} import {name}"
+        for lineno, base, name in _imported_names(path)
+        if name.startswith("run_") or base.split(".")[-1] == "commands"
+    ]
+
+    assert offenders == [], "参数表里出现了执行细节：\n" + "\n".join(offenders)

@@ -483,7 +483,7 @@ def test_按下载量取头部的默认名次只有一个来源() -> None:
     from hf_data_crawl.acquire import DEFAULT_TOP
     from hf_data_crawl.acquire.enrich import Enricher
     from hf_data_crawl.acquire.sizes import SizeFetcher
-    from hf_data_crawl.ops.cli import build_parser
+    from hf_data_crawl.ops.parsers import build_parser
 
     parser = build_parser()
     for command in ("enrich", "fetch-sizes", "fetch-readme"):

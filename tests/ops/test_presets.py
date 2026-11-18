@@ -73,7 +73,7 @@ def test_所有预设有描述():
 
 def parse_collect(*argv: str) -> argparse.Namespace:
     """按真实解析器取一份 collect 参数，避免手搓 Namespace 与 CLI 脱节。"""
-    from hf_data_crawl.ops.cli import build_parser
+    from hf_data_crawl.ops.parsers import build_parser
 
     return build_parser().parse_args(["collect", *argv])
 
