@@ -17,7 +17,9 @@ import orjson
 
 from .checkpoint import Checkpoint
 
-DEFAULT_BASE_URL = "https://huggingface.co/api/datasets"
+#: 列表接口根（API 域）。同仓 `readme.SITE_BASE_URL` 是站点根，两者的路径段
+#: 不可互换——曾同名 `DEFAULT_BASE_URL` 并存，读代码时极易拿错一个。
+API_BASE_URL = "https://huggingface.co/api/datasets"
 
 #: HF 列表接口 expand[] 的合法字段白名单（实测由 400 响应回显取得）。
 EXPAND_WHITELIST: frozenset[str] = frozenset(
@@ -217,7 +219,7 @@ class HfDatasetApi:
         self,
         transport: Transport,
         *,
-        base_url: str = DEFAULT_BASE_URL,
+        base_url: str = API_BASE_URL,
         max_limit: int = MAX_LIMIT,
         sleeper: Callable[[float], None] | None = None,
         max_retries: int = 5,

@@ -48,7 +48,8 @@ from ..platform.tables import README_SCHEMA, url_for
 from .batch import collect_rows
 from .hf.api import RETRYABLE_STATUS, HfResponse, Transport, TransportError
 
-DEFAULT_BASE_URL = "https://huggingface.co"
+#: 站点根（非 API 域）：README 正文在 `huggingface.co/<id>/raw/...` 下。
+SITE_BASE_URL = "https://huggingface.co"
 
 #: 默认限速：HF 解析器配额约 5000 次 / 5 分钟（≈16.7 req/s），留一点余量。
 DEFAULT_RATE = 15.0
@@ -137,7 +138,7 @@ class HfReadmeApi:
         self,
         transport: Transport,
         *,
-        base_url: str = DEFAULT_BASE_URL,
+        base_url: str = SITE_BASE_URL,
         max_retries: int = 2,
         retry_base_delay: float = 2.0,
         sleeper: Callable[[float], None] | None = None,

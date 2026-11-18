@@ -52,7 +52,7 @@ import polars as pl
 from ..platform.coerce import as_int
 from ..platform.tables import FILES_SCHEMA, url_for
 from .batch import collect_rows
-from .hf.api import DEFAULT_BASE_URL, RETRYABLE_STATUS, HfResponse, Transport, TransportError
+from .hf.api import API_BASE_URL, RETRYABLE_STATUS, HfResponse, Transport, TransportError
 
 #: tree 接口每页硬上限；显式带上 limit，免得哪天上游默认值变了口径跟着漂。
 TREE_LIMIT = 1000
@@ -133,7 +133,7 @@ class HfFilesApi:
         self,
         transport: Transport,
         *,
-        base_url: str = DEFAULT_BASE_URL,
+        base_url: str = API_BASE_URL,
         max_retries: int = 3,
         max_pages: int = 1,
         retry_base_delay: float = 2.0,
