@@ -28,8 +28,8 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 import orjson
 import zstandard
 
-from ..platform import retention
 from ..platform.atomic import write_bytes
+from ..platform.retention import read_compressed_dates
 
 if TYPE_CHECKING:
     from ..platform.store import DatasetStore
@@ -362,7 +362,7 @@ class RawDay:
 
 def describe_day(store: DatasetStore, snapshot_date: date) -> RawDay:
     """读出某一天的形态；不判断它是否存在于主目录。"""
-    return _describe(store, snapshot_date, retention.read_compressed_dates(store))
+    return _describe(store, snapshot_date, read_compressed_dates(store))
 
 
 def observed_days(store: DatasetStore) -> list[RawDay]:
@@ -371,7 +371,7 @@ def observed_days(store: DatasetStore) -> list[RawDay]:
     只认至少有一个分块文件的目录，空 `dt=` 目录不算——沿用
     `rebuild.discover_raw_dates` 的既有判据。
     """
-    compressed = retention.read_compressed_dates(store)
+    compressed = read_compressed_dates(store)
     days: dict[date, RawDay] = {}
     if store.raw_dir.exists():
         for path in sorted(store.raw_dir.glob("dt=*")):

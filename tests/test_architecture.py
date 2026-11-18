@@ -366,3 +366,83 @@ def test_参数表只声明参数不承担执行() -> None:
     ]
 
     assert offenders == [], "参数表里出现了执行细节：\n" + "\n".join(offenders)
+
+
+def _declared(slice_name: str) -> set[str]:
+    """读出某切片 `__init__.py` 里 `__all__` 登记的名字（只解析，不执行导入）。"""
+    tree = ast.parse((SRC / slice_name / "__init__.py").read_text(encoding="utf-8"))
+    names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.List):
+            if not any(isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets):
+                continue
+            names |= {
+                item.value
+                for item in node.value.elts
+                if isinstance(item, ast.Constant) and isinstance(item.value, str)
+            }
+    return names
+
+
+def test_跨切片只能依赖登记过的符号() -> None:
+    """别的切片能用的名字，必须在目标切片的 `__all__` 里登记过。
+
+    原来的九条规则管住了「依赖谁」，管不住「依赖到什么程度」：`delivery` 抓一个
+    `query.gold.share_text` 与抓 `query.gold.GoldCatalog` 一样畅通，于是哪个是
+    契约、哪个只是眼下顺手拿的，事后无从分辨。这条要求前者登记、后者也登记，
+    区别只在于——登记时要停下来想一次「这算不算我的接口」。
+
+    登记的粒度由各切片的公开面自己定，两种写法都算数：
+
+    - 符号级（`platform` / `query`）：`from ..platform.atomic import write_bytes`
+      里 `write_bytes` 出现在 `__all__`；
+    - 子模块级（`pipeline`）：`from ..pipeline.rebuild import discover_raw_dates`
+      里 `rebuild` 出现在 `__all__`——「我依赖重建这一整块」本身就是一句可审的话。
+
+    判据取「路径上的子模块名或末端的符号名，任一登记即可」：这两种写法表达的是
+    同一件事，只认一种的话，换个写法就绕过去了。
+
+    `ops` 不在约束范围内。它是组合根兼运维层，职责就是横跨所有切片：CLI 要调
+    每个 `run_*`，体检要读各切片的诊断函数。要求它「只碰登记符号」只会逼着
+    各切片把诊断函数一并登记，登记的筛选作用就没了。
+    """
+    declared = {name: _declared(name) for name in RANK}
+    violations: list[str] = []
+    for path in _sources():
+        mine = _slice_of(_module_name(path))
+        if mine is None or mine == "ops":
+            continue
+        for lineno, module, name in _imported_names(path):
+            if not module.startswith(PACKAGE):
+                continue
+            theirs = _slice_of(module)
+            if theirs is None or theirs == mine:
+                continue
+            parts = module.split(".")
+            allowed = {name} if len(parts) == 2 else {parts[2], name}
+            if allowed & declared[theirs]:
+                continue
+            violations.append(
+                f"{path.relative_to(SRC)}:{lineno} {mine} -> {module}.{name}"
+                f"（要就登记进 {theirs}/__init__.py 的 __all__，要就别依赖）"
+            )
+    assert violations == [], "跨切片用到了未登记的名字：\n" + "\n".join(violations)
+
+
+def test_门面登记的名字都真实存在() -> None:
+    """`__all__` 里写了却取不到，等于给外部一张空头契约。
+
+    子模块名（如 `pipeline.rebuild`）按文件是否存在判断，不用 `hasattr`：包内
+    子模块要等第一次 import 才会成为父模块的属性，用 `hasattr` 会在「还没人
+    import 过」时误报。
+    """
+    from importlib import import_module
+
+    missing: list[str] = []
+    for name in RANK:
+        module = import_module(f"{PACKAGE}.{name}")
+        for attr in _declared(name):
+            if _module_exists([name, attr]) or hasattr(module, attr):
+                continue
+            missing.append(f"{name}.{attr}")
+    assert missing == [], "__all__ 里登记了取不到的名字：" + "、".join(missing)
