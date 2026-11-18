@@ -88,6 +88,25 @@ def test_容忍列表符号与全角冒号() -> None:
     assert extract_fields("Homepage：https://c.example")["homepage"] == "https://c.example"
 
 
+def test_模板占位符不算有值() -> None:
+    """HF 模板预置的 `[More Information Needed]` 不是内容。
+
+    `Paper:` 行里它占绝大多数——不排除的话 `paper_title` 会有 88,872 条「有值」，
+    而每一格都是同一句话。这类行还常带残留的 `**`（值自己以加粗开头）。
+    """
+    fields = extract_fields(
+        "- **Paper:** ** [More Information Needed]\r\n- **Homepage:** ** [More Information Needed]"
+    )
+
+    assert fields["paper_title"] is None
+    assert fields["paper_url"] is None
+    assert fields["homepage"] is None
+
+
+def test_值自己带加粗也能剥干净() -> None:
+    assert extract_fields("**Homepage:** ** https://a.example")["homepage"] == "https://a.example"
+
+
 def test_抽不到一律_none() -> None:
     """上游本就稀疏，别用空串冒充「有」。"""
     for text in ("", "## Dataset\n\nSome text.\n", None):

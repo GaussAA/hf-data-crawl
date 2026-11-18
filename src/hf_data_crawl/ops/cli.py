@@ -86,7 +86,11 @@ LOCKED_COMMANDS = WRITE_COMMANDS | SNAPSHOT_COMMANDS | REQUEST_COMMANDS
 #: 它们仍在 WRITE_COMMANDS 里（启动检查/恢复未完成的派生照旧），但不走
 #: `_execute` 的整段锁。原因见 `sizes.StagingWriter`：全量抓取要跑三小时，
 #: 整段持锁会直接让当天的 collect 等锁失败（2026-11-07 实际事故）。
-SELF_LOCKED_COMMANDS = frozenset({"fetch-sizes", "fetch-readme", "fetch-preview"})
+#: `parse-readme` 同理：78 万条正文逐行解析要二十几分钟，全程持锁会挡住当天的
+#: 采集；它只在最后写 `readme_fields` 时拿一次短锁。2026-11-18 忘了登记这一条，
+#: 结果自锁死锁——`_execute` 持着锁，内部又调 `exclusive`，等了二十多分钟后
+#: 以 `LockBusy: ... 被另一个写命令占用：parse-readme（pid 自己）` 收场。
+SELF_LOCKED_COMMANDS = frozenset({"fetch-sizes", "fetch-readme", "fetch-preview", "parse-readme"})
 
 #: 生成命令默认等锁时长（秒）。它们通常由计划任务或人工临时触发，撞上采集
 #: 时干等一会儿比直接失败有用；等不到仍会如实报错。可用 `--lock-wait` 覆盖。

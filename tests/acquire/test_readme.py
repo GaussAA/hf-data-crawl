@@ -374,6 +374,17 @@ def test_fetcher_fetch_readme属于写命令且自排锁() -> None:
     assert "fetch-readme" in SELF_LOCKED_COMMANDS
 
 
+def test_parse_readme也自排锁() -> None:
+    """`parse-readme` 必须走自排锁，否则 `_execute` 与内部 `exclusive` 自锁死锁。
+
+    2026-11-18 实测：忘了登记，78 万条解析二十多分钟后以
+    `LockBusy: ... 被另一个写命令占用：parse-readme（自己）` 收场——锁是被自己
+    持有的，命令却一直在等它。解析全量正文要二十几分钟，全程持锁还会挡住采集。
+    """
+    assert "parse-readme" in WRITE_COMMANDS
+    assert "parse-readme" in SELF_LOCKED_COMMANDS
+
+
 def test_命令行抓取并入表并留下运行摘要(store_with_data: DatasetStore) -> None:
     transport = FakeReadmeTransport({"acme/ds-3": BODY, "acme/ds-2": 404})
 

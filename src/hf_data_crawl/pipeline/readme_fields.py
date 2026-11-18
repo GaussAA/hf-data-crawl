@@ -41,13 +41,27 @@ _LINK = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
 _BARE_URL = re.compile(r"^https?://\S+$")
 
 #: `## Citation` 段落；到下一个标题（任意级别）为止。
-_CITATION_SECTION = re.compile(r"(?m)^#{1,3}[ \t]+Citation[ \t]*$(.*?)(?=^#{1,3}[ \t]|\Z)", re.S)
+#:
+#: 标题后面允许带后缀——`Salesforce/wikitext` 用的是 `## Citation Information`，
+#: 只认 `Citation$` 会把它整段漏掉（2026-11-18 实测：`citation_bibtex` 因此少算）。
+_CITATION_SECTION = re.compile(r"(?m)^#{1,3}[ \t]+Citation[^\n]*$(.*?)(?=^#{1,3}[ \t]|\Z)", re.S)
 
 #: 围栏代码块（```、```bibtex、```python 都收）。
 _FENCE = re.compile(r"```[^\n]*\n(.*?)```", re.S)
 
 #: BibTeX 条目的开头。
 _BIBTEX_ENTRY = re.compile(r"@\w+\{")
+
+#: HF 数据集模板在每张卡片里预置的占位符。作者没填时它原样留着。
+#:
+#: 它不是「有内容」——`**Paper:** ** [More Information Needed]` 这种行在
+#: `## Citation` 段落里占 50.7%，在 `Paper:` 行里也占绝大多数。不排除的话
+#: 覆盖率会凭空翻倍，而每一格都是同一句话。
+PLACEHOLDER = "[More Information Needed]"
+
+
+def _is_placeholder(value: str | None) -> bool:
+    return value is not None and PLACEHOLDER.lower() in value.lower()
 
 
 def _compile() -> dict[str, re.Pattern[str]]:
@@ -71,12 +85,16 @@ def _clean(value: str) -> str:
     """去掉行尾的 Markdown 装饰。
 
     `**Homepage:** https://x` 会被正则吃到 `**` 之后，但作者也可能写成
-    `Homepage: https://x **bold**`，故只剥「包裹整段的」星号与尖括号。
+    `Homepage: ** https://x`（值自己以加粗开头）——两种都要剥干净。
     """
     text = value.strip()
     text = text.strip("<>").strip()
+    # 包裹整段的加粗：`**foo**`
     if text.startswith("**") and text.endswith("**") and len(text) > 4:
         text = text[2:-2].strip()
+    # 开头残留的加粗：`** foo`（值自己带星号，或模板占位符的写法）
+    if text.startswith("**"):
+        text = text[2:].strip()
     return text
 
 
@@ -141,21 +159,24 @@ def extract_fields(text: str | None) -> dict[str, Any]:
     homepage = _PATTERNS["homepage"].search(text)
     if homepage:
         value = _clean(homepage.group(1))
-        title, url = _split_link(value)
-        fields["homepage"] = url or title
+        if not _is_placeholder(value):
+            title, url = _split_link(value)
+            fields["homepage"] = url or title
 
     paper = _PATTERNS["paper"].search(text)
     if paper:
         value = _clean(paper.group(1))
-        title, url = _split_link(value)
-        fields["paper_title"] = title
-        fields["paper_url"] = url
+        if not _is_placeholder(value):
+            title, url = _split_link(value)
+            fields["paper_title"] = title
+            fields["paper_url"] = url
 
     contact = _PATTERNS["point_of_contact"].search(text)
     if contact:
         value = _clean(contact.group(1))
-        title, _ = _split_link(value)
-        fields["point_of_contact"] = title
+        if not _is_placeholder(value):
+            title, _ = _split_link(value)
+            fields["point_of_contact"] = title
 
     fields["citation_bibtex"] = _extract_citation(text)
 
