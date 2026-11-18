@@ -82,6 +82,19 @@ def _files_transport(transport: Transport | None, timeout: float) -> Transport:
     return HttpxTransport(timeout=timeout)
 
 
+def _readme_transport(transport: Transport | None, timeout: float) -> Transport:
+    """`fetch-readme` 是十几小时的长跑：关掉空闲连接复用。
+
+    代理侧会把空闲连接单方面丢掉，而 httpx 仍当它可用，下一次复用就卡在 TLS
+    握手上直到超时——实测 10 个连接同时变坏后吞吐从 14/s 掉到 0.33/s，进程重启
+    即恢复。每条请求各开各的连接后，坏连接最多影响一条请求。
+    """
+    if transport is not None:
+        return transport
+    load_env_file()
+    return HttpxTransport(timeout=timeout, max_keepalive=0)
+
+
 def _collected_today(store: DatasetStore, snapshot: date) -> bool:
     """该快照日是否已有一次完整采集（走到末页或触发水位线，且在这一天内完成）。"""
     for item in read_runs(store):
@@ -537,7 +550,7 @@ def run_fetch_readme(
 
     fetcher = ReadmeFetcher(
         api=HfReadmeApi(
-            transport=_files_transport(transport, args.timeout),
+            transport=_readme_transport(transport, args.timeout),
             max_retries=args.max_retries,
             rate=args.rate,
         ),
