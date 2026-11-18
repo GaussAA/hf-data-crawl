@@ -41,7 +41,10 @@ platform < pipeline < {acquire, query} < delivery < ops
   `ops/fielddocs.py` 后重新生成。
 - **一份事实只写一处**：`docs/README.md` 的「谁拥有什么」表说明每类事实该落在哪份文件；
   改文档前先查表，别在 README 里复述词表。
-- **提交前**：`uv run pytest -q` 与 `python scripts/check_docs_links.py`。
+- **提交前**：先 `uv run pre-commit install` 装一次钩子（新 clone 必做）；之后每次提交
+  由它跑 ruff / mypy / pytest / 文档链接，与 CI 同源。手动兜底
+  `uv run pre-commit run --all-files`，别只跑 `pytest`——2026-11-18 两次 CI 红都是
+  「本地漏跑 ruff format / mypy」造成的，钩子没装时没人拦得住。
 - **测试名与 docstring 用中文**，沿用现状；机械规则见 `CODING_STANDARDS.md`。
   文档里写「一定 / 必然」时，先问有没有一条能打红的测试。
 
