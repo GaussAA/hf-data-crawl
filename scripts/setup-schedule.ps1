@@ -11,6 +11,8 @@
     hf-sizes    每周日 06:00 补数据集规模（行数/列数），最慢的一步，增量可续。
     hf-files    每周日 07:30 补下载量前 1000 名的文件清单（首屏，子集而非全量）。
     hf-archive  每周一 05:00 归档满 30 天的 Raw（去重小分块、冻结写入序），移入 backup。
+    hf-readme   每周六 09:00 重取 commit 已变的 README 全文，默认前 8000 名的量。
+                全量那趟（约 21 小时）仍留人工：11-17 跑过一次，113 万条已入库。
 
     为什么把五个任务收成一条链（2026-11-09 实测）
     ----------------------------------------------
@@ -53,6 +55,7 @@ param(
     [string]$FilesTime = "07:30",
     [string]$ArchiveTime = "05:00",
     [string]$CompactTime = "00:30",
+    [string]$ReadmeTime = "09:00",
     [switch]$Uninstall
 )
 
@@ -105,6 +108,12 @@ $jobs = @(
     @{ Name = "hf-archive"; Script = "archive.ps1"; Hours = 2; CatchUp = $false
        LogonDelay = $null
        Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At $ArchiveTime)) },
+    # README 保鲜排周六：周日已经压着规模（最慢可跑数小时）与文件清单两趟，
+    # 再塞一趟只是多一个抢锁的。周六除日链与压缩外没有别的任务。
+    # 它只做增量（--changed），全量那趟 21 小时仍留人工择机。
+    @{ Name = "hf-readme"; Script = "readme.ps1"; Hours = 2; CatchUp = $false
+       LogonDelay = $null
+       Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Saturday -At $ReadmeTime)) },
     # 压缩每日 00:30：门槛仍是 7 天，实际每天最多压掉一个刚满期的分区，把
     # 「周一才清一次、平日热区一路上涨」摊平。错过一轮次日接着压，不必补跑。
     @{ Name = "hf-compact"; Script = "compact.ps1"; Hours = 2; CatchUp = $false
@@ -170,6 +179,7 @@ Write-Host "  hf-compact    每日 $CompactTime 压缩满 7 天的冷区 Raw（�
 Write-Host "  hf-sizes      每周日 $SizesTime 补规模数据，增量合并、中断可续（不补跑）"
 Write-Host "  hf-files      每周日 $FilesTime 补下载量前 1000 名的文件清单（首屏子集，不补跑）"
 Write-Host "  hf-archive    每周一 $ArchiveTime 归档满 30 天的 Raw，原文件移入 backup（不补跑）"
+Write-Host "  hf-readme     每周六 $ReadmeTime 重取 commit 已变的 README 全文（增量，不补跑）"
 Write-Host "日志目录：$(Join-Path $root 'data\logs')　链条摘要：同上，文件名以 -daily.log 结尾"
 Write-Host "运行摘要：$(Join-Path $root 'data\runs')"
 Write-Host "核对：Get-ScheduledTask -TaskName hf-* | Get-ScheduledTaskInfo"

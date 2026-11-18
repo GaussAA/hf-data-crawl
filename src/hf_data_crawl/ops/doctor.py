@@ -16,11 +16,12 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
 import polars as pl
 
+from ..acquire.readme import stale_readme_ids
 from ..acquire.reconcile import PROBE_DEGRADE_AFTER
 from ..acquire.sizes import stale_ids
 from ..delivery.delivery import (
@@ -107,6 +108,11 @@ ACTIVE_DAYS = 3
 #: 常态，卡片抓在 commit 之后、下一轮增量之前，短暂不一致是正常的；超过这个比例
 #: 说明整趟没跑，而不是个别库在窗口边缘。
 CARD_BEHIND_ALERT_SHARE = 20.0
+
+#: README 全文（`readme` / `readme_fields`）的刷新时限。它不在任何一条链里：全量
+#: 那趟 21 小时、抽字段 6 分钟，都只能人工择机跑。定时任务按周刷新，这里给两个
+#: 周期——连着两周没动才算「没人管」，漏跑一次不至于喊。
+README_MAX_AGE_DAYS = 14
 
 #: 有界试跑（max_pages）与 dry_run 不是完成；collect 的完成态与 cli 共用一份枚举。
 _RECONCILE_DONE = frozenset({"end"})
@@ -782,6 +788,100 @@ def _card_provenance(ctx: RunContext) -> Finding:
         f"卡片凭证：活跃库中 {recorded.height - behind}/{recorded.height}"
         f"（{(1 - behind / recorded.height) * 100:.0f}%）与当前 sha 一致{tail}",
     )
+
+
+def _readme_fields_behind(store: DatasetStore, readme: pl.DataFrame) -> int:
+    """侧栏字段落后多少：`readme_fields.source_sha` 与正文当前的 `source_sha` 比。
+
+    正文换了新版而字段没重抽，是**安静的错误**——查询照样返回 URL、BibTeX，
+    只是那些值属于上一版正文。保鲜任务把两步串起来跑，就为堵这一处。
+    """
+    path = store.path("readme_fields")
+    if not path.exists():
+        return 0
+    extracted = pl.read_parquet(path, columns=["id", "source_sha"]).rename(
+        {"source_sha": "extracted_sha"}
+    )
+    ok_rows = readme.filter(pl.col("status") == "ok").select("id", "source_sha")
+    if ok_rows.height == 0:
+        return 0
+    joined = ok_rows.join(extracted, on="id", how="left")
+    return joined.filter(
+        pl.col("extracted_sha").is_null() | (pl.col("extracted_sha") != pl.col("source_sha"))
+    ).height
+
+
+def _readme_freshness(ctx: RunContext) -> Finding:
+    """README 全文有没有人管：抽过侧栏字段的那份资产会悄悄变旧。
+
+    为什么单列一项：`readme` 与 `readme_fields` 是两次人工触发的产物（全量约 21 小时、
+    抽字段约 6 分钟），**不属于任何一条链**。不盯它，就会出现「体检全 ok，而 2.8 GB
+    正文已经三周没动」——库里没有任何一处读数会变红，因为没有一处看它。
+
+    判据取「最近一次刷新时刻」，两处取较大者：
+
+    - 表里 `snapshot_date` 的最大值——真写过数据；
+    - 最近一次成功的 `fetch-readme` 运行——`--changed` 若找不到陈旧会提前返回、**不写行**，
+      只查数据会把它误报成「没刷新」。
+
+    只查数据会误报，只查运行记录会漏报（跑成功但一条没抓），故两者取大。
+
+    另外报三个计数：`陈旧`（commit 已变的库，该重取的量）、`无记录`（新库还没抓过）、
+    `侧栏落后`（正文已换版而字段没重抽）。它们只在两次刷新之间自然增长，不单独判红
+    ——判红看的是「多久没刷新」这一件事；`侧栏落后` 长期不降，则说明保鲜任务只跑了
+    第一步（`fetch-readme`）而漏了第二步（`parse-readme`）。
+
+    **没有 readme 表不算故障**：它与 `carddata` 同为富化产物，日常链不生成它，
+    全新安装或刻意不抓都该是绿的。缺表时只报「未抓过」，把红留给「抓过、但没人管了」。
+    """
+    store = ctx.store
+    pattern = f"{store.root.as_posix()}/{table('readme').glob()}"
+    try:
+        names = pl.scan_parquet(pattern).collect_schema().names()
+    except (OSError, pl.exceptions.PolarsError):
+        return Finding(False, "README 全文：尚无 readme 表（未抓过，不判新旧）")
+    if "snapshot_date" not in names:
+        return Finding(True, "README 全文：表里没有 snapshot_date，无法判断新旧")
+
+    frame = _scan_frame(pattern, ["id", "source_sha", "status", "snapshot_date"])
+    if frame is None or frame.height == 0:
+        return Finding(False, "README 全文：表为空（未抓过，不判新旧）")
+
+    last_run: datetime | None = None
+    for item in ctx.runs:
+        if item.get("command") != "fetch-readme" or item.get("status") != "success":
+            continue
+        finished = _run_time(item.get("finished_at"))
+        if finished is not None and (last_run is None or finished > last_run):
+            last_run = finished
+
+    written = frame["snapshot_date"].max()
+    marks: list[datetime] = []
+    if isinstance(written, datetime):
+        marks.append(written)
+    elif isinstance(written, date):
+        marks.append(datetime.combine(written, time.min))
+    if last_run is not None:
+        marks.append(last_run)
+    if not marks:
+        return Finding(True, "README 全文：既无写入日期也无成功记录，无法判断新旧")
+
+    refreshed = max(marks)
+    age_days = (ctx.now - refreshed).days
+    stale = stale_readme_ids(ctx.current, frame).height
+    missing = len(ctx.current_ids - set(frame["id"].to_list()))
+    behind = _readme_fields_behind(store, frame)
+    counts = (
+        f"陈旧 {stale:,} · 无记录 {missing:,} · 侧栏落后 {behind:,} · 最近刷新 {refreshed:%Y-%m-%d}"
+    )
+
+    if age_days > README_MAX_AGE_DAYS:
+        return Finding(
+            True,
+            f"README 全文：已 {age_days} 天没有刷新（{counts}）；"
+            "跑 fetch-readme --changed 8000，或确认定时任务 hf-readme 是否还在",
+        )
+    return Finding(False, f"README 全文：正常（{age_days} 天前刷新，{counts}）")
 
 
 def _raw_growth(ctx: RunContext) -> Finding:
@@ -1466,6 +1566,7 @@ CHECKS: tuple[Check, ...] = (
     Check("contract_coverage", _contract_coverage, snapshot_dependent=True),
     Check("field_freshness", _field_freshness, snapshot_dependent=True),
     Check("card_provenance", _card_provenance, snapshot_dependent=True),
+    Check("readme_freshness", _readme_freshness, snapshot_dependent=True),
     Check("raw_growth", _raw_growth),
     Check("cold_backlog", _cold_backlog),
     Check("archive_backlog", _archive_backlog),

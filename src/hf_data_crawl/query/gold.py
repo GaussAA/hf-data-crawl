@@ -85,6 +85,11 @@ _VIEWS: tuple[tuple[str, str], ...] = (
     ("dataset_size", "size"),
     ("files", "files"),
     ("readme", "readme"),
+    # 正文里抽出的侧栏字段（Homepage / Paper / BibTeX / 联系人）。不进宽表：
+    # 宽表是交付契约，加列要单独议；但必须可查——否则 78 万条抽出来的字段
+    # 只能靠直读 parquet 才拿得到，`fielddocs` 里写着它的说明、`query` 里却
+    # 报「表不存在」（2026-11-18 实测）。
+    ("readme_fields", "readme_fields"),
 )
 
 

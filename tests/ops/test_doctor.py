@@ -31,7 +31,12 @@ from hf_data_crawl.platform.lock import LockBusy
 from hf_data_crawl.platform.retention import REPLAY_WINDOW_DAYS, manifest_path
 from hf_data_crawl.platform.runs import Outcome, write_run
 from hf_data_crawl.platform.store import DatasetStore
-from hf_data_crawl.platform.tables import CURRENT_SCHEMA, ENRICH_SCHEMA, SIZE_SCHEMA
+from hf_data_crawl.platform.tables import (
+    CURRENT_SCHEMA,
+    ENRICH_SCHEMA,
+    README_SCHEMA,
+    SIZE_SCHEMA,
+)
 
 NOW = datetime(2026, 11, 10, 12, 0, 0)
 
@@ -79,6 +84,21 @@ def put_cards(store: DatasetStore, day: date, source_shas: Mapping[str, str | No
     data["source_sha"] = list(source_shas.values())
     data["snapshot_date"] = [day] * len(source_shas)
     store.write("carddata", pl.DataFrame(data, schema=ENRICH_SCHEMA))
+
+
+def put_readme(store: DatasetStore, day: date, shas: Mapping[str, str | None]) -> None:
+    """只造体检要读的四列：id / source_sha / status / snapshot_date。
+
+    正文（`text`）留空：这一项判的是「多久没刷新」，不读内容；真读 2.8 GB 也不该
+    发生在体检里。
+    """
+    data: dict[str, list[Any]] = {name: [None] * len(shas) for name in README_SCHEMA}
+    data["id"] = list(shas)
+    data["source_sha"] = list(shas.values())
+    data["snapshot_date"] = [day] * len(shas)
+    data["status"] = ["ok"] * len(shas)
+    data["bytes"] = [0] * len(shas)
+    store.write("readme", pl.DataFrame(data, schema=README_SCHEMA))
 
 
 def put_ids(store: DatasetStore, name: str, day: date, ids: list[str]) -> None:
@@ -156,6 +176,9 @@ def healthy(store: DatasetStore) -> None:
         put_ids(store, "silver", day, ids)
         lineage.stamp(store, day, bronze_rows=0, silver_rows=0, observations=len(ids))
     put_export(store, ids)
+    # README 是「抓过、且有人管」的常态：不进链，靠每周 hf-readme 保鲜。
+    put_readme(store, NOW.date(), {ident: None for ident in ids})
+    make_run(store, "fetch-readme", NOW - timedelta(hours=20), "end")
     manifest = manifest_path(store)
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
@@ -1577,3 +1600,54 @@ def test_降级不会丢掉已经贴上的码() -> None:
 
     assert downgraded.snapshot_dependent is True
     assert downgraded.code == "raw_gaps"
+
+
+# ------------------------------------------------------------ README 全文保鲜
+
+
+def test_README太久没刷新要报(tmp_path: Path) -> None:
+    """README 与侧栏字段不进任何一条链，没人刷新就会悄悄变旧。
+
+    2026-11-18 之前体检二十七项里**没有一项**看它：2.8 GB 正文即使三周没动，
+    所有读数照样全绿——因为没有一处读它。
+    """
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    old = NOW.date() - timedelta(days=40)
+    put_readme(store, old, {"acme/ds-0": None})
+    for path in (store.root / "runs").glob("*fetch-readme*"):
+        path.unlink()
+
+    found = [text for text in problems(store) if "README 全文" in text]
+
+    assert found, "README 陈旧却没人报"
+    assert "没有刷新" in found[0] and "fetch-readme" in found[0]
+    assert "陈旧" in found[0] and "无记录" in found[0], "两个计数要一并给出，否则不知道该重取多少"
+
+
+def test_README刚跑过就不报即使一条没写(tmp_path: Path) -> None:
+    """`--changed` 找不到陈旧会提前返回、不写行；只查数据会把它误报成「没刷新」。
+
+    判据因此取「表里最大 snapshot_date」与「最近一次成功运行」两者较大者。
+    """
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    put_readme(store, NOW.date() - timedelta(days=60), {"acme/ds-0": None})
+    for path in (store.root / "runs").glob("*fetch-readme*"):
+        path.unlink()
+    make_run(store, "fetch-readme", NOW - timedelta(hours=2), "end")
+
+    assert not any("README 全文" in text for text in problems(store))
+
+
+def test_README从未抓过不算故障(tmp_path: Path) -> None:
+    """富化产物缺表不是故障：全新安装、或刻意不抓，都该是绿的。
+
+    红只留给「抓过、但没人管了」。判据与 `card_provenance` 同一取向：
+    缺表说「无从对照」，不判 problem。
+    """
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    store.path("readme").unlink()
+
+    assert not any("README 全文" in text for text in problems(store))

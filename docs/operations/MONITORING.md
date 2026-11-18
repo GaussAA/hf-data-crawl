@@ -180,7 +180,8 @@ uv run python -c "from pathlib import Path; from hf_data_crawl.pipeline.raw impo
 `collect → build --stale → reconcile → fetch-sizes --changed 8000 → export-wide → request run-due → prune → doctor`。
 依赖由**脚本顺序**表达，不由钟点表达；前置失败时下游记 `[跳过]`。
 独立任务：`hf-sizes`（周日 06:00）、`hf-files`（周日 07:30）、`hf-archive`（周一 05:00）、
-`hf-compact`（每日 00:30），四者刻意不带补跑，免得与日常链抢写锁。
+`hf-compact`（每日 00:30）、`hf-readme`（周六 09:00，只重取 commit 已变的那批），
+五者刻意不带补跑，免得与日常链抢写锁。README 全量（约 21 小时）不排日程，留人工择机。
 
 ---
 

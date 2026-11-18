@@ -535,3 +535,59 @@ def test_解析不再整表读入正文(
     readme_calls = [columns for name, columns in called if name == "readme"]
     assert readme_calls, "应当按列读过 readme"
     assert all(columns is not None for columns in readme_calls), "readme 不得整表读入"
+
+
+def test_解析跳过同id同sha的行(store_with_data: DatasetStore) -> None:
+    """保鲜每周会重取几千条；若每次都重抽 78 万条，那 340 秒纯属白烧。
+
+    判据是 `(id, source_sha)`：同 id 同 sha 说明正文没变，抽出来的字段必然相同。
+    """
+    store = store_with_data
+    store.write(
+        "readme",
+        pl.DataFrame(
+            [
+                _readme_row("acme/ds-1", "ok", "- **Homepage:** https://a.test\n", "sha-1"),
+                _readme_row("acme/ds-2", "ok", "- **Homepage:** https://b.test\n", "sha-2"),
+            ],
+            schema=README_SCHEMA,
+        ),
+    )
+
+    first = run_parse_readme(argparse.Namespace(), store)
+    second = run_parse_readme(argparse.Namespace(), store)
+
+    assert first.payload["parsed"] == 2
+    assert second.payload["parsed"] == 0, "同 id 同 sha 的行不该重抽"
+    assert second.payload["skipped"] == 2
+    # 跳过不等于丢字段：表里仍是两条，值不变。
+    fields = store.read("readme_fields")
+    assert fields.height == 2
+    assert set(fields["id"].to_list()) == {"acme/ds-1", "acme/ds-2"}
+
+
+def test_解析在sha变化后重抽该行(store_with_data: DatasetStore) -> None:
+    """正文换了版本，旧字段就不再是事实——静默留着比抽错更难查。"""
+    store = store_with_data
+    store.write(
+        "readme",
+        pl.DataFrame(
+            [_readme_row("acme/ds-1", "ok", "- **Homepage:** https://old.test\n", "sha-old")],
+            schema=README_SCHEMA,
+        ),
+    )
+    run_parse_readme(argparse.Namespace(), store)
+
+    store.write(
+        "readme",
+        pl.DataFrame(
+            [_readme_row("acme/ds-1", "ok", "- **Homepage:** https://new.test\n", "sha-new")],
+            schema=README_SCHEMA,
+        ),
+    )
+    outcome = run_parse_readme(argparse.Namespace(), store)
+
+    assert outcome.payload["parsed"] == 1
+    row = store.read("readme_fields").row(0, named=True)
+    assert row["homepage"] == "https://new.test"
+    assert row["source_sha"] == "sha-new"

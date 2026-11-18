@@ -622,3 +622,29 @@ def test_有内容的判据按类型分三种() -> None:
     assert filled_count(frame["tags"]) == 1
     assert filled_count(frame["text"]) == 1
     assert filled_count(frame["num"]) == 2
+
+
+# ------------------------------------------------- README 侧栏字段（2026-11-18）
+
+
+def test_侧栏字段表也挂了视图(catalog: GoldCatalog) -> None:
+    """抽出 78 万条字段却查不到，是最难解释的那种缺口。
+
+    `fielddocs` 里写着 `readme_fields` 的字段说明、抽取命令也照常跑成功，而
+    `query` 里 `SELECT ... FROM readme_fields` 报 `CatalogException`：视图登记表
+    （`_VIEWS`）漏了它，只能直读 parquet 才拿得到。文档有、数据有、接口没有——
+    三者不一致时，读文档的人会以为是自己写错了 SQL。
+    """
+    from hf_data_crawl.platform.tables import table
+
+    columns = catalog.run("SELECT * FROM readme_fields LIMIT 0").columns
+
+    assert set(table("readme_fields").schema) <= set(columns)
+
+
+def test_侧栏字段不进宽表(catalog: GoldCatalog) -> None:
+    """宽表是交付契约，加列要单独议；这条钉住「没顺手把它们并进去」。"""
+    columns = catalog.run("SELECT * FROM datasets LIMIT 0").columns
+
+    assert "homepage" not in columns
+    assert "citation_bibtex" not in columns

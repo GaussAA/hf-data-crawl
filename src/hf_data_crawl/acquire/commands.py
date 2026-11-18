@@ -760,10 +760,18 @@ def run_parse_readme(
     ok_total = int((statuses["status"] == "ok").sum())
     print(f"解析 {ok_total:,} 条 README 正文（共 {total_records:,} 条记录）")
 
+    # 已有凭证：`(id, source_sha)` 都相同的行，字段就是照这版正文抽出来的，不必重抽。
+    # 每周保鲜只重取几千条（2026-11-18 实测 4,781 条），而全量重抽 78 万条要 340 秒
+    # ——不跳过的代价是「每次保鲜都白跑一遍全量」。
+    existing = _extracted_pairs(store)
+    if existing.height:
+        print(f"已抽过 {existing.height:,} 条（同 id 同 sha 者跳过）")
+
     # 逐批读正文：一批只驻留 `PARSE_BATCH_ROWS` 条，抽完即弃。抽出的字段是短字符串，
     # 累积起来只有几十 MB，故帧可以攒到最后一次写。
     parquet = pq.ParquetFile(target)
     frames: list[pl.DataFrame] = []
+    skipped = 0
     try:
         for batch in parquet.iter_batches(batch_size=PARSE_BATCH_ROWS):
             chunk = pl.from_arrow(batch)
@@ -771,6 +779,14 @@ def run_parse_readme(
             usable = chunk.filter(pl.col("status") == "ok")
             if usable.height == 0:
                 continue
+            if existing.height:
+                before = usable.height
+                # anti join 而不是拼字符串键：两列都是 Utf8，拼键要为 78 万行造一个
+                # 新列；join 直接用两列做等值匹配，内存与时间都省。
+                usable = usable.join(existing, on=["id", "source_sha"], how="anti")
+                skipped += before - usable.height
+                if usable.height == 0:
+                    continue
             rows: list[dict[str, Any]] = [
                 {
                     "id": item["id"],
@@ -795,7 +811,20 @@ def run_parse_readme(
 
     total = store.read("readme_fields").height
     _print_readme_fields(frame, total)
-    return Outcome({"parsed": frame.height, "table_rows": total})
+    return Outcome({"parsed": frame.height, "skipped": skipped, "table_rows": total})
+
+
+def _extracted_pairs(store: DatasetStore) -> pl.DataFrame:
+    """已抽过的 `(id, source_sha)`：正文没变就不必再抽一遍。
+
+    只读两列（78 万行约 40 MB），不碰正文。凭证为空的行不算「抽过」——空 sha 是
+    「没记账」，按它跳过等于让旧行的字段永远停在旧正文上。
+    """
+    path = store.path("readme_fields")
+    if not path.exists():
+        return pl.DataFrame(schema={"id": pl.Utf8, "source_sha": pl.Utf8})
+    frame = pl.read_parquet(path, columns=["id", "source_sha"])
+    return frame.filter(pl.col("source_sha").is_not_null())
 
 
 def _print_readme_fields(frame: pl.DataFrame, table_rows: int) -> None:
