@@ -24,4 +24,4 @@ param(
 exit (Invoke-HfTask -Name "archive" -Arguments (@(
     "--lock-wait", "900",
     "archive"
-) + $Rest))
+) + $Rest) -TimeoutSeconds 7200)

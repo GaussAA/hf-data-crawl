@@ -24,4 +24,4 @@ param(
 
 . (Join-Path $PSScriptRoot "_common.ps1")
 
-exit (Invoke-HfTask -Name "doctor" -Arguments (@("doctor") + $Rest))
+exit (Invoke-HfTask -Name "doctor" -Arguments (@("doctor") + $Rest) -TimeoutSeconds 300)

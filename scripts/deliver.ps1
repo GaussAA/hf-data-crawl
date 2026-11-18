@@ -30,4 +30,4 @@ param(
 exit (Invoke-HfTask -Name "deliver" -Arguments (@(
     "--lock-wait", "900",
     "request", "run-due"
-) + $Rest))
+) + $Rest) -TimeoutSeconds 600)

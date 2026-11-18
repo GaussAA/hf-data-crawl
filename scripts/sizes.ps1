@@ -30,4 +30,4 @@ param(
 exit (Invoke-HfTask -Name "sizes" -Arguments (@(
     "--lock-wait", "900",
     "fetch-sizes", "--top", "0", "--workers", "16"
-) + $Rest))
+) + $Rest) -TimeoutSeconds 7200)

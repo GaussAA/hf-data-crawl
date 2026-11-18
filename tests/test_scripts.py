@@ -155,3 +155,75 @@ def test_规模补齐不写死全站行数() -> None:
     assert '"--top", "0"' in source
     assert "1122000" not in source
     assert "全量" in source
+
+
+# ---------------------------------------------------------------- 墙钟上限
+
+
+def test_每一步都有墙钟上限且退出码可辨() -> None:
+    """卡死时不该靠人守着：进程留着不走，后面每一步都在排队等锁。
+
+    2026-11-16 的 `fetch-sizes` 卡 1 小时 35 分、11-17 的 `reconcile` 卡 2 小时，
+    症状一模一样——CPU 与读写计数零增长、`Get-NetTCPConnection` 一个连接都没有
+    （卡在 DNS 解析，httpx 的超时覆盖不到 getaddrinfo）。心跳只能让它可见，
+    救不了链条；必须有一个总时长上限，到点掐掉、记 124、继续往下走。
+    """
+    source = text(COMMON)
+    assert "$script:TimeoutExitCode = 124" in source
+    assert "[ValidateRange(1, 86400)][int]$TimeoutSeconds = 3600" in source
+
+    chain = text(SCRIPTS / "daily.ps1")
+    steps = ("collect", "build", "reconcile", "sizes", "export", "deliver", "prune", "doctor")
+    assert chain.count("TimeoutSeconds = ") == len(steps), "有步骤没声明墙钟上限"
+    # 首次调用与 collect 的重试都要把上限传下去，漏一处等于漏一条。
+    assert chain.count("-TimeoutSeconds $step.TimeoutSeconds") == 2
+
+
+def test_超时要杀进程树而不是只杀父进程() -> None:
+    """`uv` 是启动器，python 与 hf-data-crawl.exe 都在它下面。
+
+    只杀 uv 会留下攥着写锁的孤儿——后面每一步都会因「拿不到锁」而失败，
+    比不杀更糟。故必须 `taskkill /T`（整棵进程树）。
+    """
+    source = text(COMMON)
+    assert "function Stop-ProcessTree" in source
+    assert "/T /F" in source, "taskkill 必须带 /T，否则只杀得掉启动器"
+    assert "Start-Process" in source
+    assert "-RedirectStandardOutput" in source
+    # 旧的同步调用拿不到进程句柄，超时无从谈起；管道还可能在缓冲满时死锁。
+    assert "@Arguments *>> $log" not in source
+
+
+def test_超时与失败在摘要里分开写() -> None:
+    """一个是「这步自己出错」，一个是「这步卡住了」——处置完全不同。"""
+    chain = text(SCRIPTS / "daily.ps1")
+    assert "[超时]" in chain
+    assert "$script:TimeoutExitCode" in chain
+    # 超时也要计入链条失败，不能静默放过。
+    assert "if ($failure -eq 0) { $failure = $code }" in chain
+
+
+def test_所有任务脚本都传了墙钟上限() -> None:
+    """漏一个脚本，就等于留了一处无限等。"""
+    for path in sorted(SCRIPTS.glob("*.ps1")):
+        if path.name == COMMON.name:
+            continue
+        source = text(path)
+        if "Invoke-HfTask" not in source:
+            continue
+        assert "-TimeoutSeconds" in source, f"{path.name} 调了 Invoke-HfTask 却没给上限"
+
+
+def test_日志头部在收尾时补写() -> None:
+    """`Start-Process` 的重定向会截断目标文件，先写头必被冲掉。
+
+    所以运行期由 OS 直接写正文（能实时 tail），收尾再拼「头 + 正文 + 尾」，
+    格式与旧版一致。这条断言钉住那个拼接，别让头部悄悄消失。
+    """
+    source = text(COMMON)
+    assert "$header + $body + $footer" in source
+    assert "已强杀进程树" in source
+    # 末尾不能多出空行：MONITORING 承诺「末行带实耗秒数」，多一行空白就食言了。
+    assert '.TrimEnd("`r", "`n") | Out-File' in source
+    # 正文不以换行收尾时，尾行会粘在最后一行输出后面。
+    assert '$body.EndsWith("`n")' in source
