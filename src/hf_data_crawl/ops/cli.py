@@ -200,6 +200,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="kind=backfill：列名在第几行（骨子里默认 2；多数表第 1 行就是列名）",
     )
+    request_new.add_argument(
+        "--sample",
+        action="store_true",
+        help="标记为开发用样例需求：台账与体检照常覆盖，但不计入影响面统计",
+    )
     request_sub.add_parser("list", help="列出全部需求与交付概况")
     request_show = request_sub.add_parser("show", help="查看一份需求的口径、历史版本与交付台账")
     request_show.add_argument("id", help="需求号")
@@ -242,6 +247,12 @@ def build_parser() -> argparse.ArgumentParser:
     request_close.add_argument("--reason", required=True, help="为什么关（必填，写给人看）")
     request_reopen = request_sub.add_parser("reopen", help="恢复一份已关闭的需求")
     request_reopen.add_argument("id", help="需求号")
+    request_sample = request_sub.add_parser(
+        "sample", help="标记/取消样例需求：不计入影响面，其余照常"
+    )
+    request_sample.add_argument("id", help="需求号")
+    request_sample.add_argument("--reason", default="", help="样例说明；默认「开发与验证用」")
+    request_sample.add_argument("--undo", action="store_true", help="取消样例标记")
     request_handoff = request_sub.add_parser(
         "handoff", help="记一笔「哪一版给了谁」：只追加，不改档案"
     )

@@ -8,6 +8,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from ..platform.atomic import write_bytes
 from ..platform.runs import Outcome
@@ -47,9 +48,12 @@ from .requirement import (
     compile_sql,
     directory_name,
     history_versions,
+    is_sample,
     read_handoffs,
+    read_status,
     request_dirs,
     resolve_dir,
+    sample_note,
     skeleton,
     spec_digest,
     version_conflict,
@@ -139,6 +143,8 @@ def run_request(args: argparse.Namespace) -> int:
         return _request_reopen(root, args)
     if args.request_action == "handoff":
         return _request_handoff(root, args)
+    if args.request_action == "sample":
+        return _request_sample(root, args)
     return _request_show(root, args.id)
 
 
@@ -189,6 +195,20 @@ def _request_handoff(root: Path, args: argparse.Namespace) -> int:
     return 0
 
 
+def _write_status(request_dir: Path, **fields: Any) -> dict[str, Any]:
+    """更新 `STATUS.json`：合并现有键，再原子写。
+
+    合并而不是覆盖：关闭状态与样例标记是两件独立的事实，后写的那次不该把前一次抹掉。
+    """
+    body = read_status(request_dir)
+    body.update(fields)
+    write_bytes(
+        request_dir / STATUS_NAME,
+        (json.dumps(body, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+    )
+    return body
+
+
 def _request_close(root: Path, args: argparse.Namespace) -> int:
     """关掉一份需求：不删任何东西，只是告诉交付链「这单不用再跑了」。
 
@@ -205,20 +225,11 @@ def _request_close(root: Path, args: argparse.Namespace) -> int:
     if not reason:
         print("失败：写一句关闭原因（--reason）——半年后只看到「已关闭」，没人知道为什么。")
         return 1
-    write_bytes(
-        request_dir / STATUS_NAME,
-        (
-            json.dumps(
-                {
-                    "status": "closed",
-                    "reason": reason,
-                    "closed_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-            + "\n"
-        ).encode("utf-8"),
+    _write_status(
+        request_dir,
+        status="closed",
+        reason=reason,
+        closed_at=datetime.now().astimezone().isoformat(timespec="seconds"),
     )
     print(f"{spec.id} 已关闭：{reason}")
     print("  台账与产物一份没动；`request run` / `run-due` 不再跑它。要恢复用 `request reopen`。")
@@ -235,8 +246,57 @@ def _request_reopen(root: Path, args: argparse.Namespace) -> int:
     if closed_note(request_dir) is None:
         print(f"{spec.id} 本来就是开着的，无需恢复。")
         return 0
-    (request_dir / STATUS_NAME).unlink(missing_ok=True)
+    body = read_status(request_dir)
+    body.pop("status", None)
+    body.pop("reason", None)
+    body.pop("closed_at", None)
+    if body:
+        # 样例标记要留着：恢复一份样例需求，不该把它变回真实需求。
+        write_bytes(
+            request_dir / STATUS_NAME,
+            (json.dumps(body, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+        )
+    else:
+        (request_dir / STATUS_NAME).unlink(missing_ok=True)
     print(f"{spec.id} 已恢复：`request run` / `run-due` 会重新把它算进来。")
+    return 0
+
+
+def _request_sample(root: Path, args: argparse.Namespace) -> int:
+    """把一份需求标记成开发用样例（或撤销标记）。
+
+    为什么要可识别：样例是用需求的形式写的测试夹具，台账与体检照常覆盖它们，
+    但「改这个词条会影响谁」必须只算真实需求——否则影响面会被夹具淹没。
+    """
+    try:
+        request_dir = resolve_dir(root, args.id)
+        spec = load_spec(request_dir / SPEC_NAME)
+    except SpecError as error:
+        print(f"失败：{error}")
+        return 1
+    if args.undo:
+        body = read_status(request_dir)
+        body.pop("sample", None)
+        body.pop("sample_reason", None)
+        body.pop("sample_marked_at", None)
+        if body:
+            write_bytes(
+                request_dir / STATUS_NAME,
+                (json.dumps(body, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+            )
+        else:
+            (request_dir / STATUS_NAME).unlink(missing_ok=True)
+        print(f"{spec.id} 已取消样例标记：影响面统计会重新把它算进来。")
+        return 0
+    reason = (args.reason or "开发与验证用，不是真实需求").strip()
+    _write_status(
+        request_dir,
+        sample=True,
+        sample_reason=reason,
+        sample_marked_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+    )
+    print(f"{spec.id} 已标记为样例需求：{reason}")
+    print("  台账与体检照常覆盖它；`request usage` 不再把它算进影响面。")
     return 0
 
 
@@ -310,6 +370,8 @@ def _request_usage(root: Path, term: str) -> int:
 
     hits = 0
     requests = 0
+    sample_hits = 0
+    sample_requests = 0
     for request_dir in request_dirs(root):
         try:
             spec = load_spec(request_dir / SPEC_NAME)
@@ -340,6 +402,12 @@ def _request_usage(root: Path, term: str) -> int:
                     sites.append(f"列「{rule.name}」← 模板 `{rule.template}`")
         if not sites:
             continue
+        if is_sample(request_dir):
+            # 样例是开发夹具：它们当然也引用这个词条，但「改定义会影响谁」的清单
+            # 只该算真实需求。数量单独报一句，既不丢信息，也不污染影响面。
+            sample_requests += 1
+            sample_hits += len(sites)
+            continue
         requests += 1
         hits += len(sites)
         runs = deliveries_of(request_dir)
@@ -353,10 +421,19 @@ def _request_usage(root: Path, term: str) -> int:
         for line in sites:
             print(f"  {line}")
 
+    sample_tail = (
+        f"另有 {sample_requests} 份样例需求也引用了它（{sample_hits} 处，未计入影响面）。"
+        if sample_requests
+        else ""
+    )
     if not hits:
-        print("没有需求用到它——可以放心改定义；若刚改过而这里仍为空，检查 spec 是否保存。")
+        print("没有真实需求用到它——可以放心改定义。")
+        if sample_tail:
+            print(sample_tail)
         return 1
-    print(f"\n共 {requests} 份需求、{hits} 处引用。改定义前，这些是必须复核的清单。")
+    print(f"\n共 {requests} 份真实需求、{hits} 处引用。改定义前，这些是必须复核的清单。")
+    if sample_tail:
+        print(sample_tail)
     return 0
 
 
@@ -753,6 +830,15 @@ def _request_new(args: argparse.Namespace, root: Path) -> int:
         # 过程记录一并建好骨架：新需求从第一天起就有 method/ 这个坑位，
         # 不必等人想起来该记「怎么做的」——想不起来，是这类记录最常见的死法。
         sync_method(folder, request_id=args.id, title=args.title, kind=kind.value)
+        if getattr(args, "sample", False):
+            # 样例标记从建目录那一刻就写下：等它有了交付再补，那之前的台账就已经
+            # 把夹具当真实需求算过一次影响面了。
+            _write_status(
+                folder,
+                sample=True,
+                sample_reason="开发与验证用，不是真实需求（--sample 创建）",
+                sample_marked_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+            )
     except (SpecError, OSError) as error:
         shutil.rmtree(folder, ignore_errors=True)
         print(f"失败：{error}")
@@ -797,6 +883,9 @@ def _request_list(root: Path) -> int:
         note = closed_note(path.parent)
         if note is not None:
             print(f"  已关闭：{note}")
+        sample = sample_note(path.parent)
+        if sample is not None:
+            print(f"  样例需求：{sample}（不计入影响面）")
         print(f"  目录：{path.parent.name}")
         print(f"  口径：{criteria_text(spec)}")
     return 0
@@ -842,6 +931,10 @@ def _request_show(root: Path, request_id: str) -> int:
     note = closed_note(path.parent)
     if note is not None:
         print(f"  状态：已关闭 —— {note}（`request reopen` 可恢复）")
+    sample = sample_note(path.parent)
+    if sample is not None:
+        print(f"  样例需求：{sample}")
+        print("    （台账与体检照常覆盖它；`request usage` 不计入影响面）")
     print(f"  提出人：{spec.requester}")
     if spec.purpose:
         print(f"  用途：{spec.purpose}")

@@ -532,6 +532,74 @@ def test_外发指定不存在的交付被拒(tmp_path: Path, capsys: pytest.Cap
     assert "找不到交付" in capsys.readouterr().out
 
 
+def test_新建时就能标成样例需求(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """样例是用需求的形式写的测试夹具；从建目录那刻标上，台账才不会先当真算一次。"""
+    assert (
+        run(
+            tmp_path,
+            "request",
+            "new",
+            "REQ-0100",
+            "--title",
+            "样例需求",
+            "--requester",
+            "张三",
+            "--sample",
+        )
+        == 0
+    )
+    status = json.loads(
+        (resolve_dir(tmp_path / "req", "REQ-0100") / "STATUS.json").read_text(encoding="utf-8")
+    )
+    assert status["sample"] is True and status["sample_reason"]
+    capsys.readouterr()
+
+    assert run(tmp_path, "request", "list") == 0
+    assert "样例需求" in capsys.readouterr().out
+
+
+def test_usage不再把样例算进影响面(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """「改这个词条会影响谁」只该算真实需求；夹具单独报数量，不丢信息也不污染清单。"""
+    make(tmp_path)
+    assert (
+        run(tmp_path, "request", "new", "REQ-0002", "--title", "真实一份", "--requester", "李四")
+        == 0
+    )
+    assert run(tmp_path, "request", "sample", "REQ-0001", "--reason", "开发夹具") == 0
+    capsys.readouterr()
+
+    assert run(tmp_path, "request", "usage", "下载量") == 0
+
+    out = capsys.readouterr().out
+    assert "REQ-0002" in out
+    assert "REQ-0001" not in out and "REQ-0002" in out.split("另有")[0]
+    assert "另有 1 份样例需求" in out and "未计入影响面" in out
+
+
+def test_关闭与恢复都保留样例标记(tmp_path: Path) -> None:
+    """关闭与样例是两件独立的事实；后写的那次不该把前一次抹掉。"""
+    path = make(tmp_path)
+    assert run(tmp_path, "request", "sample", "REQ-0001") == 0
+    assert run(tmp_path, "request", "close", "REQ-0001", "--reason", "夹具收工") == 0
+
+    status = json.loads((path.parent / "STATUS.json").read_text(encoding="utf-8"))
+    assert status["sample"] is True and status["status"] == "closed"
+
+    assert run(tmp_path, "request", "reopen", "REQ-0001") == 0
+    status = json.loads((path.parent / "STATUS.json").read_text(encoding="utf-8"))
+    assert status["sample"] is True and "status" not in status
+
+
+def test_取消样例标记后重新计入影响面(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    make(tmp_path)
+    assert run(tmp_path, "request", "sample", "REQ-0001") == 0
+    assert run(tmp_path, "request", "sample", "REQ-0001", "--undo") == 0
+    capsys.readouterr()
+
+    assert run(tmp_path, "request", "usage", "下载量") == 0
+    assert "REQ-0001" in capsys.readouterr().out
+
+
 def test_index命令重写交付索引(tmp_path: Path) -> None:
     """补建历史索引不该靠再交付一份——那正是这次治理要断掉的循环。"""
     path = make(tmp_path)

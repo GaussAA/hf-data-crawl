@@ -69,6 +69,7 @@ from .requirement import (
     SpecError,
     closed_note,
     resolve_dir,
+    sample_note,
     snapshot_history,
     spec_body,
     spec_body_digest,
@@ -706,6 +707,10 @@ def index_lines(request_dir: Path) -> list[str]:
         "> 交付目录是不可变台账——每条只增不删；「当前有效」只看最后一行。",
         "",
     ]
+    sample = sample_note(request_dir)
+    if sample is not None:
+        # 样例需求常常交得比真实需求还整齐；不标出来，它就会被当成业务事实引用。
+        header += [f"> **样例需求**：{sample}（影响面统计不计入它）", ""]
     if not directories:
         return [*header, "（尚未交付）", ""]
     lines = [
@@ -1234,6 +1239,11 @@ def run_due(
         note = closed_note(spec_path.parent)
         if note is not None:
             skipped.append((spec.id, f"已关闭：{note}"))
+            continue
+        # 样例是开发夹具：它们可以手工 `request run`，但不该由定时链每天生产交付。
+        sample = sample_note(spec_path.parent)
+        if sample is not None:
+            skipped.append((spec.id, f"样例需求：{sample}（不参与定时交付）"))
             continue
 
         due, reason = due_state(spec, spec_path.parent, moment)

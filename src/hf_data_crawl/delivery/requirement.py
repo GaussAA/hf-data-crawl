@@ -98,6 +98,25 @@ def closed_note(request_dir: Path) -> str | None:
     return reason or "（未写原因）"
 
 
+def is_sample(request_dir: Path) -> bool:
+    """是不是开发用样例需求。
+
+    样例不是真实需求：它们是用需求的形式写的测试夹具，代表某个方向、验证某条路径。
+    台账与体检照常覆盖它们（边界样本最有价值），但**影响面统计只算真实需求**——
+    否则「改这个词条会影响谁」会被一堆夹具淹没。
+    """
+    return bool(read_status(request_dir).get("sample"))
+
+
+def sample_note(request_dir: Path) -> str | None:
+    """样例需求的一句话说明；不是样例返回 None。"""
+    body = read_status(request_dir)
+    if not body.get("sample"):
+        return None
+    reason = str(body.get("sample_reason") or "").strip()
+    return reason or "开发与验证用，不是真实交付"
+
+
 def _slug(title: str, limit: int = 24) -> str:
     """标题短名：只留中英文、数字、连字符，去掉路径分隔符与文件系统禁用的字符。"""
     text = re.sub(r"[\s/\\:*?\"<>|]+", "-", title.strip())

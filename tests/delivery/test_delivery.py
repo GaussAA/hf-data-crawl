@@ -1067,6 +1067,35 @@ def test_清理后索引与比对都记得住账(tmp_path: Path) -> None:
         compare_deliveries(older, root / "REQ-0001" / DELIVERIES_DIR / "20261102T000000")
 
 
+def test_样例需求在批量里记跳过(store: DatasetStore, tmp_path: Path) -> None:
+    """夹具可以手工 `run`，但不该由定时链每天生产交付。"""
+    root = tmp_path / "req"
+    make_request(root, cadence="daily")
+    (root / "REQ-0001" / "STATUS.json").write_text(
+        '{"sample": true, "sample_reason": "开发夹具"}', encoding="utf-8"
+    )
+
+    report = run_due(store, root, now=NOW)
+
+    assert [item[0] for item in report.skipped] == ["REQ-0001"]
+    assert "样例需求" in report.skipped[0][1]
+    assert report.delivered == [] and report.failed == []
+
+
+def test_索引标出样例需求(tmp_path: Path) -> None:
+    """样例常常交得比真实需求还整齐；不标出来，它会被当成业务事实引用。"""
+    root = tmp_path / "req"
+    seed_manifest(root, "20261101T000000")
+    (root / "REQ-0001" / "STATUS.json").write_text(
+        '{"sample": true, "sample_reason": "开发夹具"}', encoding="utf-8"
+    )
+
+    write_index(root / "REQ-0001")
+
+    text = (root / "REQ-0001" / DELIVERIES_DIR / "INDEX.md").read_text(encoding="utf-8")
+    assert "**样例需求**" in text and "开发夹具" in text
+
+
 def test_索引把重钉与内容变化分开(tmp_path: Path) -> None:
     """台账里最容易混淆的一件事：这条是「又交了一份一样的」还是「真的变过」。"""
     root = tmp_path / "req"
