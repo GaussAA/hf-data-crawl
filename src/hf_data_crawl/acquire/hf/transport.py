@@ -28,19 +28,35 @@ class HttpxTransport:
         proxy: str | None = None,
         token: str | None = None,
         timeout: float = 120.0,
+        max_keepalive: int | None = None,
     ) -> None:
         self._proxy = proxy if proxy is not None else os.environ.get("HF_PROXY")
         self._token = token if token is not None else os.environ.get("HF_TOKEN")
         self._timeout = timeout
+        #: 连接池里最多保留几条空闲连接。`None` 用 httpx 默认值（20 条）。
+        #:
+        #: 为什么要能关：走本地代理跑十几小时的批量抓取时，空闲连接会被代理侧
+        #: 单方面丢掉而 httpx 不知道，下一次复用就卡在 TLS 握手上直到超时
+        #: （2026-11-18 实测：10 个连接同时变坏后，吞吐从 14/s 掉到 0.33/s，
+        #: 且进程重启即恢复）。这类链路给 0，每条请求各开各的连接。
+        self._max_keepalive = max_keepalive
         self._client: httpx.Client | None = None
         self._lock = threading.Lock()
 
     def _get_client(self) -> httpx.Client:
         with self._lock:
             if self._client is None:
-                self._client = httpx.Client(
-                    proxy=self._proxy, timeout=self._timeout, follow_redirects=True
-                )
+                # `httpx.Client(limits=None)` 会在建连接池时炸（`NoneType` 没有
+                # `max_connections`）：它的默认值是 `DEFAULT_LIMITS`，不是 None。
+                # 所以「没设置就别传」，而不是传个 None 进去。
+                options: dict[str, Any] = {
+                    "proxy": self._proxy,
+                    "timeout": self._timeout,
+                    "follow_redirects": True,
+                }
+                if self._max_keepalive is not None:
+                    options["limits"] = httpx.Limits(max_keepalive_connections=self._max_keepalive)
+                self._client = httpx.Client(**options)
             return self._client
 
     def close(self) -> None:

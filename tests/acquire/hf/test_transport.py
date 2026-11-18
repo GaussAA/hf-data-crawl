@@ -91,3 +91,23 @@ def test_close后重新获取会建新Client() -> None:
 
     assert first is not second
     assert first.is_closed
+
+
+def test_没设_keepalive_时不要把_limits_传成_None() -> None:
+    """`httpx.Client(limits=None)` 在建连接池时就炸：`NoneType` 没有 `max_connections`。
+
+    这条钉住「参数没给就别传」——httpx 不给 `limits` 时用自己的 `DEFAULT_LIMITS`。
+    2026-11-18 的真实回归：给长跑加 `max_keepalive` 时顺带把 `limits` 无条件传了，
+    于是**所有没设 keepalive 的传输**在建连接时抛 AttributeError，`collect`、
+    `fetch-sizes`、`fetch-files`、`fetch-preview` 全部不可用；只有 `fetch-readme`
+    （唯一传了 `max_keepalive=0` 的那个）照常。测试全用假传输，所以一条都没红。
+    """
+    client = HttpxTransport(proxy=LOCAL_PROXY)._get_client()
+
+    assert client is not None
+
+
+def test_关掉空闲连接复用也能建客户端() -> None:
+    client = HttpxTransport(proxy=LOCAL_PROXY, max_keepalive=0)._get_client()
+
+    assert client is not None
