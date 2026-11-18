@@ -558,11 +558,25 @@ mtime 一复制就变，靠它排序会让「Raw 是唯一事实来源」名不�
 16. **宽表的 `has_readme` 与 `files_has_readme` 是两件事，别混读**。前者由 `readme.status`
     派生（`ok`→true / `absent`→false / `denied`→NULL），覆盖全库 100%；后者是 `files`
     表那一页的原始事实，只覆盖下载量前 1000 名（0.08%）。`has_readme` 为 NULL 的读法是
-    「不知道」（受门禁读不到），不是「作者没写」——把它当 false 就是在替作者下结论。
+    「不知道」（门禁或资源被禁，我们读不到），不是「作者没写」——把它当 false 就是在替
+    作者下结论。
 17. **已下架的库，富化记录一律保留**。`readme` / `size` / `carddata` 等按 id 覆盖的表
     不会因为库消失而删行，例如 `readme` 比在架库多 84 行。判断在架与否一律 join
     `current.status`，**别拿「这张表里有行」当在架证据**。理由：删掉就再也说不清它当年
     是什么样；代价只是各表行数略多于在架库数，且 `reconcile` 已把状态标在 `current` 里。
+18. **`readme.status = 'denied'` 是「读不到」，且几乎全是门禁，重试无益**。
+    全库 51,860 条（占 4.52%），join `current.gated` 后分解为：`manual` 34,471（66.5%，
+    需作者逐一审批）、`auto` 17,257（33.3%，需账号点到「同意」才放行）、`gated = false`
+    仅 131 条（0.25%）。这些库 `private` 全是 `false`——**没有一条是私有库**，全是公开但
+    受限。2026-11-18 实测：带 `HF_TOKEN` 随机抽 500 条重试，**零命中 200**，500 条全 403，
+    响应体为 `Access to dataset ... is restricted and you are not in the authorized list`。
+    同一个令牌读 `ok` 组的库全部 200，whoami 也正常——排除令牌与网络因素。
+    所以「带令牌再来一遍」不值得做：全量一趟要约 1 小时，而 `auto` 那 1.7 万条即便能过
+    也等于**代替账号签署 1.7 万份各不相同的许可条款**，`manual` 那 3.4 万条则只能逐个
+    向作者申请，两者都无法规模化。`fetch-readme --retry-denied` 只对「你确实已获批的那批」
+    有意义，不是一条可以无脑跑的补救。剩下 131 条 `gated = false` 的才是真异常：抽查多为
+    `Access to this resource is disabled.`（资源被禁，`current.disabled` 却仍是 `false`，
+    以响应为准），个别在快照之后转为可读。
 
 ## 六、HF 页面上的数字，在表里是哪个字段
 

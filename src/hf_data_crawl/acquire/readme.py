@@ -19,9 +19,12 @@ YAML 头，正文不在任何一次列表响应里。全文只有一个来源：
   20,000 条约 22 分钟；全量 113 万条（**每条都要发一次请求**，404 也占配额）
   约 21 小时，其中约 70% 能拿到正文。想更快只能换 PRO/Team 账号（配额更高），
   不是改并发能解决的。
-- 命中率：200 约 70%、404（仓库没有 README）约 25%、401/403（门禁或私有）
-  约 5%。三种空必须分开记账——`absent` 是「作者本来没写」，`denied` 是
+- 命中率：200 约 70%、404（仓库没有 README）约 25%、401/403（门禁或资源
+  被禁）约 5%。三种空必须分开记账——`absent` 是「作者本来没写」，`denied` 是
   「我们读不到」，`error` 是「这次没抓到」。
+- `denied` 别指望带令牌重来一遍就能补上：全量 51,860 条里 join `current.gated`
+  后 99.75% 是门禁库（`manual` / `auto`），且 `private` 无一为真——不是私有库，
+  是公开但受限。带令牌抽 500 条实测零命中。见 `docs/DATA.md` 第 18 条。
 - 体积：中位 2.5 KB、均值 4.6 KB、p90 8.6 KB；全量约 3.6 GB 文本。
 
 与 `size` / `files` 一样是 `Origin.NETWORK` 表：raw 里没有副本，删掉就要重抓；
@@ -56,7 +59,9 @@ README_STAGING_DIR = ".staging/readme"
 #: 仓库没有 README：重试无意义，落 `absent`。
 ABSENT_STATUS: frozenset[int] = frozenset({404})
 
-#: 门禁或私有：匿名读不到，带令牌也可能仍被拒（manual gated）。
+#: 门禁或资源被禁：匿名读不到，带令牌也基本仍被拒（`manual` gated、`auto` gated
+#: 未接受条款、仓库被 disabled）。2026-11-18 实测：500 条带令牌重试全 403 零命中，
+#: 而同一令牌读 `ok` 组建库全部 200——是数据属性，不是凭据问题。
 DENIED_STATUS: frozenset[int] = frozenset({401, 403})
 
 #: 限流与网关抖动：值得退避重试。
@@ -284,6 +289,11 @@ class ReadmeFetcher:
         候选顺序由调用方决定（按下载量降序）；`refresh` 里的 id 一律重抓——
         仓库 commit 变了，旧全文就不再是当前版本。`existing` 里 ok / absent
         默认跳过，denied 要 `retry_denied` 才重试，error 下次自然重来。
+
+        `retry_denied` **不是「补齐缺口」的开关**：2026-11-18 实测全库 51,860 条
+        denied 中 99.75% 是 gated（`manual` 34,471 需作者逐一审批、`auto` 17,257
+        需账号接受条款），带令牌随机抽 500 条重试**零命中**。它只对「你确实已
+        获批的那批库」有意义。详见 `docs/DATA.md` 第 18 条。
         """
         started = time.monotonic()
         candidates = list(dataset_ids)

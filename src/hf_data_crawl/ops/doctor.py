@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import hashlib
+import statistics
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
@@ -73,6 +74,12 @@ COLLECT_MAX_AGE = timedelta(hours=36)
 RECONCILE_MAX_AGE = timedelta(hours=48)
 #: 回看多少天的 Raw 是否断日。
 GAP_WINDOW_DAYS = 14
+#: Raw 某日的分块数低于近期中位的这个比例，就认为那天没采全。实测 11-11..11-18
+#: 稳定在 1,155–1,171（波动 1.4%），90% 的线抓得住「只跑了一半」，又不会被
+#: 个别块的加减触发。
+RAW_VOLUME_FLOOR = 0.9
+#: 算中位与判异常的回看天数。取 7：一周足够盖住工作日的常规波动。
+RAW_VOLUME_WINDOW_DAYS = 7
 #: 临时文件超过这个年纪才算残留；正在写的文件只会存在几秒。
 TMP_STALE_AFTER = timedelta(hours=1)
 #: Raw 是唯一不可重算、也是唯一会无限增长的一层。归档只压同一天内的重复，
@@ -297,6 +304,46 @@ def _raw_gaps(ctx: RunContext) -> Finding:
         reason = KNOWN_RAW_GAPS[known[0]]
         return Finding(False, f"Raw 断日：{shown} 为已知缺口，{reason}")
     return Finding(False, f"Raw：近 {GAP_WINDOW_DAYS} 天没有断日")
+
+
+def _raw_volume(ctx: RunContext) -> Finding:
+    """某一天的 Raw 分块数是否明显少于近期常态。
+
+    与 `_raw_gaps` 互补：那条只抓「整天没采」，抓不到「采了一半就断了」——目录
+    在、分块在，断日判据看不见。这里补的正是这一格。
+
+    为什么不用观测行数判：`observations` 只追加指标真变过的行，行数少往往说明
+    上游计数没动（11-14 只有 2,188 行，而当日 Raw 完整、1,160 块）。拿它当采集
+    完整度会天天误报，且误报的恰恰是「上游很平静」这种好日子。
+
+    分块数只由采集自己决定：一页一块、每块约一千条，跑到一半断掉，块数就少一半。
+    压缩过的日期已并档（数不出块数），今天可能还在采，两者都不判。
+    """
+    store, today = ctx.store, ctx.today
+    counts = [
+        (day.snapshot_date, len(raw.batch_files(store, day.snapshot_date)))
+        for day in raw.observed_days(store)
+        if not day.compacted and day.snapshot_date < today
+    ]
+    if len(counts) < 4:
+        return Finding(False, f"Raw 分量：可比的完整日只有 {len(counts)} 天，不足以比较")
+    median = statistics.median(n for _, n in counts)
+    if median <= 0:
+        return Finding(False, "Raw 分量：近期分块数为零，无法比较")
+    floor = median * RAW_VOLUME_FLOOR
+    window = [
+        (day, n) for day, n in counts if day >= today - timedelta(days=RAW_VOLUME_WINDOW_DAYS)
+    ]
+    short = [(day, n) for day, n in window if n < floor]
+    if short:
+        shown = "、".join(f"{day.isoformat()}（{n} 块）" for day, n in short[:3])
+        more = f" 等 {len(short)} 天" if len(short) > 3 else ""
+        return Finding(
+            True,
+            f"Raw 分量：{shown}{more} 明显少于近期中位 {median:.0f} 块；"
+            "那天可能只采了一部分，核对该日的 collect 与补抓是否中途退出",
+        )
+    return Finding(False, f"Raw 分量：近 {len(window)} 天分块数与中位 {median:.0f} 块相当")
 
 
 def _derive_state(ctx: RunContext) -> Finding:
@@ -1560,6 +1607,7 @@ CHECKS: tuple[Check, ...] = (
     Check("catalog_staleness", _catalog_staleness),
     Check("layer_reconcile", _layer_reconcile, snapshot_dependent=True),
     Check("raw_gaps", _raw_gaps),
+    Check("raw_volume", _raw_volume),
     Check("derive_state", _derive_state),
     Check("status_snapshot", _status_snapshot),
     Check("artifact_freshness", _artifact_freshness, snapshot_dependent=True),

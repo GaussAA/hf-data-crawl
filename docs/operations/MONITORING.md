@@ -144,12 +144,16 @@ uv run python -c "from pathlib import Path; from hf_data_crawl.pipeline.raw impo
 
 **正常范围**：
 - 热区（近 7 天）每天 1000~2500 个原始分块；`data/raw` 里没有超过 7 天的 `dt=` 分区
+- 分块数逐日稳定（实测 11-11..11-18 在 1155~1171 之间，波动 1.4%）——一页一块、每块约一千条，
+  所以**块数骤降就是采集中断**。判据取「当日块数 < 近 7 天中位的 90%」，
+  比固定区间更抗规模变化
 - `cold/raw/manifest.json` 的日期与已压缩分区一致；`build` 默认只重放热区
 - 来源清单应只含 `lean_lastModified` / `top_refresh_downloads` / `enrich_downloads` / `reconcile_createdAt` / `legacy`；出现陌生来源说明新增扫描未登记
 - `data/backup/raw/` 无超过 7 天的分区
 
 **告警**（`doctor` 自动判定并写 `ALERT.txt`）：
 - `data/raw` > 5 GB 或 > 20,000 文件
+- 某日分块数明显低于近期中位（当天只采了一部分；与「断日」互补，断日判据看不见这种情况）
 - 超过 7 天仍留在 `data/raw` 的冷区分区（compact 没跟上，主目录会线性膨胀）
 - 30 天前的分区仍是原始分块（写入序未冻结、同天重复未压缩）
 - `backup/raw` 分区超过 7 天未清理（归档不删原文件，磁盘没真正释放）

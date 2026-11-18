@@ -480,7 +480,11 @@ def build_parser() -> argparse.ArgumentParser:
     readme.add_argument(
         "--retry-denied",
         action="store_true",
-        help="重试上次 401/403 的库（受门禁的库带令牌也可能读到）",
+        help=(
+            "重试上次 401/403 的库。只在你确实已获批访问那批库时才有意义："
+            "全库 denied 中 99.75% 是 gated（manual 需作者审批、auto 需账号接受条款），"
+            "2026-11-18 带令牌抽 500 条重试零命中，不要指望它能把缺口补上"
+        ),
     )
     readme.add_argument(
         "--flush-every",

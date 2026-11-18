@@ -303,6 +303,42 @@ def test_Raw断日要点名日期(tmp_path: Path) -> None:
     assert any("Raw 断日" in text and missing.isoformat() in text for text in problems(store))
 
 
+def test_Raw分量骤降要点名日期(tmp_path: Path) -> None:
+    """「采了一半」与「整天没采」是两件事：目录在、分块在，断日判据看不见。
+
+    判据用分块数而不是观测行数——后者只追加指标真变过的行，上游平静的日子
+    行数本来就少（11-14 只有 2,188 行而 Raw 完整），拿它判会天天误报。
+    """
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    # healthy 每天只有 1 块；补到 5 块，只留下一天是 1 块。
+    short_day = NOW.date() - timedelta(days=3)
+    for offset in range(1, 7):
+        day = NOW.date() - timedelta(days=offset)
+        if day == short_day:
+            continue
+        directory = store.raw_dir / f"dt={day.isoformat()}"
+        for index in range(2, 6):
+            (directory / f"part-{index}.json.gz").write_bytes(b"x")
+
+    found = [text for text in problems(store) if "Raw 分量" in text]
+
+    assert len(found) == 1 and short_day.isoformat() in found[0]
+
+
+def test_Raw分量样本不足四天时不判(tmp_path: Path) -> None:
+    """只有一两天分块时，所谓「中位」就是它自己，拿它判会自说自话。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    days = sorted(path for path in store.raw_dir.glob("dt=*") if any(path.glob("*.json.gz")))
+    for path in days[3:]:
+        for item in path.glob("*.json.gz"):
+            item.unlink()
+        path.rmdir()
+
+    assert not any("明显少于" in text for text in problems(store))
+
+
 def test_残留临时文件超过一小时才算(tmp_path: Path) -> None:
     store = DatasetStore(tmp_path / "data")
     healthy(store)

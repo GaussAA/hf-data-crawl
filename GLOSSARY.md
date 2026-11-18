@@ -1478,8 +1478,17 @@
       请求**，404 也占配额）约 21 小时。体积：约 70% 拿到正文，共
       **约 3.6 GB** 文本、parquet 压缩后约 0.7 GB；中位 2.5 KB、p90 8.6 KB。
     - **三种空必须分开**：200 约 70%、404（仓库没有 README）约 25%、401/403
-      （门禁或私有）约 5%。表里用 `status` 记 `ok` / `absent` / `denied` / `error`；
+      （门禁或资源被禁）约 5%。表里用 `status` 记 `ok` / `absent` / `denied` / `error`；
       把后三种都读成「作者没写描述」，是这张表最容易骗人的地方。
+    - **`denied` 几乎全是门禁，带令牌重来一遍补不上**（2026-11-18 实测）：全库
+      51,860 条 `denied` join `current.gated` 后 = `manual` 34,471 + `auto` 17,257 +
+      `gated=false` 131，且 `private` **无一为真**——不是私有库，是公开但受限。
+      抽 500 条带 `HF_TOKEN` 重试，**全 403、零命中**，响应体为「restricted and you
+      are not in the authorized list」；同一令牌读 `ok` 组全部 200、whoami 正常，
+      排除凭据与网络。所以 `--retry-denied` 只对「已获批的那批」有意义：`manual`
+      只能逐个向作者申请，`auto` 即便放行也等于代账号签署 1.7 万份不同条款。
+      剩下 131 条 `gated=false` 的才是真异常，抽查多为 `Access to this resource is
+      disabled.`（`current.disabled` 仍是 false，以响应为准）。详见 `docs/DATA.md` 第 18 条。
     - **不替换 `description`**：摘要便宜、一次列表就能拿全、适合粗筛；全文均值
       4.6 KB，塞进 31 列默认导出会让导出从 105 MB 涨到约 4 GB。两条并存，各管一段——
       与「低覆盖列不回默认面」是同一条原则。
