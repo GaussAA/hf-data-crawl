@@ -162,6 +162,21 @@ FIELD_DOCS: dict[str, dict[str, str]] = {
         "（HF 截断的摘要）不是一回事",
         "snapshot_date": "最近一次成功抓取 README 的日期（按 id 覆盖的单文件表，不分区）",
     },
+    "readme_fields": {
+        "source_sha": "抽这些字段时那条 README 记录的 commit sha，与 `readme.source_sha` "
+        "同源；仓库改过之后这里的取值可能落后于当前 `sha`",
+        "homepage": "项目主页。**只在 README 正文里**（`- **Homepage:** ...`），"
+        "YAML 头不一定写，所以 `carddata.card_homepage` 对这类库是空的",
+        "paper_title": "配套论文标题。同样取自正文的 `**Paper:**` 行；"
+        "只有正文写了、且写成了 Markdown 链接或裸标题才有值",
+        "paper_url": "配套论文链接（多为 arXiv）。`paper_title` 与它至少有一个为空——"
+        "作者写成裸链接时只有 url、写成纯标题时只有 title",
+        "point_of_contact": "数据集联系人。命中率仅 1%，别拿它当「作者」用——"
+        "`author` 才是仓库拥有者",
+        "citation_bibtex": "正文 `## Citation` 段落里的 BibTeX 原文。"
+        "**这是 citation 的主要来源**：YAML 的 `citation` 只有 3,844 条，这里是它的十几倍。"
+        "模板占位符 `[More Information Needed]` 已被排除，有值即为真条目",
+    },
     "preview": {
         "status": "`ok` 取到行 / `unavailable` 这个库没有 viewer 或受限（401 与 404 的报文"
         "一字不差，分不开）/ `error` 临时失败；后两者只有前者落库",

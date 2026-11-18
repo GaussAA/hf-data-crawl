@@ -23,6 +23,7 @@ from ..acquire.commands import (
     run_fetch_preview,
     run_fetch_readme,
     run_fetch_sizes,
+    run_parse_readme,
     run_reconcile,
 )
 from ..delivery import Cadence, Kind
@@ -60,6 +61,7 @@ WRITE_COMMANDS = frozenset(
         "fetch-sizes",
         "fetch-files",
         "fetch-readme",
+        "parse-readme",
         "fetch-preview",
         "archive",
         "compact",
@@ -483,6 +485,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="每处理多少条就写一个暂存分片，中断时最多损失这一批",
     )
 
+    parse_readme = subparsers.add_parser(
+        "parse-readme",
+        help="从已抓到的 README 正文抽 Homepage / Paper / Point of Contact（纯本地，不发请求）",
+    )
+    parse_readme.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
+
     preview = subparsers.add_parser(
         "fetch-preview", help="抓数据集 viewer 的前几行当样例（独立表，不进默认导出）"
     )
@@ -647,6 +655,13 @@ def main(argv: list[str] | None = None, *, transport: Any = None) -> int:
             store,
             "fetch-readme",
             lambda: run_fetch_readme(args, store, transport, lock_wait),
+            lock_wait,
+        )
+    if args.command == "parse-readme":
+        return _execute(
+            store,
+            "parse-readme",
+            lambda: run_parse_readme(args, store, transport, lock_wait),
             lock_wait,
         )
     if args.command == "fetch-preview":

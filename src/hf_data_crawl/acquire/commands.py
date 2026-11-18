@@ -5,16 +5,17 @@ from __future__ import annotations
 import argparse
 import sys
 from datetime import date
+from typing import Any
 
 import polars as pl
 
-from ..pipeline import rebuild, state
+from ..pipeline import readme_fields, rebuild, state
 from ..platform.env import load_env_file
 from ..platform.lock import exclusive
 from ..platform.presets import get_preset
 from ..platform.runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs
 from ..platform.store import DatasetStore
-from ..platform.tables import README_SCHEMA
+from ..platform.tables import README_FIELDS_SCHEMA, README_SCHEMA
 from .batch import (
     STALL_HEARTBEAT_SECONDS,
 )
@@ -704,3 +705,76 @@ def _print_files(summary: FileSummary, table_rows: int) -> None:
         f"临时失败 {summary.failed} · 已存跳过 {summary.skipped}"
     )
     print(f"  汇总表累计 {table_rows} 行（临时失败不入库，下次自然重试）")
+
+
+def run_parse_readme(
+    args: argparse.Namespace,
+    store: DatasetStore,
+    transport: Transport | None = None,
+    lock_wait: float = 0.0,
+) -> Outcome:
+    """从已抓到的 README 正文里抽侧栏字段。纯本地，不发一个请求。
+
+    `cardData` 里没有 Homepage / Paper / Point of Contact——它们只写在正文的
+    Markdown 列表里（`- **Homepage:** ...`）。`fetch-readme` 已经把全文落到
+    `readme` 表，这里只做解析。
+
+    只处理 `status=ok` 的行：`absent`（仓库没有 README）与 `denied`（权限）都
+    没有正文可抽。抽不到一律 null，别用空串冒充「有」。
+    """
+    readme = store.read("readme")
+    if readme.height == 0:
+        print("readme 表为空，先跑 `hf-data-crawl fetch-readme`。")
+        return Outcome({"error": "empty"}, code=1, reason="readme 表为空")
+
+    usable = readme.filter(pl.col("status") == "ok")
+    print(f"解析 {usable.height:,} 条 README 正文（共 {readme.height:,} 条记录）")
+
+    rows: list[dict[str, Any]] = []
+    for item in usable.iter_rows(named=True):
+        fields = readme_fields.extract_fields(item.get("text"))
+        rows.append(
+            {
+                "id": item["id"],
+                "url": item["url"],
+                "snapshot_date": item["snapshot_date"],
+                "source_sha": item["source_sha"],
+                **fields,
+            }
+        )
+
+    frame = (
+        pl.DataFrame(rows, schema=README_FIELDS_SCHEMA)
+        if rows
+        else pl.DataFrame(schema=README_FIELDS_SCHEMA)
+    )
+    if frame.height:
+        with exclusive(store.root, "parse-readme:write", lock_wait):
+            store.upsert("readme_fields", frame, dedupe=["id"])
+
+    total = store.read("readme_fields").height
+    _print_readme_fields(frame, total)
+    return Outcome({"parsed": frame.height, "table_rows": total})
+
+
+def _print_readme_fields(frame: pl.DataFrame, table_rows: int) -> None:
+    """报各字段的命中率。
+
+    它们在上游本就稀疏（Homepage 12.4%、Paper 12.7%、Point of Contact 1.0%、
+    真 BibTeX 8.6%），所以「百分比」比「条数」更能说明这次解析值不值。
+    """
+    if frame.height == 0:
+        print(f"  没有可解析的正文 · 表累计 {table_rows} 行")
+        return
+    total = frame.height
+    homepage = frame.filter(pl.col("homepage").is_not_null()).height
+    paper = frame.filter(pl.col("paper_url").is_not_null()).height
+    contact = frame.filter(pl.col("point_of_contact").is_not_null()).height
+    citation = frame.filter(pl.col("citation_bibtex").is_not_null()).height
+    print(f"  解析 {total:,} 条 · 表累计 {table_rows:,} 行")
+    print(
+        f"  Homepage {homepage:,} ({homepage / total * 100:.1f}%) · "
+        f"Paper {paper:,} ({paper / total * 100:.1f}%) · "
+        f"Point of Contact {contact:,} ({contact / total * 100:.1f}%) · "
+        f"BibTeX {citation:,} ({citation / total * 100:.1f}%)"
+    )

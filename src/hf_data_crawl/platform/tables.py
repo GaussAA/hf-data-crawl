@@ -355,6 +355,23 @@ README_SCHEMA: dict[str, PolarsType] = {
     "text": pl.Utf8,
 }
 
+#: 从 `readme.text` 正文里抽出来的侧栏字段。
+#:
+#: 这些字段不在 YAML frontmatter 里，`cardData` 拿不到，只在正文的 Markdown
+#: 列表里（`- **Homepage:** ...`）。抽不到一律 null——上游本就稀疏，别用空串
+#: 冒充「有」。抽取规则见 `pipeline/readme_fields.py`。
+README_FIELDS_SCHEMA: dict[str, PolarsType] = {
+    "id": pl.Utf8,
+    "url": pl.Utf8,
+    "snapshot_date": pl.Date,
+    "source_sha": pl.Utf8,
+    "homepage": pl.Utf8,
+    "paper_title": pl.Utf8,
+    "paper_url": pl.Utf8,
+    "point_of_contact": pl.Utf8,
+    "citation_bibtex": pl.Utf8,
+}
+
 
 # ------------------------------------------------------------------ 登记
 
@@ -375,6 +392,12 @@ TABLES: dict[str, TableSpec] = {
     "size": TableSpec("size", "enrich/size.parquet", SIZE_SCHEMA, Origin.NETWORK),
     "files": TableSpec("files", "enrich/files.parquet", FILES_SCHEMA, Origin.NETWORK),
     "readme": TableSpec("readme", "enrich/readme.parquet", README_SCHEMA, Origin.NETWORK),
+    #: 从 `readme.text` 本地派生，可从 readme 表重算——故是 RAW 而不是 NETWORK：
+    #: 重建时清掉重算即可，不必重抓。这与 `carddata`（从 raw 里的 cardData 重算）
+    #: 同一个道理。
+    "readme_fields": TableSpec(
+        "readme_fields", "enrich/readme_fields.parquet", README_FIELDS_SCHEMA, Origin.RAW
+    ),
     "preview": TableSpec("preview", "enrich/preview.parquet", PREVIEW_SCHEMA, Origin.NETWORK),
 }
 
