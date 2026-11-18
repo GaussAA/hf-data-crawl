@@ -1107,6 +1107,12 @@ def _recent_failures(ctx: RunContext) -> Finding:
         # `request-run-due` 不在此列：那是没人盯着的定时路径，坏了必须报。
         if item.get("command") == "request-run":
             continue
+        # `fetch-preview` 撞 429 是**设计内的主动停车**：`preview.py` 规定撞上就整轮
+        # 中止（CloudFront 按 IP 限流，各线程各自退避只会把封禁拖长，实测吞吐掉到
+        # 0.5 req/s）。下次重跑会接着抓，把「主动刹车」算成故障只会让红点变噪音。
+        # 只认 reason 里的「被限流」——真的崩了照样报。
+        if item.get("command") == "fetch-preview" and "被限流" in str(item.get("reason") or ""):
+            continue
         started = _run_time(item.get("started_at"))
         if started is None:
             continue

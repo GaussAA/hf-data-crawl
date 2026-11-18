@@ -342,6 +342,34 @@ def test_单次交付被拦不算故障但批量交付失败要报(tmp_path: Pat
     assert any("失败运行" in text for text in problems(store))
 
 
+def test_预览被限流停车不算故障但真崩了要报(tmp_path: Path) -> None:
+    """`fetch-preview` 撞 429 是设计内的主动停车。
+
+    `preview.py` 明确规定撞上 429 就整轮中止——CloudFront 按 IP 限流，各线程各自
+    退避只会把封禁拖长（实测吞吐掉到 0.5 req/s）。下次重跑会接着抓，所以「主动
+    刹车」不该点亮七天红点。但 reason 不含「被限流」时（真的崩了）照样要报。
+    """
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    write_run(
+        store,
+        "fetch-preview",
+        NOW - timedelta(hours=3),
+        Outcome({}, code=1, reason="被限流（429）中止：已并入 1 行，其余未抓"),
+    )
+
+    assert not any("失败运行" in text for text in problems(store))
+
+    write_run(
+        store,
+        "fetch-preview",
+        NOW - timedelta(hours=2),
+        Outcome({}, code=1, reason="KeyError: 'splits'"),
+    )
+
+    assert any("失败运行" in text for text in problems(store))
+
+
 def test_别的命令成功不能覆盖这条命令的失败(tmp_path: Path) -> None:
     store = DatasetStore(tmp_path / "data")
     healthy(store)
