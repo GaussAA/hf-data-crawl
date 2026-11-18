@@ -10,6 +10,7 @@
 | [DATA.md](DATA.md) | data 目录、表结构、字段含义（**生成物，不手改**） | 查字段、查表；改 `ops/fielddocs.py` 后重新生成 |
 | [operations/RECOVERY.md](operations/RECOVERY.md) | 故障恢复、人工复位、归档 / 压缩回滚 | 数据或派生坏了 |
 | [operations/MONITORING.md](operations/MONITORING.md) | 台账字段、监控指标与告警阈值、调度清单 | 排障、核对例行任务 |
+| [operations/PERFORMANCE.md](operations/PERFORMANCE.md) | 体积与延迟基线、各表压缩参数、怎么重测 | 调压缩 / 分区、怀疑变慢、磁盘吃紧 |
 | [adr/](adr/) | 决策**当时**的样子与被否掉的方案；不改写历史 | 要推翻或修订一项旧决策时 |
 | [TODO.md](TODO.md) | 还没做的事 | 找活干 |
 | [agents/](agents/) | issue 追踪、领域词表的使用约定 | 提 issue、写规格、做领域建模 |

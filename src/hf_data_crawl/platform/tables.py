@@ -73,6 +73,17 @@ class TableSpec:
     #: 列定义。读写两侧都以它为准，不再各自维护一份。
     schema: dict[str, PolarsType]
     origin: Origin
+    #: parquet 的 zstd 压缩级别；`None` 用 polars 默认（3）。
+    #:
+    #: 只给**冷表**调高：readme 只在 `readme` 视图按 id 查（0.05 秒，靠 row group
+    #: 跳过），写一次 80 秒换 61 MB 是划算的。热表（current / silver / observations）
+    #: 不动——实测查询全在 1 秒内、`COPY` 导出 8.2 秒，瓶颈不在压缩；调高只会让
+    #: 每次派生写盘变慢，调低只换来 7% 写速却让文件大一圈。
+    #:
+    #: 注意：parquet metadata 只记 codec（`ZSTD`）不记级别，所以这条配置**没法从
+    #: 落盘文件反查**；改它之后要重写一次表才生效（`docs/operations/PERFORMANCE.md`
+    #: 记着每张表的当前值）。
+    compression_level: int | None = None
 
     @property
     def partitioned(self) -> bool:
@@ -391,7 +402,11 @@ TABLES: dict[str, TableSpec] = {
     # readme 走 raw 文件下载（按 id / top / 全量补齐）。
     "size": TableSpec("size", "enrich/size.parquet", SIZE_SCHEMA, Origin.NETWORK),
     "files": TableSpec("files", "enrich/files.parquet", FILES_SCHEMA, Origin.NETWORK),
-    "readme": TableSpec("readme", "enrich/readme.parquet", README_SCHEMA, Origin.NETWORK),
+    # readme 是整库里最大的单表（398 MB / 3 GB 文本），且只在 `readme` 视图按 id 查
+    # ——冷表的典型：写一次 80 秒换 61 MB，查询靠 row group 跳过、实测 0.05 秒。
+    "readme": TableSpec(
+        "readme", "enrich/readme.parquet", README_SCHEMA, Origin.NETWORK, compression_level=12
+    ),
     #: 从 `readme.text` 本地派生，可从 readme 表重算——故是 RAW 而不是 NETWORK：
     #: 重建时清掉重算即可，不必重抓。这与 `carddata`（从 raw 里的 cardData 重算）
     #: 同一个道理。

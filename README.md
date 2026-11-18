@@ -145,7 +145,7 @@ data/
 │   ├── card_configs.parquet                           # config/split 明细
 │   └── size.parquet                                   # 行数/列数/内存（datasets-server）
 ├── meta/failed-status.json                            # 仅重建进行中存在；成功后删除，残留说明上次被打断
-├── reports/reconcile-YYYY-MM-DD.csv                   # 对账差异清单
+├── reports/reconcile-YYYY-MM-DD.parquet               # 对账差异清单
 └── runs/YYYYMMDDTHHMMSS-<command>.json                # 每轮运行摘要
 ```
 

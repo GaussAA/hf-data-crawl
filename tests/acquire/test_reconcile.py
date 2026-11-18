@@ -160,7 +160,7 @@ def test_差异清单落盘且含三类(store: DatasetStore) -> None:
     summary = reconciler(transport, store).run(DAY2, limit=100)
 
     assert summary.report_path is not None and summary.report_path.exists()
-    kinds = pl.read_csv(summary.report_path)["kind"].to_list()
+    kinds = pl.read_parquet(summary.report_path)["kind"].to_list()
     assert "new" in kinds
     assert "disappeared" in kinds
     assert "sha_changed" in kinds
@@ -197,7 +197,7 @@ def test_完成后清理扫描会话文件(store: DatasetStore) -> None:
 
     reconciler(transport, store).run(DAY2, limit=100)
 
-    assert not list(store.state_dir.glob("reconcile-*.csv"))
+    assert not list(store.state_dir.glob("reconcile-*.parquet"))
     assert not (store.state_dir / "reconcile-baseline.parquet").exists()
 
 
@@ -267,7 +267,7 @@ def test_差异清单区分三种消失方式(store: DatasetStore) -> None:
 
     summary = reconciler(transport, store).run(DAY2, limit=100)
 
-    kinds = pl.read_csv(summary.report_path)["kind"].to_list()
+    kinds = pl.read_parquet(summary.report_path)["kind"].to_list()
     assert "disappeared" in kinds
     assert "restricted" in kinds
     assert "renamed" in kinds
@@ -301,7 +301,7 @@ def test_探测证明还在的误标库恢复在架并计入reactivated(store: D
     assert status_of(store, "acme/b") == "active"
     assert summary.reactivated == 1
     assert summary.renamed == 0
-    report = pl.read_csv(summary.report_path)
+    report = pl.read_parquet(summary.report_path)
     probed = report.filter((pl.col("kind") == "reactivated") & (pl.col("detail") == "probe"))
     assert probed["id"].to_list() == ["acme/b"]
 
@@ -321,7 +321,7 @@ def test_差异清单的note列不再被schema丢弃(store: DatasetStore) -> Non
         DAY2, "end", [], [], [], [], undetectable=["acme/x"]
     )
 
-    report = pl.read_csv(path)
+    report = pl.read_parquet(path)
 
     assert report.columns == ["kind", "id", "detail", "note"]
     row = report.filter(pl.col("kind") == "undetectable_change").row(0, named=True)
@@ -359,8 +359,8 @@ def test_分段跑的差异与单次跑完全一致(store: DatasetStore, tmp_pat
         single.disappeared,
     )
     assert (single.new_ids, single.sha_changed) == (2, 1)
-    single_rows = pl.read_csv(single.report_path).sort(["kind", "id"])
-    split_rows = pl.read_csv(final.report_path).sort(["kind", "id"])
+    single_rows = pl.read_parquet(single.report_path).sort(["kind", "id"])
+    split_rows = pl.read_parquet(final.report_path).sort(["kind", "id"])
     assert split_rows.equals(single_rows)
 
 
@@ -451,7 +451,7 @@ def test_探测统计进差异清单(store: DatasetStore) -> None:
 
     summary = reconciler(transport, store, probe_limit=2).run(DAY2, limit=100)
 
-    rows = pl.read_csv(summary.report_path)
+    rows = pl.read_parquet(summary.report_path)
     probe_rows = rows.filter(pl.col("kind") == "probe")
     assert probe_rows.height == 1
     assert "probed=2" in probe_rows["detail"][0]
@@ -593,7 +593,7 @@ def test_连续三轮探测失败要单独报告且不驱逐(store: DatasetStore
 
     assert [item.probe_degraded for item in summaries[:-1]] == [0] * (PROBE_DEGRADE_AFTER - 1)
     assert summaries[-1].probe_degraded == 3
-    rows = pl.read_csv(summaries[-1].report_path)
+    rows = pl.read_parquet(summaries[-1].report_path)
     assert rows.filter(pl.col("kind") == "probe_degraded").height == 3
     failures = json.loads(probe_cursor_path(store).read_text(encoding="utf-8"))["failures"]
     assert failures == {item: PROBE_DEGRADE_AFTER for item in ids}

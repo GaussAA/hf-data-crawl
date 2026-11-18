@@ -68,8 +68,20 @@ grep -l "已自动恢复" data/logs/*.log | wc -l
 
 **采集方法**：
 ```bash
-grep "undetectable_change" data/reports/reconcile-*.csv | tail -1 | wc -l
+uv run hf-data-crawl query --sql "
+WITH latest AS (
+    SELECT max(filename) AS f
+    FROM read_parquet('data/reports/reconcile-*.parquet', filename = true)
+)
+SELECT count(*) FILTER (WHERE kind = 'undetectable_change') AS undetectable,
+       count(*) AS total
+FROM read_parquet('data/reports/reconcile-*.parquet', filename = true), latest
+WHERE filename = latest.f"
 ```
+
+> 对账清单自 2026-11-18 起存 parquet（此前是 CSV）：`kind` / `id` 都是高重复的短
+> 字符串，zstd 压完只剩几 MB，而首份全量清单 CSV 有 50.5 MB。取「最近一份」要按
+> `filename` 虚拟列过滤，直接读会把这一个月 30 份混在一起。
 
 **正常范围**：< 5%（相对 current 总行数）
 

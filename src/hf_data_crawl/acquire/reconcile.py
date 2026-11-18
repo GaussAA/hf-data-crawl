@@ -22,7 +22,7 @@ import polars as pl
 
 from ..pipeline import state
 from ..pipeline.derive import derive_day
-from ..platform.atomic import write_csv, write_text
+from ..platform.atomic import write_parquet, write_text
 from ..platform.store import DatasetStore
 from ..platform.tables import PolarsType
 from ..platform.vocab import INACTIVE, Status
@@ -46,7 +46,7 @@ REPORT_SCHEMA: dict[str, PolarsType] = {
     "id": pl.Utf8,
     # `detail` 是机器可读的编码（404 / 401 / sha_null / probe），保留给程序判断；
     # `note` 是给人看的中文说明。Polars 按显式 schema 建表时会静默丢掉多出的键，
-    # 所以两列都必须登记，否则行里的 `note` 永远进不了 CSV。
+    # 所以两列都必须登记，否则行里的 `note` 永远进不了清单。
     "detail": pl.Utf8,
     "note": pl.Utf8,
 }
@@ -498,8 +498,11 @@ class Reconciler:
         ]
 
         self._report_dir.mkdir(parents=True, exist_ok=True)
-        path = self._report_dir / f"reconcile-{snapshot_date.isoformat()}.csv"
-        write_csv(pl.DataFrame(rows, schema=REPORT_SCHEMA), path)
+        # 存 parquet 不存 CSV：首次全量对账那份 CSV 实测 50.5 MB（1.13M 行全在差异里），
+        # 而同样的列都是高重复的短字符串，zstd 压完只剩几 MB。要人读时用 DuckDB /
+        # polars 直接读 `reconcile-YYYY-MM-DD.parquet`，不为 grep 常驻一份副本。
+        path = self._report_dir / f"reconcile-{snapshot_date.isoformat()}.parquet"
+        write_parquet(pl.DataFrame(rows, schema=REPORT_SCHEMA), path)
         prune_reports(self._report_dir)
         return path
 
@@ -513,7 +516,7 @@ REPORT_KEEP = 30
 #: 1.5 GB——而日常对账只有几十 KB。两个判据缺一个，就会在某类日子上翻车。
 REPORT_MAX_BYTES = 200 * 1024 * 1024
 
-_REPORT_PATTERN = re.compile(r"^reconcile-\d{4}-\d{2}-\d{2}\.csv$")
+_REPORT_PATTERN = re.compile(r"^reconcile-\d{4}-\d{2}-\d{2}\.parquet$")
 
 
 def prune_reports(
@@ -527,7 +530,7 @@ def prune_reports(
     都五十兆」。先按份数删，再按总字节从最旧的删起——顺序反过来会先删掉几天前的
     小文件，只为给今天的大文件腾地方。
 
-    只认 `reconcile-YYYY-MM-DD.csv` 这个文件名：同目录的榜单页、用户放进来的
+    只认 `reconcile-YYYY-MM-DD.parquet` 这个文件名：同目录的榜单页、用户放进来的
     其他文件一概不碰。按文件名里的日期排序，不看 mtime（复制目录后会变）。
     """
     reports = sorted(

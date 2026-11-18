@@ -79,9 +79,14 @@ class DatasetStore:
         )
 
     def write(self, name: str, frame: pl.DataFrame, dt: date | None = None) -> Path:
-        """原子写一张表（或一个分区），列序按 schema 固定。"""
+        """原子写一张表（或一个分区），列序按 schema 固定、压缩级别按登记表给。"""
+        spec = table(name)
         target = self.path(name, dt)
-        write_parquet(frame.select(list(table(name).schema)), target)
+        write_parquet(
+            frame.select(list(spec.schema)),
+            target,
+            compression_level=spec.compression_level,
+        )
         return target
 
     def upsert(self, name: str, frame: pl.DataFrame, dedupe: list[str] | None = None) -> int:

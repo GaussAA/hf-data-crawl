@@ -240,3 +240,29 @@ def test_时间单位不一致的分区也能读(tmp_path: Path) -> None:
 
     assert aligned.schema["created_at"] == TIMESTAMP
     assert aligned["created_at"].item() == datetime(2026, 11, 1, tzinfo=UTC)
+
+
+def test_压缩级别按登记表传给写盘(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """readme 是唯一调高级别的表；这条防「改了 TableSpec 却没接上 store.write」。
+
+    parquet metadata 只记 codec、不记级别，所以没法从落盘文件反查——只能拦写盘
+    那一刻的参数。哪天有人把 `store.write` 改回只传 frame，这里会立刻变红。
+    """
+    from hf_data_crawl.platform import store as store_module
+    from hf_data_crawl.platform.tables import CURRENT_SCHEMA, README_SCHEMA
+
+    captured: dict[str, int | None] = {}
+
+    def spy(frame: pl.DataFrame, path: Path, **options: Any) -> None:
+        captured["level"] = options.get("compression_level")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        frame.write_parquet(path)
+
+    monkeypatch.setattr(store_module, "write_parquet", spy)
+    target = DatasetStore(tmp_path / "data")
+
+    target.write("readme", pl.DataFrame(schema=README_SCHEMA))
+    assert captured["level"] == 12
+
+    target.write("current", pl.DataFrame(schema=CURRENT_SCHEMA))
+    assert captured["level"] is None

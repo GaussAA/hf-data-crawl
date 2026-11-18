@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import polars as pl
+
 from hf_data_crawl.acquire.reconcile import REPORT_KEEP, REPORT_MAX_BYTES, prune_reports
+
+#: 与 `REPORT_SCHEMA` 同形的一行；测试只关心文件名与大小，但这几个文件确实是
+#: parquet——写文本进去会让下一个人以为清单还是 CSV。
+_ROW = {"kind": ["x"], "id": ["a/b"], "detail": [""], "note": [""]}
 
 
 def touch(directory: Path, name: str) -> Path:
     path = directory / name
-    path.write_text("kind,id,detail\n", encoding="utf-8")
+    pl.DataFrame(_ROW).write_parquet(path)
     return path
 
 
@@ -22,51 +28,51 @@ def fill(directory: Path, name: str, size: int) -> Path:
 
 def test_超出份数时删最旧的(tmp_path: Path) -> None:
     for day in range(1, 6):
-        touch(tmp_path, f"reconcile-2026-11-0{day}.csv")
+        touch(tmp_path, f"reconcile-2026-11-0{day}.parquet")
 
     removed = prune_reports(tmp_path, keep=3)
 
     assert [path.name for path in removed] == [
-        "reconcile-2026-11-01.csv",
-        "reconcile-2026-11-02.csv",
+        "reconcile-2026-11-01.parquet",
+        "reconcile-2026-11-02.parquet",
     ]
     assert sorted(path.name for path in tmp_path.iterdir()) == [
-        "reconcile-2026-11-03.csv",
-        "reconcile-2026-11-04.csv",
-        "reconcile-2026-11-05.csv",
+        "reconcile-2026-11-03.parquet",
+        "reconcile-2026-11-04.parquet",
+        "reconcile-2026-11-05.parquet",
     ]
 
 
 def test_不足份数时一份不删(tmp_path: Path) -> None:
-    touch(tmp_path, "reconcile-2026-11-01.csv")
+    touch(tmp_path, "reconcile-2026-11-01.parquet")
 
     assert prune_reports(tmp_path, keep=3) == []
     assert len(list(tmp_path.iterdir())) == 1
 
 
 def test_按文件名日期排序而不是修改时间(tmp_path: Path) -> None:
-    old = touch(tmp_path, "reconcile-2026-10-01.csv")
-    touch(tmp_path, "reconcile-2026-11-01.csv")
+    old = touch(tmp_path, "reconcile-2026-10-01.parquet")
+    touch(tmp_path, "reconcile-2026-11-01.parquet")
     # 让最旧日期的文件拥有最新的 mtime，模拟复制目录后时间戳被打乱。
     old.touch()
 
     prune_reports(tmp_path, keep=1)
 
-    assert [path.name for path in tmp_path.iterdir()] == ["reconcile-2026-11-01.csv"]
+    assert [path.name for path in tmp_path.iterdir()] == ["reconcile-2026-11-01.parquet"]
 
 
 def test_不碰榜单页与其他文件(tmp_path: Path) -> None:
     touch(tmp_path, "dashboard.html")
-    touch(tmp_path, "reconcile-notes.csv")
+    touch(tmp_path, "reconcile-notes.parquet")
     for day in range(1, 4):
-        touch(tmp_path, f"reconcile-2026-11-0{day}.csv")
+        touch(tmp_path, f"reconcile-2026-11-0{day}.parquet")
 
     prune_reports(tmp_path, keep=1)
 
     assert sorted(path.name for path in tmp_path.iterdir()) == [
         "dashboard.html",
-        "reconcile-2026-11-03.csv",
-        "reconcile-notes.csv",
+        "reconcile-2026-11-03.parquet",
+        "reconcile-notes.parquet",
     ]
 
 
@@ -82,38 +88,38 @@ def test_份数没超但总量超限时从最旧的删起(tmp_path: Path) -> Non
     反过来会先删掉几天前的小文件，只为给今天的大文件腾地方。
     """
     for day in range(1, 5):
-        fill(tmp_path, f"reconcile-2026-11-0{day}.csv", 100)
-    fill(tmp_path, "reconcile-2026-11-05.csv", 1000)
+        fill(tmp_path, f"reconcile-2026-11-0{day}.parquet", 100)
+    fill(tmp_path, "reconcile-2026-11-05.parquet", 1000)
 
     removed = prune_reports(tmp_path, keep=30, max_bytes=1100)
 
     assert [path.name for path in removed] == [
-        "reconcile-2026-11-01.csv",
-        "reconcile-2026-11-02.csv",
-        "reconcile-2026-11-03.csv",
+        "reconcile-2026-11-01.parquet",
+        "reconcile-2026-11-02.parquet",
+        "reconcile-2026-11-03.parquet",
     ]
     assert sorted(path.name for path in tmp_path.iterdir()) == [
-        "reconcile-2026-11-04.csv",
-        "reconcile-2026-11-05.csv",
+        "reconcile-2026-11-04.parquet",
+        "reconcile-2026-11-05.parquet",
     ]
 
 
 def test_先按份数删再按体积删(tmp_path: Path) -> None:
     """两道判据串起来：份数超限的那批先走，剩下的再看总量。"""
     for day in range(1, 6):
-        fill(tmp_path, f"reconcile-2026-11-0{day}.csv", 100)
+        fill(tmp_path, f"reconcile-2026-11-0{day}.parquet", 100)
 
     removed = prune_reports(tmp_path, keep=4, max_bytes=250)
 
     # 份数先删 11-01；剩下 4 份共 400 字节，仍超 250，再从 11-02 起删到只剩 2 份。
     assert [path.name for path in removed] == [
-        "reconcile-2026-11-01.csv",
-        "reconcile-2026-11-02.csv",
-        "reconcile-2026-11-03.csv",
+        "reconcile-2026-11-01.parquet",
+        "reconcile-2026-11-02.parquet",
+        "reconcile-2026-11-03.parquet",
     ]
     assert sorted(path.name for path in tmp_path.iterdir()) == [
-        "reconcile-2026-11-04.csv",
-        "reconcile-2026-11-05.csv",
+        "reconcile-2026-11-04.parquet",
+        "reconcile-2026-11-05.parquet",
     ]
 
 
