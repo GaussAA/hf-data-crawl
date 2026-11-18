@@ -225,10 +225,10 @@ def test_限流不重试而是立刻抛出() -> None:
 # ------------------------------------------------------------ config 自动解析
 
 
-def _splits_body(splits: list[dict[str, Any]], pending: list[dict[str, Any]] | None = None) -> bytes:
-    return json.dumps(
-        {"splits": splits, "pending": pending or [], "failed": []}
-    ).encode()
+def _splits_body(
+    splits: list[dict[str, Any]], pending: list[dict[str, Any]] | None = None
+) -> bytes:
+    return json.dumps({"splits": splits, "pending": pending or [], "failed": []}).encode()
 
 
 def test_自动解析_config_与_split() -> None:
