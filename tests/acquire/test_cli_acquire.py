@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -238,6 +238,85 @@ def test_残留分片会被续抓并合入正式表(root: Path) -> None:
     assert transport.calls == ["acme/ds-3"], "残留分片里的 id 应跳过"
     assert sorted(store.read("size")["id"].to_list()) == ["acme/ds-1", "acme/ds-2", "acme/ds-3"]
     assert staged_shards(store) == []
+
+
+def _put_sizes(root: Path, rows: list[dict[str, Any]]) -> None:
+    """往正式表写几行已有规模；未给的列由 schema 补 None。"""
+    frame = pl.DataFrame(
+        [{name: None for name in SIZE_SCHEMA} | row for row in rows], schema=SIZE_SCHEMA
+    )
+    DatasetStore(root).write("size", frame)
+
+
+def test_changed顺带补上新库的规模缺口(root: Path) -> None:
+    """新库在 `size` 表里没有行，而 `stale_ids` 是 inner join，看不见它们。
+
+    原先 `--changed` 把候选集整个换成陈旧集合，新库只能等周日全量——实测中位 2 天、
+    超 7 天的有 1,322 个。缺口必须和刷新在同一趟里补。
+    """
+    store = DatasetStore(root)
+    raw.write(
+        store, snapshot_date=DAY, page_index=1, records=[record(1), record(2), record(3)], meta={}
+    )
+    derive_day(store, DAY)
+    # record() 的 lastModified 是 11-01。ds-1 抓在它之前 → 陈旧；
+    # ds-2 抓在它之后 → 新鲜；ds-3 没有行 → 缺口。
+    _put_sizes(
+        root,
+        [
+            {
+                "id": "acme/ds-1",
+                "snapshot_date": date(2026, 11, 1),
+                "fetched_at": datetime(2026, 10, 30, tzinfo=UTC),
+                "status": "ok",
+            },
+            {
+                "id": "acme/ds-2",
+                "snapshot_date": DAY,
+                "fetched_at": datetime(2026, 11, 5, tzinfo=UTC),
+                "status": "ok",
+            },
+        ],
+    )
+    transport = SizeTransport()
+
+    code = run(
+        root,
+        "fetch-sizes",
+        "--date",
+        DAY_ARG,
+        "--changed",
+        "10",
+        "--workers",
+        "1",
+        transport=transport,
+    )
+
+    assert code == 0
+    assert sorted(transport.calls) == ["acme/ds-1", "acme/ds-3"], "陈旧与新库缺口都该被抓"
+
+
+def test_changed在没有陈旧时也不跳过缺口(root: Path) -> None:
+    """原先 `if not refresh: return` 会把缺口一并跳过——没有陈旧≠没有欠账。"""
+    store = DatasetStore(root)
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[record(1), record(2)], meta={})
+    derive_day(store, DAY)
+    transport = SizeTransport()
+
+    code = run(
+        root,
+        "fetch-sizes",
+        "--date",
+        DAY_ARG,
+        "--changed",
+        "10",
+        "--workers",
+        "1",
+        transport=transport,
+    )
+
+    assert code == 0
+    assert sorted(transport.calls) == ["acme/ds-1", "acme/ds-2"]
 
 
 def test_fetch_sizes只抓点名的ids(root: Path) -> None:

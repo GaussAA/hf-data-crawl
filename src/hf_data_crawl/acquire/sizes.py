@@ -335,6 +335,13 @@ def stale_ids(current: pl.DataFrame, existing: pl.DataFrame) -> pl.DataFrame:
 #: 规模表的暂存目录；分片只写真数据、不碰正式表，故写它不必持锁。
 STAGING_DIR = ".staging/sizes"
 
+#: `--changed` 一轮里最多顺带补多少个「新库缺口」（在架、但 `size` 表里没有行）。
+#:
+#: 与 `--top` 的默认值同量级：16 并发实测约 22 req/s，两万个约 15 分钟，仍在夜链
+#: 给的 3600 秒之内。设上限防的是「某轮全量失败后缺口涨到几十万」——那种情况该由
+#: 周日的 `--top 0` 兜底，不该让一次日常刷新跑成几小时。
+GAP_BUDGET = 20_000
+
 
 def protect_ok_rows(previous: pl.DataFrame, fresh: pl.DataFrame) -> pl.DataFrame:
     """不让「不可用」覆盖「已拿到」。

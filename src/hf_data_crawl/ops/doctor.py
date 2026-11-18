@@ -729,7 +729,10 @@ def _field_freshness(ctx: RunContext) -> Finding:
       与当前 sha 一致」，那由 `_card_provenance` 负责，此处只报覆盖。
     - **规模字段**：`fetch-sizes` 的跳过判据只能表达「问过没」，表达不了
       「问过之后它变了没有」。`--changed` 按 `lastModified > snapshot_date`
-      重取，这里报还剩多少没跟上、最老的一批停在哪天。
+      重取，这里报还剩多少没跟上、最老的一批停在哪天。**「有行」与「有值」必须
+      分开报**：`unavailable`（上游没做 parquet 转换）也占一行，但它的行数、
+      字节全是空——2026-11-18 实测两者差 25 个百分点（99.2% vs 73.8%），
+      只报前者会让读的人以为行数基本齐全，而实际四分之一是空的。
     """
     store, runs = ctx.store, ctx.runs
     current = ctx.current
@@ -749,6 +752,12 @@ def _field_freshness(ctx: RunContext) -> Finding:
     covered = _covered(cards, current_ids)
     sizes = store.read("size")
     covered_sizes = _covered(sizes, current_ids)
+    # 「有行」≠「有值」：`unavailable` 行也占一行，但 num_rows 与字节全是空。
+    # 两者相差 25 个百分点（2026-11-18：99.2% vs 73.8%），只报前者等于虚报。
+    covered_rows = _covered(
+        sizes.filter((pl.col("status") == "ok") & pl.col("num_rows").is_not_null()),
+        current_ids,
+    )
     # 直接调 `fetch-sizes --changed` 用的那个函数，不在这里复刻一份：复制品与原件
     # 分居两个切片，改了一边不会报错、不会变红，只会静默漂移。原先这里有一份逐字
     # 抄来的 join——「同一判据三处实现」的中间那一份，正是最容易被改坏的那一份。
@@ -760,7 +769,9 @@ def _field_freshness(ctx: RunContext) -> Finding:
     text = (
         f"字段新鲜度：列表字段最近一轮（{sweep}）覆盖 {share:.1%}（{seen}/{current.height}）"
         f" · 卡片覆盖 {_share_text(covered / total)}（上游卡片本就不全）"
-        f" · 规模覆盖 {_share_text(covered_sizes / total)}、最新 {newest_size or '无'}"
+        f" · 规模 有行 {_share_text(covered_sizes / total)}"
+        f" / 有值 {_share_text(covered_rows / total)}（未做 parquet 转换的不计）"
+        f"、最新 {newest_size or '无'}"
         f" · 规模待重取 {stale} 个"
     )
     if share < FIELD_SWEEP_SHARE:

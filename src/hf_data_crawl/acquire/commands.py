@@ -45,6 +45,7 @@ from .readme import (
 )
 from .reconcile import PROBE_DEGRADE_AFTER, Reconciler, ReconcileSummary
 from .sizes import (
+    GAP_BUDGET,
     HfSizeApi,
     SizeFetcher,
     SizeSummary,
@@ -301,16 +302,28 @@ def run_fetch_sizes(
     # 规模是内容的函数：库改了（lastModified 越过抓取日），旧的行数就不再是事实。
     # `--changed N` 只重取这批里的前 N 个（按下载量），不重扫全站——全量那一趟留
     # 给周任务，这里补的是「每天都变」的那一小撮。
+    #
+    # 同一趟里还要补「新库」：它们在 `size` 表里没有行，而 `stale_ids` 是 inner
+    # join，天然把它们排除在陈旧集合之外。原先这里把候选集整个换成陈旧集合，
+    # 于是新库只能等周日那趟全量——实测中位 2 天、超 7 天的有 1,322 个，
+    # 2026-11 一个月就攒下 8,726 个没有行数的新库。缺口按下载量取前
+    # `GAP_BUDGET` 个，防的是某轮全量失败后缺口涨到几十万。
     refresh: set[str] = set()
     if args.changed > 0:
         stale = stale_ids(current, store.read("size"))
         picked = stale.sort("downloads", descending=True, nulls_last=True).head(args.changed)
         refresh = set(picked["id"].to_list())
-        if not refresh:
-            print("规模无陈旧：没有内容变更晚于抓取日的库。")
-            return Outcome({"changed": 0, "refreshed": 0})
-        ordered = ordered.filter(pl.col("id").is_in(sorted(refresh)))
-        print(f"规模随变化刷新：{len(refresh)} 个库内容已变，重取其规模。")
+        changed = ordered.filter(pl.col("id").is_in(sorted(refresh)))
+        # `existing` 已含残留分片：上一轮中断前抓到的缺口不该再请求一遍。
+        gap = ordered.join(existing.select("id").unique(), on="id", how="anti").head(GAP_BUDGET)
+        if not changed.height and not gap.height:
+            print("规模无陈旧、也无缺口：没有需要重取的库。")
+            return Outcome({"changed": 0, "refreshed": 0, "gap": 0})
+        ordered = pl.concat([changed, gap]) if gap.height else changed
+        print(
+            f"规模随变化刷新：{changed.height} 个库内容已变，"
+            f"另补 {gap.height} 个新库缺口（共 {ordered.height} 个）。"
+        )
 
     if args.ids:
         # 按需补：只问点名的库。全量一轮三小时，而交付实际命中的常常只有几十条。

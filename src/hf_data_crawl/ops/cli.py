@@ -373,7 +373,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--changed",
         type=int,
         default=0,
-        help="规模随内容刷新：重取 lastModified 晚于抓取日的库，最多 N 个（0 表示不做）",
+        help=(
+            "规模随内容刷新：重取 lastModified 晚于抓取日的库，最多 N 个（0 表示不做）；"
+            "同一趟顺带补新库缺口（在架但没有规模行，按下载量最多 2 万个）"
+        ),
     )
     sizes.add_argument(
         "--ids",
