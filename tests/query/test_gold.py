@@ -648,3 +648,45 @@ def test_侧栏字段不进宽表(catalog: GoldCatalog) -> None:
 
     assert "homepage" not in columns
     assert "citation_bibtex" not in columns
+
+
+def test_宽表has_readme由readme派生而不是files(tmp_path: Path) -> None:
+    """两份事实分开：`files` 只看前 1000 名的一页，`readme` 覆盖全库。
+
+    2026-11-18 之前宽表的 `has_readme` 取自 `files`，全库只有 0.08% 有值——空值在
+    读数据的人眼里就是「没有 README」。当时 `readme` 表已 100% 覆盖，却没人用它。
+    """
+    from hf_data_crawl.platform.tables import FILES_SCHEMA, README_SCHEMA
+
+    store = DatasetStore(tmp_path / "data")
+    seed(store, DAY1, [record(1, downloads=100), record(2, downloads=50), record(3, downloads=10)])
+
+    readme: dict[str, list[Any]] = {name: [None] * 3 for name in README_SCHEMA}
+    readme["id"] = ["acme/ds-1", "acme/ds-2", "acme/ds-3"]
+    readme["snapshot_date"] = [DAY1] * 3
+    readme["source_sha"] = ["sha-1", "sha-2", "sha-3"]
+    readme["status"] = ["ok", "absent", "denied"]
+    readme["bytes"] = [10, 0, None]
+    store.write("readme", pl.DataFrame(readme, schema=README_SCHEMA))
+
+    files: dict[str, list[Any]] = {name: [None] for name in FILES_SCHEMA}
+    files["id"] = ["acme/ds-1"]
+    files["snapshot_date"] = [DAY1]
+    files["status"] = ["ok"]
+    files["has_readme"] = [True]
+    store.write("files", pl.DataFrame(files, schema=FILES_SCHEMA))
+
+    catalog = GoldCatalog(store)
+    try:
+        rows = catalog.run(
+            "SELECT id, has_readme, files_has_readme FROM datasets ORDER BY id"
+        ).rows()
+    finally:
+        catalog.close()
+
+    # ok → true，absent → false，denied → NULL（「读不到」不等于「作者没写」）
+    assert rows == [
+        ("acme/ds-1", True, True),
+        ("acme/ds-2", False, None),
+        ("acme/ds-3", None, None),
+    ]

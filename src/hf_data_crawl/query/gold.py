@@ -46,7 +46,15 @@ _VIEW_RENAMES: dict[str, dict[str, str]] = {
     },
     # files.status 与 current.status 是两回事：前者只说这次文件清单补采成功与否。
     # files.formats 是扩展名计数，与 silver.formats（标签维度）同名不同义。
-    "files": {"status": "files_status", "formats": "file_formats"},
+    #
+    # `has_readme` 也在此改名：`files` 那份只说「这一页有没有 README 开头的文件」，
+    # 而它只覆盖下载量前 1000 名（0.08%）；宽表要的是「这个库有没有 README 正文」，
+    # 由 `readme.status` 派生、覆盖全库。两份都留着，名字各自说清是哪一个。
+    "files": {
+        "status": "files_status",
+        "formats": "file_formats",
+        "has_readme": "files_has_readme",
+    },
     # 卡片表里只有这一个 sha，表内不必限定；但并进宽表后它左边就是 `sha`（仓库
     # 当前版本），不限定会被读成「另一个 sha」而不是「抓卡片时的 sha」。
     "carddata": {"source_sha": "card_source_sha"},
@@ -69,6 +77,22 @@ _VIEW_SOURCES: tuple[tuple[str, str, str], ...] = (
     ("cd", "carddata", "card"),
     ("ds", "size", "dataset_size"),
     ("fs", "files", "files"),
+)
+
+#: 只供派生列用的额外联接：(视图名, 别名)。
+#:
+#: 与 `_VIEW_SOURCES` 分开是有意的：那边是「整表列进宽表」，这边只是给派生列一个
+#: 可哈希联接的源，**列本身不进宽表**——`readme.text` 是全库 2.8 GB 正文，
+#: 让它出现在 `datasets` 里，每次查询都会拖着它走。
+_EXTRA_JOINS: tuple[tuple[str, str], ...] = (("readme", "rm"),)
+
+#: 派生列：(SELECT 表达式, 列名)，排在附表列之后、重名同样跳过。
+#:
+#: `CASE ... END` 不写 `ELSE`：`denied`（受门禁读不到）与无记录都落到 NULL，
+#: 而 NULL 的正确读法是「不知道」——把「读不到」写成 false，就是在替作者断言
+#: 「他没有 README」。
+_DERIVED_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("CASE rm.status WHEN 'ok' THEN true WHEN 'absent' THEN false END", "has_readme"),
 )
 
 #: 视图名 → 登记表名。两者不必同名（`card` 视图读的是 `carddata` 表）。
@@ -118,6 +142,11 @@ def wide_columns() -> tuple[tuple[str, str], ...]:
                 continue
             parts.append((f"{alias}.{column} AS {target}", target))
             used.add(target)
+    for expression, name in _DERIVED_COLUMNS:
+        if name in used:
+            continue
+        parts.append((f"{expression} AS {name}", name))
+        used.add(name)
     return tuple(parts)
 
 
@@ -622,8 +651,16 @@ class GoldCatalog:
             ["c.*", *(expression for expression, _ in wide_columns())]
         )
         joins = "\n            ".join(
-            f"LEFT JOIN {view} AS {alias} ON c.id = {alias}.id"
-            for alias, _name, view in _VIEW_SOURCES
+            [
+                *(
+                    f"LEFT JOIN {view} AS {alias} ON c.id = {alias}.id"
+                    for alias, _name, view in _VIEW_SOURCES
+                ),
+                *(
+                    f"LEFT JOIN {view} AS {alias} ON c.id = {alias}.id"
+                    for view, alias in _EXTRA_JOINS
+                ),
+            ]
         )
         return (
             "CREATE VIEW datasets AS\n"
