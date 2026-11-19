@@ -531,10 +531,15 @@ def run_fetch_readme(
         return Outcome({"error": "empty"}, code=1, reason="尚无采集数据，请先运行 collect")
 
     # 残留分片同样是「已处理」的 id：上一轮中断前抓到的结果不该再请求一遍。
-    existing = store.read("readme")
+    # 只要 `id` / `status` / `source_sha` 三列：判「跳过谁」「谁陈旧」「谁是缺口」
+    # 都用不到正文。整表读入是 365 MB 压缩 / 3 GB 解压——2026-11-19 实测收尾时
+    # 峰值 3.8 GB，而这一步只是想知道哪些 id 已有结论。
+    existing = store.read("readme", columns=["id", "status", "source_sha"])
     staged, _ = read_staged_dir(store, README_STAGING_DIR, README_SCHEMA)
     if staged.height:
-        existing = pl.concat([existing, staged], how="vertical_relaxed")
+        existing = pl.concat(
+            [existing, staged.select("id", "status", "source_sha")], how="vertical_relaxed"
+        )
 
     ordered = current.sort("downloads", descending=True, nulls_last=True)
     # README 是仓库里的一个文件：commit 变了，旧全文就不再是当前版本。
