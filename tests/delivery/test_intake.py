@@ -14,7 +14,7 @@ import openpyxl
 import pytest
 
 from hf_data_crawl.delivery.intake import CreatedRequest, IntakeError, create_request
-from hf_data_crawl.delivery.requirement import Kind, read_status, resolve_dir
+from hf_data_crawl.delivery.requirement import Kind, load, read_status, resolve_dir
 
 
 def book_at(path: Path) -> Path:
@@ -98,3 +98,83 @@ def test_样例标记用注入的时刻(tmp_path: Path) -> None:
     status = read_status(created.folder)
     assert status["sample"] is True
     assert status["sample_marked_at"] == moment.isoformat(timespec="seconds")
+
+
+# ---------------------------------------------------------------- 骨架里的 sheet 名
+
+
+def named_book(path: Path, sheet_name: str) -> Path:
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.title = sheet_name
+    workbook.save(path)
+    return path
+
+
+def test_回填型骨架的sheet名取自源表(tmp_path: Path) -> None:
+    """写死占位会让 `request input` 读不到旧表头，字段差异只剩新表那一半。
+
+    受理时文件就在手边，读一次索引只要几毫秒；放到交付时再发现，人已经离开
+    现场，还得回去翻对方给的原表。
+    """
+    source = named_book(tmp_path / "清单.xlsx", "对方给的数据")
+
+    created = create_request(
+        tmp_path / "req",
+        request_id="REQ-0007",
+        title="清单补全",
+        requester="大帅",
+        kind=Kind.BACKFILL,
+        source=str(source),
+    )
+
+    spec = (created.folder / "spec.yaml").read_text(encoding="utf-8")
+    assert 'sheet: "对方给的数据"' in spec
+    assert "Sheet1" not in spec
+
+
+def test_源表读不出来时当场失败且不留目录(tmp_path: Path) -> None:
+    """留一个读不出来的源表在需求目录里，代价是几天后才在交付时炸。
+
+    这条还钉住顺序：读 sheet 名发生在建目录**之前**，所以失败时连回滚都不必。
+    """
+    broken = tmp_path / "坏表.xlsx"
+    broken.write_text("这不是工作簿", encoding="utf-8")
+    root = tmp_path / "req"
+
+    with pytest.raises(IntakeError, match="读不出输入表的 sheet 名") as caught:
+        create_request(
+            root,
+            request_id="REQ-0008",
+            title="清单补全",
+            requester="大帅",
+            kind=Kind.BACKFILL,
+            source=str(broken),
+        )
+
+    assert "坏表.xlsx" in str(caught.value)
+    assert not root.exists() or list(root.iterdir()) == []
+
+
+def test_sheet名里有井号也能原样读回(tmp_path: Path) -> None:
+    """页名是对方给的任意字符串，而 `#` 在 Excel 里合法、在 YAML 里却是注释开头。
+
+    裸写的话 `sheet: 数据 # 2026` 会被读成「数据」，不报错——骨架里就静静躺着
+    一个错的页名，直到 `request input` 才说「没有这个 sheet」。这条钉住加引号。
+    """
+    source = named_book(tmp_path / "清单.xlsx", "数据 # 2026")
+
+    created = create_request(
+        tmp_path / "req",
+        request_id="REQ-0009",
+        title="清单补全",
+        requester="大帅",
+        kind=Kind.BACKFILL,
+        source=str(source),
+    )
+
+    spec = load(created.folder / "spec.yaml")
+
+    assert spec.fill is not None
+    assert spec.fill.source.sheet == "数据 # 2026"

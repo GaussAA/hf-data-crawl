@@ -370,16 +370,11 @@ def test_show在方法合规时明说合规(tmp_path: Path, capsys) -> None:
 def backfill_request(tmp_path: Path) -> Path:
     """建一份回填型需求，返回需求目录。
 
-    骨架里的 sheet 恒为 `Sheet1`——那是待人工核对的占位，不是从源表读出来的。
-    测试用表叫「数据」，所以按受理完成后提示的那一步改一次，这正是真实用法。
+    sheet 名由受理从源表读出来写进骨架（源表叫「数据」），这里不必再手工改。
     """
     first = book(tmp_path / "第一版.xlsx")
     assert new_backfill(tmp_path, first) == 0
-    request_dir = resolve_dir(tmp_path / "req", "REQ-0001")
-    spec = request_dir / SPEC_NAME
-    text = spec.read_text(encoding="utf-8").replace("sheet: Sheet1", "sheet: 数据")
-    spec.write_text(text, encoding="utf-8")
-    return request_dir
+    return resolve_dir(tmp_path / "req", "REQ-0001")
 
 
 def test_换输入表时新文件不存在要当场拒绝(tmp_path: Path, capsys) -> None:
@@ -448,3 +443,15 @@ def test_取消样例标记后状态里不残留样例键(tmp_path: Path, capsys
 
     assert not {"sample", "sample_reason", "sample_marked_at"} & set(body)
     assert "已取消样例标记" in capsys.readouterr().out
+
+
+def test_建回填需求时告诉人填的是哪一页(tmp_path: Path, capsys) -> None:
+    """骨架里的 sheet 是从源表读的，人得知道读到了哪一页才谈得上「核对」。
+
+    只说「已填好」等于没说：源表有两个页、第一页是空模板时，读错了也没人察觉。
+    """
+    assert new_backfill(tmp_path, book(tmp_path / "第一版.xlsx")) == 0
+
+    out = capsys.readouterr().out
+    assert "sheet 已按源表第一页填成「数据」" in out
+    assert "核对 fill.source 的 header_row 与 key_column" in out

@@ -16,8 +16,10 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from zipfile import BadZipFile
 
 import openpyxl
+from openpyxl.utils.exceptions import InvalidFileException
 
 from .header import Header, HeaderError, parse
 
@@ -29,6 +31,32 @@ def open_sheet(path: Path, *, sheet: str | None = None) -> tuple[Any, Any]:
     if name not in workbook.sheetnames:
         raise HeaderError(f"{path}: 没有 sheet {name!r}（现有 {workbook.sheetnames}）")
     return workbook, workbook[name]
+
+
+def first_sheet_name(path: Path) -> str:
+    """工作簿里第一个 sheet 的名字。
+
+    受理新需求时用它填进骨架。原先那里写死 `Sheet1`，而源表几乎不叫这个名字：
+    骨架与实际不符，`request input` 就读不出旧表头，「字段差异」只剩一半——只报
+    新表结构，旧表那侧一段空白，看着像比对通过。
+
+    只读工作簿索引、不读单元格（`read_only=True`）：五万行的表也只花几毫秒，
+    而受理时拷一份快照已经够慢了，不该再整本加载一遍。
+
+    `openpyxl` 的几种失败（不是 xlsx、文件损坏、无读权限）都翻成 `HeaderError`：
+    调用方只需处理一种异常，消息里也带得上文件路径。
+    """
+    try:
+        workbook = openpyxl.load_workbook(path, read_only=True)
+    except (OSError, BadZipFile, InvalidFileException) as error:
+        raise HeaderError(f"{path} 打不开：{error}") from error
+    try:
+        names = list(workbook.sheetnames)
+    finally:
+        workbook.close()
+    if not names:
+        raise HeaderError(f"{path}: 工作簿里没有任何 sheet")
+    return names[0]
 
 
 def header_of(path: Path, *, sheet: str | None = None, header_row: int = 1) -> Header:

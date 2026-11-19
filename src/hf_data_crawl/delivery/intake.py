@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..platform.atomic import write_bytes
+from .header import HeaderError
 from .method import sync as sync_method
 from .requirement import (
     INPUT_DIR,
@@ -27,6 +28,7 @@ from .requirement import (
     skeleton,
     write_status,
 )
+from .sheet import first_sheet_name
 
 
 class IntakeError(ValueError):
@@ -35,11 +37,16 @@ class IntakeError(ValueError):
 
 @dataclass(frozen=True)
 class CreatedRequest:
-    """一份刚建好的需求。`snapshot` 是输入快照落点，查询型为 None。"""
+    """一份刚建好的需求。`snapshot` 是输入快照落点，查询型为 None。
+
+    `sheet_name` 是从源表读到的第一个 sheet 名，已写进骨架；查询型为空串。
+    带上它，命令层才能如实说「填的是哪一页」，而不是笼统地说「已填好」。
+    """
 
     folder: Path
     kind: Kind
     snapshot: Path | None
+    sheet_name: str = ""
 
 
 def create_request(
@@ -86,12 +93,20 @@ def create_request(
         )
 
     given: Path | None = None
+    sheet_name = ""
     if kind is Kind.BACKFILL:
         if not source:
             raise IntakeError("kind=backfill 需要 --source 指向对方给的原始表格（文件须已存在）。")
         given = Path(source).expanduser()
         if not given.is_file():
             raise IntakeError(f"输入表不存在或不是文件：{given}")
+        # 趁文件在手边把 sheet 名读出来写进骨架。放到「交付时再说」的代价是：
+        # 骨架里的占位一旦与实际不符，`request input` 读不到旧表头，字段差异只剩
+        # 一半，而那时人已经离开受理现场，得回去翻对方给的原表。
+        try:
+            sheet_name = first_sheet_name(given)
+        except HeaderError as error:
+            raise IntakeError(f"读不出输入表的 sheet 名：{error}") from error
 
     folder.mkdir(parents=True)
     snapshot: Path | None = None
@@ -112,6 +127,7 @@ def create_request(
                 kind=kind,
                 source_path=given.name if given else "",
                 header_row=header_row,
+                sheet_name=sheet_name,
             ),
             encoding="utf-8",
         )
@@ -133,4 +149,4 @@ def create_request(
     except (SpecError, OSError) as error:
         shutil.rmtree(folder, ignore_errors=True)
         raise IntakeError(str(error)) from error
-    return CreatedRequest(folder=folder, kind=kind, snapshot=snapshot)
+    return CreatedRequest(folder=folder, kind=kind, snapshot=snapshot, sheet_name=sheet_name)

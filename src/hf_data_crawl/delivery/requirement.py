@@ -862,7 +862,7 @@ alert:
 fill:
   source:
     path: "input/{source_name}"    # 受理时复制进来的输入快照；绝不指向外部文件
-    sheet: Sheet1            # 不写则取第一个 sheet
+    sheet: {sheet_name}            # 取自源表第一个 sheet；换表或写错会被 input 报出来
     header_row: {header_row}            # 列名所在行；其上可有多行分组标题
     key_column: URL          # 用列名定位，不用列号
   output:
@@ -895,6 +895,7 @@ def skeleton(
     kind: Kind = Kind.QUERY,
     source_path: str = "",
     header_row: int | None = None,
+    sheet_name: str = "",
 ) -> str:
     """生成一份带注释的 spec 骨架。注释是给人看的，所以不走 YAML dump。
 
@@ -915,6 +916,12 @@ def skeleton(
         # 默认 2 是「第 1 行分组、第 2 行列名」那种表；多数表第 1 行就是列名，
         # 受理时定下来比事后在骨架里改更不容易漏。
         values["{header_row}"] = str(2 if header_row is None else header_row)
+        # 取不到真实 sheet 名时退回占位：`skeleton` 是纯函数，不开文件——
+        # 要真名请由调用方（受理）读了传进来。
+        #
+        # 用 JSON 引号而不是裸写：sheet 名是对方给的任意字符串，「数据: 2026」
+        # 里那个冒号会让 YAML 把它读成映射，整个骨架当场读不回来。
+        values["{sheet_name}"] = json.dumps(sheet_name or "Sheet1", ensure_ascii=False)
     text = _FILL_SKELETON if kind is Kind.BACKFILL else _SKELETON
     for placeholder, value in values.items():
         text = text.replace(placeholder, value)

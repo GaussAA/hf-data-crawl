@@ -13,7 +13,7 @@ import openpyxl
 import pytest
 
 from hf_data_crawl.delivery.header import HeaderError
-from hf_data_crawl.delivery.sheet import header_of, key_rows, open_sheet
+from hf_data_crawl.delivery.sheet import first_sheet_name, header_of, key_rows, open_sheet
 
 
 def build(path: Path, rows: list[list[Any]], *, title: str = "数据") -> Path:
@@ -79,3 +79,41 @@ def test_标识列空的行不算数据(tmp_path: Path) -> None:
     _workbook, worksheet = open_sheet(book)
 
     assert key_rows(worksheet, header_row=1, key_column=1) == [(2, "acme/ds-1"), (4, "acme/ds-2")]
+
+
+# ---------------------------------------------------------------- 取第一个 sheet 的名字
+
+
+def two_sheets(path: Path, first: str, second: str) -> Path:
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.title = first
+    workbook.create_sheet(second)
+    workbook.save(path)
+    return path
+
+
+def test_取的是工作簿里的第一页而不是字典序(tmp_path: Path) -> None:
+    """受理时填进骨架的名字要跟人打开文件看到的一致。
+
+    按字典序排会让「乙表」排在「甲表」后面，于是骨架写的不是第一页——人对着
+    文件核对时怎么都对不上。
+    """
+    book = two_sheets(tmp_path / "两页.xlsx", "乙表", "甲表")
+
+    assert first_sheet_name(book) == "乙表"
+
+
+def test_不是工作簿时翻成HeaderError并带上路径(tmp_path: Path) -> None:
+    """受理要能当场失败：留一个读不出来的源表在需求目录里，代价是几天后才发现。"""
+    fake = tmp_path / "其实是文本.xlsx"
+    fake.write_text("这不是工作簿", encoding="utf-8")
+
+    with pytest.raises(HeaderError, match="打不开"):
+        first_sheet_name(fake)
+
+
+def test_文件不存在时同样翻成HeaderError(tmp_path: Path) -> None:
+    with pytest.raises(HeaderError, match="打不开"):
+        first_sheet_name(tmp_path / "没有这个文件.xlsx")

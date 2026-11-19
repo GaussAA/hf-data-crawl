@@ -135,7 +135,10 @@ def build_parser() -> argparse.ArgumentParser:
     request_new.add_argument(
         "--source",
         default="",
-        help="kind=backfill 必填：对方给的原始表格路径（必须已存在，且引擎绝不改动它）",
+        help=(
+            "kind=backfill 必填：对方给的原始表格路径（必须已存在，且引擎绝不改动它；"
+            "受理时会读出第一页的 sheet 名写进骨架）"
+        ),
     )
     request_new.add_argument(
         "--header-row",

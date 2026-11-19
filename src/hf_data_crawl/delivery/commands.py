@@ -770,7 +770,8 @@ def _request_new(args: argparse.Namespace, root: Path) -> int:
     if created.snapshot is not None:
         print(f"  输入快照：{created.snapshot}（原件未改动；此后本需求不再依赖外部文件）")
         print(
-            "  下一步：核对 fill.source 的 sheet / header_row / key_column 与逐列规则，"
+            f"  下一步：核对 fill.source 的 header_row 与 key_column 及逐列规则"
+            f"（sheet 已按源表第一页填成「{created.sheet_name}」），"
             "改完把 version 加一，先跑 `request run <id> --dry-run`"
         )
     else:
