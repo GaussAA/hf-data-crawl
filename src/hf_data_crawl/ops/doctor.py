@@ -947,7 +947,7 @@ def _readme_freshness(ctx: RunContext) -> Finding:
         return Finding(
             True,
             f"README 全文：已 {age_days} 天没有刷新（{counts}）；"
-            "跑 fetch-readme --changed 8000，或确认定时任务 hf-readme 是否还在",
+            "跑 fetch-readme --changed-all，或确认 hf-refresh 的 readme 步骤有没有跑成",
         )
     return Finding(False, f"README 全文：正常（{age_days} 天前刷新，{counts}）")
 

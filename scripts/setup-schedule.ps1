@@ -4,18 +4,17 @@
     注册 / 卸载 hf-data-crawl 的 Windows 计划任务。
 
 .DESCRIPTION
-    hf-daily    每日 03:10 一条链跑完当日全部例行，登录后 3 分钟再补一次：
-                采集 → 派生重放 → 全站对账 → 导出宽表 → 到期交付 → 体检。
-                顺序由 scripts\daily.ps1 保证，不由钟点猜（见下）。
-    hf-compact  每日 00:30 压缩满 7 天的冷区 Raw（跨天去重成基线），原分块移入 backup。
-    hf-sizes    每周日 06:00 补数据集规模（行数/列数），最慢的一步，增量可续。
-    hf-files    每周日 07:30 补下载量前 1000 名的文件清单（首屏，子集而非全量）。
-    hf-archive  每周一 05:00 归档满 30 天的 Raw（去重小分块、冻结写入序），移入 backup。
-    hf-readme   每周六 09:00 重取 commit 已变的 README 全文，默认前 8000 名的量。
-                全量那趟（约 21 小时）仍留人工：11-17 跑过一次，113 万条已入库。
+    hf-refresh  每日 00:30 起跑完全部例行，一条链，不分钟点：
+                compact → collect --full-scan → build --stale
+                → 〔reconcile ‖ fetch-sizes / fetch-readme / fetch-preview〕
+                → fetch-files → parse-readme → export-wide → request run-due
+                → prune → doctor
+                顺序与并发由 `ops/refresh.py` 保证，不由钟点猜。09:00 是软边界：
+                到点不再启动新的抓取，已在跑的收尾，`doctor` 照常跑——它是唯一
+                能说明「今天哪里没跑完」的环节（ADR-0008）。
 
-    为什么把五个任务收成一条链（2026-11-09 实测）
-    ----------------------------------------------
+    为什么不拆成多个定时任务（2026-11-09 实测，教训保留）
+    ----------------------------------------------------
     原先是采集 03:10 / 对账 04:00 / 导出 04:50 / 交付 07:00 / 体检 09:00 各一条，
     靠时刻先后表达依赖。机器一直开着时看不出问题；一旦关机错过，
     `-StartWhenAvailable` 会在开机后**把错过的实例在同一分钟全部补跑**：
@@ -26,18 +25,24 @@
         ⇒ 导出一出来就落后，体检随之报「宽表导出落后：缺 2,466 行」
         19:14  体检第二次触发，撞上对账持锁 → 降级非快照 → 退出码 1
 
-    补跑本身要留着（不补就断更），要改的是**依赖的表达方式**：把五步写进一条
-    脚本按序执行，补跑时整条链重跑一遍。故本次只给 hf-daily 保留
-    `-StartWhenAvailable`；compact / sizes / archive 是互不相干的纯周期维护，
-    错过一轮就等下一轮（compact 次日、sizes 与 archive 下周），不必开机补跑——
-    它们补跑也只会跟链抢写锁。
+    所以依赖必须由编排器表达，而不是由「谁先到点」。2026-11-19 起进一步把编排
+    从 PowerShell 挪进 Python（ADR-0008）：锁、runs 台账、退出码本来都在 CLI 里，
+    `_common.ps1` 又实现过一遍墙钟与摘要，再叠一层 `Start-Job` 只会得到两份事实。
+    现在这个 ps1 只负责**注册**，跑什么由 `hf-data-crawl refresh` 决定。
+
+    **不补跑**（`CatchUp = $false`）：错过就错过，次日从 `runs/` 台账与 staging
+    分片续。补跑整条链既抢写锁，也会把「昨天的口径」跑成今天的日期——昨天那条
+    链的产物日期不对，比缺一天更麻烦。
 
     其余与旧版一致：
       - 允许在电池供电时启动（旧版 DisallowStartIfOnBatteries 会让任务被拒绝，
         结果码 0x800710E0），且切到电池不中断；
       - 设执行时限：写命令持有数据目录的锁，挂死的进程会一直占着它。
 
-    幂等：同名任务会被覆盖，可反复执行；升级时旧的五个任务会被一并清掉。
+    幂等：同名任务会被覆盖，可反复执行。**升级时 11 个旧任务会被一并清掉**
+    （`hf-daily` / `hf-sizes` / `hf-files` / `hf-archive` / `hf-compact` /
+    `hf-readme` 及更早的 `hf-collect` 等五个）——它们的脚本已删，留着只会在夜里
+    报「找不到文件」，且补跑仍会各自抢锁。
     用 PowerShell 7 运行（脚本为 UTF-8 无 BOM）：
         pwsh -File scripts\setup-schedule.ps1
         pwsh -File scripts\setup-schedule.ps1 -Uninstall
@@ -46,7 +51,7 @@
     采集日志落 data\logs\（按轮命名 `时间戳-任务名.log`，自动保留最近 200 个），
     运行摘要落 data\runs\（同样是时间戳-命令，但为结构化 JSON），任务本身不弹窗。
     两者同键不同扩展名：查某一轮的现场过程与结论，取同前缀即可。链条另写一份
-    `时间戳-daily.log`，逐步行首尾与跳过原因，一眼看出断在哪。
+    `时间戳-refresh.log`，逐步行首尾与跳过原因，一眼看出断在哪。
 #>
 [CmdletBinding()]
 param(

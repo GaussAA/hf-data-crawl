@@ -16,7 +16,7 @@
 | 静态 | `uv run ruff check .` / `uv run ruff format --check .` | 全仓 |
 | 测试 | `uv run pytest -q` | 全量 |
 | 覆盖率（观测） | `uv run pytest --cov=hf_data_crawl --cov-report=term-missing` | `src`（`[tool.coverage.run]`） |
-| 文档链接 | `python scripts/check_docs_links.py` | 全仓 Markdown |
+| 文档链接 | `uv run python scripts/tools/check_docs_links.py` | 全仓 Markdown |
 
 **覆盖率的口径（2026-11-18 引入）**
 

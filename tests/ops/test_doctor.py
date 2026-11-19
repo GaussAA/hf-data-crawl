@@ -176,7 +176,8 @@ def healthy(store: DatasetStore) -> None:
         put_ids(store, "silver", day, ids)
         lineage.stamp(store, day, bronze_rows=0, silver_rows=0, observations=len(ids))
     put_export(store, ids)
-    # README 是「抓过、且有人管」的常态：不进链，靠每周 hf-readme 保鲜。
+    # README 是「抓过、且有人管」的常态：2026-11-19 起进 hf-refresh 的并行段
+    # （`fetch-readme --changed-all`），这里造一轮已刷新的记录。
     put_readme(store, NOW.date(), {ident: None for ident in ids})
     make_run(store, "fetch-readme", NOW - timedelta(hours=20), "end")
     manifest = manifest_path(store)
