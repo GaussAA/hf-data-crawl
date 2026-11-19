@@ -31,6 +31,7 @@ from hf_data_crawl.acquire.readme import (
     RateLimiter,
     ReadmeFetcher,
     keep_previous_ok,
+    missing_readme_ids,
     stale_readme_ids,
 )
 from hf_data_crawl.ops.cli import SELF_LOCKED_COMMANDS, WRITE_COMMANDS, main
@@ -327,6 +328,29 @@ def test_旧行没有source_sha算陈旧() -> None:
     assert stale_readme_ids(current, existing)["id"].to_list() == ["acme/a"]
 
 
+def test_无记录的库算缺口() -> None:
+    """`--changed` 的候选是 inner join，从没抓过的库永远进不来。
+
+    2026-11-19 实测：2,945 个库卡在这里，而 `size` 的同类问题早就有缺口补抓。
+    """
+    current = pl.DataFrame({"id": ["acme/a", "acme/b", "acme/c"]})
+    existing = existing_frame({"id": "acme/a", "status": "ok"})
+
+    assert set(missing_readme_ids(current, existing)["id"].to_list()) == {"acme/b", "acme/c"}
+
+
+def test_error算缺口而denied不算() -> None:
+    """`error` 不是结论（下次该重试）；`denied` 是结论，只在 `--retry-denied` 时重试。"""
+    current = pl.DataFrame({"id": ["acme/a", "acme/b", "acme/c"]})
+    existing = existing_frame(
+        {"id": "acme/a", "status": "error"},
+        {"id": "acme/b", "status": "denied"},
+        {"id": "acme/c", "status": "absent"},
+    )
+
+    assert set(missing_readme_ids(current, existing)["id"].to_list()) == {"acme/a"}
+
+
 def test_临时失败不覆盖已拿到的全文() -> None:
     previous = existing_frame({"id": "acme/a", "status": "ok", "text": "正文"})
     fresh = existing_frame(
@@ -422,6 +446,21 @@ def test_命令行只抓指定ids(store_with_data: DatasetStore) -> None:
     assert code == 0
     assert set(transport.calls) == {"acme/ds-1", "acme/ds-3"}
     assert set(store_with_data.read("readme")["id"].to_list()) == {"acme/ds-1", "acme/ds-3"}
+
+
+def test_命令行changed会带上还没有结论的库(store_with_data: DatasetStore) -> None:
+    """修复前 `--changed` 只看已有记录，readme 表为空时整轮零请求。"""
+    transport = FakeReadmeTransport({"acme/ds-1": BODY})
+
+    code = main(
+        ["--data-dir", str(store_with_data.root), "fetch-readme", "--changed", "5"],
+        transport=transport,
+    )
+
+    assert code == 0
+    # seed 造了 3 个库、readme 表初始为空，三个都算缺口。
+    assert set(transport.calls) == {"acme/ds-1", "acme/ds-2", "acme/ds-3"}
+    assert store_with_data.read("readme").height == 3
 
 
 def test_全文视图可查但不进默认宽表(store_with_data: DatasetStore) -> None:

@@ -392,6 +392,28 @@ def stale_readme_ids(current: pl.DataFrame, existing: pl.DataFrame) -> pl.DataFr
     )
 
 
+def missing_readme_ids(current: pl.DataFrame, existing: pl.DataFrame) -> pl.DataFrame:
+    """还没有可用结论的库：从没抓过、或上次失败的。
+
+    与 `stale_readme_ids` 互补，补的正是它 inner join 漏掉的那两类：
+
+    - **无记录**：`--changed` 的候选来自 `current ⋈ existing`，新库不在 `existing`
+      里，跑一万遍也轮不到。2026-11-19 实测 2,945 个库卡在这里，而同步修的
+      `fetch-sizes` 早就有缺口补抓（`b0ae923`），`readme` 一直没有。
+    - **`error`**：`_resolved_ids` 说它「下次自然重试」，但重试只发生在 `--top`
+      全量模式；日常那趟 `--changed` 同样把它排除在外。
+
+    `denied` 不算缺口：它是明确结论（受门禁），要显式 `--retry-denied` 才重试。
+
+    anti join 而非 `is_in`：`existing` 是百万行，collect 成 set 再查会慢一个量级。
+    """
+    empty = current.head(0)
+    if current.height == 0:
+        return empty
+    resolved = existing.filter(pl.col("status").is_in(["ok", "absent", "denied"])).select("id")
+    return current.join(resolved, on="id", how="anti")
+
+
 def keep_previous_ok(previous: pl.DataFrame, fresh: pl.DataFrame) -> pl.DataFrame:
     """不让临时失败覆盖已拿到的全文。
 

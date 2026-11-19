@@ -41,6 +41,7 @@ from .readme import (
     ReadmeFetcher,
     ReadmeSummary,
     keep_previous_ok,
+    missing_readme_ids,
     stale_readme_ids,
 )
 from .reconcile import PROBE_DEGRADE_AFTER, Reconciler, ReconcileSummary
@@ -540,14 +541,30 @@ def run_fetch_readme(
     # `--changed N` 只重取这批里的前 N 个（按下载量），全量那一趟留给人工择机跑。
     refresh: set[str] = set()
     if args.changed > 0:
-        stale = stale_readme_ids(current, store.read("readme"))
-        picked = stale.sort("downloads", descending=True, nulls_last=True).head(args.changed)
+        # 候选 = 陈旧 ∪ 缺口。只看陈旧会漏掉「从没记录」的新库——`stale_readme_ids`
+        # 是 inner join，不在表里的 id 永远进不了候选（2026-11-19 实测卡住 2,945 个）。
+        # 与 `fetch-sizes` 的缺口补抓对齐，按下载量分配这一轮的 N 个名额。
+        stale = stale_readme_ids(current, existing)
+        gap = missing_readme_ids(current, existing)
+        picked = (
+            pl.concat(
+                [
+                    stale.select("id", "downloads", "sha"),
+                    gap.select("id", "downloads", "sha"),
+                ]
+            )
+            .sort("downloads", descending=True, nulls_last=True)
+            .head(args.changed)
+        )
         refresh = set(picked["id"].to_list())
         if not refresh:
-            print("README 无陈旧：没有 commit 变过的库。")
+            print("README 既无陈旧也无缺口：所有库都已有结论。")
             return Outcome({"changed": 0, "refreshed": 0})
         ordered = ordered.filter(pl.col("id").is_in(sorted(refresh)))
-        print(f"README 随内容刷新：{len(refresh)} 个库 commit 已变，重取其全文。")
+        print(
+            f"README 随内容刷新：{len(stale)} 个库 commit 已变、{len(gap)} 个还没有结论，"
+            f"本轮取 {len(refresh)} 个（按下载量）。"
+        )
 
     if args.ids:
         wanted = [item.strip() for item in args.ids.split(",") if item.strip()]
