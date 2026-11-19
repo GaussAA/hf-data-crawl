@@ -224,13 +224,17 @@ def run_docs(args: argparse.Namespace, store: DatasetStore) -> Outcome:
 
     缺字段说明时退出码为 1：文档不完整等于没写，应当在生成那一刻就看见。
 
+    默认写到**数据目录里**（`data/DATA.md`）而不是 `docs/`：这份文档的每个数字都
+    由本机数据算出，而各机器的 `data/` 互相独立。放进 `data/`（已在 .gitignore）
+    就不会出现「两台机器生成同一份 DATA.md、互相把对方的行数覆盖掉」。
+
     返回 `Outcome` 而不是裸退出码，是为了和别的命令一样经 `_execute` 落一条台账：
     `docs` 曾自己加锁、自己返回，失败了从不在 runs/ 里出现，而体检只读台账——
     盲区就等于「这条命令从不失败」。
     """
     from .datadoc import missing_docs, write
 
-    target = Path(args.out) if args.out else Path("docs") / "DATA.md"
+    target = Path(args.out) if args.out else store.root / "DATA.md"
     path = write(store.root, target)
     gaps = missing_docs()
     print(f"数据说明已生成：{path}")

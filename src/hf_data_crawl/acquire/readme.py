@@ -24,7 +24,7 @@ YAML 头，正文不在任何一次列表响应里。全文只有一个来源：
   「我们读不到」，`error` 是「这次没抓到」。
 - `denied` 别指望带令牌重来一遍就能补上：全量 51,860 条里 join `current.gated`
   后 99.75% 是门禁库（`manual` / `auto`），且 `private` 无一为真——不是私有库，
-  是公开但受限。带令牌抽 500 条实测零命中。见 `docs/DATA.md` 第 18 条。
+  是公开但受限。带令牌抽 500 条实测零命中。见 `data/DATA.md` 第 18 条。
 - 体积：中位 2.5 KB、均值 4.6 KB、p90 8.6 KB；全量约 3.6 GB 文本。
 
 与 `size` / `files` 一样是 `Origin.NETWORK` 表：raw 里没有副本，删掉就要重抓；
@@ -293,7 +293,7 @@ class ReadmeFetcher:
         `retry_denied` **不是「补齐缺口」的开关**：2026-11-18 实测全库 51,860 条
         denied 中 99.75% 是 gated（`manual` 34,471 需作者逐一审批、`auto` 17,257
         需账号接受条款），带令牌随机抽 500 条重试**零命中**。它只对「你确实已
-        获批的那批库」有意义。详见 `docs/DATA.md` 第 18 条。
+        获批的那批库」有意义。详见 `data/DATA.md` 第 18 条。
         """
         started = time.monotonic()
         candidates = list(dataset_ids)

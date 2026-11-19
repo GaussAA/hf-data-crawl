@@ -87,7 +87,7 @@ ops      → {delivery, query, acquire, pipeline, platform}
   这一改能让 `acquire` 落到 `pipeline` 之下、次序与数据流一致，但要连带碰
   marker 的崩溃恢复、lineage 的戳记语义与 `build` 的既有含义。换来的是编号好看，
   不是故障面变小。
-- **没有拆 `ops`。** 它同时是组合根与全系统视图（体检、`docs/DATA.md` 生成），所以
+- **没有拆 `ops`。** 它同时是组合根与全系统视图（体检、`data/DATA.md` 生成），所以
   必然 import 其余五片。要给它一个 rank 5 的上层，组合根就得搬出切片阶梯（包根
   `__main__.py` 或新增 `cli` 切片），`test_every_module_lives_in_a_known_slice` 也要
   开例外；而 `docs` 本来就要读四片，耦合只是挪位置。要动先单独提。

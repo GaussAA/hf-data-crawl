@@ -574,7 +574,7 @@ def test_旧结构表文件缺新列时视图仍能建立(tmp_path: Path) -> Non
 def test_覆盖率只数真有内容的行(catalog: GoldCatalog) -> None:
     """非 NULL 不等于有内容：空列表要算空。
 
-    这是 `docs/DATA.md` 与交付 README 里那个百分比的唯一算法。夹具里的
+    这是 `data/DATA.md` 与交付 README 里那个百分比的唯一算法。夹具里的
     `plain_tags` 是 `fill_null([])` 出来的空列表，按 `count(col)` 会报成 100%，
     而实际没有一个数据集真带了自定义标签。
     """

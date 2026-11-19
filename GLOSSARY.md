@@ -220,7 +220,7 @@
     分毫未变。这不是虚增——11-07 的 `card-*` 批次含 1,119,899 个去重 id（补抓覆盖
     近全库），而当日扫描只有 219,869 个，故原先那 20.5 万才是异常低值。代价是
     **「观测 ⊄ bronze」**这条不变量被打破：补位行由 `pipeline.bronze.day_frame` 合成，只能靠
-    那套逻辑复现，不能只拿 bronze 分区反推。口径已写入 `docs/DATA.md` 第五节第 12 条。
+    那套逻辑复现，不能只拿 bronze 分区反推。口径已写入 `data/DATA.md` 第五节第 12 条。
     **同日补记**：补位最初只做在状态层，`silver` 看不到这批库——实测 203 个库有
     current、有观测、没有属性行，见 #45。
 41. **任意前缀走 `tag_index` 视图，不物化长表**（2026-11-08，B 案的轻量替代）：
@@ -735,7 +735,7 @@
     **做法（大帅钦点甲案、应用按任务/用途理解）**：契约升 v4，默认面 26→31 列，
     新增 `pretty_name` / `multilinguality` / `arxiv_ids` / `source_datasets` / `task_ids`；
     4 个 LIST 列并入 `FLATTEN_COLUMNS`（共 13 个）。另立 `EXTENDED_FIELDS`（19 项，
-    列名 + 中文定义 + 覆盖档）与 `EXTENDED_NOTE`，交付 README 与 `docs/DATA.md`
+    列名 + 中文定义 + 覆盖档）与 `EXTENDED_NOTE`，交付 README 与 `data/DATA.md`
     第八节都从它生成表格，不手抄第二份。覆盖档写区间不写精确百分比——百分比会随
     每日采集漂移。`regions` 明确列入清单但不进默认面。
 
@@ -1492,7 +1492,7 @@
       排除凭据与网络。所以 `--retry-denied` 只对「已获批的那批」有意义：`manual`
       只能逐个向作者申请，`auto` 即便放行也等于代账号签署 1.7 万份不同条款。
       剩下 131 条 `gated=false` 的才是真异常，抽查多为 `Access to this resource is
-      disabled.`（`current.disabled` 仍是 false，以响应为准）。详见 `docs/DATA.md` 第 18 条。
+      disabled.`（`current.disabled` 仍是 false，以响应为准）。详见 `data/DATA.md` 第 18 条。
     - **不替换 `description`**：摘要便宜、一次列表就能拿全、适合粗筛；全文均值
       4.6 KB，塞进 31 列默认导出会让导出从 105 MB 涨到约 4 GB。两条并存，各管一段——
       与「低覆盖列不回默认面」是同一条原则。
@@ -1547,7 +1547,7 @@
     不再是全量。数字过期了，读者却无法从文本判断它是哪天的，也没人会记得回来改。
 
     - **做法**：`EXTENDED_FIELDS` 只留「列名 + 定义」，覆盖率由两个消费方现算。
-      `docs/DATA.md` 第八节与交付 README 都调 `query.gold.column_coverage`，
+      `data/DATA.md` 第八节与交付 README 都调 `query.gold.column_coverage`，
       对 `gold.datasets` 视图算一次聚合。**空列表不算有内容**——按 `count(col)`
       会把 `plain_tags` 报成 100%，而真正带自定义标签的只有两成多。
     - **交付 README 多一段「本次输出的列覆盖」**：交付方拿到一份全空的
@@ -2153,3 +2153,20 @@
     「从没处理过」**？`inner join`、`existing[col]`、`is_in(done)` 这三种常见写法都只
     覆盖「有记录且已处理」，新来的那一类会静默落空。落空的代价不是报错，而是「永远不
     处理，且没人知道」。
+
+130. **`DATA.md` 生成本地、不进仓库**（2026-11-19，作者澄清「各机器 `data/` 独立」）：
+     这份文档的每个数字都由本机数据算出，而**代码共享、数据各自独立**——两台机器
+     各自生成，就会把对方的行数覆盖掉。11-18 与 11-19 各有一版：`silver` 一边
+     15 分区 232 万行、一边 4 分区 114 万行，`current` 一边 1,146,841、一边 1,138,778，
+     两边各自的 `size` 缺口都对得上自己的 `current`——都是真的，只是不同的库。
+
+     - **做法**：默认输出改为 `store.root / "DATA.md"`（即 `data/DATA.md`），
+       `data/` 已在 `.gitignore`；仓库里那份已删除。
+     - **字段字典没丢**：唯一事实源是 `ops/fielddocs.py`，随代码共享；`data/DATA.md`
+       只是它的渲染加本机统计。
+     - **测试跟着改**：`test_本机已生成的文档与结构一致` 只在文件存在时校验
+       （CI 上没有 `data/`，跳过），比结构、不比数字。
+     - **不放 Markdown 链接**：`data/` 是行内代码路径校验白名单之外，但链接目标
+       仍会被判存在性，所以 README 里改成纯文本 `` `data/DATA.md` ``。
+     - **同类**：`PERFORMANCE.md` 的体积与延迟表也是单机数字，文头已注明
+       「各机器数据独立，只看方法与相对变化」。

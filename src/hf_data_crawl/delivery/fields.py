@@ -269,7 +269,7 @@ PAGE_FIELDS: tuple[tuple[str, tuple[str, ...], str], ...] = (
 #:
 #: **刻意不写覆盖档**：覆盖率随上游与补抓节奏天天漂，写进源码就等于抄下一份会
 #: 过期且无从判断新旧的数字（与 README 那条「不抄数」同一理由）。要覆盖率就去
-#: `docs/DATA.md` 第八节或交付 README，两处都按当期底库现算。
+#: `data/DATA.md` 第八节或交付 README，两处都按当期底库现算。
 EXTENDED_FIELDS: tuple[tuple[str, str], ...] = (
     ("regions", "数据覆盖地区标签"),
     ("dois", "关联的 DOI 编号"),

@@ -209,7 +209,7 @@ def column_coverage(catalog: GoldCatalog, columns: Iterable[str]) -> dict[str, f
     `fill_kind`——与 Polars 侧同一个判据，不是第二套。
 
     覆盖率只给「这一刻的底库」：补抓与上游都会让它漂，所以消费方（交付 README、
-    `docs/DATA.md`）必须现算，不能抄进常量。
+    `data/DATA.md`）必须现算，不能抄进常量。
     """
     probe = catalog.run("SELECT * FROM datasets LIMIT 0")
     schema = probe.schema

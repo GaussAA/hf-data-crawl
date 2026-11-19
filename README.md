@@ -39,7 +39,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `archive` | 归档早于 N 天的 Raw 分区：合并小分块并去重，先验证 Bronze 逐行相等，原文件移入 `backup/raw/` | 否 |
 | `compact` | 压缩冷区 Raw：跨天去重成一份基线，原分块移入 `backup/raw/` 不删除 | 否 |
 | `prune` | 清理备份：把 `backup/` 里超过 7 天的分片真正删掉，释放磁盘（只动 `backup/`） | 否 |
-| `docs` | 生成 `docs/DATA.md`：data 目录结构、各文件作用、全部字段含义 | 否 |
+| `docs` | 生成 `data/DATA.md`：data 目录结构、各文件作用、全部字段含义（本机生成，不进仓库） | 否 |
 | `export-wide` | 把 `datasets` 宽视图导出成单文件 parquet（zstd 压缩；可重建，不参与状态更新） | 否 |
 
 常用参数：
@@ -58,7 +58,7 @@ hf-data-crawl query        [--board NAME] [--limit 50] [--sql "..."]   # NAME �
 hf-data-crawl bronze       [--date YYYY-MM-DD] [--id 作者/名称] [--limit 5] [--out PATH]  # 回看某天的原始标量
 hf-data-crawl report       [--out PATH] [--top 20]
 hf-data-crawl archive      [--older-than-days 30] [--date YYYY-MM-DD]
-hf-data-crawl docs         [--out PATH]           # 默认 docs/DATA.md
+hf-data-crawl docs         [--out PATH]           # 默认 data/DATA.md
 hf-data-crawl export-wide  [--out PATH]           # 默认 data/exports/datasets.parquet
 hf-data-crawl request      new REQ-0001 --title 标题 --requester 姓名 [--purpose ...] [--cadence once|daily|weekly|monthly|manual] [--kind query|backfill] [--source 输入表.xlsx]
 hf-data-crawl request      list
@@ -95,9 +95,9 @@ hf-data-crawl request      sample REQ-0001 [--reason …] [--undo]   # 标/取�
 才展平并把机器码换成页面文字。契约的增删与 v3 压平、v5 撤销的来龙去脉见
 GLOSSARY #62–#66，版本号在 `delivery/fields.py` 的 `CONTRACT_VERSION`。
 
-`regions` 实测 100% 有值但 **99.94% 是 HF 自动推断的 `us`**，故不进默认面；它与 DOI、引用、项目主页等扩展字段一起登记在 `EXTENDED_FIELDS`，需要时写 `output.columns: [id, regions, ...]` 点名即可投列——**默认面管「不指定时给什么」，不是「总共有什么」**。完整清单见 [docs/DATA.md](docs/DATA.md) 第八节。这份文件也是**数据集筛选需求未指定 `output.columns` 时的默认投影**；不登记为表、不参与状态更新，视图本身仍保留全部列。四处共用一份定义，详见 [GLOSSARY](GLOSSARY.md) #62–#66。
+`regions` 实测 100% 有值但 **99.94% 是 HF 自动推断的 `us`**，故不进默认面；它与 DOI、引用、项目主页等扩展字段一起登记在 `EXTENDED_FIELDS`，需要时写 `output.columns: [id, regions, ...]` 点名即可投列——**默认面管「不指定时给什么」，不是「总共有什么」**。完整清单见 `data/DATA.md` 第八节（跑 `hf-data-crawl docs` 生成）。这份文件也是**数据集筛选需求未指定 `output.columns` 时的默认投影**；不登记为表、不参与状态更新，视图本身仍保留全部列。四处共用一份定义，详见 [GLOSSARY](GLOSSARY.md) #62–#66。
 
-**文件清单补采（试点）**：列表接口不返回 `siblings`（见 [docs/DATA.md](docs/DATA.md) 第九节），
+**文件清单补采（试点）**：列表接口不返回 `siblings`（见 `data/DATA.md` 第九节），
 单库详情按头部补又会反复超时，故 `fetch-files` 改走 `/tree/main?recursive=true&expand=false`：
 每页固定 1000 条、约 110–230 KB / 0.4–0.7 s。`hf-files` 每周日 07:30 补下载量前 1000 名，
 体检给 10 天年龄红线——漏跑一次不喊，连丢一周才说明停了。默认每库只取第一页，有后续页时

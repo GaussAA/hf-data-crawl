@@ -513,7 +513,7 @@ def build_parser() -> argparse.ArgumentParser:
     bronze.add_argument("--out", default=None, help="把整表写到这个路径（.parquet 或 .csv）")
 
     docs = subparsers.add_parser("docs", help="生成 data 目录说明（结构·文件·字段含义）")
-    docs.add_argument("--out", default=None, help="输出路径，默认 docs/DATA.md")
+    docs.add_argument("--out", default=None, help="输出路径，默认 data/DATA.md")
 
     wide = subparsers.add_parser(
         "export-wide",

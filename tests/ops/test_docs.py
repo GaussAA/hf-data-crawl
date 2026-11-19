@@ -29,19 +29,23 @@ def doc(tmp_path: Path) -> str:
     return render(tmp_path / "data", STAMP)
 
 
-def test_仓库里的文档也是最新的() -> None:
-    """原先这里只比 `render()` 与 `TABLES`——文档在仓库里过不过期都不会红。
+def test_本机已生成的文档与结构一致() -> None:
+    """`data/DATA.md` 不进仓库：它的每个数字都由本机数据算出，而各机器 `data/` 独立。
 
-    `docs/DATA.md` 是生成物，有人改了 schema 却忘记跑 `hf-data-crawl docs` 时，
-    上面那几条测试照样全绿，因为它们的 `doc` 是当场重新渲染的。这条直接读仓库里
-    那份：只比结构（表路径、逻辑名、列名），不比随数据变化的数字。
+    所以这条不再读仓库文件（CI 上本就没有），只在**本机已经生成过**时校验结构：
+    改了 schema 却忘记跑 `hf-data-crawl docs` 时，这里会红。数字不比——行数、体积
+    随采集天天变，比它只会制造噪声。
     """
     root = Path(__file__).resolve().parents[2]
-    committed = (root / "docs" / "DATA.md").read_text(encoding="utf-8")
+    generated = root / "data" / "DATA.md"
+    if not generated.exists():
+        pytest.skip("本机还没跑过 docs；CI 上没有 data/，本就不该有这份文件")
+
+    committed = generated.read_text(encoding="utf-8")
     for name, spec in TABLES.items():
-        assert f"逻辑名：`{name}`" in committed, f"{name} 没进仓库文档，跑 docs 重新生成"
+        assert f"逻辑名：`{name}`" in committed, f"{name} 没进本机文档，跑 docs 重新生成"
         for column in spec.schema:
-            assert f"| `{column}` |" in committed, f"{name}.{column} 没进仓库文档，跑 docs 重新生成"
+            assert f"| `{column}` |" in committed, f"{name}.{column} 没进本机文档"
 
 
 def test_每张表都出现在文档里(doc: str) -> None:
@@ -125,7 +129,7 @@ def test_命令生成的文档与渲染函数一致(tmp_path: Path) -> None:
 def test_文档提到的源码文件必须真的存在(tmp_path: Path) -> None:
     """生成物被手工改过，重新生成就会把手改的部分冲掉。
 
-    2026-11-13 实测：`docs/DATA.md` 里补了切片前缀（`delivery/fields.py`），生成器
+    2026-11-13 实测：`data/DATA.md` 里补了切片前缀（`delivery/fields.py`），生成器
     却仍输出裸名 `fields.py`——重新生成即回退。这类漂移没有守卫就只能靠人记得，
     而「记得」不是机制。故：文档里每个以 `.py` 结尾的引用，都必须能在仓库根或
     `src/hf_data_crawl/` 下找到。

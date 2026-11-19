@@ -7,7 +7,7 @@
 |---|---|---|
 | [README](../README.md) | 项目是什么、怎么跑、命令与参数、数据布局、关键机制索引 | 第一次上手、加命令、换机器 |
 | [GLOSSARY](../GLOSSARY.md) | 领域词表；编号决策与不变量（#1–#16 接口事实，#17 起设计与取舍） | 命名一个概念、改一处机制、想知道「为什么是这样」 |
-| [DATA.md](DATA.md) | data 目录、表结构、字段含义（**生成物，不手改**） | 查字段、查表；改 `ops/fielddocs.py` 后重新生成 |
+| `data/DATA.md`（生成物，**不进仓库**） | data 目录、表结构、字段含义 | 查字段、查表；跑 `hf-data-crawl docs` 生成——各机器的 `data/` 独立，所以这份文档只描述本机数据 |
 | [operations/RECOVERY.md](operations/RECOVERY.md) | 故障恢复、人工复位、归档 / 压缩回滚 | 数据或派生坏了 |
 | [operations/MONITORING.md](operations/MONITORING.md) | 台账字段、监控指标与告警阈值、调度清单 | 排障、核对例行任务 |
 | [operations/PERFORMANCE.md](operations/PERFORMANCE.md) | 体积与延迟基线、各表压缩参数、怎么重测 | 调压缩 / 分区、怀疑变慢、磁盘吃紧 |

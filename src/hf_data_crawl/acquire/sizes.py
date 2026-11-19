@@ -1,7 +1,7 @@
 """用 datasets-server 补数据集的规模与形状。
 
 列表接口给的是仓库字节数（`mainSize`），卡片里声明的行数只覆盖少数数据集
-（当前覆盖率见 `docs/DATA.md` 的「HF 页面上的数字」一节，那里按实际数据计算）。
+（当前覆盖率见 `data/DATA.md` 的「HF 页面上的数字」一节，那里按实际数据计算）。
 真正回答「这个数据集多少行、多少列」的是 datasets-server 的 `/size`：
 
     {"size": {"dataset": {"num_rows": ..., "num_bytes_memory": ...},
@@ -354,7 +354,7 @@ def protect_ok_rows(previous: pl.DataFrame, fresh: pl.DataFrame) -> pl.DataFrame
 
     判据只看「旧行是不是 ok」：从未成功抓过的 id 照常写 `unavailable`（那是真实
     结论，也是永久结论），已经拿到数字的 id 保持原样——`snapshot_date` 因此诚实地
-    表示「这个值是哪天取得的」，而不是「哪天问过」（docs/DATA.md 第五节第 14 条）。
+    表示「这个值是哪天取得的」，而不是「哪天问过」（data/DATA.md 第五节第 14 条）。
     """
     if previous.height == 0 or fresh.height == 0:
         return fresh

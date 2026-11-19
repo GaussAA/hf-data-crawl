@@ -28,7 +28,7 @@ platform < pipeline < {acquire, query} < delivery < ops
 | 体检 / 告警 | GLOSSARY #74、#76、#81–#84、#127；`docs/operations/MONITORING.md` | 判据基准（快照日而非日历）、Finding 的身份、连续天数、富化资产怎么判新旧 |
 | 调度 / 日志 | `scripts/daily.ps1`（日常链的顺序）、`scripts/setup-schedule.ps1`（独立任务与补跑策略）、GLOSSARY #67、#77、#92、#118 | 为什么是一条链、哪些任务不补跑、重试边界、卡住了怎么看得出与怎么掐断 |
 | 交付 / 需求 | `.agents/skills/hf-request/SKILL.md`、GLOSSARY #51–#58、#69–#71、#79、#85–#87 | 受理 → 口径 → 方法 → 预演 → 交付 → 变更 |
-| 字段 / 数据形状 | `docs/DATA.md`（生成物）、GLOSSARY #62–#66、#128、`delivery/fields.py` | 表结构、字段含义、默认交付契约、同名列的两份事实与空值语义 |
+| 字段 / 数据形状 | `data/DATA.md`（生成物）、GLOSSARY #62–#66、#128、`delivery/fields.py` | 表结构、字段含义、默认交付契约、同名列的两份事实与空值语义 |
 | 架构决策 / 术语 | `docs/adr/`、GLOSSARY #75、`docs/agents/domain.md` | 当时的取舍与事故；术语怎么用 |
 | 提 issue / 写规格 | `docs/agents/issue-tracker.md` | `.scratch/<feature>/` 的目录与 Status 约定 |
 | 改提交钩子 / 质量门槛 | GLOSSARY #125；`.pre-commit-config.yaml`（五项与 CI 一一对应）；`.github/workflows/ci.yml` | 本地与 CI 为什么必须是同一把尺子、mypy 与 pyright 各自的盲区 |
@@ -38,7 +38,7 @@ platform < pipeline < {acquire, query} < delivery < ops
 
 ## 硬规则
 
-- **生成物不手改**：`docs/DATA.md` 由 `hf-data-crawl docs` 生成；字段含义改
+- **生成物不手改**：`data/DATA.md` 由 `hf-data-crawl docs` 生成；字段含义改
   `ops/fielddocs.py` 后重新生成。
 - **一份事实只写一处**：`docs/README.md` 的「谁拥有什么」表说明每类事实该落在哪份文件；
   改文档前先查表，别在 README 里复述词表。
