@@ -11,8 +11,8 @@
 `docs/operations/PERFORMANCE.md` 对应日期的段落，与上一次比。不 exit 1。
 
 用法：
-    uv run python scripts/bench.py
-    uv run python scripts/bench.py --data-dir path/to/data
+    uv run python scripts/tools/bench.py
+    uv run python scripts/tools/bench.py --data-dir path/to/data
 """
 
 from __future__ import annotations

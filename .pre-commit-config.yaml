@@ -42,10 +42,10 @@ repos:
         always_run: true
       - id: docs-links
         name: docs links
-        entry: uv run python scripts/check_docs_links.py
+        entry: uv run python scripts/tools/check_docs_links.py
         language: system
         pass_filenames: false
-        files: ^(?:.*\.md|scripts/check_docs_links\.py)$
+        files: ^(?:.*\.md|scripts/tools/check_docs_links\.py)$
       # 本地并行提速；CI 仍串行跑全量——总得留一处「串行全量」，否则测试间的
       # 顺序依赖一旦出现，本地与 CI 会一起把它藏起来（全绿不等于都跑了）。
       #

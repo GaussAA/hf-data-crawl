@@ -23,7 +23,7 @@
    README 不把「为什么」讲到最后一段——那一段属于词表。词表编号是稳定引用键，只增不改。
 2. **不抄数**：列数、行数、检查项数量从代码或生成器取，文档只写判据与指向。
    数字会漂，判据不会；抄下来的数一旦过期，读者无法判断该信哪一份。
-3. **改了文件名或新增文档**，更新本页并跑 `python scripts/check_docs_links.py`；
+3. **改了文件名或新增文档**，更新本页并跑 `python scripts/tools/check_docs_links.py`；
    它校验引用是否落地、编号是否完整，不校验内容是否过期——过期靠 Review 对照代码发现。
 
 ## v1.0 历史归档
@@ -51,10 +51,10 @@
 
 ## 校验
 
-相对链接与行内代码里的仓库路径由 [check_docs_links.py](../scripts/check_docs_links.py)
+相对链接与行内代码里的仓库路径由 [check_docs_links.py](../scripts/tools/check_docs_links.py)
 逐条解析校验，CI 的 `Check documentation` 与 pre-commit 共用这一入口；同一入口还会校验
 `DECISIONS #nn` 引用指向真有条目、编号不重。本地可跑：
 
 ```bash
-python scripts/check_docs_links.py
+python scripts/tools/check_docs_links.py
 ```

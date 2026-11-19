@@ -20,7 +20,7 @@ CI 的 ``Check documentation`` 与 pre-commit 共用这一入口；判定标准�
 
 用法::
 
-    python scripts/check_docs_links.py [--root DIR]
+    python scripts/tools/check_docs_links.py [--root DIR]
 """
 
 from __future__ import annotations
@@ -125,7 +125,7 @@ def _repo_relative_target(raw: str) -> str | None:
 
     只认「前缀 + 单一路径」：`docs/ISSUES.md` 会被校验，`derive.py`（裸文件名）、
     `silver/dt={dt}/silver.parquet`（数据布局示例）、`.scratch/<slug>/spec.md`
-    （模板占位符）、`python scripts/check_docs_links.py`（命令片段）都不会。
+    （模板占位符）、`python scripts/tools/check_docs_links.py`（命令片段）都不会。
     """
     target = raw.strip().split("#", 1)[0].strip()
     if not target.startswith(_REPO_PREFIXES) or _NOT_A_PATH.search(target):
@@ -262,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--root",
         type=Path,
-        default=Path(__file__).resolve().parent.parent,
+        default=Path(__file__).resolve().parents[2],
         help="仓库根目录，默认取本脚本所在仓库",
     )
     args = parser.parse_args(argv)

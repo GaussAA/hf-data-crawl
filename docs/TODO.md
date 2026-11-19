@@ -27,7 +27,7 @@ CI 里不要动的地方：
 
 - **不要移除 Windows job**：它曾抓出 cp1252 控制台下打印中文导致的 `UnicodeEncodeError`
   （文档链接校验器「校验通过」被误判为失败），本机 UTF-8 终端复现不到，见
-  `scripts/check_docs_links.py`。
+  `scripts/tools/check_docs_links.py`。
 - **不要给 CI 的 pytest 加 `-n`**：理由同上，串行那一份是留给顺序依赖的探针。
 - 若 CI 真的慢到碍事，先看哪一步占比最大（`gh run view --log`），再针对性处理；
   「并行运行测试」在 2 核 runner 上通常换不到时间。

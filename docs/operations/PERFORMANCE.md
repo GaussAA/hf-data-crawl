@@ -10,7 +10,7 @@
 ## 怎么重测
 
 ```bash
-uv run python scripts/bench.py            # 打印一份 Markdown 报告
+uv run python scripts/tools/bench.py            # 打印一份 Markdown 报告
 ```
 
 它只打印、不判红：基准会随机器、负载与数据量漂，硬阈值只会训练人忽略告警。

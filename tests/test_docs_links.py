@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "check_docs_links.py"
+SCRIPT = ROOT / "scripts" / "tools" / "check_docs_links.py"
 
 
 def _run(root: Path, io_encoding: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -100,7 +100,7 @@ def test_行内代码路径修好后转为通过(tmp_path: Path) -> None:
 def test_裸文件名占位符与命令片段不误报(tmp_path: Path) -> None:
     (tmp_path / "note.md").write_text(
         "`derive.py` 是源码；`silver/dt={dt}/silver.parquet` 是数据布局；\n"
-        "`.scratch/<slug>/spec.md` 是模板；`python scripts/check_docs_links.py` 是命令。\n"
+        "`.scratch/<slug>/spec.md` 是模板；`python scripts/tools/check_docs_links.py` 是命令。\n"
         "```\n`docs/missing-in-fence.md`\n```\n",
         encoding="utf-8",
     )

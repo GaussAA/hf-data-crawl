@@ -561,5 +561,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_LAUNCH_HOURS,
         help=f"超过这个时长不再启动新抓取（默认 {DEFAULT_LAUNCH_HOURS} 小时）",
     )
+    refresh.add_argument(
+        "--only",
+        default=None,
+        help="只跑点名的步骤（逗号分隔），手动补跑用：不看依赖、不读今天已完成的台账、"
+        "不套时间边界。可选值见 python -m hf_data_crawl.ops.refresh 的 STEP_NAMES",
+    )
 
     return parser

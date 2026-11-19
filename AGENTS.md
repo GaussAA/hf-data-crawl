@@ -35,7 +35,7 @@ platform < pipeline < {acquire, query} < delivery < ops
 
 术语一律以 [GLOSSARY.md](GLOSSARY.md) 为准，新词先入表再用；带编号的设计决策与
 接口事实在 [DECISIONS.md](DECISIONS.md)，编号是稳定键（`DECISIONS #74`），只增不改。
-`python scripts/check_docs_links.py` 会校验编号指向的真有条目。
+`python scripts/tools/check_docs_links.py` 会校验编号指向的真有条目。
 
 ## 硬规则
 

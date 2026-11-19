@@ -159,12 +159,17 @@ def test_升级时清除旧的钟点任务() -> None:
 
 
 def test_规模补齐不写死全站行数() -> None:
-    """`--top 1122000` 会随底库增长过期，长尾永远补不到规模且不报任何错。"""
-    source = text(SCRIPTS / "sizes.ps1")
+    """`--top 1122000` 会随底库增长过期，长尾永远补不到规模且不报任何错。
 
-    assert '"--top", "0"' in source
-    assert "1122000" not in source
-    assert "全量" in source
+    2026-11-19 起不看 ps1 的默认参数（那 11 个单命令包装已删），改看刷新链里
+    `sizes` 这一步：它用 `--changed-all`（陈旧 ∪ 缺口），本来就不依赖行数常量。
+    """
+    from hf_data_crawl.ops import refresh
+
+    sizes = next(step for step in refresh.PARALLEL if step.name == "sizes")
+
+    assert "--changed-all" in sizes.args
+    assert not [arg for arg in sizes.args[1:] if arg.isdigit()]
 
 
 # ---------------------------------------------------------------- 墙钟上限

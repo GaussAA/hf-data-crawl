@@ -182,20 +182,39 @@ def _plan(
     steps: tuple[Step, ...],
     done: set[str],
     failed: set[str],
+    only: frozenset[str] | None = None,
 ) -> tuple[list[Step], list[StepResult]]:
-    """把步骤分成「要跑」与「跳过」，跳过的带上原因。"""
+    """把步骤分成「要跑」与「跳过」，跳过的带上原因。
+
+    `only` 非空时是**手动补跑**模式：只跑点名的步骤，且**不看依赖**——
+    `--only export` 的人知道自己在干什么，让他先拼一串前置只会把「补一步」
+    变成「补整条」。代价写在 `--only` 的 help 里：导出的口径取决于底层数据
+    今天是否真的更新过。
+    """
     ready: list[Step] = []
     skipped: list[StepResult] = []
     for step in steps:
+        if only is not None and step.name not in only:
+            skipped.append(StepResult(step.name, note="不在 --only 里"))
+            continue
         if step.name in done:
             skipped.append(StepResult(step.name, note="今天已完成"))
             continue
-        missing = [need for need in step.needs if need not in done or need in failed]
+        missing: list[str] = []
+        if only is None:
+            missing = [need for need in step.needs if need not in done or need in failed]
         if missing:
             skipped.append(StepResult(step.name, note=f"依赖未完成：{','.join(missing)}"))
             continue
         ready.append(step)
     return ready, skipped
+
+
+#: 全部步骤名，供 `--only` 校验。写在这里而不是扫描三个元组，是为了让拼错的步骤名
+#: 在参数解析期就报错——`--only exprot` 静默什么都不跑，比报错坏得多。
+STEP_NAMES: frozenset[str] = frozenset(
+    step.name for step in (*SERIAL_HEAD, *PARALLEL, *AFTER_RECONCILE, *SERIAL_TAIL)
+)
 
 
 @dataclass
@@ -229,20 +248,28 @@ def execute(
     *,
     budget_hours: float = DEFAULT_BUDGET_HOURS,
     launch_hours: float = DEFAULT_LAUNCH_HOURS,
+    only: frozenset[str] | None = None,
     log: Callable[[str], None] | None = None,
 ) -> Plan:
-    """跑完整条链。`log` 是逐步摘要的输出口（默认打印）。"""
+    """跑完整条链，或（`only` 非空时）只跑点名的步骤。
+
+    `log` 是逐步摘要的输出口（默认打印）。
+
+    `only` 是**手动补跑**模式：不读「今天已完成」台账（明确要求跑就不该被跳过）、
+    不检查依赖、不套用软边界与预算——手跑一步是几分钟到几小时的事，把它当整条链
+    来限时没有意义，超时由 `refresh.ps1` 的墙钟兜底。
+    """
     emit = log or print
     started = time.monotonic()
     plan = Plan()
-    done = today_successes(store)
+    done = today_successes(store) if only is None else set()
     failed: set[str] = set()
 
     def over_launch() -> bool:
-        return time.monotonic() - started > launch_hours * 3600
+        return only is None and time.monotonic() - started > launch_hours * 3600
 
     def over_budget() -> bool:
-        return time.monotonic() - started > budget_hours * 3600
+        return only is None and time.monotonic() - started > budget_hours * 3600
 
     def announce(result: StepResult) -> None:
         if result.code is None:
@@ -255,12 +282,21 @@ def execute(
     # collect，一次性评估会把「还没跑的 collect」判成依赖未完成，build 直接被跳过，
     # 然后导出的依赖链整条塌掉（2026-11-19 首测就是这个形状）。
     for step in SERIAL_HEAD:
+        if only is not None and step.name not in only:
+            result = StepResult(step.name, note="不在 --only 里")
+            plan.results.append(result)
+            announce(result)
+            continue
         if step.name in done:
             result = StepResult(step.name, note="今天已完成")
             plan.results.append(result)
             announce(result)
             continue
-        missing = [need for need in step.needs if need not in done or need in failed]
+        missing = (
+            []
+            if only is not None
+            else [need for need in step.needs if need not in done or need in failed]
+        )
         if missing:
             result = StepResult(step.name, note=f"依赖未完成：{','.join(missing)}")
             plan.results.append(result)
@@ -272,7 +308,7 @@ def execute(
         announce(result)
 
     # ② 并行段：对账与三个锁外抓取同时跑；files 等 reconcile。
-    ready, skipped = _plan(PARALLEL, done, failed)
+    ready, skipped = _plan(PARALLEL, done, failed, only)
     for result in skipped:
         plan.results.append(result)
         announce(result)
@@ -315,12 +351,21 @@ def execute(
     # ③ 串行尾：**逐步推进**，理由同串行头——`export` 依赖同批的 `parse`，
     # 一次性 `_plan` 会把「还没跑的 parse」判成依赖未完成，导出与交付整条塌掉。
     for step in SERIAL_TAIL:
+        if only is not None and step.name not in only:
+            result = StepResult(step.name, note="不在 --only 里")
+            plan.results.append(result)
+            announce(result)
+            continue
         if step.name in done:
             result = StepResult(step.name, note="今天已完成")
             plan.results.append(result)
             announce(result)
             continue
-        missing = [need for need in step.needs if need not in done or need in failed]
+        missing = (
+            []
+            if only is not None
+            else [need for need in step.needs if need not in done or need in failed]
+        )
         if missing:
             result = StepResult(step.name, note=f"依赖未完成：{','.join(missing)}")
             plan.results.append(result)
@@ -359,10 +404,20 @@ def summary_payload(plan: Plan, budget_hours: float) -> dict[str, object]:
 
 def run(args, store: DatasetStore) -> Outcome:
     """`refresh` 子命令入口。"""
+    only: frozenset[str] | None = None
+    if getattr(args, "only", None):
+        names = frozenset(item.strip() for item in args.only.split(",") if item.strip())
+        unknown = sorted(names - STEP_NAMES)
+        if unknown:
+            raise SystemExit(
+                f"未知步骤名：{', '.join(unknown)}；可选：{', '.join(sorted(STEP_NAMES))}"
+            )
+        only = names
     plan = execute(
         store,
         budget_hours=args.budget_hours,
         launch_hours=args.launch_hours,
+        only=only,
     )
     # 体检非零只代表**有告警**（导出落后、Raw 断日这类待办也计入非零），不让它
     # 拖垮整条链——告警与故障挤进同一个退出码，铃声很快就没人听。详情在

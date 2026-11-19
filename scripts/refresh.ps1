@@ -16,6 +16,7 @@
 .EXAMPLE
     pwsh -File scripts\refresh.ps1
     pwsh -File scripts\refresh.ps1 --budget-hours 4
+    pwsh -File scripts\refresh.ps1 --only export    # 手动补一步，不看依赖与时间边界
 #>
 [CmdletBinding()]
 param(
