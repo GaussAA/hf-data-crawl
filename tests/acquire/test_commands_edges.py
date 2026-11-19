@@ -488,6 +488,36 @@ def test_README全都有结论时立刻收工(tmp_path: Path, capsys) -> None:
     assert "既无陈旧也无缺口" in capsys.readouterr().out
 
 
+def test_changed_all单独给出也成立(tmp_path: Path, monkeypatch, capsys) -> None:
+    """刷新链只传 `--changed-all`、不传 `--changed`。
+
+    判据原先只看 `args.changed > 0`，于是链上这一步静默退回「按 --top 抓头部」：
+    陈旧库一个没刷，退出码 0，日志里也看不出少了什么。
+    """
+    store = DatasetStore(tmp_path / "data")
+    seed_current(store, sha="sha-2")
+    store.upsert(
+        "readme",
+        pl.DataFrame(
+            [{"id": "a/x", "url": "u", "source_sha": "sha-1", "status": "ok"}],
+            schema=dict(table("readme").schema),
+        ),
+    )
+
+    class Chosen(Exception):
+        """候选已选出——证明没走「既无陈旧也无缺口」那条早退。"""
+
+    def boom(*_args: object, **_kwargs: object) -> object:
+        raise Chosen
+
+    monkeypatch.setattr(commands, "ReadmeFetcher", boom)
+
+    with pytest.raises(Chosen):
+        commands.run_fetch_readme(readme_args(changed=0, changed_all=True), store, None)
+
+    assert "随内容刷新" in capsys.readouterr().out
+
+
 def test_README点名不到在架库时拒绝(tmp_path: Path, capsys) -> None:
     store = DatasetStore(tmp_path / "data")
     seed_current(store)

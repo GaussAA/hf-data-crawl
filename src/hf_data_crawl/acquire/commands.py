@@ -577,8 +577,10 @@ def run_fetch_readme(
     ordered = current.sort("downloads", descending=True, nulls_last=True)
     # README 是仓库里的一个文件：commit 变了，旧全文就不再是当前版本。
     # `--changed N` 只重取这批里的前 N 个（按下载量），全量那一趟留给人工择机跑。
+    # `--changed-all` 单独给出也成立——刷新链只传它、不传 `--changed`，此前这个
+    # 条件只看 `args.changed > 0`，整段被跳过，链上那一步就退化成「按 --top 抓头部」。
     refresh: set[str] = set()
-    if args.changed > 0:
+    if args.changed > 0 or args.changed_all:
         # 候选 = 陈旧 ∪ 缺口。只看陈旧会漏掉「从没记录」的新库——`stale_readme_ids`
         # 是 inner join，不在表里的 id 永远进不了候选（2026-11-19 实测卡住 2,945 个）。
         # 与 `fetch-sizes` 的缺口补抓对齐，按下载量分配这一轮的 N 个名额。
