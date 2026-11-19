@@ -45,9 +45,14 @@ _FENCE = re.compile(r"^\s*(?:```|~~~)")
 #: 再列一次：本校验按文件系统递归，不读 `.gitignore`，而记忆文件里满是当时的旧路径，
 #: 于是同一份代码在 CI 上全绿、在本机永远报十几条断链——「本机红、CI 绿」比不校验更坏，
 #: 它会训练人忽略这条命令。
+#:
+#: `.scratch` 同理（`.gitignore` 第 17 行）：临时探查脚本、别处的草稿与 issue 存档都堆在
+#: 这里，写的是当时的相对路径。2026-11-19 一份 `.scratch/<slug>/issues/*.md` 里的
+#: `` `docs/DATA.md` `` 就这样让本地全量测试红了两条，而 CI 上根本没有这个目录。
 _EXCLUDED = {
     ".git",
     ".workbuddy",
+    ".scratch",
     ".venv",
     "node_modules",
     "data",

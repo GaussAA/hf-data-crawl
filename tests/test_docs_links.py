@@ -40,6 +40,24 @@ def test_当前仓库的文档引用全部有效() -> None:
     assert "0 条断链" in result.stdout
 
 
+def test_本地杂物目录不参与校验(tmp_path: Path) -> None:
+    """`.workbuddy` / `.scratch` 在 `.gitignore` 里，但校验器按文件系统递归、不读它。
+
+    不显式排除，本地就会永远报断链而 CI 全绿——「本机红、CI 绿」比不校验更坏，
+    它会训练人忽略这条命令。两个目录写的是当时的相对路径，不该拿仓库根去解析。
+    """
+    (tmp_path / "ok.md").write_text("[好](ok.md)\n", encoding="utf-8")
+    for name in (".workbuddy", ".scratch"):
+        directory = tmp_path / name / "draft"
+        directory.mkdir(parents=True)
+        (directory / "note.md").write_text("`docs/DATA.md`\n", encoding="utf-8")
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "0 条断链" in result.stdout
+
+
 def test_断链必须被检出并报出文件与位置(tmp_path: Path) -> None:
     (tmp_path / "ok.md").write_text("# OK\n", encoding="utf-8")
     (tmp_path / "README.md").write_text(
