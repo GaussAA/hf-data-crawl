@@ -63,7 +63,12 @@ def build_parser() -> argparse.ArgumentParser:
     collect = subparsers.add_parser("collect", help="日增量采集")
     collect.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
     collect.add_argument("--limit", type=int, default=MAX_LIMIT, help="每页条数，上限 1000")
-    collect.add_argument("--max-pages", type=int, default=None, help="本轮最多抓几页（有界试跑）")
+    collect.add_argument(
+        "--max-pages",
+        type=int,
+        default=None,
+        help="本轮最多抓几页（有界试跑）；0 表示不设上限，扫到末页",
+    )
     collect.add_argument(
         "--pages-without-new",
         type=int,
@@ -104,7 +109,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--card-pages",
         type=int,
         default=None,
-        help="变化集卡片扫描的页数上限，默认 200；防止水位线异常时把全站拉完",
+        help=(
+            "变化集卡片扫描的页数上限，默认 200（防止水位线异常时把全站拉完）；"
+            "0 表示不设上限，刷新链用它把变化 ∪ 缺口全刷"
+        ),
     )
 
     collect.add_argument(
@@ -251,7 +259,10 @@ def build_parser() -> argparse.ArgumentParser:
     reconcile.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
     reconcile.add_argument("--limit", type=int, default=MAX_LIMIT, help="每页条数，上限 1000")
     reconcile.add_argument(
-        "--max-pages", type=int, default=None, help="本轮最多抓几页（未扫完不判下架）"
+        "--max-pages",
+        type=int,
+        default=None,
+        help="本轮最多抓几页（未扫完不判下架）；0 表示不设上限，一轮扫完全站",
     )
     reconcile.add_argument(
         "--probe-limit",

@@ -63,7 +63,9 @@ class ScanSpec:
     label: str = "part"
     direction: str = "-1"
     limit: int = MAX_LIMIT
-    #: 页数上限；None 表示扫到末页。由上层的 ScanRun 判定而非交给生成器，
+    #: 页数上限；None 或 0 表示扫到末页（`--card-pages 0` 这类命令行惯例：0 是
+    #: 「不设上限」而不是「一页都不扫」，照字面比 `pages >= 0` 会第一页就停，
+    #: 让「全刷」静默变成「只刷一页」）。由上层的 ScanRun 判定而非交给生成器，
     #: 这样才能给出准确的停止原因（生成器只会在到限时静默 return）。
     max_pages: int | None = None
     #: 游标；None 表示这类重扫不需要续跑（顶部刷新、卡片补齐都是幂等的）。
@@ -158,7 +160,8 @@ class ScanRun:
                 stopped_reason = hint
                 break
 
-            if spec.max_pages is not None and pages >= spec.max_pages:
+            # 0 = 不设上限（命令行惯例），见 `ScanSpec.max_pages` 的说明。
+            if spec.max_pages is not None and spec.max_pages > 0 and pages >= spec.max_pages:
                 stopped_reason = "max_pages"
                 break
 

@@ -297,7 +297,11 @@ class HfDatasetApi:
                 checkpoint.save(next_cursor)
 
             pages += 1
-            if next_cursor is None or (max_pages is not None and pages >= max_pages):
+            # 0 与 None 同义：不设上限。照字面比会让 `--card-pages 0` 第一页就返回，
+            # 调用方以为「全刷」而实际只刷了一页，且停止原因看起来完全正常。
+            if next_cursor is None:
+                return
+            if max_pages is not None and max_pages > 0 and pages >= max_pages:
                 return
 
             if remaining is not None and remaining < self._low_quota_threshold and reset_in:

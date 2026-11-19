@@ -242,6 +242,20 @@ def test_钩子收到的是本页与页码(store: DatasetStore) -> None:
     assert seen == [(1, ["a", "b"]), (2, ["c"])]
 
 
+def test_页数上限为零表示不设上限(store: DatasetStore) -> None:
+    """`--card-pages 0` 在刷新链里写作「变化 ∪ 缺口全刷」。
+
+    照字面比 `pages >= 0` 会在第一页就停：站上以为刷完了，停止原因还写着
+    `max_pages`——一个完全正常的编码，只是含义反了。
+    """
+    api = FakeScanApi([page("a"), page("b"), page("c", cursor=None)])
+
+    summary = ScanRun(api, store).run(DAY, spec(max_pages=0))
+
+    assert summary.pages == 3
+    assert summary.stopped_reason == "end"
+
+
 def test_不把页数上限交给生成器(store: DatasetStore) -> None:
     """交给生成器会得到错误的停止原因，且钩子看不到最后一页之后的状态。"""
     api = FakeScanApi([page("a", cursor=None)])
