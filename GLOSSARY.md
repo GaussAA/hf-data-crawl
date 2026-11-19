@@ -2,6 +2,10 @@
 
 > 本项目所有代码、测试名、issue 措辞一律使用本表词汇。新词先入表，再用。
 >
+> **代码引用给到子模块**：`delivery.delivery.read_manifest` 这样写，别写成
+> `delivery.read_manifest`——后者在包上取不到，按图索骥会 `AttributeError`。
+> 这 4 处是 2026-11-19 核对时才发现（`audit_glossary_symbols` 的真实产出）。
+>
 > **编号是跨文档的引用键**（`GLOSSARY #74`）：只增不改、不复用，新增条目接在末尾。
 > 引用键失效比文案陈旧更坏——它会把读者送到另一条决策上，而两边都读得通。
 
@@ -1189,8 +1193,8 @@
     体检就报「宽表导出不存在，跑 export-wide」，而重跑只会写到新位置——**照提示做
     永远修不好它指的病**。改为 `delivery.wide.export_path()`（原 `default_target` 改名，
     名字里带 export 才看得出它答的是哪个问题）。「哪些目录算一次交付」也由四份
-    （`delivery._last_delivery`、`commands.deliveries_of`、doctor 两处内联）收成一份
-    `delivery.deliveries_of`；「哪些目录算一次需求」收成 `requirement.request_dirs`。
+    （`delivery.delivery._last_delivery`、`commands.deliveries_of`、doctor 两处内联）收成一份
+    `delivery.delivery.deliveries_of`；「哪些目录算一次需求」收成 `requirement.request_dirs`。
 
     **一条方法论**：口径不是只有「公式」。分子、分母、格式化、过滤条件，四处任一处
     各写各的，都会长出第二个数字。所以「统一口径」的判据是「能不能只改一处」，
@@ -1304,7 +1308,7 @@
     打不红的不是承诺，是愿望——而愿望会被人当真，然后按它做错事。
 
     **同批收拢的档案读法**（D-2）：`manifest.json` 写在一处、读在三处，且三处
-    各写各的容错——`delivery._read_manifest` 返回 None、`commands.manifest_summary`
+    各写各的容错——`delivery.delivery.read_manifest` 返回 None、`commands.manifest_summary`
     折成一行文案、`compare._manifest` 抛 `CompareError`（还自己拼字符串
     `"manifest.json"`，`MANIFEST_NAME` 就在隔壁）。文件名硬编码的坏处不是丑：
     改名之后 `compare` 会对一个「文件明明在」的目录报「没有 manifest」。
