@@ -132,8 +132,9 @@ _TABLE_STORY: dict[str, tuple[str, str, str]] = {
         "0.2 req/s，故按 15 req/s 主动匀速。约 25% 的库没有 README、5% 受限读不到，"
         "`status` 把「没有」「读不到」「抓失败」分开记，别一律当成空描述。",
         "`fetch-readme` 写；是 `Origin.NETWORK` 表，重建保留、删了要重抓。"
-        "全量 113 万条（每条都要问一次，404 也占配额）约 21 小时，且**不进默认导出（契约 v6 起只取清洗后的正文，不取这张表的字段）**"
-        "（塞进去会让导出从 105 MB 涨到约 4 GB）；要用全文请直接查 `readme` 视图或按需 join。",
+        "全量 113 万条（每条都要问一次，404 也占配额）约 21 小时。**正文会进默认导出**"
+        "（契约 v6 起 `readme` 是交付列，导出时清洗掉 YAML 头与格式噪音），"
+        "导出物 358 MB 里约四分之三是它；要看未经清洗的原文，直接查 `readme` 表。",
     ),
     "preview": (
         "数据集**长什么样**——viewer 里的前几行，回答「这个库的列与值到底成什么形状」。"
@@ -300,6 +301,10 @@ def _overview(stamp: str, store_root: Path) -> list[str]:
         "flowchart TD",
         '  API["Hugging Face API"] -->|"翻页扫描"| RAW["raw/<br/>原始响应"]',
         '  DS["datasets-server /size"] -->|"按需补齐"| SIZE["enrich/size.parquet"]',
+        '  API -->|"README 正文"| RM["enrich/readme<br/>全文 2.8 GB"]',
+        '  RM -->|"抽侧栏字段"| RF["enrich/readme_fields<br/>Homepage / Paper / BibTeX"]',
+        '  API -->|"viewer 样例"| PV["enrich/preview"]',
+        '  API -->|"文件清单"| FL["enrich/files"]',
         '  RAW -->|"解析·去重"| BRONZE["bronze/<br/>标量快照"]',
         '  BRONZE -->|"拆维度·只记变更"| SILVER["silver/<br/>属性流水"]',
         '  BRONZE -->|"折叠指标"| STATE["state/<br/>当前态 + 观测流水"]',
@@ -308,10 +313,19 @@ def _overview(stamp: str, store_root: Path) -> list[str]:
         "  STATE --> GOLD",
         "  ENRICH --> GOLD",
         "  SIZE --> GOLD",
+        '  GOLD -->|"视图里的 30 列"| EXPORT["exports/datasets.parquet<br/>默认契约 35 列"]',
+        '  RM -->|"清洗后正文 readme"| EXPORT',
+        '  RF -->|"paper_url / citation_bibtex"| EXPORT',
+        '  ENRICH -->|"split / features"| EXPORT',
         "```",
         "",
         "**Raw 是唯一不可重算的一层**：其余各层删掉都能从它重新推出来，",
         "所以 `build` 可以断网重跑，而 `raw/` 一旦丢失就真的没有了。",
+        "",
+        "导出物那 35 列里，**有 5 列不在 `datasets` 视图里**（`readme` / `split` / "
+        "`features` / `paper_url` / `citation_bibtex`）：它们要么太大（正文 2 GB、"
+        "features 265 MB），要么粒度不同（config 级），由 `export-wide` 的第二步现场 "
+        "join 上去。所以「视图里查不到」不等于「导出物里没有」。",
         "",
         "## 二、目录一览",
         "",
@@ -666,16 +680,20 @@ def _wide(store_root: Path, extended_coverage: dict[str, float]) -> list[str]:
         "`hf-data-crawl export-wide` 按**默认交付字段契约**把 `gold.datasets` 视图",
         f"裁成 {len(DEFAULT_COLUMNS)} 列写成一份 parquet，默认落在 `data/exports/datasets.parquet`，",
         "行数与 `current` 相同。视图本身仍保留全部列供内部查询，导出物只留「与数据集",
-        "有关、有用且必要」的画像字段：标识、描述、热度、许可、语言、模态、任务、",
-        "数据类型、规模、大小。",
+        "有关、有用且必要」的画像字段：标识与来源、内容描述、热度、可用性与许可、",
+        "语言与模态、任务与数据类型、标签、补充画像、学术关联、规模、大小、结构。",
         "",
         "这份文件同时是**默认参考交付底库**：数据集筛选需求若未写 `output.columns`，",
         "就按同一份契约投影。契约在 `delivery/fields.py`（含逐列中文定义与 `CONTRACT_VERSION`），",
         "导出物、查询编译、体检勾稽三处共用，不在文档里手抄第二份列清单。",
         "",
-        f"契约 v{CONTRACT_VERSION} 共 {len(DEFAULT_COLUMNS)} 列，含 `tags` / `plain_tags`",
-        "（API 原样标签与拆出的自定义标签，即详情页 `Tags` 那一行）。少数数据集只在",
-        "卡片 YAML 里声明、没同步进 `tags`，默认投影用 `card_*` 同义列兜底；",
+        f"契约 v{CONTRACT_VERSION} 共 {len(DEFAULT_COLUMNS)} 列：标识与来源、内容描述",
+        "（`readme` 清洗后正文 + `has_readme`）、热度、可用性与许可、语言与模态、",
+        "任务与数据类型、标签、补充画像、学术关联、规模、大小、结构（`split` / `features`）。",
+        "v6 删掉了 `description`（被正文取代）、`license_name`（与 `licenses` 同口径）、",
+        "`plain_tags`（`tags` 的无前缀子集，可现滤）、`server_config_count` 与",
+        "`server_num_columns`（与 `features` 重复）。少数数据集只在卡片 YAML 里声明、",
+        "没同步进 `tags`，默认投影用 `card_*` 同义列兜底；",
         "`gold.datasets` 视图语义不改，内部仍可分列追溯。交付 README 附「页面标签 ↔",
         "库列名 ↔ 值的显示形式」对照表，CSV 把语言 / 任务 / 规模的机器码展平成页面",
         "形式，parquet 与 SQL 结果保留机器码以便筛算。",
