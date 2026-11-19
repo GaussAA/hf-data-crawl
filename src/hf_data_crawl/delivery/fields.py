@@ -2,7 +2,7 @@
 
 为什么要有这份契约
 ------------------
-`datasets` 宽视图有 72 列，但它是**管道全景**，不是给人看的交付面：水印
+`datasets` 宽视图是**管道全景**（列数见 `wide_column_names()`，不在此抄），不是给人看的交付面：水印
 （`first_seen_at`）、抓取状态（`files_status` / `truncated`）、卡片凭证
 （`source_sha`）、内部标记（`xet_enabled` / `resource_group`）全在里面；还有一批
 只对头部补过、`card_num_rows` 1.6% / `card_dataset_bytes` 1.4% / `arxiv_ids` 3.7%
@@ -71,7 +71,7 @@ HF 列表接口也不提供「被哪些模型 / Space 使用」这类应用字�
 `multilinguality`、`arxiv_ids`（论文）、`source_datasets` / `task_ids`（用途与来源）。
 其余约 15 个语义字段不进默认面，改由 `EXTENDED_FIELDS` 登记定义（覆盖率不写进
 源码，见该常量的注释）：
-它们一直都在 72 列视图里，`spec.output.columns` 点名即可投列——**默认面管的是
+它们一直都在宽视图里，`spec.output.columns` 点名即可投列——**默认面管的是
 「不指定时给什么」，不是「总共有什么」**。低覆盖列塞回默认面，等于把 v1 裁掉的
 「九成空」问题请回来。
 
@@ -262,7 +262,7 @@ PAGE_FIELDS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("Total file size", ("main_size",), "729 MB ↔ 字节数；页面按文件大小统计，口径可能略有出入"),
 )
 
-#: 不进默认面、但一直都在 72 列视图里的语义字段。
+#: 不进默认面、但一直都在宽视图里的语义字段。
 #:
 #: 登记在这里是为了回答「总共有什么、怎么拿」：默认面管「不指定时给什么」，
 #: 不是「总共有什么」。
