@@ -551,6 +551,23 @@ class GoldCatalog:
             f"(FORMAT PARQUET, COMPRESSION {COPY_COMPRESSION})"
         )
 
+    def copy_query(self, target: Path, query: str) -> None:
+        """把一段完整 SELECT 写成 parquet；目标必须在数据目录内。
+
+        与 `copy_wide` 同一条受控通道，区别只在于「投影」换成「完整查询」：导出
+        宽表的第二步要把临时文件、`readme`、`card_configs`、`readme_fields` 一次
+        join 出来，那已经不是一个投影表达式能表达的了（`projection` 会被塞进
+        `COPY (...)` 的括号里，无法带 CTE 与 join）。
+        """
+        destination = Path(target)
+        root = self._store.root.resolve()
+        if not destination.resolve().is_relative_to(root):
+            raise ValueError(f"导出目标必须在数据目录内：{destination}（数据目录 {root}）")
+        escaped = destination.resolve().as_posix().replace("'", "''")
+        self._connection.execute(
+            f"COPY ({query}) TO '{escaped}' (FORMAT PARQUET, COMPRESSION {COPY_COMPRESSION})"
+        )
+
     def close(self) -> None:
         self._connection.close()
         self._tempdir.cleanup()

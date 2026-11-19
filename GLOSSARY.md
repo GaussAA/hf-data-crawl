@@ -2204,3 +2204,27 @@
      跑不完次日从断点续。区别于**全量重抓**：只重写变了或没有的，不动没变的行。
      readme 全量 22 小时、sizes 全量 9.8 小时，真·全量一天跑不完，这是唯一
      能在每日窗口里做到「更新后即最新」的形态。
+
+136. **契约 v6：31 → 35 列**（2026-11-19）：导出宽表按「删重复、删空值超 99%、
+     换成更常用的字段」重整，同时把 readme 正文收进交付面。
+
+     - **删 5 列**：`description`（被 readme 正文取代）、`license_name`（与
+       `licenses` 同口径，前者可从后者映射）、`plain_tags`（`tags` 按「无前缀」拆出
+       的子集，可现滤）、`server_config_count`（63.6% 是常量 1）、`server_num_columns`
+       （`features` 里已列出字段名，可数出列数）。
+     - **加 9 列**：`readme`、`has_readme`、`first_seen_at`、`last_seen_at`、
+       `xet_enabled`、`split`、`features`、`paper_url`、`citation_bibtex`。
+     - **readme 清洗**（导出时做，不截断）：去 YAML 头（占正文 26.8%）、HTML、图片
+       徽章，链接只留文字，空行压缩；**代码块全保留**。换行按 `\r?\n` 处理——上游
+       CRLF 与 LF 混用，只认 `\n` 会让整段正则空转（实测 `farwew/subsetTemplateName`）。
+       清洗后不足 100 字符的，回退「去 YAML 头后的原文」前 500 字符——截原始正文会
+       把刚去掉的 frontmatter 又还回来。
+     - **两步导出**：视图里的 30 列先 `COPY` 到临时文件，再与 `readme` /
+       `card_configs` / `readme_fields` 现场 join 注入 5 列。注入列不能进视图
+       （正文 2 GB、features 265 MB，进视图会让每次查询拖着走）。富化表还没采时用
+       空 CTE，导出不会因此失败。
+     - **导出物 358 MB**（v5 是 119 MB），在 600 MB 预算内；`features` 取每库第一个
+       非空 config，`split` 是所有 config 的去重列表。
+     - **体检**：`contract_coverage` 会列出覆盖率不足 1% 的契约列，作为下一次重审的
+       待办（不升格成红项——低覆盖多半是上游分布）。契约版本号 5→6，交付档案按它
+       区分口径。

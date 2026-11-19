@@ -90,22 +90,22 @@ from ..query.gold import wide_column_names
 #:
 #: 版本号只增不减：历史交付档案钉住的是当时那一版，倒退会让两份档案都说不清。
 #: 故 v3 的扁平化撤销后记作 v5，而不是退回 v2。
-CONTRACT_VERSION = 5
+CONTRACT_VERSION = 6
 
 #: 分组 → 列。顺序即交付列序：标识在前、画像居中、数值在后，便于人读。
 GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "标识与来源",
-        ("id", "url", "author", "created_at", "last_modified"),
+        ("id", "url", "author", "created_at", "last_modified", "first_seen_at", "last_seen_at"),
     ),
-    ("内容描述", ("description",)),
+    ("内容描述", ("readme", "has_readme")),
     (
         "热度",
         ("downloads", "downloads_all_time", "likes"),
     ),
     (
         "可用性与许可",
-        ("status", "gated", "license_name", "licenses"),
+        ("status", "gated", "licenses", "xet_enabled"),
     ),
     (
         "语言与模态",
@@ -115,30 +115,52 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "任务与数据类型",
         ("task_categories", "formats", "libraries"),
     ),
-    (
-        "标签",
-        ("tags", "plain_tags"),
-    ),
+    ("标签", ("tags",)),
     (
         "补充画像",
         ("pretty_name", "multilinguality"),
     ),
     (
         "学术关联与用途",
-        ("arxiv_ids", "source_datasets", "task_ids"),
+        ("arxiv_ids", "source_datasets", "task_ids", "paper_url", "citation_bibtex"),
     ),
     (
         "规模",
-        ("size_categories", "server_num_rows", "server_num_columns", "server_config_count"),
+        ("size_categories", "server_num_rows"),
     ),
     (
         "大小",
         ("main_size", "server_num_bytes_parquet"),
     ),
+    (
+        "结构",
+        ("split", "features"),
+    ),
 )
 
 #: 默认交付字段，按 GROUPS 顺序展开。别在别处手抄第二份。
 DEFAULT_COLUMNS: tuple[str, ...] = tuple(column for _, columns in GROUPS for column in columns)
+
+#: 不在 `gold.datasets` 视图里、由 `export_wide` 现场 join 的契约列。
+#:
+#: 两个理由之一：体积太大（`readme` 正文清洗后约 2 GB、`features` 265 MB），放进
+#: 视图会让**每次**查询都拖着它们走；或粒度不同（`split` / `features` 在
+#: `card_configs` 里是 config 级，要先聚合成 id 级）。
+#:
+#: 它们仍算契约列：交付物里必须有、`contract_errors` 认可、`data/DATA.md` 会写。
+#: 只是「从哪来」与视图列不同——`wide.py` 的第二步专门负责这一半。
+INJECTED_COLUMNS: tuple[str, ...] = (
+    "readme",
+    "split",
+    "features",
+    "paper_url",
+    "citation_bibtex",
+)
+
+#: 视图里那部分契约列，按契约顺序。`projection_sql()` 只投这些。
+VIEW_COLUMNS: tuple[str, ...] = tuple(
+    column for column in DEFAULT_COLUMNS if column not in INJECTED_COLUMNS
+)
 
 #: 每列一句人话定义。会进交付 README 与数据说明，所以要说清口径与歧义。
 #:
@@ -152,32 +174,36 @@ COLUMN_NOTES: dict[str, str] = {
     "author": "仓库所属用户名或组织",
     "created_at": "仓库创建时刻（UTC）",
     "last_modified": "最后一次提交的时刻（UTC）",
-    "description": "数据集简介：卡片正文（README）的纯文本摘要，HF 会截断并附「见数据集页」；未写正文则为空",
+    "first_seen_at": "本底库第一次见到该库的快照时间（UTC）；用于筛「新上架」",
+    "last_seen_at": "本底库最近一次在列表接口见到该库的快照时间（UTC）；早于当前快照说明它可能已下架",
+    "readme": "README 正文：已去 YAML 头、HTML 标签与图片徽章，链接只留文字，代码块保留；不是卡片摘要",
+    "has_readme": "作者是否写了 README：true 有正文 / false 明确没有 / 空表示读不到（受限）",
     "downloads": "近 30 天下载量，不是累计值；累计值见 downloads_all_time",
     "downloads_all_time": "历史累计下载量，正常只增不减（上游偶有清零）；与近 30 天下载量是两个口径",
     "likes": "点赞总数",
     "status": "active 在架 / disappeared 已删除 / restricted 转私有 / renamed 已改名",
     "gated": "门禁：false 公开 / manual 需人工审批 / auto 自动授权",
-    "license_name": "卡片声明的许可证名称（页面 License）；未声明则为空，不代表无许可",
-    "licenses": "许可证标签列表（HF 结构化枚举），与 license_name 可能口径不同",
+    "licenses": "许可证标签列表（HF 结构化枚举，如 license:mit）；未声明为空，不代表无许可",
+    "xet_enabled": "是否启用 HF 的 Xet 存储（影响下载方式）；空表示上游未返回该字段",
     "languages": "数据集语言标签列表（页面 Languages）；存 ISO 码如 ko，页面显示 Korean；未声明为空",
     "modalities": "数据模态标签（页面 Modalities，图像/文本/音频/视频等）；未声明则为空",
     "task_categories": "任务类别标签（页面 Tasks，即目标用途）；存 text-generation，页面显示 Text Generation",
     "formats": "文件格式标签列表（页面 Formats，parquet/json/csv 等）",
     "libraries": "支持库标签列表（页面 Libraries，datasets、pandas 等）",
-    "size_categories": "规模档位标签（页面 Size）；存 100K<n<1M，页面显示 100K - 1M",
-    "tags": "API 返回的原样标签全量（含 task_categories: 之类前缀），可追溯、可按任意前缀再拆",
-    "plain_tags": "无前缀的自定义标签（页面 Tags，如 keyword / reranking）；本仓库拆分所得",
+    "tags": "API 返回的原样标签全量（页面 Tags 的完整形式，含 task_categories: 之类前缀），可追溯、可按任意前缀再拆",
     "pretty_name": "卡片里的展示名（可能与作者/名称完全不同）；未声明则为空",
     "multilinguality": "多语言性标记（单语 / 多语 / 翻译等）；未声明则为空",
     "arxiv_ids": "关联的 arXiv 论文编号，如 2507.02259；仅少数库在卡片里声明",
     "source_datasets": "该数据集派生自哪些上游数据集；取值由作者填写，未必是 HF 数据集 id",
     "task_ids": "具体任务标识，比 task_categories 大类更细；未声明则为空",
+    "paper_url": "README 里声明的论文链接；未声明则为空",
+    "citation_bibtex": "README 里给出的 BibTeX 引用块；未声明则为空",
+    "size_categories": "规模档位标签（页面 Size）；存 100K<n<1M，页面显示 100K - 1M",
     "server_num_rows": "datasets-server 实测行数；与卡片声明行数是两个口径",
-    "server_num_columns": "各 config 中列数的最大值",
-    "server_config_count": "datasets-server 返回的 config 数量",
     "main_size": "仓库主分支字节数（页面 Total file size 的机器值），十进制换算 MB 请除以 1e6",
     "server_num_bytes_parquet": "datasets-server 转成 parquet 后的字节数，是数据文件体积而非仓库体积",
+    "split": "该库所有 config 的 split 去重列表（train/validation/test 等）；空表示上游未返回",
+    "features": '该库某个 config 的字段定义（JSON 文本，形如 [{"dtype":"string","name":"id"}]）；取第一个非空 config',
 }
 
 #: 每列**类型族**。契约原先只声明列名，于是「列名没变、类型变了」没有绊线：
@@ -192,25 +218,28 @@ COLUMN_TYPES: dict[str, str] = {
     "id": "text",
     "url": "text",
     "author": "text",
-    "description": "text",
+    "readme": "text",
     "status": "text",
     "gated": "text",
-    "license_name": "text",
     "pretty_name": "text",
+    "paper_url": "text",
+    "citation_bibtex": "text",
+    "features": "text",
     # 时间
     "created_at": "time",
     "last_modified": "time",
-    # 数值
+    "first_seen_at": "time",
+    "last_seen_at": "time",
+    # 数值（布尔在 `type_family` 里归 number）
     "downloads": "number",
     "downloads_all_time": "number",
     "likes": "number",
     "server_num_rows": "number",
-    "server_num_columns": "number",
-    "server_config_count": "number",
     "main_size": "number",
     "server_num_bytes_parquet": "number",
-    # 多值列：`;` 拼平的 VARCHAR 曾经出现过（v3），是对「预览器读不了 LIST」的
-    # 妥协；上游修好后 v5 撤销。这条声明就是为了让那种回退必须先改这里。
+    "has_readme": "number",
+    "xet_enabled": "number",
+    # 多值列
     "licenses": "list",
     "languages": "list",
     "modalities": "list",
@@ -219,11 +248,11 @@ COLUMN_TYPES: dict[str, str] = {
     "libraries": "list",
     "size_categories": "list",
     "tags": "list",
-    "plain_tags": "list",
     "multilinguality": "list",
     "arxiv_ids": "list",
     "source_datasets": "list",
     "task_ids": "list",
+    "split": "list",
 }
 
 
@@ -255,9 +284,9 @@ PAGE_FIELDS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("Formats", ("formats",), "json ↔ `json`"),
     ("Languages", ("languages",), "Korean ↔ `ko`（ISO 码）"),
     ("Size", ("size_categories",), "100K - 1M ↔ `100K<n<1M`（档位，非精确行数）"),
-    ("Tags", ("plain_tags", "tags"), "keyword / reranking … ↔ `plain_tags`；`tags` 另存含前缀全量"),
+    ("Tags", ("tags",), "原文全量（含 `task_categories:` 等前缀），无前缀子集可按需自滤"),
     ("Libraries", ("libraries",), "Datasets, pandas, Polars, +1 ↔ 列表四项，`+1` 是末项折叠显示"),
-    ("License", ("license_name", "licenses"), "cc-by-nc-4.0 ↔ 标量 + 标签列表"),
+    ("License", ("licenses",), "cc-by-nc-4.0 ↔ 结构化枚举列表 `license:cc-by-nc-4.0`"),
     ("Downloads last month", ("downloads",), "12 ↔ 快照时点的近 30 天下载量，会随时间变化"),
     ("Total file size", ("main_size",), "729 MB ↔ 字节数；页面按文件大小统计，口径可能略有出入"),
 )
@@ -280,7 +309,7 @@ EXTENDED_FIELDS: tuple[tuple[str, str], ...] = (
     ("card_homepage", "项目主页"),
     (
         "card_description",
-        "卡片 YAML 声明的一句话摘要（作者口径），与 description 不是一回事",
+        "卡片 YAML 声明的一句话摘要（作者口径），与 readme 正文不是一回事",
     ),
     ("annotations_creators", "标注者类型（专家 / 众包 / 机器生成）"),
     ("language_creators", "语料来源（原始采集 / 翻译 / 机器生成）"),
@@ -312,7 +341,6 @@ FALLBACKS: dict[str, str] = {
     "task_categories": "card_task_categories",
     "languages": "card_languages",
     "size_categories": "card_size_categories",
-    "plain_tags": "card_tags",
 }
 
 #: 契约列 → 值来自哪张附表。只登记「来源表可能整体没采集」的列。
@@ -325,11 +353,14 @@ FALLBACKS: dict[str, str] = {
 #: 没登记在此的列，值来自 `current` / `silver`，整列为空一律算故障。
 COLUMN_SOURCES: dict[str, str] = {
     "pretty_name": "carddata",
-    "license_name": "carddata",
     "server_num_rows": "size",
-    "server_num_columns": "size",
-    "server_config_count": "size",
     "server_num_bytes_parquet": "size",
+    "readme": "readme",
+    "has_readme": "readme",
+    "split": "card_configs",
+    "features": "card_configs",
+    "paper_url": "readme_fields",
+    "citation_bibtex": "readme_fields",
 }
 
 #: CSV 展平时做「机器码 → 页面形式」变换的列。parquet 与 SQL 结果不变。
@@ -400,7 +431,7 @@ def projection_sql() -> str:
     导出物号称与视图同构，这曾是唯一没对上的地方。
     """
     parts: list[str] = []
-    for column in DEFAULT_COLUMNS:
+    for column in VIEW_COLUMNS:
         fallback = FALLBACKS.get(column)
         if fallback is None:
             parts.append(f'"{column}"')
@@ -462,7 +493,11 @@ def contract_errors() -> list[str]:
     """
     problems: list[str] = []
     known = set(wide_column_names())
-    unknown = [column for column in DEFAULT_COLUMNS if column not in known]
+    # 注入列由 `export_wide` 现场 join 产出，不在视图里；其余契约列必须在视图里。
+    injected = set(INJECTED_COLUMNS)
+    unknown = [
+        column for column in DEFAULT_COLUMNS if column not in known and column not in injected
+    ]
     if unknown:
         problems.append(f"契约里有宽视图不存在的列：{unknown}")
     if len(DEFAULT_COLUMNS) != len(set(DEFAULT_COLUMNS)):

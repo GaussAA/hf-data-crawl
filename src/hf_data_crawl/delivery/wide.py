@@ -46,6 +46,7 @@ from .fields import (
     COLUMN_TYPES,
     DEFAULT_COLUMNS,
     FALLBACKS,
+    INJECTED_COLUMNS,
     contract_errors,
     projection_sql,
     type_family,
@@ -54,6 +55,137 @@ from .fields import (
 #: 默认产物路径，相对 `store.root`。放在 `exports/` 而非登记表管理的目录，
 #: 是为了让「它不是一张表」在目录结构上一眼可见。
 DEFAULT_RELATIVE = Path("exports") / "datasets.parquet"
+
+#: 注入列 → 第二步 SQL 里的别名。
+_INJECT_ALIAS: dict[str, str] = {
+    "readme": "rc",
+    "split": "sa",
+    "features": "fa",
+    "paper_url": "rf",
+    "citation_bibtex": "rf",
+}
+
+#: README 正文清洗：去 YAML 头、图片徽章、HTML 标签、链接只留文字、空行压缩。
+#:
+#: 顺序有意义：`frontmatter` 先去掉（它含 `---` 与大量 `:`，先处理后两个正则的
+#: 成本更低）；图片与徽章必须在「链接只留文字」之前——徽章是 `[![alt](img)](url)`，
+#: 先转链接会留下 `![alt](img)` 这种半截。
+#:
+#: **换行一律写成 `\r?\n`**：上游 README 里 CRLF 与 LF 混着（2026-11-19 实测，
+#: `farwew/subsetTemplateName` 这类整篇都是 `\r\n`），只认 `\n` 会让整段正则空转。
+#:
+#: 实测（2026-11-19 抽 2000 条）：frontmatter 占 26.8%、代码块 25.9%、HTML 7.5%。
+#: 这里只清格式噪音，**代码块一个字不动**——加载示例与字段示例是有用信息。
+_README_CLEAN = (
+    "regexp_replace("
+    "regexp_replace("
+    "regexp_replace("
+    "regexp_replace("
+    "regexp_replace(rm.text, '(?s)^---\\r?\\n.*?---\\r?\\n', ''),"
+    " '!\\[[^\\]]*\\]\\([^)]*\\)', '', 'g'),"
+    " '<[^>]+>', '', 'g'),"
+    " '\\[([^\\]]*)\\]\\([^)]*\\)', '\\1', 'g'),"
+    " '(?:\\r?\\n){3,}', chr(10) || chr(10), 'g')"
+)
+
+#: 只去 YAML 头，其余原样。它是**回退**用的底稿：清洗后不足 100 字符时截它前
+#: 500 字符，而不是截原始 `rm.text`——否则回退会把刚去掉的 frontmatter 又还回去
+#: （2026-11-19 实测：`sravaniayyagari/apr2` 这类只有 YAML 的 README 正是这个形状）。
+_STRIP_YAML = "regexp_replace(rm.text, '(?s)^---\\r?\\n.*?---\\r?\\n', '')"
+
+
+def _sql_path(path: Path) -> str:
+    """SQL 字面量里的绝对路径：正斜杠 + 单引号转义。"""
+    return path.resolve().as_posix().replace("'", "''")
+
+
+#: 富化表还没采时的空 CTE。导出不该因为「这批富化还没跑」而整个失败：注入列
+#: 退化成 NULL，行数与列集仍然正确，`doctor` 的整列为空检查会如实报「来源表没数据」。
+_EMPTY_CTE: dict[str, str] = {
+    "readme_clean": "readme_clean AS (SELECT CAST(NULL AS VARCHAR) AS id, "
+    "CAST(NULL AS VARCHAR) AS readme WHERE false)",
+    "split_agg": "split_agg AS (SELECT CAST(NULL AS VARCHAR) AS id, "
+    "CAST(NULL AS VARCHAR[]) AS split WHERE false)",
+    "features_agg": "features_agg AS (SELECT CAST(NULL AS VARCHAR) AS id, "
+    "CAST(NULL AS VARCHAR) AS features WHERE false)",
+    "fields_agg": "fields_agg AS (SELECT CAST(NULL AS VARCHAR) AS id, "
+    "CAST(NULL AS VARCHAR) AS paper_url, CAST(NULL AS VARCHAR) AS citation_bibtex WHERE false)",
+}
+
+
+def _injection_sql(store: DatasetStore, base: Path) -> str:
+    """导出第二步：把视图里那 30 列与五个注入列拼成最终契约列序。
+
+    `readme` / `split` / `features` / `paper_url` / `citation_bibtex` 不在
+    `datasets` 视图里（体积或粒度原因，见 `fields.INJECTED_COLUMNS`），这里现场
+    join：`readme` 清洗正文、`split` 去重列表、`features` 取第一个非空 config、
+    `paper_url`/`citation_bibtex` 取 `readme_fields`。
+    """
+    columns = ", ".join(
+        f'{_INJECT_ALIAS[column]}."{column}"' if column in _INJECT_ALIAS else f'base."{column}"'
+        for column in DEFAULT_COLUMNS
+    )
+
+    readme_cte = (
+        f"""
+        readme_clean AS (
+            SELECT c.id,
+                   CASE WHEN char_length(c.body) < 100
+                        THEN substr(c.stripped, 1, 500) ELSE c.body END AS readme
+            FROM (
+                SELECT rm.id, rm.text AS raw,
+                       {_STRIP_YAML} AS stripped,
+                       {_README_CLEAN} AS body
+                FROM read_parquet('{_sql_path(store.path("readme"))}') rm
+                WHERE rm.text IS NOT NULL
+            ) c
+        ),"""
+        if store.path("readme").exists()
+        else _EMPTY_CTE["readme_clean"] + ","
+    )
+    configs = store.path("card_configs")
+    if configs.exists():
+        split_cte = f"""
+        split_agg AS (
+            SELECT id, list(DISTINCT split) AS split
+            FROM read_parquet('{_sql_path(configs)}')
+            WHERE split IS NOT NULL
+            GROUP BY id
+        ),"""
+        features_cte = f"""
+        features_agg AS (
+            SELECT id, first(features) AS features
+            FROM read_parquet('{_sql_path(configs)}')
+            WHERE features IS NOT NULL
+            GROUP BY id
+        ),"""
+    else:
+        split_cte = _EMPTY_CTE["split_agg"] + ","
+        features_cte = _EMPTY_CTE["features_agg"] + ","
+    fields_cte = (
+        f"""
+        fields_agg AS (
+            SELECT id, first(paper_url) AS paper_url, first(citation_bibtex) AS citation_bibtex
+            FROM read_parquet('{_sql_path(store.path("readme_fields"))}')
+            GROUP BY id
+        )"""
+        if store.path("readme_fields").exists()
+        else _EMPTY_CTE["fields_agg"]
+    )
+
+    return f"""
+        WITH base AS (SELECT * FROM read_parquet('{_sql_path(base)}')),
+        {readme_cte}
+        {split_cte}
+        {features_cte}
+        {fields_cte}
+        SELECT {columns}
+        FROM base
+        LEFT JOIN readme_clean rc USING (id)
+        LEFT JOIN split_agg sa USING (id)
+        LEFT JOIN features_agg fa USING (id)
+        LEFT JOIN fields_agg rf USING (id)
+    """
 
 
 class WideExportMismatch(RuntimeError):
@@ -118,6 +250,10 @@ def export_wide(store: DatasetStore, target: Path | None = None) -> WideExportSu
     destination.parent.mkdir(parents=True, exist_ok=True)
     temp = destination.with_suffix(destination.suffix + ".tmp")
     temp.unlink(missing_ok=True)
+    # 第一步的中间文件。定义在 `try` 之前：视图校验失败时异常会走 `finally`，
+    # 那时 `base` 必须已经绑定，否则清理语句本身抛 NameError、把原异常盖掉。
+    base = destination.with_suffix(destination.suffix + ".base.tmp")
+    base.unlink(missing_ok=True)
 
     try:
         expected = wide_column_names()
@@ -131,12 +267,20 @@ def export_wide(store: DatasetStore, target: Path | None = None) -> WideExportSu
         problems = contract_errors()
         if problems:
             raise WideExportMismatch(f"默认交付字段契约不自洽：{'；'.join(problems)}")
-        needed = (*DEFAULT_COLUMNS, *FALLBACKS.values())
+        needed = [
+            column
+            for column in (*DEFAULT_COLUMNS, *FALLBACKS.values())
+            if column not in INJECTED_COLUMNS
+        ]
         outside = [column for column in needed if column not in view_columns]
         if outside:
             raise WideExportMismatch(f"契约列或卡片兜底列在视图里找不到：{outside}")
 
-        catalog.copy_wide(temp, projection=projection_sql())
+        # 第一步：视图里那 30 列先落一个临时文件。第二步再与 `readme` 等五张附表
+        # 现场 join——它们体积太大或粒度不同，不能进视图（见 INJECTED_COLUMNS）。
+        catalog.copy_wide(base, projection=projection_sql())
+        catalog.copy_query(temp, _injection_sql(store, base))
+        base.unlink(missing_ok=True)
 
         frame = pl.scan_parquet(temp)
         actual = tuple(frame.collect_schema().names())
@@ -174,4 +318,5 @@ def export_wide(store: DatasetStore, target: Path | None = None) -> WideExportSu
         return WideExportSummary(destination, rows, len(actual), size)
     finally:
         temp.unlink(missing_ok=True)
+        base.unlink(missing_ok=True)
         catalog.close()

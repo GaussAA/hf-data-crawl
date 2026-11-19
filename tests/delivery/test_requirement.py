@@ -15,7 +15,7 @@ import openpyxl
 import pytest
 import yaml
 
-from hf_data_crawl.delivery.fields import DEFAULT_COLUMNS, projection_sql
+from hf_data_crawl.delivery.fields import VIEW_COLUMNS, projection_sql
 from hf_data_crawl.delivery.requirement import (
     Cadence,
     Criterion,
@@ -137,7 +137,9 @@ def test_不指定字段时投默认契约而非全列(tmp_path: Path) -> None:
 
     assert "SELECT *" not in sql
     assert sql.startswith(f"SELECT {projection_sql()}\nFROM datasets")
-    for column in DEFAULT_COLUMNS:
+    # 注入列（readme / split / features / paper_url / citation_bibtex）不在视图里，
+    # 需求 SQL 走的是视图 + projection，拿不到它们；交付物里由 `export-wide` 补。
+    for column in VIEW_COLUMNS:
         assert f'"{column}"' in sql
 
 

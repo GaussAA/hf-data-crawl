@@ -21,7 +21,9 @@ from hf_data_crawl.delivery.fields import (
     EXTENDED_NOTE,
     FALLBACKS,
     GROUPS,
+    INJECTED_COLUMNS,
     PAGE_FIELDS,
+    VIEW_COLUMNS,
     contract_errors,
     display_expr,
     display_value,
@@ -40,9 +42,14 @@ def test_默认列序以id开头且无重复() -> None:
     assert len(DEFAULT_COLUMNS) == len(set(DEFAULT_COLUMNS))
 
 
-def test_契约列都在宽视图里() -> None:
-    """拼错列名要让契约自检当场炸，而不是等交付跑出一份少列的表。"""
-    assert set(DEFAULT_COLUMNS) <= set(wide_column_names())
+def test_契约列都在宽视图或注入清单里() -> None:
+    """拼错列名要让契约自检当场炸，而不是等交付跑出一份少列的表。
+
+    五个注入列（readme / split / features / paper_url / citation_bibtex）不在视图里，
+    由 `export_wide` 的第二步现场 join——它们体积太大或粒度不同。
+    """
+    known = set(wide_column_names()) | set(INJECTED_COLUMNS)
+    assert set(DEFAULT_COLUMNS) <= known
 
 
 def test_每列都有中文说明且分组不漏列() -> None:
@@ -52,27 +59,24 @@ def test_每列都有中文说明且分组不漏列() -> None:
     assert all(COLUMN_NOTES[column].strip() for column in DEFAULT_COLUMNS)
 
 
-def test_SQL投影覆盖全部契约列() -> None:
-    """`projection_sql()` 才是导出与交付真正走的投影，漏一列等于交付少一列。
+def test_SQL投影覆盖全部视图列() -> None:
+    """`projection_sql()` 是导出第一步真正走的投影，漏一列等于交付少一列。
 
-    原先这里断言的是一个只被测试使用的 `quoted_columns()`——它等于一句 join 表达式，
-    改坏了也没有任何生产代码受影响，测的其实是「另一个函数写得对不对」。
+    注入列刻意不在投影里：它们由导出的第二步 join，写进 `COPY (...)` 会找不到来源。
     """
     sql = projection_sql()
-    missing = [column for column in DEFAULT_COLUMNS if f'"{column}"' not in sql]
+    missing = [column for column in VIEW_COLUMNS if f'"{column}"' not in sql]
 
     assert not missing, f"投影里缺列：{missing}"
+    assert not [column for column in INJECTED_COLUMNS if f'"{column}"' in sql]
 
 
 def test_内部状态列不进默认交付面() -> None:
     """水印、抓取状态、卡片凭证、内部标记属于管道，不属于数据集画像。"""
     internal = {
         "sha",
-        "first_seen_at",
-        "last_seen_at",
         "source_sha",
         "resource_group",
-        "xet_enabled",
         "files_status",
         "truncated",
         "private",
@@ -80,6 +84,9 @@ def test_内部状态列不进默认交付面() -> None:
         "trending_score",
     }
     assert not (internal & set(DEFAULT_COLUMNS))
+    # v6 起 first_seen_at / last_seen_at / xet_enabled 进默认面：前者答「这个库什么时候
+    # 出现」，后者答「怎么下载」，都是客户问题，不是管道内部状态。
+    assert {"first_seen_at", "last_seen_at", "xet_enabled"} <= set(DEFAULT_COLUMNS)
 
 
 def test_低覆盖补抓列不进默认交付面() -> None:
@@ -90,7 +97,6 @@ def test_低覆盖补抓列不进默认交付面() -> None:
         "card_download_bytes",
         "citation",
         "dois",
-        "has_readme",
         "total_bytes",
         "file_count",
     }
@@ -108,9 +114,9 @@ def test_用户点名的画像字段都在契约里() -> None:
         "size_categories",
         "server_num_rows",
         "main_size",
-        "license_name",
         "licenses",
-        "description",
+        "readme",
+        "has_readme",
     }
     assert required <= set(DEFAULT_COLUMNS)
 
@@ -123,12 +129,15 @@ def test_契约版本为正整数() -> None:
 # ---------------------------------------------------------------- v2：详情页标签
 
 
-def test_补回页面红圈里那组Tags() -> None:
-    """v1 只裁列没对值，把无前缀标签整组丢了——页面看得见、库里找不着。"""
+def test_标签列保留原始全量_无前缀子集可自滤() -> None:
+    """v1 只裁列没对值，把无前缀标签整组丢了；v6 反过来删掉 `plain_tags`。
+
+    理由是后者本就是 `tags` 按「无前缀」拆出来的子集，删了可从 `tags` 还原；
+    保留原始全量，才不丢 `task_categories:` / `region:` 这些前缀维度。
+    """
     assert "tags" in DEFAULT_COLUMNS
-    assert "plain_tags" in DEFAULT_COLUMNS
-    assert DEFAULT_COLUMNS.index("plain_tags") == DEFAULT_COLUMNS.index("tags") + 1
-    assert "Tags" in COLUMN_NOTES["plain_tags"] or "页面 Tags" in COLUMN_NOTES["plain_tags"]
+    assert "plain_tags" not in DEFAULT_COLUMNS
+    assert "Tags" in COLUMN_NOTES["tags"] or "页面 Tags" in COLUMN_NOTES["tags"]
 
 
 def test_页面标签行逐项都有对照() -> None:
@@ -146,10 +155,10 @@ def test_页面标签行逐项都有对照() -> None:
     assert all(columns and note for _label, columns, note in PAGE_FIELDS)
 
 
-def test_卡片兜底只作用于四列且别名不变() -> None:
+def test_卡片兜底只作用于三列且别名不变() -> None:
     """兜底是「默认交付面」的事；视图语义不改，内部仍可分列追溯。"""
     sql = projection_sql()
-    assert sql.count("CASE WHEN") == len(FALLBACKS) == 4
+    assert sql.count("CASE WHEN") == len(FALLBACKS) == 3
     for column, source in FALLBACKS.items():
         assert column in DEFAULT_COLUMNS
         assert source in wide_column_names()
@@ -202,9 +211,9 @@ def test_默认投影不再压平列表() -> None:
     sql = projection_sql()
 
     assert "array_to_string" not in sql
-    for column in ("languages", "task_categories", "tags", "plain_tags", "arxiv_ids"):
+    for column in ("languages", "task_categories", "tags", "arxiv_ids"):
         assert f'"{column}"' in sql
-    assert CONTRACT_VERSION >= 5
+    assert CONTRACT_VERSION >= 6
 
 
 def test_卡片兜底仍保留且不改变列类型() -> None:
@@ -264,11 +273,33 @@ def test_列表列仍能展平成页面形式交给CSV() -> None:
 # ---------------------------------------------------------------- v4：克制扩充 + 扩展清单
 
 
-def test_v4新增五列都在默认面() -> None:
+def test_v4新增五列与v6扩充都在默认面() -> None:
     added = {"pretty_name", "multilinguality", "arxiv_ids", "source_datasets", "task_ids"}
     assert added <= set(DEFAULT_COLUMNS)
-    assert len(DEFAULT_COLUMNS) == 31
-    assert CONTRACT_VERSION >= 4
+    # v6：31 → 35（删 5：description / license_name / plain_tags / server_config_count /
+    # server_num_columns；加 9：readme 等）。
+    assert len(DEFAULT_COLUMNS) == 35
+    assert CONTRACT_VERSION >= 6
+    v6 = {
+        "readme",
+        "has_readme",
+        "first_seen_at",
+        "last_seen_at",
+        "xet_enabled",
+        "split",
+        "features",
+        "paper_url",
+        "citation_bibtex",
+    }
+    assert v6 <= set(DEFAULT_COLUMNS)
+    dropped = {
+        "description",
+        "license_name",
+        "plain_tags",
+        "server_config_count",
+        "server_num_columns",
+    }
+    assert not (dropped & set(DEFAULT_COLUMNS))
 
 
 def test_地区因无区分度不进默认面但进扩展清单() -> None:
@@ -318,7 +349,7 @@ def test_列表列的类型声明不会退化成文本() -> None:
     契约里的族声明是那道回退的绊线：谁要把 `tags` 改回 `text`，得先改这里。
     """
     multi = [name for name, family in COLUMN_TYPES.items() if family == "list"]
-    assert "tags" in multi and "plain_tags" in multi
+    assert "tags" in multi and "split" in multi
     assert COLUMN_TYPES["tags"] == "list"
 
 

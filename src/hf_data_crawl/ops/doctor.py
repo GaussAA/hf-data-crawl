@@ -651,6 +651,16 @@ def _contract_coverage(ctx: RunContext) -> Finding:
         # 取整后会印成「100% 为空」，与同一句里的「31 列都有值」自相矛盾
         # ——2026-11-18 实测就这么印过一次。
         filled = rows - int(counted[worst])
+        # 契约列覆盖率不足 1%：按「空值率 > 99% 就该删」这条规则，它们是**下一次
+        # 契约重审的待办**，不是数据坏了。所以这里只列名字与实测行数，不给结论。
+        thin = [column for column in DEFAULT_COLUMNS if (rows - int(counted[column])) / rows < 0.01]
+        if thin:
+            detail = "、".join(f"{column}（{rows - int(counted[column]):,} 行）" for column in thin)
+            return Finding(
+                False,
+                f"交付面取值：{len(DEFAULT_COLUMNS)} 列都有值，但 {len(thin)} 列覆盖率不足 1%："
+                f"{detail}——按契约规则该在下一次重审时决定去留",
+            )
         return Finding(
             False,
             f"交付面取值：{len(DEFAULT_COLUMNS)} 列都有值"
