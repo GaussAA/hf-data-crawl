@@ -110,3 +110,22 @@
 2. **collect 全站每天多花 15–20 分钟** API 配额，换来 cardData 的全站覆盖。
 3. **08:50 之后启动的抓取可能跑不完**：软边界只停止「未开始的」，正在跑的抓取
    会跑完再结束，实际收工时间可能略晚于 09:00。
+
+## 修订（2026-11-19 落地复核）
+
+决策正文保留原貌，下面是落地时与事实不符、或当时没写清的三处：
+
+1. **契约不是 31 列，是 35 列**（DECISIONS #136）。正文里「31 列契约只依赖 `size`
+   的 `server_*` 四列，readme / files / preview 都不在契约里」两处均需按此读。
+2. **导出确实依赖 readme**：35 列里的 `paper_url` / `citation_bibtex` 取自
+   `readme_fields`，而那张表由 `parse-readme` 从 `readme` 派生。所以链上是
+   `readme → parse → export`，`export` 的依赖写全为 `build, reconcile, sizes, parse`。
+   正文那句「readme 不在契约里」是 v5 口径的残留。
+3. **归档漏了排期**：正文只写「删除 `hf-archive`」，没写它并入哪一段。落地时确实
+   没人接——`doctor` 的 `archive_backlog` 一过 30 天就永久报红。现排在串行尾
+   （`request run-due` 之后、`prune` 之前），`needs=build`：它要用 build 之后的
+   派生状态判「归档前是否已滞后」，改的是 Raw 而非 `current`。
+
+另有一处实现约定写进代码而未写进本 ADR：`--card-pages 0` / `--max-pages 0` 表示
+**不设上限**（命令行惯例），`ScanSpec` 与 `api.scan` 都按这个口径判，照字面比会在
+第一页就停。
