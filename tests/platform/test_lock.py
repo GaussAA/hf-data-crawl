@@ -255,3 +255,54 @@ def test_打不开过后恢复可写就能拿到锁(tmp_path: Path, monkeypatch:
         pass
 
     assert calls["n"] >= 3
+
+
+# ---------------------------------------------------------------- 写锁文件本身失败
+
+
+def test_锁文件被拒写时开锁入口返回None(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """上面两条测的是「拿不到句柄」之后的行为，这条测句柄真的打不开时那个分支。
+
+    `_open_lock_file` 只把 `PermissionError` 翻成 None；其它 OSError（磁盘满、
+    路径坏掉）照旧往上抛——那些是真故障，不该被当成「有人占着」而静默等待。
+    """
+    from hf_data_crawl.platform import lock as lock_mod
+
+    def denied(_self: Path, *_args: object, **_kwargs: object) -> object:
+        raise PermissionError("拒绝访问")
+
+    monkeypatch.setattr(Path, "open", denied)
+
+    assert lock_mod._open_lock_file(tmp_path, LOCK_NAME) is None
+
+
+def test_写占用者信息失败时按占用处理而不是抛栈(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """两个并发调用者同时看到空文件、同时去写第 0 字节，慢的那个会 OSError。
+
+    2026-11-16 由并发写体检流水的用例抓到。那一刻正确的结果是「这次没抢到」，
+    不是把一次正常并发升级成异常栈。
+    """
+    from hf_data_crawl.platform import lock as lock_mod
+
+    class BrokenHandle:
+        """能打开、但一写就坏：模拟两个进程同时写第 0 字节。"""
+
+        def seek(self, *_args: object) -> None:
+            raise OSError("写不进去")
+
+        def write(self, _data: bytes) -> int:
+            raise OSError("写不进去")
+
+        def flush(self) -> None:
+            raise OSError("写不进去")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(lock_mod, "_open_lock_file", lambda _root, _name: BrokenHandle())
+
+    with pytest.raises(lock_mod.LockBusy, match="占用"):
+        with lock_mod.exclusive(tmp_path, "doctor"):
+            pass
