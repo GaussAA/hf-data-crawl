@@ -98,9 +98,18 @@ class Collector:
         cards: bool = False,
         card_max_pages: int | None = CARD_PAGES_CAP,
         dry_run: bool = False,
+        full_scan: bool = False,
     ) -> CollectSummary:
-        threshold = max(
-            1, pages_without_new if pages_without_new is not None else self._pages_without_new
+        # 全站扫描：水位线必须失效，否则扫到「连续 N 页无新记录」就停在第 N 页。
+        # 页数也不设上限，交给 ScanRun 扫到末页（约 1,140 页，12–20 分钟）。
+        # 与刷新链的「采集定稿」配套：只有扫完全站，cardData 才谈得上全量覆盖。
+        threshold = (
+            10**9
+            if full_scan
+            else max(
+                1,
+                pages_without_new if pages_without_new is not None else self._pages_without_new,
+            )
         )
         started = time.monotonic()
         runner = ScanRun(self._api, self._store)

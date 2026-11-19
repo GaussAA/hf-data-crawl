@@ -24,7 +24,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 
 | 命令 | 作用 | 联网 |
 |---|---|---|
-| `collect` | 日增量：按 `lastModified` 倒序扫到水位线 | 是 |
+| `collect` | 日增量：按 `lastModified` 倒序扫到水位线；`--full-scan` 忽略水位线扫到末页（刷新链用，约 1,140 页） | 是 |
 | `enrich` | 按下载量取头部补抓 `cardData`（标签、config/split 明细、行数列数）；`--ids a,b,c` 按需补（上限 200） | 是 |
 | `fetch-sizes` | 经 datasets-server 补规模与列数（`num_rows` / `num_columns_max`）；`--changed N` 只重取内容已变的库，`--top 0` 表示全量（按 `current` 实际行数，不写死常量），`--ids a,b,c` 只补点名的库（上限 200，忽略 `--top`） | 是 |
 | `fetch-files` | 按下载量取头部，经 `/tree/main` 补文件清单汇总（试点：top 1000，每库默认 1 页）；`--ids a,b,c` 只补点名的库（上限 200，忽略 `--top`） | 是 |
@@ -41,6 +41,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `prune` | 清理备份：把 `backup/` 里超过 7 天的分片真正删掉，释放磁盘（只动 `backup/`） | 否 |
 | `docs` | 生成 `data/DATA.md`：data 目录结构、各文件作用、全部字段含义（本机生成，不进仓库） | 否 |
 | `export-wide` | 把 `datasets` 宽视图导出成单文件 parquet（zstd 压缩；可重建，不参与状态更新） | 否 |
+| `refresh` | 刷新鲜：每日 00:30 起串并混合跑完全部例行（ADR-0008）；09:00 软边界，未完成的下次从断点续 | 否 |
 
 常用参数：
 

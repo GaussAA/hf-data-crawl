@@ -22,6 +22,7 @@ from ..acquire import (
 from ..delivery import Cadence, Kind
 from ..platform import ARCHIVE_AFTER_DAYS, BACKUP_KEEP_DAYS, REPLAY_WINDOW_DAYS
 from ..query import BOARDS
+from .refresh import DEFAULT_BUDGET_HOURS, DEFAULT_LAUNCH_HOURS
 
 #: 生成命令默认等锁时长（秒）。它们通常由计划任务或人工临时触发，撞上采集
 #: 时干等一会儿比直接失败有用；等不到仍会如实报错。可用 `--lock-wait` 覆盖。
@@ -68,6 +69,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="连续多少页无新记录即判定到达水位线。默认 3（--preset 可覆盖）",
+    )
+    collect.add_argument(
+        "--full-scan",
+        action="store_true",
+        help="扫到末页、忽略水位线（每日全站采集用，约 1,140 页、12–20 分钟）",
     )
     collect.add_argument("--dry-run", action="store_true", help="只探一页并打印字段，不落盘")
     collect.add_argument(
@@ -310,6 +316,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     sizes.add_argument(
+        "--changed-all",
+        action="store_true",
+        help="刷新链用：陈旧集合全部重取，不设名额（与 --changed 的 N 互斥，优先此开关）",
+    )
+    sizes.add_argument(
         "--ids",
         default=None,
         help="按需补：只补这些 id（逗号分隔，上限 200，忽略 --top）；交付点名的长尾只补几条",
@@ -391,6 +402,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="README 随内容刷新：重取 commit 已变的库，最多 N 个（0 表示不做）",
+    )
+    readme.add_argument(
+        "--changed-all",
+        action="store_true",
+        help="刷新链用：陈旧与缺口全部取，不设名额（与 --changed 的 N 互斥，优先此开关）",
     )
     readme.add_argument("--workers", type=int, default=12, help="并发数，实测 12 稳定在 19 req/s")
     readme.add_argument(
@@ -521,6 +537,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     wide.add_argument(
         "--out", default=None, help="输出路径，默认 data/exports/datasets.parquet（须在数据目录内）"
+    )
+
+    refresh = subparsers.add_parser(
+        "refresh", help="刷新鲜：每日 00:30 起跑完全部例行（串并混合，参 ADR-0008）"
+    )
+    refresh.add_argument(
+        "--budget-hours",
+        type=float,
+        default=DEFAULT_BUDGET_HOURS,
+        help=f"整条链的时间预算（小时，默认 {DEFAULT_BUDGET_HOURS}）；超时只停止未启动的步骤",
+    )
+    refresh.add_argument(
+        "--launch-hours",
+        type=float,
+        default=DEFAULT_LAUNCH_HOURS,
+        help=f"超过这个时长不再启动新抓取（默认 {DEFAULT_LAUNCH_HOURS} 小时）",
     )
 
     return parser

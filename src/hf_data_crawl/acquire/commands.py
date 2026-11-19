@@ -16,7 +16,7 @@ from ..platform.lock import exclusive
 from ..platform.presets import get_preset
 from ..platform.runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs
 from ..platform.store import DatasetStore
-from ..platform.tables import README_FIELDS_SCHEMA, README_SCHEMA
+from ..platform.tables import FILES_SCHEMA, README_FIELDS_SCHEMA, README_SCHEMA
 from .batch import (
     STALL_HEARTBEAT_SECONDS,
 )
@@ -31,7 +31,7 @@ from .batch import (
 )
 from .collect import Collector, CollectSummary
 from .enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
-from .files import FileFetcher, FileSummary, HfFilesApi
+from .files import FILES_STAGING_DIR, FileFetcher, FileSummary, HfFilesApi
 from .hf.api import HfDatasetApi, Transport
 from .hf.transport import HttpxTransport
 from .preview import HfPreviewApi, PreviewFetcher, PreviewSummary
@@ -161,6 +161,7 @@ def run_collect(
         refresh_top=args.refresh_top,
         cards=args.cards,
         card_max_pages=CARD_PAGES_CAP if args.card_pages is None else args.card_pages,
+        full_scan=args.full_scan,
         dry_run=args.dry_run,
     )
     _print_collect(summary)
@@ -310,9 +311,11 @@ def run_fetch_sizes(
     # 2026-11 一个月就攒下 8,726 个没有行数的新库。缺口按下载量取前
     # `GAP_BUDGET` 个，防的是某轮全量失败后缺口涨到几十万。
     refresh: set[str] = set()
-    if args.changed > 0:
+    if args.changed > 0 or args.changed_all:
         stale = stale_ids(current, store.read("size"))
-        picked = stale.sort("downloads", descending=True, nulls_last=True).head(args.changed)
+        ranked = stale.sort("downloads", descending=True, nulls_last=True)
+        # `--changed-all`：陈旧集合整个刷，不设名额——刷新链要的是「当天有多少刷多少」。
+        picked = ranked if args.changed_all else ranked.head(args.changed)
         refresh = set(picked["id"].to_list())
         changed = ordered.filter(pl.col("id").is_in(sorted(refresh)))
         # `existing` 已含残留分片：上一轮中断前抓到的缺口不该再请求一遍。
@@ -463,8 +466,18 @@ def _print_preview(summary: PreviewSummary, total_rows: int) -> None:
 
 
 def run_fetch_files(
-    args: argparse.Namespace, store: DatasetStore, transport: Transport | None
+    args: argparse.Namespace,
+    store: DatasetStore,
+    transport: Transport | None,
+    lock_wait: float = 0.0,
 ) -> Outcome:
+    """锁外抓取、锁内合并：与 `fetch-sizes` / `fetch-readme` 同一套路。
+
+    原先整段持锁（写命令的默认）。刷新链要让它与对账并行，而它每天 2 万条约
+    70 分钟——整段占锁会把并行段里其他抓取的合并全堵在锁外（2026-11-19 实测：
+    `fetch-files` 持锁 25 分钟，`fetch-readme` 的合并等到 `--lock-wait` 超时）。
+    现在结果先落 `.staging/files/` 的原子分片，收尾才用短锁并入 `enrich/files.parquet`。
+    """
     snapshot = _snapshot(args)
     if args.refresh_truncated and args.max_pages <= 1:
         # 页数还是一页时重抓，只会把「截断」原样重新确认一遍，白烧请求与配额。
@@ -485,6 +498,12 @@ def run_fetch_files(
             print(f"失败：{problem}")
             return Outcome({"error": "ids"}, code=1, reason=problem)
 
+    # 残留分片同样是「已处理」的 id：上一轮中断前抓到的结果不该再请求一遍。
+    existing = store.read("files")
+    staged, _ = read_staged_dir(store, FILES_STAGING_DIR, FILES_SCHEMA)
+    if staged.height:
+        existing = pl.concat([existing, staged], how="vertical_relaxed")
+
     fetcher = FileFetcher(
         api=HfFilesApi(
             transport=_files_transport(transport, args.timeout),
@@ -495,6 +514,7 @@ def run_fetch_files(
         progress=lambda done, total: _progress_line(done, total, "补齐文件清单"),
         heartbeat=lambda done, total: _stall_line(done, total, "补齐文件清单"),
     )
+    writer = StagingDirWriter(store, snapshot, FILES_STAGING_DIR)
     summary, frame = fetcher.run(
         snapshot,
         dataset_ids=ordered["id"].to_list(),
@@ -502,13 +522,24 @@ def run_fetch_files(
         top=max(1, ordered.height if args.ids else args.top),
         retry_unavailable=args.retry_unavailable,
         refresh_truncated=args.refresh_truncated,
-        existing=store.read("files"),
-        flush=lambda frame: store.upsert("files", frame),
+        existing=existing,
+        # 边跑边落暂存分片：中断时最多损失一个批次，但写入发生在锁外。
+        flush=writer.write,
         flush_every=args.flush_every,
     )
+    # `flush` 只在攒满一批时触发；不足一批的尾巴必须补写进分片，否则合并只读
+    # 分片时会漏掉它们。
+    if frame.height > writer.flushed:
+        writer.write(frame.slice(writer.flushed, frame.height - writer.flushed))
     print()
-    if frame.height:
-        store.upsert("files", frame)
+
+    # 短锁：只在这段独占数据目录，把本轮结果与残留分片一次并入正式表。
+    # 抓不到锁就失败，分片原样留着，下一轮继续（不丢已抓到的数据）。
+    with exclusive(store.root, "fetch-files:merge", lock_wait):
+        merged, paths = read_staged_dir(store, FILES_STAGING_DIR, FILES_SCHEMA)
+        if merged.height:
+            store.upsert("files", merged)
+        clear_staged_dir(store, paths, FILES_STAGING_DIR)
     _print_files(summary, store.read("files").height)
     return Outcome(summary)
 
@@ -551,16 +582,14 @@ def run_fetch_readme(
         # 与 `fetch-sizes` 的缺口补抓对齐，按下载量分配这一轮的 N 个名额。
         stale = stale_readme_ids(current, existing)
         gap = missing_readme_ids(current, existing)
-        picked = (
-            pl.concat(
-                [
-                    stale.select("id", "downloads", "sha"),
-                    gap.select("id", "downloads", "sha"),
-                ]
-            )
-            .sort("downloads", descending=True, nulls_last=True)
-            .head(args.changed)
-        )
+        ranked = pl.concat(
+            [
+                stale.select("id", "downloads", "sha"),
+                gap.select("id", "downloads", "sha"),
+            ]
+        ).sort("downloads", descending=True, nulls_last=True)
+        # `--changed-all`：陈旧与缺口整个刷，不设名额（刷新链的默认形态）。
+        picked = ranked if args.changed_all else ranked.head(args.changed)
         refresh = set(picked["id"].to_list())
         if refresh:
             ordered = ordered.filter(pl.col("id").is_in(sorted(refresh)))

@@ -179,13 +179,24 @@ uv run python -c "from pathlib import Path; from hf_data_crawl.pipeline.raw impo
 
 ## 调度与依赖
 
-日常链只有一个补跑单元 `hf-daily`（03:10 + 登录后 3 分钟），由
-`scripts/daily.ps1` 按固定顺序跑：
-`collect → build --stale → reconcile → fetch-sizes --changed 8000 → export-wide → request run-due → prune → doctor`。
-依赖由**脚本顺序**表达，不由钟点表达；前置失败时下游记 `[跳过]`。
-独立任务：`hf-sizes`（周日 06:00）、`hf-files`（周日 07:30）、`hf-archive`（周一 05:00）、
-`hf-compact`（每日 00:30）、`hf-readme`（周六 09:00，只重取 commit 已变的那批），
-五者刻意不带补跑，免得与日常链抢写锁。README 全量（约 21 小时）不排日程，留人工择机。
+只有一个任务 `hf-refresh`（每日 00:30），由 `scripts/refresh.ps1` 调
+`hf-data-crawl refresh`，编排逻辑在 `ops/refresh.py`（ADR-0008）。三段式：
+
+```
+① 串行   compact → collect --full-scan → build --stale        （current 定稿）
+② 并行   reconcile ‖ fetch-sizes --changed-all
+                    ‖ fetch-readme --changed-all
+                    ‖ fetch-preview --top 20000
+         fetch-files --top 20000 排在 reconcile 之后（同走 /api 配额）
+③ 串行   export-wide（sizes 合并后即跑）→ request run-due → prune → doctor
+```
+
+依赖与并发由**编排器**表达，不由钟点表达；前置失败时下游记 `[跳过]`，不相关的
+并行分支照常跑完。**09:00 软边界**：之后不再启动新的抓取，未完成的步骤次日从
+runs 台账 + staging 分片续跑；次日 00:30 若发现上一条还在跑，跳过本次触发。
+
+旧的六个任务（`hf-daily` / `hf-sizes` / `hf-files` / `hf-archive` / `hf-compact` /
+`hf-readme`）已删除并并入本链。README 全量（约 21 小时）仍不排日程，留人工择机。
 
 ---
 

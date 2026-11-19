@@ -38,6 +38,7 @@ from ..platform import DatasetStore, LockBusy, Outcome, exclusive, write_run
 from ..query.commands import run_query, run_report
 from .commands import run_archive, run_compact, run_docs, run_doctor, run_prune
 from .parsers import DOCTOR_LOCK_WAIT, SNAPSHOT_LOCK_WAIT, build_parser
+from .refresh import run as run_refresh
 
 #: 会改写数据目录的命令，执行期间持有独占锁。query 只读且单次查询很短，
 #: 不在此列；report/docs 不改数据，但要同时读多张表，与写命令并发会读到
@@ -80,7 +81,9 @@ LOCKED_COMMANDS = WRITE_COMMANDS | SNAPSHOT_COMMANDS | REQUEST_COMMANDS
 #: 采集；它只在最后写 `readme_fields` 时拿一次短锁。2026-11-18 忘了登记这一条，
 #: 结果自锁死锁——`_execute` 持着锁，内部又调 `exclusive`，等了二十多分钟后
 #: 以 `LockBusy: ... 被另一个写命令占用：parse-readme（pid 自己）` 收场。
-SELF_LOCKED_COMMANDS = frozenset({"fetch-sizes", "fetch-readme", "fetch-preview", "parse-readme"})
+SELF_LOCKED_COMMANDS = frozenset(
+    {"fetch-sizes", "fetch-files", "fetch-readme", "fetch-preview", "parse-readme"}
+)
 
 
 def main(argv: list[str] | None = None, *, transport: Any = None) -> int:
@@ -147,7 +150,10 @@ def main(argv: list[str] | None = None, *, transport: Any = None) -> int:
         )
     if args.command == "fetch-files":
         return _execute(
-            store, "fetch-files", lambda: run_fetch_files(args, store, transport), lock_wait
+            store,
+            "fetch-files",
+            lambda: run_fetch_files(args, store, transport, lock_wait),
+            lock_wait,
         )
     if args.command == "fetch-readme":
         return _execute(
@@ -205,6 +211,11 @@ def main(argv: list[str] | None = None, *, transport: Any = None) -> int:
         # 失败因此也会留在 runs/ 里——原先这里自己开一次锁并直接返回，等于在
         # `_execute` 之外又造了一条「有加锁、没台账」的路径。
         return _execute(store, "docs", lambda: run_docs(args, store), lock_wait)
+
+    if args.command == "refresh":
+        # 编排器自己不写表：每个步骤是一次独立子进程，锁与台账由子进程按各自的
+        # 语义施加。这里**不能**持锁——否则它会把自己启动的写命令全挡在锁外。
+        return _execute(store, "refresh", lambda: run_refresh(args, store), lock_wait)
 
     return 1
 
@@ -271,3 +282,7 @@ def _execute(
 
 
 # ---------------------------------------------------------------- 需求管理
+
+
+if __name__ == "__main__":  # pragma: no cover - 仅给 `python -m` 与编排器的子进程用
+    raise SystemExit(main())

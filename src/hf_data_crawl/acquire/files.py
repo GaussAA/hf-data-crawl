@@ -57,6 +57,12 @@ from .hf.api import API_BASE_URL, RETRYABLE_STATUS, HfResponse, Transport, Trans
 #: tree 接口每页硬上限；显式带上 limit，免得哪天上游默认值变了口径跟着漂。
 TREE_LIMIT = 1000
 
+#: 文件清单的暂存目录；分片只写真数据、不碰正式表，故写它不必持锁。
+#:
+#: 与 `.staging/sizes`、`.staging/readme` 并列。`fetch-files` 原先整段持锁，
+#: 每日 2 万条约 70 分钟——刷新链要它与 reconcile 并行，落盘只能走分片 + 短锁。
+FILES_STAGING_DIR = ".staging/files"
+
 #: 一页全是目录时额外允许翻的页数，防止「目录排在文件前」被误报成 0 个文件。
 #: 只在**还没看到任何文件**时生效：一旦见到文件就严格按 `max_pages` 收工。
 EMPTY_PAGE_GRACE = 3

@@ -96,48 +96,57 @@ def test_全量对账与压缩按日跑() -> None:
     """日增量按 lastModified 走只覆盖约 6%，长尾靠全量对账刷新；退回按周就会让
     底库在两次对账之间拿旧值充数。这里把频率钉死，改回 Weekly 必须有人来解释。
 
-    对账已并入 `hf-daily` 链（2026-11-09），故要同时盯两头：链本身按日跑，
-    且链里确实有对账这一步——只在其中一个上做文章，都能悄悄把频率改回去。
+    2026-11-19 起调度收成一条 `hf-refresh`（ADR-0008）：对账在并行段、压缩在
+    串行头，都由 `ops/refresh.py` 定义，不再散在多个计划任务里。
     """
-    source = text(SCRIPTS / "setup-schedule.ps1")
-    for name in ("daily", "compact"):
-        block = job_block(source, name)
-        assert "-Daily" in block, f"hf-{name} 应每日触发"
-        assert "Weekly" not in block, f"hf-{name} 不应再按周触发"
+    from hf_data_crawl.ops import refresh
 
-    chain = text(SCRIPTS / "daily.ps1")
-    assert 'Name = "reconcile"' in chain, "链条里必须还有全量对账这一步"
+    block = job_block(text(SCRIPTS / "setup-schedule.ps1"), "refresh")
+    assert "-Daily" in block, "hf-refresh 应每日触发"
+    assert "Weekly" not in block, "刷新链不应再按周触发"
+
+    names = {step.name for step in (*refresh.SERIAL_HEAD, *refresh.PARALLEL)}
+    assert "reconcile" in names, "链条里必须还有全量对账"
+    assert "compact" in names, "压缩必须仍在链里"
 
 
 def test_链条按序且前置失败会跳过() -> None:
     """顺序是这条链存在的理由：补跑时若各步并起，导出会抢在对账前完成。"""
-    chain = text(SCRIPTS / "daily.ps1")
-    order = [
-        chain.index(f'Name = "{name}"')
-        for name in ("collect", "build", "reconcile", "export", "deliver", "doctor")
+    from hf_data_crawl.ops import refresh
+
+    assert [step.name for step in refresh.SERIAL_HEAD] == ["compact", "collect", "build"]
+    assert [step.name for step in refresh.SERIAL_TAIL] == [
+        "export",
+        "deliver",
+        "prune",
+        "doctor",
     ]
-    assert order == sorted(order), "链条步骤顺序被打乱"
+    export = next(step for step in refresh.SERIAL_TAIL if step.name == "export")
+    assert set(export.needs) == {"build", "reconcile", "sizes"}
     # 前置失败要跳过并写明原因，而不是带着半截状态硬跑。
-    assert "Requires" in chain
-    assert "[跳过]" in chain
+    assert "依赖未完成" in text(Path(refresh.__file__))
 
 
 def test_体检在链条里只算告警不算失败() -> None:
     """体检把「导出落后」「Raw 断日」这类待办也计入非零；若让它拖垮链条，
     整条链会天天报红，铃声很快就没人听。"""
-    chain = text(SCRIPTS / "daily.ps1")
-    assert "Report = $true" in chain
-    assert "$step.Report" in chain
-    assert "if ($failure -eq 0) { $failure = $code }" in chain
+    from hf_data_crawl.ops import refresh
+
+    source = text(Path(refresh.__file__))
+    assert 'item.name != "doctor"' in source
+    assert "data/ALERT.txt" in source
 
 
 def test_补跑只留给链条() -> None:
-    """错过时补跑整条链是对的；其余纯周期维护补跑只会跟链抢写锁。"""
+    """错过时补跑整条链是对的；其余纯周期维护补跑只会跟链抢写锁。
+
+    2026-11-19 起只有一个任务，且它**不补跑**：续跑靠 runs 台账 + staging 分片，
+    比把整条链重放一遍精细（ADR-0008）。
+    """
     source = text(SCRIPTS / "setup-schedule.ps1")
     for block in source.split('Name = "hf-')[1:]:
         name = block.split('"')[0]
-        catch_up = "CatchUp = $true" in job_block(source, name)
-        assert catch_up == (name == "daily"), f"hf-{name} 的补跑设置不对"
+        assert "CatchUp = $true" not in job_block(source, name), f"hf-{name} 不该补跑"
 
 
 def test_升级时清除旧的钟点任务() -> None:
@@ -172,11 +181,8 @@ def test_每一步都有墙钟上限且退出码可辨() -> None:
     assert "$script:TimeoutExitCode = 124" in source
     assert "[ValidateRange(1, 86400)][int]$TimeoutSeconds = 3600" in source
 
-    chain = text(SCRIPTS / "daily.ps1")
-    steps = ("collect", "build", "reconcile", "sizes", "export", "deliver", "prune", "doctor")
-    assert chain.count("TimeoutSeconds = ") == len(steps), "有步骤没声明墙钟上限"
-    # 首次调用与 collect 的重试都要把上限传下去，漏一处等于漏一条。
-    assert chain.count("-TimeoutSeconds $step.TimeoutSeconds") == 2
+    chain = text(SCRIPTS / "refresh.ps1")
+    assert "-TimeoutSeconds 36000" in chain, "刷新链必须有 10 小时墙钟上限"
 
 
 def test_超时要杀进程树而不是只杀父进程() -> None:
@@ -196,11 +202,11 @@ def test_超时要杀进程树而不是只杀父进程() -> None:
 
 def test_超时与失败在摘要里分开写() -> None:
     """一个是「这步自己出错」，一个是「这步卡住了」——处置完全不同。"""
-    chain = text(SCRIPTS / "daily.ps1")
-    assert "[超时]" in chain
-    assert "$script:TimeoutExitCode" in chain
-    # 超时也要计入链条失败，不能静默放过。
-    assert "if ($failure -eq 0) { $failure = $code }" in chain
+    from hf_data_crawl.ops import refresh
+
+    # 超时由 Invoke-HfTask 统一折算成 124；编排器把每步的退出码原样记进摘要。
+    assert "$script:TimeoutExitCode = 124" in text(COMMON)
+    assert '"code": item.code' in text(Path(refresh.__file__))
 
 
 def test_所有任务脚本都传了墙钟上限() -> None:

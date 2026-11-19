@@ -50,12 +50,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$DailyTime = "03:10",
-    [string]$SizesTime = "06:00",
-    [string]$FilesTime = "07:30",
-    [string]$ArchiveTime = "05:00",
-    [string]$CompactTime = "00:30",
-    [string]$ReadmeTime = "09:00",
+    [string]$RefreshTime = "00:30",
     [switch]$Uninstall
 )
 
@@ -68,12 +63,17 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
 
-#: 现行任务。
-$taskNames = @("hf-daily", "hf-sizes", "hf-files", "hf-archive", "hf-compact")
+#: 现行任务。每日 00:30 一条链（ADR-0008）。
+$taskNames = @("hf-refresh")
 
-#: 2026-11-09 之前按钟点拆分的五个任务。升级时一并清掉：留着它们就会与链抢写锁，
-#: 且补跑依旧抢在彼此前面——正是这次要治的病。
-$legacyNames = @("hf-collect", "hf-reconcile", "hf-export", "hf-deliver", "hf-doctor")
+#: 历史任务，升级时一并清掉：留着就与链抢写锁，且补跑仍会各自抢跑。
+#: `hf-collect` 等五个是 2026-11-09 前按钟点拆分的；`hf-daily` / `hf-sizes` /
+#: `hf-files` / `hf-archive` / `hf-compact` / `hf-readme` 六个在 2026-11-19 并入
+#: 刷新鲜——每日增量已覆盖它们各自的周期，留着只是同一批工作被排两次。
+$legacyNames = @(
+    "hf-collect", "hf-reconcile", "hf-export", "hf-deliver", "hf-doctor",
+    "hf-daily", "hf-sizes", "hf-files", "hf-archive", "hf-compact", "hf-readme"
+)
 
 if ($Uninstall) {
     foreach ($name in ($taskNames + $legacyNames)) {
@@ -89,36 +89,11 @@ if ($Uninstall) {
 }
 
 $jobs = @(
-    # 一条链跑完全部例行。`CatchUp = $true`：错过（关机 / 休眠）则开机补跑，
-    # 补的是整条链，顺序仍在脚本里，不会像旧版那样各抢各的。
-    @{ Name = "hf-daily"; Script = "daily.ps1"; Hours = 8; CatchUp = $true
-       Triggers = @(
-           (New-ScheduledTaskTrigger -Daily -At $DailyTime),
-           (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME)
-       ); LogonDelay = "PT3M" },
-    @{ Name = "hf-sizes"; Script = "sizes.ps1"; Hours = 4; CatchUp = $false
+    # 一条链跑完全部例行（ADR-0008）。00:30 起跑，09:00 软边界；错过不补跑——
+    # 次日从 runs 台账 + staging 分片续，不需要把整条链重放一遍。
+    @{ Name = "hf-refresh"; Script = "refresh.ps1"; Hours = 10; CatchUp = $false
        LogonDelay = $null
-       Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At $SizesTime)) },
-    # 文件清单排在规模之后一个半小时：规模那趟最慢可跑数小时，错开以免争锁。
-    # 它补的是下载量前 1000 名的首屏清单（子集），故归入周任务而非日链。
-    @{ Name = "hf-files"; Script = "files.ps1"; Hours = 1; CatchUp = $false
-       LogonDelay = $null
-       Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At $FilesTime)) },
-    # 归档放周一，与周日那条错开一天，省得争锁。
-    @{ Name = "hf-archive"; Script = "archive.ps1"; Hours = 2; CatchUp = $false
-       LogonDelay = $null
-       Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At $ArchiveTime)) },
-    # README 保鲜排周六：周日已经压着规模（最慢可跑数小时）与文件清单两趟，
-    # 再塞一趟只是多一个抢锁的。周六除日链与压缩外没有别的任务。
-    # 它只做增量（--changed），全量那趟 21 小时仍留人工择机。
-    @{ Name = "hf-readme"; Script = "readme.ps1"; Hours = 2; CatchUp = $false
-       LogonDelay = $null
-       Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Saturday -At $ReadmeTime)) },
-    # 压缩每日 00:30：门槛仍是 7 天，实际每天最多压掉一个刚满期的分区，把
-    # 「周一才清一次、平日热区一路上涨」摊平。错过一轮次日接着压，不必补跑。
-    @{ Name = "hf-compact"; Script = "compact.ps1"; Hours = 2; CatchUp = $false
-       LogonDelay = $null
-       Triggers = @((New-ScheduledTaskTrigger -Daily -At $CompactTime)) }
+       Triggers = @((New-ScheduledTaskTrigger -Daily -At $RefreshTime)) }
 )
 
 foreach ($job in $jobs) {
@@ -173,13 +148,8 @@ foreach ($name in $legacyNames) {
 }
 
 Write-Host "已注册："
-Write-Host "  hf-daily      每日 $DailyTime + 登录后 3 分钟补跑：采集 → 派生 → 对账 → 规模 → 导出 → 交付 → 体检"
-Write-Host "                （顺序由 scripts\daily.ps1 保证；错过则开机补跑整条链）"
-Write-Host "  hf-compact    每日 $CompactTime 压缩满 7 天的冷区 Raw（不补跑，次日接着压）"
-Write-Host "  hf-sizes      每周日 $SizesTime 补规模数据，增量合并、中断可续（不补跑）"
-Write-Host "  hf-files      每周日 $FilesTime 补下载量前 1000 名的文件清单（首屏子集，不补跑）"
-Write-Host "  hf-archive    每周一 $ArchiveTime 归档满 30 天的 Raw，原文件移入 backup（不补跑）"
-Write-Host "  hf-readme     每周六 $ReadmeTime 重取 commit 已变的 README 全文（增量，不补跑）"
-Write-Host "日志目录：$(Join-Path $root 'data\logs')　链条摘要：同上，文件名以 -daily.log 结尾"
+Write-Host "  hf-refresh    每日 $RefreshTime 起跑完全部例行：采集 → 派生 → 对账 ‖ enrich → 导出 → 交付 → 清理 → 体检"
+Write-Host "                （顺序与并发由 ops/refresh.py 保证；09:00 软边界，未完成的下次从断点续）"
+Write-Host "日志目录：$(Join-Path $root 'data\logs')　刷新鲜摘要：同上，文件名以 -refresh.log 结尾"
 Write-Host "运行摘要：$(Join-Path $root 'data\runs')"
 Write-Host "核对：Get-ScheduledTask -TaskName hf-* | Get-ScheduledTaskInfo"
