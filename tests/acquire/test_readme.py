@@ -463,6 +463,39 @@ def test_命令行changed会带上还没有结论的库(store_with_data: Dataset
     assert store_with_data.read("readme").height == 3
 
 
+def test_只剩暂存分片时也要合并(store_with_data: DatasetStore) -> None:
+    """上一轮抓完却没合并（撞锁、被杀）：本轮没有候选，但分片必须并进表。
+
+    否则它们永远滞留——分片里的行已经算「有结论」，缺口是 0，每轮都提前返回。
+    """
+    staging = store_with_data.root / ".staging" / "readme"
+    staging.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            {
+                "id": f"acme/ds-{index}",
+                "url": f"https://huggingface.co/datasets/acme/ds-{index}",
+                "snapshot_date": DAY,
+                "source_sha": f"sha-{index}",
+                "status": "ok",
+                "bytes": 5,
+                "text": "正文",
+            }
+            for index in (1, 2, 3)
+        ],
+        schema=README_SCHEMA,
+    ).write_parquet(staging / "shard-0000.parquet")
+
+    code = main(
+        ["--data-dir", str(store_with_data.root), "fetch-readme", "--changed", "5"],
+        transport=FakeReadmeTransport({}),
+    )
+
+    assert code == 0
+    assert store_with_data.read("readme").height == 3
+    assert staged_shards(store_with_data, README_STAGING_DIR) == []
+
+
 def test_全文视图可查但不进默认宽表(store_with_data: DatasetStore) -> None:
     store_with_data.upsert(
         "readme",

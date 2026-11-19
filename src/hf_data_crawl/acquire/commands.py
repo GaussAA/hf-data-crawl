@@ -557,14 +557,21 @@ def run_fetch_readme(
             .head(args.changed)
         )
         refresh = set(picked["id"].to_list())
-        if not refresh:
+        if refresh:
+            ordered = ordered.filter(pl.col("id").is_in(sorted(refresh)))
+            print(
+                f"README 随内容刷新：{len(stale)} 个库 commit 已变、{len(gap)} 个还没有结论，"
+                f"本轮取 {len(refresh)} 个（按下载量）。"
+            )
+        elif staged.height:
+            # 上一轮抓完却没来得及合并（撞锁、被杀）：分片在盘上，本轮没有新候选
+            # ——分片里的行已算「有结论」，缺口也是 0。但收尾必须走到，否则分片
+            # 永远滞留，而每轮又都因为没有候选而提前返回，形成死锁。
+            print(f"README 无新候选，但有 {staged.height} 条暂存分片待合并。")
+            ordered = ordered.head(0)
+        else:
             print("README 既无陈旧也无缺口：所有库都已有结论。")
             return Outcome({"changed": 0, "refreshed": 0})
-        ordered = ordered.filter(pl.col("id").is_in(sorted(refresh)))
-        print(
-            f"README 随内容刷新：{len(stale)} 个库 commit 已变、{len(gap)} 个还没有结论，"
-            f"本轮取 {len(refresh)} 个（按下载量）。"
-        )
 
     if args.ids:
         wanted = [item.strip() for item in args.ids.split(",") if item.strip()]
