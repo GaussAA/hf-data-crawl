@@ -41,6 +41,7 @@ from pathlib import Path
 import polars as pl
 import pyarrow.parquet as pq
 
+from ..platform.runs import read_runs
 from ..platform.store import DatasetStore
 from ..query.gold import GoldCatalog, wide_column_names
 from .fields import (
@@ -226,6 +227,40 @@ def _current_rows(store: DatasetStore) -> int:
     return int(pl.scan_parquet(store.path("current")).select(pl.len()).collect().item())
 
 
+def _last_day(store: DatasetStore, command: str) -> str | None:
+    """某条命令最近一次成功运行的日期（`YYYY-MM-DD`）。"""
+    for item in reversed(read_runs(store)):
+        if item.get("command") != command or item.get("status") != "success":
+            continue
+        return str(item.get("started_at", ""))[:10]
+    return None
+
+
+def _check_alignment(store: DatasetStore) -> None:
+    """`build` 必须不早于最近一次采集，否则导出的是一份「新鲜的旧数据」。
+
+    这是 `--only export` 那类误跑的**真正**根除。整链的依赖检查只能拦住
+    「build 失败」，拦不住「build 成功但 current 没变」；而按下 `--only export`
+    的人看到的是一份刚写完的文件，格式与行数都对，只有内容是旧的。
+
+    **判据用两条命令的时间，不用 `current.last_seen_at`**：后者连增量采集都会
+    更新（`last_seen_at` 是「最近见到这个库的日期」），于是它永远比全站扫描新，
+    比出来的结论恒为「对齐」——2026-11-19 第一版就栽在这里。`current` 的产出者
+    是 `build`，所以拿 `build` 与 `collect` 比才是同一对事实。
+
+    没有任何一条记录时跳过（手工初始化与测试夹具）。
+    """
+    last_collect = _last_day(store, "collect")
+    last_build = _last_day(store, "build")
+    if last_collect is None or last_build is None:
+        return
+    if last_build < last_collect:
+        raise WideExportMismatch(
+            f"最近一次采集是 {last_collect}，而 build 停在 {last_build}："
+            "派生层没跟上，导出的会是旧数据。先跑 build（或整链 refresh）"
+        )
+
+
 def export_wide(store: DatasetStore, target: Path | None = None) -> WideExportSummary:
     """按默认交付字段契约，把 `datasets` 视图流式写成 parquet。
 
@@ -238,6 +273,7 @@ def export_wide(store: DatasetStore, target: Path | None = None) -> WideExportSu
     """
     destination = Path(target) if target is not None else export_path(store)
     _assert_inside(store.root, destination)
+    _check_alignment(store)
 
     catalog = GoldCatalog(store)
     destination.parent.mkdir(parents=True, exist_ok=True)

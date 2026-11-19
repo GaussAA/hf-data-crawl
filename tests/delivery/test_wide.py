@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -238,3 +239,52 @@ def test_无采集数据时命令失败且留痕(tmp_path: Path) -> None:
 def test_导出命令属于写命令() -> None:
     """与 `collect` 并发会读到新旧混合的快照，必须持锁。"""
     assert "export-wide" in WRITE_COMMANDS
+
+
+# ---------------------------------------------------------------- 与采集对齐
+
+
+def _seed_run(store: DatasetStore, command: str, started_at: str) -> None:
+    """写一条指定日期的成功运行记录。"""
+    runs = store.root / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    stamp = started_at.replace("-", "").replace(":", "")
+    (runs / f"{stamp}-{command}.json").write_text(
+        json.dumps(
+            {
+                "command": command,
+                "status": "success",
+                "started_at": started_at,
+                "payload": {"stopped_reason": "end"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_current_落后于采集时拒绝导出(store: DatasetStore) -> None:
+    """`--only export` 的风险不是「导出物旧」（每次重写），是 current 本身停在
+    昨天却被包装成一份刚写完的新文件——格式与行数都对，只有内容是旧的。
+
+    判据用数据（current 的 snapshot_date）而不是台账：整链的依赖检查只能拦住
+    「build 失败」，拦不住「build 成功但 current 没变」。
+    """
+    from hf_data_crawl.delivery.wide import WideExportMismatch, export_wide
+
+    _seed_run(store, "collect", "2026-11-02T01:00:00Z")
+    _seed_run(store, "build", "2026-11-01T02:00:00Z")
+
+    with pytest.raises(WideExportMismatch, match="派生层没跟上"):
+        export_wide(store)
+
+
+def test_current_与采集对齐时照常导出(store: DatasetStore) -> None:
+    """采集日期与 current 一致（夹具的 DAY）时不该被拦。"""
+    from hf_data_crawl.delivery.wide import export_wide
+
+    _seed_run(store, "collect", "2026-11-01T01:00:00Z")
+    _seed_run(store, "build", "2026-11-01T02:00:00Z")
+
+    summary = export_wide(store)
+
+    assert summary.rows == 3

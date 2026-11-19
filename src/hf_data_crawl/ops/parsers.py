@@ -568,4 +568,10 @@ def build_parser() -> argparse.ArgumentParser:
         "不套时间边界。可选值见 python -m hf_data_crawl.ops.refresh 的 STEP_NAMES",
     )
 
+    refresh.add_argument(
+        "--strict",
+        action="store_true",
+        help="手动补跑时若前置今天没有成功记录就拒绝（默认只提示）",
+    )
+
     return parser

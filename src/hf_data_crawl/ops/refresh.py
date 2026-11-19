@@ -216,6 +216,11 @@ STEP_NAMES: frozenset[str] = frozenset(
     step.name for step in (*SERIAL_HEAD, *PARALLEL, *AFTER_RECONCILE, *SERIAL_TAIL)
 )
 
+#: 步骤名 → 定义。`--only` 的依赖提示按它取 `needs`。
+STEP_BY_NAME: dict[str, Step] = {
+    step.name: step for step in (*SERIAL_HEAD, *PARALLEL, *AFTER_RECONCILE, *SERIAL_TAIL)
+}
+
 
 @dataclass
 class Plan:
@@ -402,6 +407,44 @@ def summary_payload(plan: Plan, budget_hours: float) -> dict[str, object]:
     }
 
 
+def _report_dependencies(
+    store: DatasetStore,
+    only: frozenset[str] | None,
+    *,
+    strict: bool,
+) -> None:
+    """`--only` 时把「前置今天跑过没有」摆到台面上。
+
+    `--only` 刻意不看依赖（手动补一步的人知道自己在干什么），但**静默**与
+    **知情**是两件事：2026-11-19 之前，`--only export` 可以在 `build` 没跑过时
+    导出一份「新鲜的旧数据」，而输出里一个字都没提。
+
+    判据用「今天是否成功过」而不是「数据是否一致」：这里只是提示，真正的硬校验
+    在 `export` 自己身上（它比 `current` 与最近一次成功采集的日期，对不上就拒绝）。
+
+    `strict` 时从提示升级为拒绝——代价是手动补跑要先拼前置，换来的是「不会误跑」。
+    """
+    if not only:
+        return
+    done = today_successes(store)
+    stale: list[str] = []
+    for name in sorted(only):
+        step = STEP_BY_NAME.get(name)
+        if step is None:
+            continue
+        missing = [need for need in step.needs if need not in done]
+        if missing:
+            stale.append(f"{name} 缺前置 {', '.join(missing)}")
+    if not stale:
+        return
+    detail = "；".join(stale)
+    if strict:
+        raise SystemExit(
+            f"--strict：{detail}（今天没有成功记录）。去掉 --strict 可以照跑，但产物可能基于旧数据"
+        )
+    print(f"[提示] {detail}——今天没有成功记录，产物可能基于旧数据；加 --strict 可改为拒绝")
+
+
 def run(args, store: DatasetStore) -> Outcome:
     """`refresh` 子命令入口。"""
     only: frozenset[str] | None = None
@@ -413,6 +456,7 @@ def run(args, store: DatasetStore) -> Outcome:
                 f"未知步骤名：{', '.join(unknown)}；可选：{', '.join(sorted(STEP_NAMES))}"
             )
         only = names
+    _report_dependencies(store, only, strict=getattr(args, "strict", False))
     plan = execute(
         store,
         budget_hours=args.budget_hours,
