@@ -122,7 +122,7 @@ uv run hf-data-crawl archive --date 2026-11-07
 分块归为 `legacy`，沿用旧分片名。排障时看文件名第二段即可认出「这批是谁扫的」，
 不同来源互不合并。
 
-**冷区压缩**（`hf-compact` 每日 00:30 自动执行；也可手动）：
+**冷区压缩**（刷新链的串行头第一步，每日 00:30 起跑；也可手动）：
 ```bash
 uv run hf-data-crawl compact                       # 默认压缩超过 7 天的日期
 uv run hf-data-crawl compact --date 2026-10-01    # 只压指定日期
@@ -165,8 +165,8 @@ Remove-Item -Recurse "data\backup\raw\dt=$day"
 
 ## 维护建议
 
-- **每日**：检查 `hf-daily` 单链是否跑完（`collect → build --stale → reconcile → fetch-sizes --changed → export-wide → request run-due → prune → doctor`）；`hf-compact` 00:30 压缩满 7 天的冷区 Raw
-- **每周**：`hf-sizes` 周日 06:00 全量补规模；`hf-archive` 周一 05:00 对单日做同天去重；`hf-readme` 周六 09:00 重取 commit 已变的 README 全文（增量，判据是 `source_sha`，不是 `lastModified`）；确认无误后清理 backup
+- **每日**：检查 `hf-refresh` 单链是否跑完（串行头 `compact → collect --full-scan → build --stale`，并行段 `reconcile ‖ sizes ‖ readme ‖ preview`，串行尾 `parse-readme → export-wide → request run-due → prune → doctor`）；到 09:00 未启动的步骤留给次日，不算失败
+- **每周**：核对本周每天都有 `refresh` 记录（`data/runs/` 里按命令名筛），缺的那天看 `data/logs/*-refresh-*.log` 断在哪一步；确认无误后清理 `backup/`
 - **每月**：运行 `build`（默认只重放近 7 天热区）核对派生层；需要整体重算时，**先确认 `data/raw/dt=` 覆盖了全部采过的日期**（含冷区）再跑 `build --full`——冷区未复原时它会拒绝执行，硬要跑只能加 `--allow-cold-loss`，而那等于承认这批历史不要了
 - **`exports/` 不在恢复范围内**：单文件宽表是可重建投影，损坏或过期时重跑 `hf-data-crawl export-wide` 即可，不需要备份，也不能作为重建其它层的依据
 - **`enrich/size.parquet` 与 `enrich/files.parquet` 是 NETWORK 表**：`build` / `compact` 不会重建它们，丢了只能分别重跑 `fetch-sizes` / `fetch-files`；`files.truncated=true` 只说明当次取了一页 tree，不是全库真值，必要时用 `--max-pages` 重补

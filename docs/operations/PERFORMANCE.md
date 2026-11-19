@@ -72,7 +72,7 @@ parquet 的压缩级别写在 `platform/tables.py` 的 `TableSpec.compression_le
 | 榜单 `modalities`（unnest 列表列） | 1.08s |
 | `SELECT count(*) FROM datasets`（视图 join 五表） | 0.77s |
 | `readme` 按 id 查 | 0.05s |
-| `COPY` 全量 31 列导出 | 13.94s |
+| `COPY` 全量导出（两步：视图 30 列 + 现场 join 5 列） | 43.5s（第一步 8.1s / 第二步 23.5s / 校验 12s） |
 
 CLI 端到端再加约 4 秒（`uv run` + import），那是进程启动成本，与存储无关。
 

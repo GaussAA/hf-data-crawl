@@ -100,7 +100,7 @@ GLOSSARY #62–#66，版本号在 `delivery/fields.py` 的 `CONTRACT_VERSION`。
 
 **文件清单补采（试点）**：列表接口不返回 `siblings`（见 `data/DATA.md` 第九节），
 单库详情按头部补又会反复超时，故 `fetch-files` 改走 `/tree/main?recursive=true&expand=false`：
-每页固定 1000 条、约 110–230 KB / 0.4–0.7 s。`hf-files` 每周日 07:30 补下载量前 1000 名，
+每页固定 1000 条、约 110–230 KB / 0.4–0.7 s。刷新链每天补下载量前 20000 名（`fetch-files --top 20000`），
 体检给 10 天年龄红线——漏跑一次不喊，连丢一周才说明停了。默认每库只取第一页，有后续页时
 标 `truncated=true`：此时 `file_count` / `total_bytes` / `file_formats` / `has_readme`
 都只是**这一页的下限**，要完整清单须显式加大 `--max-pages`；`--refresh-truncated` 只重抓
@@ -222,17 +222,17 @@ Raw 原块由 `compact` 移入 `backup/`（只移不删）。`build --full` 的�
 ## 定时
 
 ```powershell
-pwsh -File scripts\setup-schedule.ps1              # 注册：hf-daily（每日 03:10 + 登录后 3 分钟，按 daily.ps1 的顺序跑完当日例行）· 每日 00:30 压缩 · 周日 06:00 规模 · 周日 07:30 文件清单 · 周一 05:00 归档
+pwsh -File scripts\setup-schedule.ps1              # 注册 hf-refresh（每日 00:30 起跑完全部例行，09:00 软边界；顺序与并发由 ops/refresh.py 保证）
 pwsh -File scripts\setup-schedule.ps1 -Uninstall   # 卸载
 Get-ScheduledTask -TaskName hf-* | Get-ScheduledTaskInfo   # 核对
 uv run hf-data-crawl doctor                        # 手动体检；有问题退出码 1，并写 data\ALERT.txt
 ```
 
-**例行是一条链，不是一个钟点表**。`scripts\daily.ps1` 按序跑八步（采集 → 派生 → 对账 → 规模随变化刷新 → 导出 → 交付 → 清理备份 → 体检），每步直接调一条 `hf-data-crawl` 子命令，`Invoke-HfTask` 负责日志与退出码；`scripts\*.ps1` 仍是可单独手动跑的入口（collect / reconcile / export / deliver / doctor / sizes / files / archive / compact / prune）。公共部分（定位 `uv`、代理默认值、日志、退出码）抽在 `scripts\_common.ps1`。
+**例行是一条链，不是一个钟点表**。`scripts\refresh.ps1` 调 `hf-data-crawl refresh`，编排在 `ops/refresh.py`（ADR-0008）：三段式——串行头（压缩 → 采集 → 派生）把 `current` 定稿，然后对账与四个锁外抓取并行，最后串行尾（解析正文 → 导出 → 交付 → 清理 → 体检）。每步是一次独立子进程，锁与 runs 台账仍由各子命令自己管，`Invoke-HfTask` 负责日志与退出码；`scripts\*.ps1` 仍是可单独手动跑的入口。公共部分（定位 `uv`、代理默认值、日志、退出码）抽在 `scripts\_common.ps1`。
 
 时钟只负责「什么时候开始」，**先后由脚本里的顺序保证**。采集撞上瞬时断连会隔 2 分钟重试一次（2026-11-15 03:10 实测：TLS `UNEXPECTED_EOF`，一分钟后对账却正常）；仍失败就照旧记失败，重试只治抖动、不掩盖故障。导出与交付**依赖 `build` 与 `reconcile` 成功**（派生层没跟上就发布，等于把旧值当新值交出去；对账没完就导出，等于发布一份还没对齐的全站快照），前置失败即跳过并在 `-daily.log` 里写明原因；对账是独立的全站扫描，采集失败也照样跑；体检永远跑，且它的非零只记「告警」不算链条失败——告警与故障挤进同一个码，铃声很快就没人听。
 
-这条设计来自 2026-11-09 的一次实测：机器 00:30 之后关机、19:03 开机，`-StartWhenAvailable` 把错过的五个任务**在同一分钟全部补跑**，导出抢在对账前完成，一出来就落后 2,466 行，体检随即误报并以退出码 1 收场。故补跑只留给 `hf-daily`（补的是整条链），compact / sizes / files / archive 是互不相干的纯周期维护，错过就等下一轮——它们补跑只会跟链抢写锁。
+这条设计来自 2026-11-09 的一次实测：机器 00:30 之后关机、19:03 开机，`-StartWhenAvailable` 把错过的五个任务**在同一分钟全部补跑**，导出抢在对账前完成，一出来就落后 2,466 行，体检随即误报并以退出码 1 收场。2026-11-19 起只剩 `hf-refresh` 一个任务，且**不补跑**：续跑靠 `data/runs` 台账与 staging 分片，比把整条链重放一遍精细；次日 00:30 若发现上一条还在跑，就跳过本次触发。
 
 要点：
 
@@ -382,7 +382,7 @@ sha256，于是「基于哪一版清单」和「基于哪一版底库」一样�
 分组、页面标签对照、`EXTENDED_FIELDS`、`CONTRACT_VERSION`），`data/exports/datasets.parquet`
 是它的物化，列序完全一致。交付 README 会附逐列定义、「详情页标签 ↔ 库列」对照与扩展
 字段清单——页面叫 `Tasks` / `Size` / `Tags`，库里叫 `task_categories` / `size_categories` /
-`plain_tags`，值也多为机器码，不对照就会以为「库里没内容」。需要默认面之外的字段时在
+`tags`（原样全量，含前缀；无前缀子集可自行滤出），值也多为机器码，不对照就会以为「库里没内容」。需要默认面之外的字段时在
 spec 写 `output.columns: [id, regions, arxiv_ids]`；`doctor` 会勾稽导出列集与契约。
 
 `manifest.json` 里的 `source.current_md5` 是整份档案的锚点：日后任何一份交付都能
