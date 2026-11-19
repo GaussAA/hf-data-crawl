@@ -18,7 +18,7 @@
    `/api` 配额（约 1000 请求/5 分钟），并行只会互相拖慢。
 
 ③ 串行尾：`export-wide`（`sizes` 合并后即跑，35 列契约只依赖它）→
-   `request run-due` → `prune` → `doctor`。
+   `request run-due` → `archive` → `prune` → `doctor`。
 
 续跑与边界
 ==========
@@ -57,12 +57,25 @@ LOG_DIR = "logs"
 
 @dataclass(frozen=True)
 class Step:
-    """链条里的一步。`args` 是 `hf-data-crawl` 之后的参数。"""
+    """链条里的一步。`args` 是 `hf-data-crawl` 之后的参数。
+
+    `name` 是编排器内部用的短名（`--only` 收它、`needs` 写它）；`ledger` 才是
+    `runs/` 台账里那条记录的 `command`。**两者必须分开**：台账记的是真正执行的
+    子命令（`fetch-sizes` / `export-wide` / `request-run-due`），拿短名去比对
+    永远比不上，续跑就退化成「每天从头再跑一遍」——而输出里看不出任何异常。
+    """
 
     name: str
     args: tuple[str, ...]
     #: 必须先成功的步骤名。缺依赖就跳过，不带着半截状态硬跑。
     needs: tuple[str, ...] = ()
+    #: 台账里的 `command`。留空表示与 `name` 相同；不同时必须显式写出。
+    command: str = ""
+
+    @property
+    def ledger(self) -> str:
+        """这一步写进 `runs/` 的命令名。"""
+        return self.command or self.name
 
 
 #: ① 采集定稿。`--card-pages 0` 表示卡片不设页数上限（变化 ∪ 缺口全刷）。
@@ -87,14 +100,14 @@ SERIAL_HEAD: tuple[Step, ...] = (
 #: ② 并行段：对账持锁，三个抓取在锁外。各自走不同端点，限速互不干扰。
 PARALLEL: tuple[Step, ...] = (
     Step("reconcile", ("reconcile",)),
-    Step("sizes", ("fetch-sizes", "--changed-all")),
-    Step("readme", ("fetch-readme", "--changed-all")),
-    Step("preview", ("fetch-preview", "--top", "20000")),
+    Step("sizes", ("fetch-sizes", "--changed-all"), command="fetch-sizes"),
+    Step("readme", ("fetch-readme", "--changed-all"), command="fetch-readme"),
+    Step("preview", ("fetch-preview", "--top", "20000"), command="fetch-preview"),
 )
 
 #: ②-b 等 reconcile 释放锁后再跑：同走 /api 配额，并行会互相拖慢。
 AFTER_RECONCILE: tuple[Step, ...] = (
-    Step("files", ("fetch-files", "--top", "20000"), needs=("reconcile",)),
+    Step("files", ("fetch-files", "--top", "20000"), needs=("reconcile",), command="fetch-files"),
 )
 
 #: ③ 收尾。导出只依赖 sizes：35 列契约里的 `server_*` 四列来自 `size` 表。
@@ -102,9 +115,24 @@ SERIAL_TAIL: tuple[Step, ...] = (
     # `fetch-readme` 只抓正文：`readme_fields` 的字段要靠 `parse-readme` 派生。
     # 必须排在导出前——`paper_url` / `citation_bibtex` 就来自那张表，不解析就会
     # 静默停在旧正文上（2026-11-19 复核发现刷新链漏了这一步）。
-    Step("parse", ("parse-readme",), needs=("readme",)),
-    Step("export", ("export-wide",), needs=("build", "reconcile", "sizes", "parse")),
-    Step("deliver", ("request", "run-due"), needs=("build", "reconcile")),
+    Step("parse", ("parse-readme",), needs=("readme",), command="parse-readme"),
+    Step(
+        "export",
+        ("export-wide",),
+        needs=("build", "reconcile", "sizes", "parse"),
+        command="export-wide",
+    ),
+    Step(
+        "deliver",
+        ("request", "run-due"),
+        needs=("build", "reconcile"),
+        command="request-run-due",
+    ),
+    # 归档把 30 天前的 Raw 冻结成分片（写入序进 groups、同天重复压掉）。旧链靠
+    # `hf-archive` 每周一跑；ADR-0008 取消全部周任务时**漏了给它排期**，于是
+    # `doctor` 的 `archive_backlog` 一过 30 天就永久报红。放串行尾是因为它要
+    # `build` 之后的派生状态判「归档前是否已滞后」，且改的是 Raw 而非 `current`。
+    Step("archive", ("archive",), needs=("build",)),
     Step("prune", ("prune",)),
     Step("doctor", ("doctor",)),
 )
@@ -122,9 +150,14 @@ class StepResult:
 
 
 def today_successes(store: DatasetStore) -> set[str]:
-    """今天已经成功跑过的命令名。`collect` 只认「扫到末页」那次。"""
+    """今天已经成功跑过的**步骤名**。`collect` 只认「扫到末页」那次。
+
+    台账记的是子命令名（`fetch-sizes` / `export-wide` / `request-run-due`），步骤名
+    是它的短名（`sizes` / `export` / `deliver`）。这一步换算不能省：直接拿短名去
+    比对台账，七个步骤永远比不上，续跑每天白跑一遍，而输出里看不出异常。
+    """
     today = date.today().isoformat()
-    done: set[str] = set()
+    commands: set[str] = set()
     for item in read_runs(store):
         if item.get("status") != "success":
             continue
@@ -136,8 +169,8 @@ def today_successes(store: DatasetStore) -> set[str]:
             if payload.get("stopped_reason") != "end":
                 # 水位线早停那次不是全站扫完，不算采集定稿。
                 continue
-        done.add(command)
-    return done
+        commands.add(command)
+    return {step.name for step in ALL_STEPS if step.ledger in commands}
 
 
 def _command(step: Step, root: Path) -> list[str]:
@@ -210,16 +243,15 @@ def _plan(
     return ready, skipped
 
 
-#: 全部步骤名，供 `--only` 校验。写在这里而不是扫描三个元组，是为了让拼错的步骤名
+#: 全部步骤，按链上的出现顺序。`--only` 的合法名与续跑的台账映射都从这一份派生。
+ALL_STEPS: tuple[Step, ...] = (*SERIAL_HEAD, *PARALLEL, *AFTER_RECONCILE, *SERIAL_TAIL)
+
+#: 全部步骤名，供 `--only` 校验。写在这里而不是扫描四个元组，是为了让拼错的步骤名
 #: 在参数解析期就报错——`--only exprot` 静默什么都不跑，比报错坏得多。
-STEP_NAMES: frozenset[str] = frozenset(
-    step.name for step in (*SERIAL_HEAD, *PARALLEL, *AFTER_RECONCILE, *SERIAL_TAIL)
-)
+STEP_NAMES: frozenset[str] = frozenset(step.name for step in ALL_STEPS)
 
 #: 步骤名 → 定义。`--only` 的依赖提示按它取 `needs`。
-STEP_BY_NAME: dict[str, Step] = {
-    step.name: step for step in (*SERIAL_HEAD, *PARALLEL, *AFTER_RECONCILE, *SERIAL_TAIL)
-}
+STEP_BY_NAME: dict[str, Step] = {step.name: step for step in ALL_STEPS}
 
 
 @dataclass
@@ -318,16 +350,34 @@ def execute(
         plan.results.append(result)
         announce(result)
 
-    if ready:
+    # files 只在 reconcile **本轮会跑**时才需要排队等它（同走 /api 配额）。
+    # reconcile 今天已成功、或被 `--only` 排除时当场排：此前这段整个挂在
+    # 「reconcile 在 ready 里」之后，于是 `--only files` 什么都不跑还退出 0，
+    # 而「今天续跑、reconcile 已完成」那条路上 files 同样被静默吞掉。
+    waiting_for_reconcile = any(step.name == "reconcile" for step in ready)
+    deferred: list[Step] = []
+    if not waiting_for_reconcile:
+        deferred, deferred_skipped = _plan(AFTER_RECONCILE, done, failed, only)
+        for item in deferred_skipped:
+            plan.results.append(item)
+            announce(item)
+
+    batch = [*ready, *deferred]
+    if batch:
         if over_launch():
-            for step in ready:
+            window = list(batch)
+            if waiting_for_reconcile:
+                # files 排在 reconcile 之后：窗口外不再启动，一并标成留给次日。
+                # 不标的话它在摘要里连一行都没有——正是「静默少跑一步」的形状。
+                window.extend(step for step in AFTER_RECONCILE if step.name not in done)
+            for step in window:
                 result = StepResult(step.name, note="超过启动窗口，留给次日续跑")
                 plan.results.append(result)
                 announce(result)
         else:
-            with ThreadPoolExecutor(max_workers=len(ready) + len(AFTER_RECONCILE)) as pool:
+            with ThreadPoolExecutor(max_workers=len(batch) + len(AFTER_RECONCILE)) as pool:
                 futures: dict[Future[StepResult], Step] = {
-                    pool.submit(run_step, step, store.root): step for step in ready
+                    pool.submit(run_step, step, store.root): step for step in batch
                 }
                 for future, step in list(futures.items()):
                     if step.name != "reconcile":
@@ -338,7 +388,8 @@ def execute(
                     announce(result)
                     del futures[future]
                     # reconcile 释放锁之后，files 才能不抢 /api 配额。
-                    later_ready, later_skipped = _plan(AFTER_RECONCILE, done, failed)
+                    # `only` 必须传下去：漏传会让 `--only reconcile` 顺手把 files 也跑了。
+                    later_ready, later_skipped = _plan(AFTER_RECONCILE, done, failed, only)
                     for item in later_skipped:
                         plan.results.append(item)
                         announce(item)

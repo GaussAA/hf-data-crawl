@@ -178,10 +178,11 @@ def test_only的依赖提示指出缺哪个前置(tmp_path: Path, capsys) -> Non
 def test_only的前置今天都跑过就不提示(tmp_path: Path, capsys) -> None:
     """提示只在真缺前置时出现；天天提示等于没提示。"""
     store = DatasetStore(tmp_path / "data")
-    for name in ("build", "reconcile", "sizes"):
-        seed_run(store, name)
-    seed_run(store, "readme", payload={"stopped_reason": "end"})
-    seed_run(store, "parse")
+    seed_run(store, "build")
+    seed_run(store, "reconcile")
+    seed_run(store, "fetch-sizes")
+    seed_run(store, "fetch-readme", payload={"stopped_reason": "end"})
+    seed_run(store, "parse-readme")
 
     refresh._report_dependencies(store, frozenset({"export"}), strict=False)
 
@@ -294,8 +295,10 @@ def test_昨天成功的记录不算今天完成(tmp_path: Path, monkeypatch) ->
 
 
 def test_并行段里已完成的那一步不再跑(tmp_path: Path, monkeypatch) -> None:
+    # 台账记的是子命令名 `fetch-sizes`，步骤短名是 `sizes`。这条用例原先按短名
+    # 播种，于是「续跑」在真实台账上从来没有生效过，测试却一直绿。
     store = DatasetStore(tmp_path / "data")
-    seed_run(store, "sizes")
+    seed_run(store, "fetch-sizes")
 
     calls = fake_steps(monkeypatch)
     plan = refresh.execute(store, log=lambda _: None)
@@ -308,7 +311,7 @@ def test_并行段里已完成的那一步不再跑(tmp_path: Path, monkeypatch)
 def test_收尾段里已完成的那一步不再跑(tmp_path: Path, monkeypatch) -> None:
     """导出已交过就不再导：同一天重导一次，档案里会多出一条没人要的版本。"""
     store = DatasetStore(tmp_path / "data")
-    seed_run(store, "export")
+    seed_run(store, "export-wide")
 
     calls = fake_steps(monkeypatch)
     plan = refresh.execute(store, log=lambda _: None)
@@ -364,7 +367,109 @@ def test_依赖提示忽略不认识的名字(tmp_path: Path, capsys) -> None:
     assert capsys.readouterr().out == ""
 
 
+def test_only点名文件清单时真的跑一次(tmp_path: Path, monkeypatch) -> None:
+    """`files` 挂在 reconcile 之后：此前 `--only files` 什么都不跑，还退出 0。"""
+    store = DatasetStore(tmp_path / "data")
+    calls = fake_steps(monkeypatch)
+    args = Namespace(only="files", strict=False, budget_hours=8.5, launch_hours=8.0)
+
+    outcome = refresh.run(args, store)
+
+    assert calls == ["files"]
+    assert outcome.code == 0
+
+
+def test_only点名对账时不顺手跑文件清单(tmp_path: Path, monkeypatch) -> None:
+    """`_plan(AFTER_RECONCILE, ...)` 漏传 only：补一次对账会捎带 70 分钟的抓取。"""
+    store = DatasetStore(tmp_path / "data")
+    calls = fake_steps(monkeypatch)
+
+    refresh.execute(store, only=frozenset({"reconcile"}), log=lambda _: None)
+
+    assert calls == ["reconcile"]
+
+
+def test_对账今天已完成时文件清单照跑(tmp_path: Path, monkeypatch) -> None:
+    """续跑那天 reconcile 已成功：files 不能因为「没有 reconcile 在跑」就永不排期。"""
+    store = DatasetStore(tmp_path / "data")
+    seed_run(store, "reconcile")
+
+    calls = fake_steps(monkeypatch)
+    plan = refresh.execute(store, log=lambda _: None)
+
+    assert "files" in calls
+    files = plan.by_name("files")
+    assert files is not None and files.code == 0
+
+
+def test_归档在链上且有排期(tmp_path: Path, monkeypatch) -> None:
+    """`doctor` 的 archive_backlog 一过 30 天就报红；没人跑 archive 就是永久红。"""
+    store = DatasetStore(tmp_path / "data")
+    calls = fake_steps(monkeypatch)
+
+    refresh.execute(store, log=lambda _: None)
+
+    assert "archive" in refresh.STEP_NAMES
+    assert "archive" in calls
+
+
+# ---------------------------------------------------------------- 台账与步骤名
+
+
+#: 步骤短名 → 台账里真正记的命令名。只列对不上的，对得上的默认同名。
+LEDGER_ALIASES = {
+    "sizes": "fetch-sizes",
+    "readme": "fetch-readme",
+    "preview": "fetch-preview",
+    "files": "fetch-files",
+    "parse": "parse-readme",
+    "export": "export-wide",
+    "deliver": "request-run-due",
+}
+
+
+def test_每一步的台账命令名与它实际跑的子命令一致() -> None:
+    """`Step.args[0]` 就是 cli 写进台账的 `command`（`request` 例外）。
+
+    这条不测行为，测的是**声明**：改了 args 却忘了改 `command`，续跑就从
+    「跳过今天已完成的」退化成「每天重跑一遍」，两种情况的输出一模一样。
+    """
+    for step in refresh.ALL_STEPS:
+        if step.args[0] == "request":
+            assert step.ledger == "request-run-due", step.name
+        else:
+            assert step.ledger == step.args[0], step.name
+
+
+def test_对不上名的七个步骤都能被台账认出来(tmp_path: Path) -> None:
+    """真实台账按子命令名落盘；续跑必须把这些名字换算回步骤名。"""
+    store = DatasetStore(tmp_path / "data")
+    for command in LEDGER_ALIASES.values():
+        seed_run(store, command)
+
+    done = refresh.today_successes(store)
+
+    assert set(LEDGER_ALIASES) <= done
+    assert "compact" not in done, "没跑过的步骤不能算完成"
+
+
 def test_查不到的步骤返回None(tmp_path: Path) -> None:
     plan = refresh.Plan()
 
     assert plan.by_name("nope") is None
+
+
+def test_窗口外不启动新抓取且文件清单也留痕(tmp_path: Path, monkeypatch) -> None:
+    """`files` 排在 reconcile 之后：窗口超时时它也必须出现在摘要里。
+
+    原先它压根不进计划——doctor 看不到、人翻日志也看不到「今天少跑了一步」。
+    """
+    store = DatasetStore(tmp_path / "data")
+    calls = fake_steps(monkeypatch)
+
+    plan = refresh.execute(store, launch_hours=0.0, log=lambda _: None)
+
+    assert "reconcile" not in calls
+    files = plan.by_name("files")
+    assert files is not None and files.code is None
+    assert "启动窗口" in files.note

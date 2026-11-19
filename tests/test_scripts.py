@@ -119,6 +119,7 @@ def test_链条按序且前置失败会跳过() -> None:
         "parse",
         "export",
         "deliver",
+        "archive",
         "prune",
         "doctor",
     ]

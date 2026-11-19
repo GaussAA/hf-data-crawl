@@ -1632,7 +1632,7 @@ _DEPRECATED_TERMS: dict[str, str] = {
     "hf-compact": "旧的压缩任务，已并入 refresh 的串行头",
     "hf-sizes": "旧的规模任务，已并入 refresh 的并行段",
     "hf-files": "旧的文件清单任务，已并入 refresh 的并行段",
-    "hf-archive": "旧的归档任务，已并入 refresh 的串行头",
+    "hf-archive": "旧的归档任务，已并入 refresh 的串行尾",
     "hf-readme": "旧的 README 保鲜任务，已并入 refresh 的并行段",
     "daily.ps1": "旧链脚本，被 refresh.ps1 取代",
     "clean-readme": "回滚掉的物化命令",
