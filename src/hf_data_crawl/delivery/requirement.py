@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from ..platform.atomic import write_bytes
-from .fields import projection_sql
+from .fields import VIEW_COLUMNS, projection_sql
 from .metrics import Metric, MetricKind, lookup
 
 if TYPE_CHECKING:
@@ -529,9 +529,12 @@ def _output(raw: Any, path: Path) -> Output:
     columns = raw.get("columns")
     if columns is not None and not isinstance(columns, list):
         raise SpecError(f"{path}: output.columns 应是列表")
+    picked = tuple(str(name) for name in (columns or ()))
+    if picked:
+        _supported_columns(picked, where=f"{path}: ")
     return Output(
         format=_enum(OutputFormat, raw.get("format", OutputFormat.PARQUET), "output.format", path),
-        columns=tuple(str(name) for name in (columns or ())),
+        columns=picked,
     )
 
 
@@ -738,7 +741,28 @@ def _select_list(spec: Spec) -> str:
     """
     if not spec.output.columns:
         return projection_sql()
+    _supported_columns(spec.output.columns)
     return ", ".join(f'"{_column(name)}"' for name in spec.output.columns)
+
+
+def _supported_columns(columns: tuple[str, ...], where: str = "") -> None:
+    """`output.columns` 只能点名**视图里有的**列。
+
+    注入列（`readme` / `split` / `features` / `paper_url` / `citation_bibtex`）随
+    宽表导出物提供，`gold.datasets` 视图里没有——它们体积太大或粒度不同，进视图
+    会让每次查询都拖着走。放它们进 spec，SQL 会编译成 `SELECT "readme" FROM
+    datasets`，受理通过、交付时才报 `Referenced column not found`。
+
+    受理（`_output`）与编译（`_select_list`）共用这一份判据：各写一遍时前一处
+    很容易漏，漏了就是「建出一份永远跑不通的需求」（与 `_compatible` 同一理由）。
+    """
+    outside = [name for name in columns if _column(name) not in VIEW_COLUMNS]
+    if outside:
+        raise SpecError(
+            f"{where}output.columns 里有需求 SQL 投不出的列：{outside}；"
+            "readme / split / features / paper_url / citation_bibtex 只随宽表导出物"
+            "（data/exports/datasets.parquet）提供，视图里没有"
+        )
 
 
 def _column(name: str) -> str:

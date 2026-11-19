@@ -56,11 +56,12 @@ from .fields import (
 #: 是为了让「它不是一张表」在目录结构上一眼可见。
 DEFAULT_RELATIVE = Path("exports") / "datasets.parquet"
 
-#: 注入列 → 第二步 SQL 里的别名。
+#: 注入列 → 第二步 SQL 里的别名。`split` 与 `features` 同来自一次 `card_configs`
+#: 聚合，故共用一个别名。
 _INJECT_ALIAS: dict[str, str] = {
     "readme": "rc",
-    "split": "sa",
-    "features": "fa",
+    "split": "ca",
+    "features": "ca",
     "paper_url": "rf",
     "citation_bibtex": "rf",
 }
@@ -104,10 +105,8 @@ def _sql_path(path: Path) -> str:
 _EMPTY_CTE: dict[str, str] = {
     "readme_clean": "readme_clean AS (SELECT CAST(NULL AS VARCHAR) AS id, "
     "CAST(NULL AS VARCHAR) AS readme WHERE false)",
-    "split_agg": "split_agg AS (SELECT CAST(NULL AS VARCHAR) AS id, "
-    "CAST(NULL AS VARCHAR[]) AS split WHERE false)",
-    "features_agg": "features_agg AS (SELECT CAST(NULL AS VARCHAR) AS id, "
-    "CAST(NULL AS VARCHAR) AS features WHERE false)",
+    "configs_agg": "configs_agg AS (SELECT CAST(NULL AS VARCHAR) AS id, "
+    "CAST(NULL AS VARCHAR[]) AS split, CAST(NULL AS VARCHAR) AS features WHERE false)",
     "fields_agg": "fields_agg AS (SELECT CAST(NULL AS VARCHAR) AS id, "
     "CAST(NULL AS VARCHAR) AS paper_url, CAST(NULL AS VARCHAR) AS citation_bibtex WHERE false)",
 }
@@ -145,23 +144,17 @@ def _injection_sql(store: DatasetStore, base: Path) -> str:
     )
     configs = store.path("card_configs")
     if configs.exists():
-        split_cte = f"""
-        split_agg AS (
-            SELECT id, list(DISTINCT split) AS split
+        # `split` 与 `features` 一次聚合里出：两次扫 186 万行只为两列不值得。
+        configs_cte = f"""
+        configs_agg AS (
+            SELECT id,
+                   list(DISTINCT split) FILTER (WHERE split IS NOT NULL) AS split,
+                   first(features) FILTER (WHERE features IS NOT NULL) AS features
             FROM read_parquet('{_sql_path(configs)}')
-            WHERE split IS NOT NULL
-            GROUP BY id
-        ),"""
-        features_cte = f"""
-        features_agg AS (
-            SELECT id, first(features) AS features
-            FROM read_parquet('{_sql_path(configs)}')
-            WHERE features IS NOT NULL
             GROUP BY id
         ),"""
     else:
-        split_cte = _EMPTY_CTE["split_agg"] + ","
-        features_cte = _EMPTY_CTE["features_agg"] + ","
+        configs_cte = _EMPTY_CTE["configs_agg"] + ","
     fields_cte = (
         f"""
         fields_agg AS (
@@ -176,14 +169,12 @@ def _injection_sql(store: DatasetStore, base: Path) -> str:
     return f"""
         WITH base AS (SELECT * FROM read_parquet('{_sql_path(base)}')),
         {readme_cte}
-        {split_cte}
-        {features_cte}
+        {configs_cte}
         {fields_cte}
         SELECT {columns}
         FROM base
         LEFT JOIN readme_clean rc USING (id)
-        LEFT JOIN split_agg sa USING (id)
-        LEFT JOIN features_agg fa USING (id)
+        LEFT JOIN configs_agg ca USING (id)
         LEFT JOIN fields_agg rf USING (id)
     """
 

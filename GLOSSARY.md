@@ -2228,3 +2228,10 @@
      - **体检**：`contract_coverage` 会列出覆盖率不足 1% 的契约列，作为下一次重审的
        待办（不升格成红项——低覆盖多半是上游分布）。契约版本号 5→6，交付档案按它
        区分口径。
+     - **需求 SQL 拿不到注入列**（2026-11-19 复核修的）：`output.columns` 现在只能
+       点名视图里有的列，写 `readme` 会在**受理期**抛 `SpecError`——以前是受理通过、
+       交付时 SQL 才报 `Referenced column not found`。判据只有一份
+       （`_supported_columns`），受理与编译共用。
+     - **`split` 与 `features` 一次聚合**：原先分两条 CTE 各扫一遍 `card_configs`
+       （186 万行），现在一个 `GROUP BY id` 出两列。导出从 44.8 s 降到 43.5 s，
+       真正的成本在 readme 正文的清洗。

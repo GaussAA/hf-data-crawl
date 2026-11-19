@@ -377,12 +377,24 @@ def test_超上限不交付且不留目录(store: DatasetStore, tmp_path: Path) 
     assert delivery_dirs(root) == []
 
 
-def test_失败时不留半成品目录(store: DatasetStore, tmp_path: Path) -> None:
-    """中途失败只能留下 .tmp-*，绝不能出现「有数据没说明」。"""
-    root = tmp_path / "req"
-    make_request(root, output={"format": "csv", "columns": ["id", "不存在的列"]})
+def test_失败时不留半成品目录(
+    store: DatasetStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """中途失败只能留下 .tmp-*，绝不能出现「有数据没说明」。
 
-    with pytest.raises(DeliveryBlocked):
+    以前靠「指名不存在的列」制造这个现场：SQL 跑起来才报错。契约 v6 起这类列在
+    **受理期**就被 `_supported_columns` 拦下（SpecError），所以要显式让执行阶段
+    炸一次，才测得到清理逻辑。
+    """
+    root = tmp_path / "req"
+    make_request(root, output={"format": "csv", "columns": ["id", "url"]})
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("执行中途炸了")
+
+    monkeypatch.setattr("hf_data_crawl.delivery.delivery._execute", boom)
+
+    with pytest.raises(RuntimeError):
         deliver(store, root, "REQ-0001", now=NOW)
 
     leftovers = [path for path in (root / "REQ-0001" / DELIVERIES_DIR).glob(".tmp-*")]

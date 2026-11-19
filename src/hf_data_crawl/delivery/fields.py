@@ -176,7 +176,7 @@ COLUMN_NOTES: dict[str, str] = {
     "last_modified": "最后一次提交的时刻（UTC）",
     "first_seen_at": "本底库第一次见到该库的快照时间（UTC）；用于筛「新上架」",
     "last_seen_at": "本底库最近一次在列表接口见到该库的快照时间（UTC）；早于当前快照说明它可能已下架",
-    "readme": "README 正文：已去 YAML 头、HTML 标签与图片徽章，链接只留文字，代码块保留；不是卡片摘要",
+    "readme": "README 正文：已去 YAML 头、HTML 标签与图片徽章，链接只留文字，代码块保留；不是卡片摘要。极少数原文本身以 --- 开头，未做二次判断",
     "has_readme": "作者是否写了 README：true 有正文 / false 明确没有 / 空表示读不到（受限）",
     "downloads": "近 30 天下载量，不是累计值；累计值见 downloads_all_time",
     "downloads_all_time": "历史累计下载量，正常只增不减（上游偶有清零）；与近 30 天下载量是两个口径",
@@ -203,7 +203,7 @@ COLUMN_NOTES: dict[str, str] = {
     "main_size": "仓库主分支字节数（页面 Total file size 的机器值），十进制换算 MB 请除以 1e6",
     "server_num_bytes_parquet": "datasets-server 转成 parquet 后的字节数，是数据文件体积而非仓库体积",
     "split": "该库所有 config 的 split 去重列表（train/validation/test 等）；空表示上游未返回",
-    "features": '该库某个 config 的字段定义（JSON 文本，形如 [{"dtype":"string","name":"id"}]）；取第一个非空 config',
+    "features": '该库某个非空 config 的字段定义（JSON 文本，形如 [{"dtype":"string","name":"id"}]）；多 config 库取到哪个不保证',
 }
 
 #: 每列**类型族**。契约原先只声明列名，于是「列名没变、类型变了」没有绊线：

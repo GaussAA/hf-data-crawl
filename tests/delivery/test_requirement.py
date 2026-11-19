@@ -540,3 +540,21 @@ def test_需求目录只认带_spec_的目录(tmp_path: Path) -> None:
 
     assert [path.name for path in request_dirs(root)] == ["REQ-0001-查清单"]
     assert request_dirs(tmp_path / "nope") == []
+
+
+def test_需求不能点名只在导出物里的注入列(tmp_path: Path) -> None:
+    """`readme` / `split` / `features` / `paper_url` / `citation_bibtex` 只在导出物里。
+
+    视图里没有它们（体积太大或粒度不同）。若一路放行，SQL 会编译成
+    `SELECT "readme" FROM datasets`：受理通过、交付时才报 `Referenced column
+    not found`——正是「受理与编译各写一遍判据」的老病（GLOSSARY #107）。
+    """
+    with pytest.raises(SpecError, match="投不出的列"):
+        sql_of(tmp_path, output={"columns": ["id", "readme"]})
+
+
+def test_需求可以点名视图里有的契约列(tmp_path: Path) -> None:
+    """边界另一侧：视图里有的列照常放行，别把校验做成「只许默认 35 列」。"""
+    sql = sql_of(tmp_path, output={"columns": ["id", "xet_enabled"]})
+    assert '"xet_enabled"' in sql
+    assert '"readme"' not in sql
