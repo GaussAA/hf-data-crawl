@@ -177,13 +177,6 @@ FIELD_DOCS: dict[str, dict[str, str]] = {
         "**这是 citation 的主要来源**：YAML 的 `citation` 只有 3,844 条，这里是它的十几倍。"
         "模板占位符 `[More Information Needed]` 已被排除，有值即为真条目",
     },
-    "readme_clean": {
-        "source_sha": "清洗这条正文时那条 README 记录的 commit sha，与 `readme.source_sha` "
-        "同源；仓库改过之后这里的取值可能落后于当前 `sha`",
-        "text_clean": "清洗后的正文：去 YAML 头、HTML 标签、图片徽章，链接只留文字，"
-        "空行压缩；代码块保留。导出宽表的 `readme` 列直接读它（287 MB），"
-        "比每次现读原文（2 GB）省一次清洗。规则见 `pipeline/readme_clean.py`",
-    },
     "preview": {
         "status": "`ok` 取到行 / `unavailable` 这个库没有 viewer 或受限（401 与 404 的报文"
         "一字不差，分不开）/ `error` 临时失败；后两者只有前者落库",

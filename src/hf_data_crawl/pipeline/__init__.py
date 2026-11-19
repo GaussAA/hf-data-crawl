@@ -38,7 +38,6 @@ __all__ = [
     # 卡片与 README 字段
     "card",
     "readme_fields",
-    "readme_clean",
     # 命令入口（组合根调用）
     "commands",
 ]

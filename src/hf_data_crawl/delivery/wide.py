@@ -41,7 +41,6 @@ from pathlib import Path
 import polars as pl
 import pyarrow.parquet as pq
 
-from ..pipeline import readme_clean
 from ..platform.store import DatasetStore
 from ..query.gold import GoldCatalog, wide_column_names
 from .fields import (
@@ -68,9 +67,41 @@ _INJECT_ALIAS: dict[str, str] = {
     "citation_bibtex": "rf",
 }
 
-#: 清洗规则只有一份，在 `pipeline/readme_clean.py`：`clean-readme` 用它物化
-#: `readme_clean` 表，这里现场清洗时调用同一个 `clean_sql()`——不是抄两份 SQL。
-#: 物化表存在就直接读它（287 MB），省掉「读 2 GB 原文 + 五道正则」的 14 秒。
+_README_CLEAN = (
+    "regexp_replace("
+    "regexp_replace("
+    "regexp_replace("
+    "regexp_replace("
+    "regexp_replace(rm.text, '(?s)^---\\r?\\n.*?---\\r?\\n', ''),"
+    " '!\\[[^\\]]*\\]\\([^)]*\\)', '', 'g'),"
+    " '<[^>]+>', '', 'g'),"
+    " '\\[([^\\]]*)\\]\\([^)]*\\)', '\\1', 'g'),"
+    " '(?:\\r?\\n){3,}', chr(10) || chr(10), 'g')"
+)
+
+#: 只去 YAML 头，其余原样。回退底稿：清洗后不足 100 字符时截它前 500 字符，
+#: 截原始正文会把刚去掉的 frontmatter 又还回去。
+_STRIP_YAML = "regexp_replace(rm.text, '(?s)^---\\r?\\n.*?---\\r?\\n', '')"
+
+
+def _readme_clean_sql() -> str:
+    clean = _README_CLEAN
+    strip = _STRIP_YAML
+    return f"CASE WHEN char_length({clean}) < 100 THEN substr({strip}, 1, 500) ELSE {clean} END"
+
+
+#: README 正文清洗：去 YAML 头、图片徽章、HTML 标签、链接只留文字、空行压缩。
+#:
+#: 顺序有意义：YAML 头先去掉（它含 `---` 与大量 `:`，先处理后两道正则更便宜）；图片
+#: 与徽章必须在「链接只留文字」之前——徽章是 `[![alt](img)](url)`，先转链接会留下
+#: `![alt](img)` 这种半截。
+#:
+#: 换行一律写成 `\r?\n`：上游 README 的 CRLF 与 LF 混着（2026-11-19 实测，
+#: `farwew/subsetTemplateName` 这类整篇都是 `\r\n`），只认 `\n` 会让整段正则空转。
+#:
+#: 2026-11-19 试过把清洗结果物化成 `readme_clean` 表换时间，实测不成立：导出瓶颈在
+#: 2 GB 文本的解压（读 282 MB 清洗版与读 3 GB 原文代价一样），且 `upsert` 整表重写
+#: 要 11 秒。回滚理由记在 GLOSSARY #137。
 
 
 def _sql_path(path: Path) -> str:
@@ -103,25 +134,16 @@ def _injection_sql(store: DatasetStore, base: Path) -> str:
         for column in DEFAULT_COLUMNS
     )
 
-    clean_path = store.path("readme_clean")
-    if clean_path.exists():
-        # 物化版优先：读 287 MB 比「读 2 GB 原文 + 五道正则」快 14 秒。表由
-        # `clean-readme` 手动产出（不進每日链，理由是 upsert 整表重写要 11 秒）。
-        readme_cte = f"""
+    readme_cte = (
+        f"""
         readme_clean AS (
-            SELECT id, text_clean AS readme
-            FROM read_parquet('{_sql_path(clean_path)}')
-            WHERE text_clean IS NOT NULL
-        ),"""
-    elif store.path("readme").exists():
-        readme_cte = f"""
-        readme_clean AS (
-            SELECT rm.id, {readme_clean.clean_sql("rm.text")} AS readme
+            SELECT rm.id, {_readme_clean_sql()} AS readme
             FROM read_parquet('{_sql_path(store.path("readme"))}') rm
             WHERE rm.text IS NOT NULL
         ),"""
-    else:
-        readme_cte = _EMPTY_CTE["readme_clean"] + ","
+        if store.path("readme").exists()
+        else _EMPTY_CTE["readme_clean"] + ","
+    )
     configs = store.path("card_configs")
     if configs.exists():
         # `split` 与 `features` 一次聚合里出：两次扫 186 万行只为两列不值得。

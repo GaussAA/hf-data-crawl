@@ -366,20 +366,6 @@ README_SCHEMA: dict[str, PolarsType] = {
     "text": pl.Utf8,
 }
 
-#: README 正文的清洗版。与 `readme.text` 同源：去掉 YAML 头、HTML 标签、图片徽章，
-#: 链接只留文字，空行压缩；代码块保留。派生规则见 `pipeline/readme_clean.py`。
-#:
-#: 单独一张表而不是给 `readme` 加列：原文要留着（换规则可重算），清洗版要能单独
-#: 重建；导出只读清洗版（287 MB），比每次读原文（2 GB）现洗省 14 秒（2026-11-19 实测）。
-README_CLEAN_SCHEMA: dict[str, PolarsType] = {
-    "id": pl.Utf8,
-    "url": pl.Utf8,
-    "snapshot_date": pl.Date,
-    "source_sha": pl.Utf8,
-    "text_clean": pl.Utf8,
-}
-
-
 #: 从 `readme.text` 正文里抽出来的侧栏字段。
 #:
 #: 这些字段不在 YAML frontmatter 里，`cardData` 拿不到，只在正文的 Markdown
@@ -426,9 +412,6 @@ TABLES: dict[str, TableSpec] = {
     #: 同一个道理。
     "readme_fields": TableSpec(
         "readme_fields", "enrich/readme_fields.parquet", README_FIELDS_SCHEMA, Origin.RAW
-    ),
-    "readme_clean": TableSpec(
-        "readme_clean", "enrich/readme_clean.parquet", README_CLEAN_SCHEMA, Origin.RAW
     ),
     "preview": TableSpec("preview", "enrich/preview.parquet", PREVIEW_SCHEMA, Origin.NETWORK),
 }

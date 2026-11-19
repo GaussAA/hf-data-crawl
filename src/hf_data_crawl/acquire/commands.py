@@ -4,16 +4,13 @@ from __future__ import annotations
 
 import argparse
 import sys
-import time
 from datetime import date
-from pathlib import Path
 from typing import Any
 
-import duckdb
 import polars as pl
 import pyarrow.parquet as pq
 
-from ..pipeline import readme_clean, readme_fields, rebuild, state
+from ..pipeline import readme_fields, rebuild, state
 from ..platform.env import load_env_file
 from ..platform.lock import exclusive
 from ..platform.presets import get_preset
@@ -886,46 +883,6 @@ def run_parse_readme(
     total = store.read("readme_fields").height
     _print_readme_fields(frame, total)
     return Outcome({"parsed": frame.height, "skipped": skipped, "table_rows": total})
-
-
-def run_clean_readme(
-    args: argparse.Namespace,
-    store: DatasetStore,
-    lock_wait: float = 0.0,
-) -> Outcome:
-    """把 README 正文清洗后物化进 `readme_clean`（可选加速，不进每日链）。
-
-    为什么可选：导出宽表时现场清洗要 13.8 秒，物化后只需读 287 MB；但 `upsert` 是
-    整表重写（2026-11-19 实测：改 1 行也要 11.2 秒），每天跑一次只净省 5.5 秒。
-    所以它不进刷新鲜——只在「要反复重导出」或「调清洗规则」时手动跑一次；
-    `export-wide` 检测到这张表就用它，没有就现场清洗。判据与取舍见 GLOSSARY #137。
-    """
-    target = store.path("readme")
-    if not target.exists():
-        print("readme 表为空，先跑 `hf-data-crawl fetch-readme`。")
-        return Outcome({"error": "empty"}, code=1, reason="readme 表为空")
-
-    clean_path = store.path("readme_clean")
-    sql = readme_clean.incremental_sql(
-        _literal_path(target),
-        _literal_path(clean_path) if clean_path.exists() else None,
-    )
-    started = time.time()
-    with duckdb.connect() as connection:
-        # `execute()` 返回连接本身；要 polars 帧得走 `sql()` 拿 relation。
-        frame = connection.sql(sql).pl()
-    cleaned = frame.height
-    if cleaned:
-        with exclusive(store.root, "clean-readme:write", lock_wait):
-            store.upsert("readme_clean", frame, dedupe=["id"])
-    total = store.read("readme_clean").height if clean_path.exists() else 0
-    print(f"清洗 {cleaned:,} 条正文（{time.time() - started:.1f}s）；readme_clean 共 {total:,} 行")
-    return Outcome({"cleaned": cleaned, "table_rows": total})
-
-
-def _literal_path(path: Path) -> str:
-    """SQL 字面量里的绝对路径：正斜杠 + 单引号转义。"""
-    return path.resolve().as_posix().replace("'", "''")
 
 
 def _extracted_pairs(store: DatasetStore) -> pl.DataFrame:
