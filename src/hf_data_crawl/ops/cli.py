@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ..acquire.commands import (
+    run_clean_readme,
     run_collect,
     run_enrich,
     run_fetch_files,
@@ -53,6 +54,7 @@ WRITE_COMMANDS = frozenset(
         "fetch-files",
         "fetch-readme",
         "parse-readme",
+        "clean-readme",
         "fetch-preview",
         "archive",
         "compact",
@@ -82,7 +84,7 @@ LOCKED_COMMANDS = WRITE_COMMANDS | SNAPSHOT_COMMANDS | REQUEST_COMMANDS
 #: 结果自锁死锁——`_execute` 持着锁，内部又调 `exclusive`，等了二十多分钟后
 #: 以 `LockBusy: ... 被另一个写命令占用：parse-readme（pid 自己）` 收场。
 SELF_LOCKED_COMMANDS = frozenset(
-    {"fetch-sizes", "fetch-files", "fetch-readme", "fetch-preview", "parse-readme"}
+    {"fetch-sizes", "fetch-files", "fetch-readme", "fetch-preview", "parse-readme", "clean-readme"}
 )
 
 
@@ -169,6 +171,11 @@ def main(argv: list[str] | None = None, *, transport: Any = None) -> int:
             lambda: run_parse_readme(args, store, transport, lock_wait),
             lock_wait,
         )
+    if args.command == "clean-readme":
+        return _execute(
+            store, "clean-readme", lambda: run_clean_readme(args, store, lock_wait), lock_wait
+        )
+
     if args.command == "fetch-preview":
         return _execute(
             store,

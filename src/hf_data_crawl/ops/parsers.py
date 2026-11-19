@@ -449,6 +449,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parse_readme.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
 
+    # 可选加速：把清洗后的正文物化一份，导出就不用每次读 2 GB 原文现洗。
+    # 刻意不进每日链——upsert 整表重写要 11 秒，每天净省只有 5 秒（GLOSSARY #137）。
+    clean_readme = subparsers.add_parser(
+        "clean-readme",
+        help="把 README 正文清洗后物化进 readme_clean（可选加速，不进每日链）",
+    )
+    clean_readme.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
+
     preview = subparsers.add_parser(
         "fetch-preview", help="抓数据集 viewer 的前几行当样例（独立表，不进默认导出）"
     )

@@ -28,7 +28,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `enrich` | 按下载量取头部补抓 `cardData`（标签、config/split 明细、行数列数）；`--ids a,b,c` 按需补（上限 200） | 是 |
 | `fetch-sizes` | 经 datasets-server 补规模与列数（`num_rows` / `num_columns_max`）；`--changed N` 只重取内容已变的库，`--top 0` 表示全量（按 `current` 实际行数，不写死常量），`--ids a,b,c` 只补点名的库（上限 200，忽略 `--top`） | 是 |
 | `fetch-files` | 按下载量取头部，经 `/tree/main` 补文件清单汇总（试点：top 1000，每库默认 1 页）；`--ids a,b,c` 只补点名的库（上限 200，忽略 `--top`） | 是 |
-| `fetch-readme` | 逐库抓 README 全文（`description` 只有约 600 字符摘要）；`--ids` 按需、`--top N` 取头部、`--top 0` 全量、`--changed N` 只重取 commit 已变的、`--rate 15` 匀速（配额 5000 次/5 分钟）；独立表，**不进默认 31 列导出** | 是 |
+| `fetch-readme` | 逐库抓 README 全文（`description` 只有约 600 字符摘要）；`--ids` 按需、`--top N` 取头部、`--top 0` 全量、`--changed N` 只重取 commit 已变的、`--rate 15` 匀速（配额 5000 次/5 分钟）；正文进默认导出（契约 v6，清洗后） | 是 |
 | `reconcile` | 全量对账：按 `createdAt` 稳定序扫全站，产出新增/删除/转私有/改名/sha 变更 | 是 |
 | `build` | 重建派生层：默认只重放近 7 天热区，`--stale` 只修派生滞后的日子及其后，`--full` 全量重放 | 否 |
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
@@ -89,7 +89,7 @@ hf-data-crawl request      sample REQ-0001 [--reason …] [--undo]   # 标/取�
 
 **默认交付底库**：`current` 只留状态标量，语义字段分散在 `silver` / `carddata` / `size`。
 `export-wide` 按 `delivery/fields.py` 的**默认交付字段契约**把 `gold.datasets` 视图裁成
-默认列集（当前 31 列），写成 `data/exports/datasets.parquet`——只留与数据集有关、有用且
+默认列集（当前 35 列），写成 `data/exports/datasets.parquet`——只留与数据集有关、有用且
 必要的画像字段（标识、描述、热度、许可、语言、模态、任务、数据类型、标签、补充画像、
 学术关联、规模、大小），把水印、抓取状态、卡片凭证与九成空的补抓列排除在外。
 多值列就是 LIST 原值（与视图同构，可直接 `list_contains` 精确筛）；只有 CSV 交付这一层
@@ -204,7 +204,7 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 | 同日帧 | 卡片补抓批次经 `day_frame` 补位，Bronze 分区仍纯净 | `pipeline/bronze.py` | GLOSSARY #45 |
 | 层间勾稽 | `current` ↔ `observations` ↔ `silver`、导出与 current 逐 id 对齐 | `ops/doctor.py` | GLOSSARY #48、#76 |
 | 失效状态 | 404 删除 / 401 转私有 / 307 改名分开记；探测被限流时轮转 | `acquire/reconcile.py` | GLOSSARY #15、#72–#73 |
-| 默认交付字段 | 31 列契约只由 `delivery/fields.py` 定义，导出与查询都从它投影 | `delivery/fields.py` | GLOSSARY #62–#66 |
+| 默认交付字段 | 35 列契约只由 `delivery/fields.py` 定义，导出与查询都从它投影 | `delivery/fields.py` | GLOSSARY #62–#66 |
 
 **恢复不是「只重算那一天」**：单日重放会把 `current` 覆盖成那天的值，等于把当前态整体回退；
 `pipeline.recovery` 一律走 `replay_suffix`。手工排障步骤见

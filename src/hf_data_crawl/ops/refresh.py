@@ -17,7 +17,7 @@
    `fetch-preview`（锁外抓取）。`fetch-files` 排在 `reconcile` 之后——两者同走
    `/api` 配额（约 1000 请求/5 分钟），并行只会互相拖慢。
 
-③ 串行尾：`export-wide`（`sizes` 合并后即跑，31 列契约只依赖它）→
+③ 串行尾：`export-wide`（`sizes` 合并后即跑，35 列契约只依赖它）→
    `request run-due` → `prune` → `doctor`。
 
 续跑与边界
@@ -97,9 +97,13 @@ AFTER_RECONCILE: tuple[Step, ...] = (
     Step("files", ("fetch-files", "--top", "20000"), needs=("reconcile",)),
 )
 
-#: ③ 收尾。导出只依赖 sizes：31 列契约里的 `server_*` 四列来自 `size` 表。
+#: ③ 收尾。导出只依赖 sizes：35 列契约里的 `server_*` 四列来自 `size` 表。
 SERIAL_TAIL: tuple[Step, ...] = (
-    Step("export", ("export-wide",), needs=("build", "reconcile", "sizes")),
+    # `fetch-readme` 只抓正文：`readme_fields` 的字段要靠 `parse-readme` 派生。
+    # 必须排在导出前——`paper_url` / `citation_bibtex` 就来自那张表，不解析就会
+    # 静默停在旧正文上（2026-11-19 复核发现刷新链漏了这一步）。
+    Step("parse", ("parse-readme",), needs=("readme",)),
+    Step("export", ("export-wide",), needs=("build", "reconcile", "sizes", "parse")),
     Step("deliver", ("request", "run-due"), needs=("build", "reconcile")),
     Step("prune", ("prune",)),
     Step("doctor", ("doctor",)),
@@ -308,11 +312,21 @@ def execute(
                     del futures[future]
 
     # ③ 串行尾：导出、交付、清理、体检。
-    ready, skipped = _plan(SERIAL_TAIL, done, failed)
-    for result in skipped:
-        plan.results.append(result)
-        announce(result)
-    for step in ready:
+    # ③ 串行尾：**逐步推进**，理由同串行头——`export` 依赖同批的 `parse`，
+    # 一次性 `_plan` 会把「还没跑的 parse」判成依赖未完成，导出与交付整条塌掉。
+    for step in SERIAL_TAIL:
+        if step.name in done:
+            result = StepResult(step.name, note="今天已完成")
+            plan.results.append(result)
+            announce(result)
+            continue
+        missing = [need for need in step.needs if need not in done or need in failed]
+        if missing:
+            result = StepResult(step.name, note=f"依赖未完成：{','.join(missing)}")
+            plan.results.append(result)
+            announce(result)
+            failed.add(step.name)
+            continue
         if step.name in {"export", "deliver"} and over_budget():
             result = StepResult(step.name, note="超过时间预算，留给次日续跑")
             plan.results.append(result)

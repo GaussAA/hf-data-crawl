@@ -116,13 +116,14 @@ def test_链条按序且前置失败会跳过() -> None:
 
     assert [step.name for step in refresh.SERIAL_HEAD] == ["compact", "collect", "build"]
     assert [step.name for step in refresh.SERIAL_TAIL] == [
+        "parse",
         "export",
         "deliver",
         "prune",
         "doctor",
     ]
     export = next(step for step in refresh.SERIAL_TAIL if step.name == "export")
-    assert set(export.needs) == {"build", "reconcile", "sizes"}
+    assert set(export.needs) == {"build", "reconcile", "sizes", "parse"}
     # 前置失败要跳过并写明原因，而不是带着半截状态硬跑。
     assert "依赖未完成" in text(Path(refresh.__file__))
 

@@ -324,7 +324,7 @@ FILES_SCHEMA: dict[str, PolarsType] = {
 
 #: README 全文。按 id 覆盖的单文件表，`text` 是原始 Markdown（含 YAML 头）。
 #:
-#: 为什么单开一张表而不是给 `description` 换源：全文均值 4.6 KB，塞进默认 31 列
+#: 为什么单开一张表而不是给 `description` 换源：全文均值 4.6 KB，塞进默认 35 列
 #: 导出会让文件从 105 MB 涨到约 4 GB，而绝大多数筛选只看摘要。两者并存——
 #: `description` 供粗筛，本表供精读。`status` 区分四种空：`ok` 拿到全文、
 #: `absent` 仓库本来没有 README、`denied` 受限读不到、`error` 临时失败；
@@ -365,6 +365,20 @@ README_SCHEMA: dict[str, PolarsType] = {
     "bytes": pl.Int64,
     "text": pl.Utf8,
 }
+
+#: README 正文的清洗版。与 `readme.text` 同源：去掉 YAML 头、HTML 标签、图片徽章，
+#: 链接只留文字，空行压缩；代码块保留。派生规则见 `pipeline/readme_clean.py`。
+#:
+#: 单独一张表而不是给 `readme` 加列：原文要留着（换规则可重算），清洗版要能单独
+#: 重建；导出只读清洗版（287 MB），比每次读原文（2 GB）现洗省 14 秒（2026-11-19 实测）。
+README_CLEAN_SCHEMA: dict[str, PolarsType] = {
+    "id": pl.Utf8,
+    "url": pl.Utf8,
+    "snapshot_date": pl.Date,
+    "source_sha": pl.Utf8,
+    "text_clean": pl.Utf8,
+}
+
 
 #: 从 `readme.text` 正文里抽出来的侧栏字段。
 #:
@@ -412,6 +426,9 @@ TABLES: dict[str, TableSpec] = {
     #: 同一个道理。
     "readme_fields": TableSpec(
         "readme_fields", "enrich/readme_fields.parquet", README_FIELDS_SCHEMA, Origin.RAW
+    ),
+    "readme_clean": TableSpec(
+        "readme_clean", "enrich/readme_clean.parquet", README_CLEAN_SCHEMA, Origin.RAW
     ),
     "preview": TableSpec("preview", "enrich/preview.parquet", PREVIEW_SCHEMA, Origin.NETWORK),
 }

@@ -33,7 +33,7 @@ EDGES: dict[str, set[str]] = {
     "pipeline": {"platform"},
     "acquire": {"pipeline", "platform"},
     "query": {"pipeline", "platform"},
-    "delivery": {"query", "platform"},
+    "delivery": {"query", "pipeline", "platform"},
     "ops": {"delivery", "query", "acquire", "pipeline", "platform"},
 }
 

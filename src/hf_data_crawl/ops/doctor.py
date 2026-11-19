@@ -627,7 +627,7 @@ def _contract_coverage(ctx: RunContext) -> Finding:
         schema = pl.scan_parquet(export.as_posix()).collect_schema()
     except (OSError, pl.exceptions.PolarsError):
         return Finding(False, "交付面取值：宽表导出读取失败，跳过（见产物新鲜度）")
-    # 列集不符契约时也由「产物新鲜度」报；这里若硬按 31 列去 select，一份少了列的
+    # 列集不符契约时也由「产物新鲜度」报；这里若硬按 35 列去 select，一份少了列的
     # 旧导出会让整个体检抛错——体检不能因为一份产物坏掉而整体失败。
     missing = [column for column in DEFAULT_COLUMNS if column not in schema]
     if missing:
@@ -648,7 +648,7 @@ def _contract_coverage(ctx: RunContext) -> Finding:
     if not empty_columns:
         worst = max(DEFAULT_COLUMNS, key=lambda column: counted[column])
         # 报**有值的行数**而不是空值百分比：`pretty_name` 常常只有个位数行有值，
-        # 取整后会印成「100% 为空」，与同一句里的「31 列都有值」自相矛盾
+        # 取整后会印成「100% 为空」，与同一句里的「35 列都有值」自相矛盾
         # ——2026-11-18 实测就这么印过一次。
         filled = rows - int(counted[worst])
         # 契约列覆盖率不足 1%：按「空值率 > 99% 就该删」这条规则，它们是**下一次

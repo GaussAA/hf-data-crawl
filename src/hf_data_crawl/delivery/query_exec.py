@@ -66,7 +66,7 @@ def definition_of(spec: Spec, result_columns: Sequence[str]) -> dict[str, Any]:
     """查询形态的机器读口径。`criteria` 带定义，交出去后不必回来翻词表。
 
     `mode: sql` 的列集由手写 SELECT 决定（`compile_sql` 原样透传，见该处注释）。
-    这里若照旧写 `source=default` 并钉上 `CONTRACT_VERSION`，档案就会声称按 31 列
+    这里若照旧写 `source=default` 并钉上 `CONTRACT_VERSION`，档案就会声称按 35 列
     默认契约投影、实际只有两列——下游照 projection 复原口径必然得出错误结论。
     手写 SQL 只记真实列集，不冒充契约。
     """
