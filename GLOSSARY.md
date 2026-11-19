@@ -2254,3 +2254,21 @@
      `source_sha` 判「哪些行变了」），且必须把写回成本算进去。这个项目里没有候选
      同时满足；这一轮真正省下 10 秒的是把一次 `pl.len()`（实扫 358 MB）换成读
      parquet footer 的 `num_rows`——比物化 282 MB 便宜得多。
+
+138. **文档口径漂移要能被体检发现**（2026-11-19，刷新链与契约 v6 之后的一次人工审计）：
+     那次一次性找出 16 处过时——README 仍写 `hf-daily 03:10`、RECOVERY 仍写「每周
+     `hf-sizes` 周日 / `hf-archive` 周一」、PERFORMANCE 还写「31 列导出 13.94 秒」、
+     GLOSSARY #94 说「不替换 description，塞进导出会涨到 4 GB」而 v6 已经替换且
+     清洗后只有 358 MB。
+
+     `check_docs_links.py` 验不了这类问题：它只管链接落地与编号完整，不管「这句话
+     对不对」。所以 `doctor` 多了一项 `doc_drift`：扫 README / AGENTS /
+     CODING_STANDARDS / operations / agents / skill，命中固定弃用词表就告警。
+
+     **判定刻意窄**：只认词表（旧任务名、`daily.ps1`、`clean-readme`、`31 列`），
+     不猜语义；行内带「已删除 / 已并入 / 历史 / 旧任务」的豁免——MONITORING 里
+     「旧的六个任务已删除」是现状说明，不是漂移。GLOSSARY、ADR、PRD、ISSUES、requests
+     全不扫：它们的职责就是记录「当时是什么样」，扫它们只会逼人删掉历史。
+
+     宁可漏、不可误报：体检红了没人看，比漏报更糟。这条路子（用一份短词表把
+     「已知会反复出错的漂移」变成可执行检查）比写更多「请记得同步文档」的约定有用。

@@ -1687,3 +1687,31 @@ def test_README从未抓过不算故障(tmp_path: Path) -> None:
     store.path("readme").unlink()
 
     assert not any("README 全文" in text for text in problems(store))
+
+
+def test_文档口径漂移能抓出弃用词(tmp_path: Path) -> None:
+    """「讲现在」的文档里出现已弃用的任务名，体检要报出来。
+
+    判定刻意窄：只认一份固定的弃用词表，不猜「这句话是否过时」。
+    """
+    from hf_data_crawl.ops.doctor import _doc_drift
+
+    (tmp_path / "README.md").write_text("例行由 hf-daily 每日跑一次。\n", encoding="utf-8")
+
+    finding = _doc_drift(ctx_of([], tmp_path))
+
+    assert finding.problem
+    assert "hf-daily" in finding.text
+
+
+def test_讲历史的那一行不算漂移(tmp_path: Path) -> None:
+    """MONITORING 里「旧的六个任务已删除」是现状说明，不能报成漂移。"""
+    from hf_data_crawl.ops.doctor import _doc_drift
+
+    (tmp_path / "README.md").write_text(
+        "旧的六个任务（hf-daily 等）已删除并并入本链。\n", encoding="utf-8"
+    )
+
+    finding = _doc_drift(ctx_of([], tmp_path))
+
+    assert not finding.problem

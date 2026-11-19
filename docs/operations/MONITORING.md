@@ -174,6 +174,8 @@ uv run python -c "from pathlib import Path; from hf_data_crawl.pipeline.raw impo
 - Collect 耗时 > 600 秒
 - 成功率 < 90%
 - Raw 规模超阈值 / 冷区未压缩 / 归档积压 / backup 超期未清理
+- 文档口径漂移：README / AGENTS / operations / skill 里出现已弃用的任务名或列数
+  （判据是一份固定的弃用词表，行内带「已删除 / 已并入 / 历史」的豁免）
 
 ---
 

@@ -1622,6 +1622,87 @@ def _reconcile_freshness(ctx: RunContext) -> Finding:
 
 
 #: 体检项登记表。顺序就是输出顺序——人读的那份清单靠它，别按字母排。
+#: 文档口径漂移：这些词属于**已弃用**的概念，出现在「当前口径」文档里就该被改掉。
+#:
+#: 只扫 README / AGENTS / CODING_STANDARDS / operations / agents / skill 这类「讲现在」
+#: 的文档；GLOSSARY 是历史词表、ADR 是决策快照、PRD 与 ISSUES 是归档，它们的职责正是
+#: 记录「当时是什么样」，扫它们只会逼人删掉历史。
+_DEPRECATED_TERMS: dict[str, str] = {
+    "hf-daily": "旧的日常链任务，2026-11-19 并入 hf-refresh",
+    "hf-compact": "旧的压缩任务，已并入 refresh 的串行头",
+    "hf-sizes": "旧的规模任务，已并入 refresh 的并行段",
+    "hf-files": "旧的文件清单任务，已并入 refresh 的并行段",
+    "hf-archive": "旧的归档任务，已并入 refresh 的串行头",
+    "hf-readme": "旧的 README 保鲜任务，已并入 refresh 的并行段",
+    "daily.ps1": "旧链脚本，被 refresh.ps1 取代",
+    "clean-readme": "回滚掉的物化命令",
+    "readme_clean": "回滚掉的物化表",
+    "31 列": "契约 v5 的列数，当前是 35",
+}
+
+#: 行内出现这些词说明是在讲历史或现状说明，不算漂移。
+_HISTORY_MARKERS = (
+    "已删除",
+    "已并入",
+    "已取代",
+    "取代",
+    "历史",
+    "不再",
+    "旧任务",
+    "旧链",
+    "旧的",
+    "v2 时",
+    "v4 时",
+    "契约 v4",
+    "契约 v5",
+)
+
+
+def _doc_drift(ctx: RunContext) -> Finding:
+    """「讲现在」的文档里，还有没有在讲已弃用的概念。
+
+    每次重构都会留下这类残渣：代码改了，而描述这套代码的散文散在 README、
+    operations、skill 里各写一份。`check_docs_links.py` 只能验链接与编号落地，
+    验不了「这段话说得对不对」——2026-11-19 刷新链与契约 v6 之后，一次人工审计
+    找出 16 处过时。这项把它变成可执行的检查。
+
+    判定刻意**窄**：只认一份固定的弃用词表，不猜「这句话是否过时」。宁可漏，
+    不可误报——体检红了没人看，比漏报更糟。行内带「已删除 / 已并入 / 历史」这类
+    词的豁免：MONITORING 里「旧的六个任务已删除」是现状说明，不是漂移。
+    """
+    root = ctx.store.root.parent
+    targets = [
+        root / "README.md",
+        root / "AGENTS.md",
+        root / "CODING_STANDARDS.md",
+        root / "docs" / "README.md",
+        root / "docs" / "TODO.md",
+        *sorted((root / "docs" / "operations").glob("*.md")),
+        *sorted((root / "docs" / "agents").glob("*.md")),
+        *sorted((root / ".agents").rglob("*.md")),
+    ]
+    found: list[str] = []
+    scanned = 0
+    for path in targets:
+        if not path.exists():
+            continue
+        scanned += 1
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line_no, line in enumerate(lines, 1):
+            if any(marker in line for marker in _HISTORY_MARKERS):
+                continue
+            for term, reason in _DEPRECATED_TERMS.items():
+                if term in line:
+                    found.append(f"{path.name}:{line_no} 提到 `{term}`（{reason}）")
+    if found:
+        detail = "；".join(found[:5]) + (f"；等 {len(found)} 处" if len(found) > 5 else "")
+        return Finding(True, f"文档口径：{detail}")
+    return Finding(False, f"文档口径：{scanned} 份「讲现在」的文档没有已弃用概念")
+
+
 CHECKS: tuple[Check, ...] = (
     Check("collect_freshness", _collect_freshness),
     Check("reconcile_freshness", _reconcile_freshness),
@@ -1644,6 +1725,8 @@ CHECKS: tuple[Check, ...] = (
     Check("backup_backlog", _backup_backlog),
     Check("probe_quality", _probe_quality),
     Check("probe_degraded", _probe_degraded),
+    # 文档口径与代码漂移：只认一份固定的弃用词表，宁可漏不可误报。
+    Check("doc_drift", _doc_drift),
     Check("recent_failures", _recent_failures),
     Check("observation_shrink", _observation_shrink),
     Check("temp_files", _stale_temp_files),
