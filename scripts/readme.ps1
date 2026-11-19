@@ -15,7 +15,7 @@
 
     为什么必须带上「从没抓过」：`stale_readme_ids` 是 inner join，只挑已有记录
     的库；表里没有行的新库永远进不了候选（2026-11-19 实测 2,945 个，与 `size`
-    早先的缺口问题是同一个形状，见 GLOSSARY #131）。
+    早先的缺口问题是同一个形状，见 DECISIONS #131）。
 
     增量可续：结果先落 `data/.staging/readme/` 的原子分片，收尾才用短锁并入
     `enrich/readme.parquet`；中断后分片还在，下一轮按 id 跳过已抓的，不重复请求。

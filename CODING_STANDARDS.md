@@ -75,7 +75,7 @@ except Exception:
 ```
 
 启动恢复见 `pipeline/recovery.py` 的 `check_and_recover`，恢复是**后缀重放**而不是
-只重算那一天；原理见 GLOSSARY #28、#78。
+只重算那一天；原理见 DECISIONS #28、#78。
 
 ---
 

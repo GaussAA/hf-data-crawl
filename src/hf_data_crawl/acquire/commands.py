@@ -434,6 +434,7 @@ def run_fetch_preview(
             config=args.config,
             split=args.split,
             rate=args.rate,
+            throttle_wait=args.throttle_wait,
         ),
         workers=args.workers,
         progress=_progress_line,
@@ -460,7 +461,8 @@ def run_fetch_preview(
 def _print_preview(summary: PreviewSummary, total_rows: int) -> None:
     print(
         f"样例：取到 {summary.fetched} · 无 viewer/受限 {summary.unavailable} · "
-        f"临时失败 {summary.failed} · 截断过 {summary.truncated}；"
+        f"临时失败 {summary.failed} · 截断过 {summary.truncated} · "
+        f"限流等待 {summary.throttles} 次；"
         f"preview 表现有 {total_rows} 行（{summary.elapsed_seconds:.0f}s）"
     )
 

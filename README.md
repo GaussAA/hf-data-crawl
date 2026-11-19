@@ -94,7 +94,7 @@ hf-data-crawl request      sample REQ-0001 [--reason …] [--undo]   # 标/取�
 学术关联、规模、大小），把水印、抓取状态、卡片凭证与九成空的补抓列排除在外。
 多值列就是 LIST 原值（与视图同构，可直接 `list_contains` 精确筛）；只有 CSV 交付这一层
 才展平并把机器码换成页面文字。契约的增删与 v3 压平、v5 撤销的来龙去脉见
-GLOSSARY #62–#66，版本号在 `delivery/fields.py` 的 `CONTRACT_VERSION`。
+DECISIONS #62–#66，版本号在 `delivery/fields.py` 的 `CONTRACT_VERSION`。
 
 `regions` 实测 100% 有值但 **99.94% 是 HF 自动推断的 `us`**，故不进默认面；它与 DOI、引用、项目主页等扩展字段一起登记在 `EXTENDED_FIELDS`，需要时写 `output.columns: [id, regions, ...]` 点名即可投列——**默认面管「不指定时给什么」，不是「总共有什么」**。完整清单见 `data/DATA.md` 第八节（跑 `hf-data-crawl docs` 生成）。这份文件也是**数据集筛选需求未指定 `output.columns` 时的默认投影**；不登记为表、不参与状态更新，视图本身仍保留全部列。四处共用一份定义，详见 [GLOSSARY](GLOSSARY.md) #62–#66。
 
@@ -106,7 +106,7 @@ GLOSSARY #62–#66，版本号在 `delivery/fields.py` 的 `CONTRACT_VERSION`。
 都只是**这一页的下限**，要完整清单须显式加大 `--max-pages`；`--refresh-truncated` 只重抓
 截断行，且 `--max-pages` 仍为 1 时会直接失败。结果落 `enrich/files.parquet`
 （`Origin.NETWORK`，重建不清），自动进入宽视图。这是按头部补的**子集**，别拿它算全站分布。
-凭据、配额与断点续跑的细节见 GLOSSARY #34–#36。
+凭据、配额与断点续跑的细节见 DECISIONS #34–#36。
 
 内置榜单（`query.gold.BOARDS` 是唯一真相源：`query --board` 的候选项由它自动生成，`report` 页面复用同一批口径）：
 
@@ -196,15 +196,15 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 
 | 机制 | 它保证什么 | 代码 | 决策 |
 |---|---|---|---|
-| 时间戳水位线 | 跨日增量不漏采；未来 7 天外的异常 `lastModified` 先过滤 | `acquire/hf/watermark.py` | GLOSSARY #6、#27 |
-| 一轮扫描的时序 | 翻页 → 落盘 → 页钩子 → 存游标 → 判停止，只实现一次 | `acquire/hf/scan.py` | GLOSSARY #20 |
-| 写入序 | `written_at` 记进 Raw，Bronze 去重按它排序；mtime 与文件名不作数 | `pipeline/raw.py` | GLOSSARY #17 |
-| 派生原子性 | 标记文件 + 启动恢复；恢复是**从该日起后缀重放**，不是只重算那一天 | `pipeline/marker.py`、`pipeline/recovery.py` | GLOSSARY #28、#78 |
-| 派生凭据 | 每日 Raw 指纹落 `state/lineage.json`；指纹不符即 `build --stale` | `pipeline/lineage.py` | GLOSSARY #44 |
-| 同日帧 | 卡片补抓批次经 `day_frame` 补位，Bronze 分区仍纯净 | `pipeline/bronze.py` | GLOSSARY #45 |
-| 层间勾稽 | `current` ↔ `observations` ↔ `silver`、导出与 current 逐 id 对齐 | `ops/doctor.py` | GLOSSARY #48、#76 |
-| 失效状态 | 404 删除 / 401 转私有 / 307 改名分开记；探测被限流时轮转 | `acquire/reconcile.py` | GLOSSARY #15、#72–#73 |
-| 默认交付字段 | 35 列契约只由 `delivery/fields.py` 定义，导出与查询都从它投影 | `delivery/fields.py` | GLOSSARY #62–#66 |
+| 时间戳水位线 | 跨日增量不漏采；未来 7 天外的异常 `lastModified` 先过滤 | `acquire/hf/watermark.py` | DECISIONS #6、#27 |
+| 一轮扫描的时序 | 翻页 → 落盘 → 页钩子 → 存游标 → 判停止，只实现一次 | `acquire/hf/scan.py` | DECISIONS #20 |
+| 写入序 | `written_at` 记进 Raw，Bronze 去重按它排序；mtime 与文件名不作数 | `pipeline/raw.py` | DECISIONS #17 |
+| 派生原子性 | 标记文件 + 启动恢复；恢复是**从该日起后缀重放**，不是只重算那一天 | `pipeline/marker.py`、`pipeline/recovery.py` | DECISIONS #28、#78 |
+| 派生凭据 | 每日 Raw 指纹落 `state/lineage.json`；指纹不符即 `build --stale` | `pipeline/lineage.py` | DECISIONS #44 |
+| 同日帧 | 卡片补抓批次经 `day_frame` 补位，Bronze 分区仍纯净 | `pipeline/bronze.py` | DECISIONS #45 |
+| 层间勾稽 | `current` ↔ `observations` ↔ `silver`、导出与 current 逐 id 对齐 | `ops/doctor.py` | DECISIONS #48、#76 |
+| 失效状态 | 404 删除 / 401 转私有 / 307 改名分开记；探测被限流时轮转 | `acquire/reconcile.py` | DECISIONS #15、#72–#73 |
+| 默认交付字段 | 35 列契约只由 `delivery/fields.py` 定义，导出与查询都从它投影 | `delivery/fields.py` | DECISIONS #62–#66 |
 
 **恢复不是「只重算那一天」**：单日重放会把 `current` 覆盖成那天的值，等于把当前态整体回退；
 `pipeline.recovery` 一律走 `replay_suffix`。手工排障步骤见
@@ -212,12 +212,12 @@ Raw 文件名带内容摘要：同页同内容重写为同一文件（幂等）�
 
 **派生的边界**：默认只重放近 7 天；冷区靠 `silver` / `observations` / `current` 的权威层，
 Raw 原块由 `compact` 移入 `backup/`（只移不删）。`build --full` 的前提是所有 Raw 都还在
-`data/raw`，冷区被搬走时它会直接拒绝——细节见 GLOSSARY #31、#78。
+`data/raw`，冷区被搬走时它会直接拒绝——细节见 DECISIONS #31、#78。
 
 **刷新的节奏**：日增量扫最近更新的库，`collect --refresh-top N` 补头部下载量池；
 采集走 lean 档（16 字段约 980 B/条），`cardData` 只在变化集（`collect --cards`）或按需
 （`enrich --ids`，上限 200）时取——full 档约 6 KB/条，全站日拉会多传数倍字节。
-`downloads` 不是实时值，增速必须跨日观测（GLOSSARY #9）；卡片**不做**全站遍历（GLOSSARY #68）。
+`downloads` 不是实时值，增速必须跨日观测（DECISIONS #9）；卡片**不做**全站遍历（DECISIONS #68）。
 
 ## 定时
 
@@ -355,7 +355,7 @@ sha256，于是「基于哪一版清单」和「基于哪一版底库」一样�
 判定用**语义指纹**（`spec_digest`）而非文件字节：只比「决定产物长什么样」的那部分，
 所以注释、键序、显式写出的默认值不算变更，`下载量 > 1000` 改成 `> 800` 一定算。
 `manifest.spec_sha256` 记下每份交付对应的口径指纹，`request show` 并列显示；
-体检对「已交付但版本号与内容对不上」的需求判红。完整取舍见 GLOSSARY #70。
+体检对「已交付但版本号与内容对不上」的需求判红。完整取舍见 DECISIONS #70。
 
 变更这件事本身有三件配套工具：
 
@@ -376,7 +376,7 @@ sha256，于是「基于哪一版清单」和「基于哪一版底库」一样�
 
 **query 形态的口径只写词条，不写字段名**：`下载量` 是近 30 天，`累计下载量` 才是
 历史累计——同一句话两种理解差两个数量级。词表见 `delivery/metrics.py` 与
-[GLOSSARY](GLOSSARY.md) #51，`request show` 会把口径连同编译后的 SQL 一起打出来。
+[DECISIONS](DECISIONS.md) #51，`request show` 会把口径连同编译后的 SQL 一起打出来。
 
 **不写 `output.columns` 就按默认底库交付**：契约在 `delivery/fields.py`（逐列中文定义、
 分组、页面标签对照、`EXTENDED_FIELDS`、`CONTRACT_VERSION`），`data/exports/datasets.parquet`

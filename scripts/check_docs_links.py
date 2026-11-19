@@ -4,7 +4,7 @@
 
 1. Markdown 内联链接 ``[...](target)``，按所在文件目录解析；
 2. 行内代码里**带仓库前缀**的路径，如 `` `docs/ISSUES.md` ``，按仓库根解析；
-3. ``GLOSSARY #nn`` 引用必须指向真实条目，且词表编号不得重号、不得断号。
+3. ``DECISIONS #nn`` 引用必须指向真实条目，且词表编号不得重号、不得断号。
 
 第二类曾经是盲区：文档的 Legacy 段用反引号引用 `` `docs/ISSUES.md` ``，
 文件被删后引用悬空，而只查内联链接的校验器与 CI 依旧全绿。裸文件名、
@@ -12,7 +12,8 @@
 否则会产生大量误报。
 
 第三类针对引用键：编号是跨文档的稳定键，重号会让两个读者落到不同决策上，
-而两处都读得通。词表内部另有 ``#17`` 这类裸引用，同样在检查范围内。
+而两处都读得通。词条与编号 2026-11-19 拆成两份文件（``GLOSSARY.md`` 放词、
+``DECISIONS.md`` 放编号条目），所以这条同时兼作迁移检查。
 
 CI 的 ``Check documentation`` 与 pre-commit 共用这一入口；判定标准是目标
 文件真的存在、引用真的落地，而不是把名字打印一遍。纯标准库实现，不依赖项目环境。
@@ -60,7 +61,7 @@ _WORKTREE_PARTS = (".agents", "worktrees")
 _REPO_PREFIXES = ("docs/", "scripts/", "src/", "tests/", ".github/")
 #: 路径里出现空白、占位符或通配符，说明是命令片段/模板而非单一路径。
 _NOT_A_PATH = re.compile(r"[\s<>{}*?$]")
-#: GLOSSARY 的条目行：`1. **...`。
+#: DECISIONS 的条目行：`1. **...`。
 _GLOSSARY_ENTRY = re.compile(r"^(\d+)\.\s", re.MULTILINE)
 #: 引用键：`#74` 或范围 `#62–#66` / `#62-66`。
 _GLOSSARY_REF = re.compile(r"#(\d+)(?:\s*[–—-]\s*#?(\d+))?")
@@ -180,9 +181,14 @@ def _glossary_refs(line: str) -> Iterator[tuple[int, int]]:
         yield start, end
 
 
-def glossary_problems(root: Path) -> list[str]:
-    """检查词表编号与引用键，返回 ``文件:行号: 问题`` 清单。"""
-    path = root / "GLOSSARY.md"
+def decisions_problems(root: Path) -> list[str]:
+    """检查编号与引用键，返回 ``文件:行号: 问题`` 清单。
+
+    编号在 `DECISIONS.md`（2026-11-19 从 `GLOSSARY.md` 拆出）：词表只放词，
+    带编号的决策与接口事实放在这里。写成 `GLOSSARY #nn` 的引用一律报错——
+    那是迁移前的写法，读者按它去词表里找会扑空。
+    """
+    path = root / "DECISIONS.md"
     if not path.is_file():
         return []
     text = path.read_text(encoding="utf-8", errors="replace")
@@ -193,35 +199,45 @@ def glossary_problems(root: Path) -> list[str]:
     for number in sorted(known):
         count = entries.count(number)
         if count > 1:
-            problems.append(f"GLOSSARY.md: 编号 {number} 出现 {count} 次")
+            problems.append(f"DECISIONS.md: 编号 {number} 出现 {count} 次")
     expected = set(range(1, len(entries) + 1))
     missing = sorted(expected - known)
     extra = sorted(known - expected)
     if missing:
-        problems.append(f"GLOSSARY.md: 缺号 {', '.join(map(str, missing))}")
+        problems.append(f"DECISIONS.md: 缺号 {', '.join(map(str, missing))}")
     if extra:
-        problems.append(f"GLOSSARY.md: 编号超出连续范围 {', '.join(map(str, extra))}")
+        problems.append(f"DECISIONS.md: 编号超出连续范围 {', '.join(map(str, extra))}")
 
     def check(target: Path, line_number: int, after: str) -> None:
         relative = target.relative_to(root)
         for start, end in _glossary_refs(after):
             for number in (start, end):
                 if number not in known:
-                    problems.append(f"{relative}:{line_number}: GLOSSARY #{number} 不存在")
+                    problems.append(f"{relative}:{line_number}: DECISIONS #{number} 不存在")
             if start > end:
                 problems.append(f"{relative}:{line_number}: 引用范围 #{start}–{end} 顺序反了")
 
-    # 词表内部用裸 `#nn` 引用；`PR #27` 不是引用键，先摘掉。
+    # 文件内部用裸 `#nn` 引用；`PR #27` 不是引用键，先摘掉。
     for number, line in _scanned_numbered(text):
         check(path, number, _PR_REF.sub("PR", line))
-    # 其他文档：同一行里出现 GLOSSARY 后，其后的 `#nn` 视为词表引用。
+    # 其他文档：同一行里出现 DECISIONS 后，其后的 `#nn` 视为编号引用。
     for target in markdown_files(root):
         if target == path:
             continue
         body = target.read_text(encoding="utf-8", errors="replace")
         for number, line in _scanned_numbered(body):
-            if "GLOSSARY" in line:
-                tail = _PR_REF.sub("PR", line.split("GLOSSARY", 1)[1])
+            if "GLOSSARY #" in line:
+                # 文档里讲「这个旧写法要报错」时，行内本身就会出现 `GLOSSARY #`。
+                # 与 doctor 的 _HISTORY_MARKERS 同一思路：讲规则的行不算违规。
+                if any(marker in line for marker in ("已迁到", "旧写法", "这种写法")):
+                    continue
+                relative = target.relative_to(root)
+                problems.append(
+                    f"{relative}:{number}: 写成 `GLOSSARY #…` 了，编号已迁到 DECISIONS.md"
+                )
+                continue
+            if "DECISIONS" in line:
+                tail = _PR_REF.sub("PR", line.split("DECISIONS", 1)[1])
                 check(target, number, tail)
     return problems
 
@@ -258,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     problems = broken_references(root)
-    problems.extend(glossary_problems(root))
+    problems.extend(decisions_problems(root))
     if problems:
         print(f"发现 {len(problems)} 条失效文档引用：", file=sys.stderr)
         for item in problems:

@@ -332,7 +332,7 @@ FILES_SCHEMA: dict[str, PolarsType] = {
 #: 演练数据：viewer 里的前几行，单开一张表、不进默认导出。
 #:
 #: `AGENTS.md` 写着「不下载数据集文件」；viewer 的几行不是文件，但它是**内容**而非
-#: 元数据，性质上跨过了那条边界。故沿用 `readme` 表的先例（GLOSSARY #94）：单开一张
+#: 元数据，性质上跨过了那条边界。故沿用 `readme` 表的先例（DECISIONS #94）：单开一张
 #: 表、不进默认导出、只在点名或取头部时抓。
 #:
 #: 列数不固定的问题进 `features` / `rows` 两列 JSON——否则换个库 schema 就变一次。

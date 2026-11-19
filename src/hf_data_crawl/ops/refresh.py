@@ -10,7 +10,7 @@
 三段式（ADR-0008）
 ==================
 ① 串行头：`compact` → `collect --full-scan` → `build --stale`
-   跑完这一步，`current` 才叫「采集定稿」（GLOSSARY #134）。锁外抓取的候选集
+   跑完这一步，`current` 才叫「采集定稿」（DECISIONS #134）。锁外抓取的候选集
    取自 `current`，早于它启动就会漏掉当天新增的库。
 
 ② 并行段：`reconcile`（持锁全站扫）‖ `fetch-sizes` / `fetch-readme` /

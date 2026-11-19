@@ -23,18 +23,19 @@ platform < pipeline < {acquire, query} < delivery < ops
 
 | 你要动 | 先读 | 它回答 |
 |---|---|---|
-| 采集 / 对账 / 探测 | GLOSSARY #5–#6、#10、#15、#17、#20、#27、#29–#30、#68、#72–#73、#123 | 排序与异常值、扫描时序、来源命名、状态判定、探测限流、连接池的两处坑 |
-| 派生 / 重建 / 恢复 / 留存 | GLOSSARY #18–#19、#28、#31、#44–#45、#47、#78、#93、#124、#126；`docs/operations/RECOVERY.md` | 标记文件、后缀重放、派生凭据、冷热分层与回滚、换压缩格式、大表别整块进内存、合并时数留下的行 |
-| 体检 / 告警 | GLOSSARY #74、#76、#81–#84、#127；`docs/operations/MONITORING.md` | 判据基准（快照日而非日历）、Finding 的身份、连续天数、富化资产怎么判新旧 |
-| 调度 / 日志 | `ops/refresh.py`（刷新鲜编排器，ADR-0008）、`scripts/refresh.ps1`（计划任务入口）、`scripts/setup-schedule.ps1`、GLOSSARY #67、#77、#92、#118、#132–#135 | 为什么是一条链、串并怎么切、哪些步骤不补跑、重试边界、卡住了怎么看得出与怎么掐断 |
-| 交付 / 需求 | `.agents/skills/hf-request/SKILL.md`、GLOSSARY #51–#58、#69–#71、#79、#85–#87 | 受理 → 口径 → 方法 → 预演 → 交付 → 变更 |
-| 字段 / 数据形状 | `data/DATA.md`（生成物）、GLOSSARY #62–#66、#128、`delivery/fields.py` | 表结构、字段含义、默认交付契约、同名列的两份事实与空值语义 |
-| 架构决策 / 术语 | `docs/adr/`、GLOSSARY #75、`docs/agents/domain.md` | 当时的取舍与事故；术语怎么用 |
+| 采集 / 对账 / 探测 | DECISIONS #5–#6、#10、#15、#17、#20、#27、#29–#30、#68、#72–#73、#123 | 排序与异常值、扫描时序、来源命名、状态判定、探测限流、连接池的两处坑 |
+| 派生 / 重建 / 恢复 / 留存 | DECISIONS #18–#19、#28、#31、#44–#45、#47、#78、#93、#124、#126；`docs/operations/RECOVERY.md` | 标记文件、后缀重放、派生凭据、冷热分层与回滚、换压缩格式、大表别整块进内存、合并时数留下的行 |
+| 体检 / 告警 | DECISIONS #74、#76、#81–#84、#127；`docs/operations/MONITORING.md` | 判据基准（快照日而非日历）、Finding 的身份、连续天数、富化资产怎么判新旧 |
+| 调度 / 日志 | `ops/refresh.py`（刷新鲜编排器，ADR-0008）、`scripts/refresh.ps1`（计划任务入口）、`scripts/setup-schedule.ps1`、DECISIONS #67、#77、#92、#118、#132–#135 | 为什么是一条链、串并怎么切、哪些步骤不补跑、重试边界、卡住了怎么看得出与怎么掐断 |
+| 交付 / 需求 | `.agents/skills/hf-request/SKILL.md`、DECISIONS #51–#58、#69–#71、#79、#85–#87 | 受理 → 口径 → 方法 → 预演 → 交付 → 变更 |
+| 字段 / 数据形状 | `data/DATA.md`（生成物）、DECISIONS #62–#66、#128、`delivery/fields.py` | 表结构、字段含义、默认交付契约、同名列的两份事实与空值语义 |
+| 架构决策 / 术语 | `docs/adr/`、`DECISIONS.md`（编号条目）、`docs/agents/domain.md` | 当时的取舍与事故；术语怎么用 |
 | 提 issue / 写规格 | `docs/agents/issue-tracker.md` | `.scratch/<feature>/` 的目录与 Status 约定 |
-| 改提交钩子 / 质量门槛 | GLOSSARY #125；`.pre-commit-config.yaml`（五项与 CI 一一对应）；`.github/workflows/ci.yml` | 本地与 CI 为什么必须是同一把尺子、mypy 与 pyright 各自的盲区 |
+| 改提交钩子 / 质量门槛 | DECISIONS #125；`.pre-commit-config.yaml`（五项与 CI 一一对应）；`.github/workflows/ci.yml` | 本地与 CI 为什么必须是同一把尺子、mypy 与 pyright 各自的盲区 |
 
-术语一律以 [GLOSSARY.md](GLOSSARY.md) 为准，新词先入表再用。引用编号是稳定键
-（`GLOSSARY #74`），只增不改；`python scripts/check_docs_links.py` 会校验它指向的真有条目。
+术语一律以 [GLOSSARY.md](GLOSSARY.md) 为准，新词先入表再用；带编号的设计决策与
+接口事实在 [DECISIONS.md](DECISIONS.md)，编号是稳定键（`DECISIONS #74`），只增不改。
+`python scripts/check_docs_links.py` 会校验编号指向的真有条目。
 
 ## 硬规则
 
@@ -48,7 +49,7 @@ platform < pipeline < {acquire, query} < delivery < ops
   「本地漏跑某一项」造成的（ruff format 两次、pyright 一次），钩子没装时没人拦得住。
 - **mypy 与 pyright 是两把尺子，不是重复**：`pyarrow` 有内联注解却缺 `py.typed`，
   mypy 整包当 Any、pyright 读得到——涉及 pyarrow（百万行表的流式读写）的改动，
-  只跑 mypy 等于没查。详见 GLOSSARY #125。
+  只跑 mypy 等于没查。详见 DECISIONS #125。
 - **覆盖率是观测，不是闸门**：CI 的 test 步骤跑 `--cov=hf_data_crawl`，但不设
   `--cov-fail-under`，pre-commit 也不含这一项。它答的是「哪块没人看过」，没有正确
   阈值，设死只会诱导为数字补空测试；口径与 `branch = true` 的理由见

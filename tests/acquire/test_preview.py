@@ -292,3 +292,30 @@ def test_viewer_还在生成记临时失败以便重试() -> None:
     result = _api(transport, config="auto").fetch("a/b", DAY)
 
     assert result.status == "error"
+
+
+def test_设了等待时限流后睡过再试而不是整轮中止() -> None:
+    """`--throttle-wait` 把「整轮中止」换成「睡过再试」。
+
+    这个接口的额度按 IP 算、一个窗口只够几十条：不睡就只能每轮推进几十行，
+    睡过再试一个进程才能跨窗口把量补上来。默认（不设）仍是中止，见
+    `test_限流不重试而是立刻抛出`。
+    """
+    transport = ScriptedTransport(_error(429), _ok({"text": "甲"}))
+    api = _api(transport, throttle_wait=600)
+
+    result = api.fetch("a/b", DAY)
+
+    assert result.status == "ok"
+    assert api.throttles == 1
+
+
+def test_同一个库连续限流到上限就放弃它() -> None:
+    """一条坏数据不该把整轮拖住：同一个库最多睡三次，之后按临时失败跳过。"""
+    transport = ScriptedTransport(*[_error(429)] * 4)
+    api = _api(transport, throttle_wait=600)
+
+    with pytest.raises(Throttled):
+        api.fetch("a/b", DAY)
+
+    assert api.throttles == 3

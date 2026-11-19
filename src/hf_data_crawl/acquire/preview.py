@@ -3,7 +3,7 @@
 为什么单开一张表、不进默认导出
 ------------------------------
 `AGENTS.md` 写着「不下载数据集文件」。viewer 的几行不是文件，但它是**内容**而非
-元数据，性质上跨过了那条边界。故沿用 `readme` 表的先例（GLOSSARY #94）：单开一张
+元数据，性质上跨过了那条边界。故沿用 `readme` 表的先例（DECISIONS #94）：单开一张
 `preview` 表、不进默认导出、只在点名或取头部时抓。
 
 抓到的只是某一刻的切片
@@ -32,6 +32,7 @@ viewer 背后是自动转出来的 parquet，上游重写数据集，行序与�
 from __future__ import annotations
 
 import json
+import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -96,6 +97,41 @@ class Throttled(RuntimeError):
     """被上游限流（429）。整轮中止，已取到的行仍然可以并入。"""
 
 
+class ThrottleGate:
+    """撞 429 后全体停一停：限流按 IP，一个人撞了，别人也不该继续打。
+
+    为什么要有它：这个接口的额度小到「一个窗口只够几十条」，而整轮中止意味着
+    每撞一次就白跑一次。给它 `--throttle-wait` 把「中止」换成「睡过再试」，
+    一次进程就能跨过多个窗口把量补上来（实测每天最多推进几十行是靠这个）。
+
+    `wait` 只睡一次剩余时长：多个线程会先后醒来，但 `trip` 取 `max`，后到的会
+    把前一次剩下的时间一起等掉，不会出现「刚醒就再撞」的锯齿。
+    """
+
+    def __init__(
+        self,
+        wait_seconds: float,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._wait = max(0.0, wait_seconds)
+        self._sleep = sleep
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._until = 0.0
+
+    def trip(self) -> None:
+        with self._lock:
+            self._until = max(self._until, self._clock() + self._wait)
+
+    def wait(self) -> None:
+        with self._lock:
+            remaining = self._until - self._clock()
+        if remaining > 0:
+            self._sleep(remaining)
+
+
 @dataclass(frozen=True)
 class PreviewResult:
     """一个库取样例的结果。`ok` 才带行，其余状态不落库。"""
@@ -118,6 +154,8 @@ class PreviewSummary:
     truncated: int = 0
     elapsed_seconds: float = 0.0
     aborted: bool = False
+    #: 本轮撞了几次 429（设了 --throttle-wait 时它们只是等待，不算失败）。
+    throttles: int = 0
 
 
 class HfPreviewApi:
@@ -134,6 +172,7 @@ class HfPreviewApi:
         base_url: str = DEFAULT_PREVIEW_URL,
         max_retries: int = 3,
         retry_base_delay: float = 2.0,
+        throttle_wait: float = 0.0,
         sleeper: Callable[[float], None] | None = None,
     ) -> None:
         self._transport = transport
@@ -144,6 +183,12 @@ class HfPreviewApi:
         self._max_retries = max_retries
         self._retry_base_delay = retry_base_delay
         self._sleeper = sleeper or time.sleep
+        #: 撞 429 之后睡多久再继续；0 表示整轮中止（默认）。
+        self._gate = ThrottleGate(throttle_wait, sleep=self._sleeper) if throttle_wait > 0 else None
+        #: 一个库最多被限流几次就放弃它，免得一条坏数据把整轮拖住。
+        self._max_throttles = 3
+        #: 本轮撞了几次 429，只用于报数。
+        self.throttles = 0
         # 主动匀速，而不是「撞 429 再退避」：与 readme 同一个教训（见 `RateLimiter`）。
         self._limiter = RateLimiter(rate)
 
@@ -164,17 +209,22 @@ class HfPreviewApi:
         """
         if self._config != AUTO_CONFIG:
             return (self._config, self._split)
-        self._limiter.acquire()
-        try:
-            response = self._transport.get(
-                DEFAULT_SPLITS_URL, {"dataset": dataset_id}, {"Accept": "application/json"}
-            )
-        except TransportError:
-            return PreviewResult(dataset_id, "error")
-        if response.status == THROTTLED_STATUS:
-            # `/splits` 撞限流也要整轮中止，不能静默记成 error——否则这一头在
-            # 吞 429、另一头继续打，实测连吞 26 个才由 `/rows` 发现（2026-11-18）。
-            raise Throttled(f"{dataset_id} 被限流（429）")
+        while True:
+            if self._gate is not None:
+                self._gate.wait()
+            self._limiter.acquire()
+            try:
+                response = self._transport.get(
+                    DEFAULT_SPLITS_URL, {"dataset": dataset_id}, {"Accept": "application/json"}
+                )
+            except TransportError:
+                return PreviewResult(dataset_id, "error")
+            if response.status != THROTTLED_STATUS:
+                break
+            # `/splits` 撞限流也不能静默记成 error——否则这一头在吞 429、另一头继续打，
+            # 实测连吞 26 个才由 `/rows` 发现（2026-11-18）。
+            if not self._snooze():
+                raise Throttled(f"{dataset_id} 被限流（429）")
         if response.status in UNAVAILABLE_STATUS:
             return _unavailable(dataset_id, snapshot_date, self._config, self._split)
         if response.status != 200:
@@ -210,6 +260,8 @@ class HfPreviewApi:
         config, split = resolved
         attempt = 0
         while True:
+            if self._gate is not None:
+                self._gate.wait()
             self._limiter.acquire()
             try:
                 response = self._transport.get(
@@ -233,7 +285,9 @@ class HfPreviewApi:
             if response.status == 200:
                 return _success(dataset_id, snapshot_date, config, split, response.body)
             if response.status == THROTTLED_STATUS:
-                # 按 IP 限流：继续请求只会把封禁拖长，故整轮中止而不是逐条退避。
+                # 按 IP 限流：设了闸门就睡过再试，没设就整轮中止（继续打只会更久）。
+                if self._snooze():
+                    continue
                 raise Throttled(f"{dataset_id} 被限流（429）")
             if response.status in RETRYABLE_STATUS and attempt < self._max_retries:
                 self._sleeper(self._backoff(attempt))
@@ -243,6 +297,18 @@ class HfPreviewApi:
                 # 永久缺失：记下来，下轮不再为它烧一次请求。
                 return _unavailable(dataset_id, snapshot_date, config, split)
             return PreviewResult(dataset_id, "error")
+
+    def _snooze(self) -> bool:
+        """撞 429 之后怎么处理：返回 True 表示「睡过再试」，False 表示整轮中止。
+
+        没设 `--throttle-wait` 就中止——那是默认的保守行为；设了就睡一觉继续，
+        一个进程能跨过多个限流窗口，把「每天只推进几十行」变成「一次跑够」。
+        """
+        if self._gate is None or self.throttles >= self._max_throttles:
+            return False
+        self.throttles += 1
+        self._gate.trip()
+        return True
 
     def _backoff(self, attempt: int) -> float:
         return min(self._retry_base_delay * (2**attempt), 30.0)
@@ -380,6 +446,7 @@ class PreviewFetcher:
             truncated=sum(1 for item in rows if item.get("truncated")),
             elapsed_seconds=time.monotonic() - started,
             aborted=aborted,
+            throttles=self._api.throttles,
         )
         return summary, _frame(rows)
 

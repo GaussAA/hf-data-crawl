@@ -547,7 +547,7 @@ def test_需求不能点名只在导出物里的注入列(tmp_path: Path) -> Non
 
     视图里没有它们（体积太大或粒度不同）。若一路放行，SQL 会编译成
     `SELECT "readme" FROM datasets`：受理通过、交付时才报 `Referenced column
-    not found`——正是「受理与编译各写一遍判据」的老病（GLOSSARY #107）。
+    not found`——正是「受理与编译各写一遍判据」的老病（DECISIONS #107）。
     """
     with pytest.raises(SpecError, match="投不出的列"):
         sql_of(tmp_path, output={"columns": ["id", "readme"]})

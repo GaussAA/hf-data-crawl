@@ -94,7 +94,7 @@ def compare_deliveries(left_dir: Path, right_dir: Path) -> Comparison:
     分派是**穷尽**的：新加一种形态时这里会当场报错，而不是静默掉进最后那条 `else`
     拿 parquet 的口径去比一张 xlsx。想让形态只在一处登记（`Form(execute, compare)`）
     走不通：比对器住在本模块，而执行体已被 `delivery` 点名导入，互相 import 会成环。
-    取舍写在 GLOSSARY #105。
+    取舍写在 DECISIONS #105。
     """
     left_body, right_body = _manifest(left_dir), _manifest(right_dir)
     # 产物可能已按留存策略清掉字节（`PRUNED.json` 记着 sha256）。那不是「文件丢了」，

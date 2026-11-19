@@ -48,14 +48,14 @@ CI 里不要动的地方：
 11-18 把当时留下的三条都收了：
 
 - **外发记账** → `request handoff` 写 `requests/<id>/HANDOFF.jsonl`，`show` 列最近三次
-  （GLOSSARY #119）。
+  （DECISIONS #119）。
 - **代码内容指纹** → `manifest.method.env.code_sha256` 按 `CODE_PATHS` 的内容算，
-  跨机器可比、脏着交付也说得清（GLOSSARY #120）。单机假设里**只剩依赖与运行环境**
+  跨机器可比、脏着交付也说得清（DECISIONS #120）。单机假设里**只剩依赖与运行环境**
   没有钉：`uv.lock` 的内容进了指纹，Python 小版本与系统库不在其中。
 - **小尾巴** → `request new --header-row` 让回填需求受理时就定表头行；四份既有需求的
   `METHOD.md` 补了「需求成立性」一节（补记日期与 manifest 指纹的先后差异写在各节里）。
 - **样例需求可识别**（作者澄清后加）→ `request new --sample` / `request sample <id>`；
-  `usage` 不计入影响面，`run-due` 跳过，`list` / `show` / `INDEX` 标注（GLOSSARY #121）。
+  `usage` 不计入影响面，`run-due` 跳过，`list` / `show` / `INDEX` 标注（DECISIONS #121）。
 
 **仍然没做**：
 
@@ -90,4 +90,4 @@ CI 里不要动的地方：
 
 落地：`PROBE_DEGRADE_AFTER = 3`；轮转档案增 `failures`（逐库连续失败轮数，拿到结论即清零，只保留仍在 missing 的 id 以免膨胀）；达线的库写进差异清单 `kind=probe_degraded`、`ReconcileSummary.probe_degraded` 与 `runs` 台账，`doctor` 新增「探测顽固失败」检查项单独报告，命令行也点名数量。
 
-**未做排序降级**：上一轮刚修好「失败项不消费轮转额度、下轮优先再探」，把连续失败的库挪到批次末尾，等于把最该复核的推远、退回「先别动变成一直没看」。GLOSSARY #73 的降级对象是「已有明确结论的非在架库」，与「判不出结论」性质不同。这里的「降级」落在报告层面：从自动复核交给人去核对配额与上游状态。
+**未做排序降级**：上一轮刚修好「失败项不消费轮转额度、下轮优先再探」，把连续失败的库挪到批次末尾，等于把最该复核的推远、退回「先别动变成一直没看」。DECISIONS #73 的降级对象是「已有明确结论的非在架库」，与「判不出结论」性质不同。这里的「降级」落在报告层面：从自动复核交给人去核对配额与上游状态。

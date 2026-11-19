@@ -468,7 +468,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--rate",
         type=float,
         default=DEFAULT_PREVIEW_RATE,
-        help="每秒放行几个请求（默认 4）。撞 429 会整轮中止——它按 IP 封，继续打只会更久",
+        help="每秒放行几个请求（默认 4）；额度按 IP 算，越小越稳",
+    )
+    preview.add_argument(
+        "--throttle-wait",
+        type=float,
+        default=0.0,
+        help="撞 429 后睡多少秒再继续（默认 0 = 整轮中止）。"
+        "这个接口一个窗口只够几十条，设成 600 才能在一次进程里跨窗口补齐",
     )
     preview.add_argument("--workers", type=int, default=8, help="并发数；吞吐由 --rate 决定")
     doctor = subparsers.add_parser("doctor", help="体检：任务是否按时、Raw 是否断日、有无残留文件")

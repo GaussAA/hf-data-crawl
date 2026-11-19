@@ -7,7 +7,7 @@
 
 ## 背景
 
-2026-11-11 夜到 11-13 凌晨的垂直切片重排（GLOSSARY #75）给 `tests/test_architecture.py`
+2026-11-11 夜到 11-13 凌晨的垂直切片重排（DECISIONS #75）给 `tests/test_architecture.py`
 留了四条规则加一条私有名规则。它们都只判断**方向**：只许依赖次序更低的切片，`platform`
 不依赖任何切片，模块图无环，跨切片不用下划线名。
 
@@ -110,7 +110,7 @@ ops      → {delivery, query, acquire, pipeline, platform}
 
 ## 参考
 
-- GLOSSARY #75: 按垂直切片重排（六切片与方向规则的由来）
-- GLOSSARY #101: 切片依赖边要显式登记
+- DECISIONS #75: 按垂直切片重排（六切片与方向规则的由来）
+- DECISIONS #101: 切片依赖边要显式登记
 - `tests/test_architecture.py`: 规则的唯一实现
 - `src/hf_data_crawl/pipeline/__init__.py`: 为什么 `check_and_recover` 不从包里导出

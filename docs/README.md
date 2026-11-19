@@ -6,7 +6,8 @@
 | 文档 | 它拥有什么 | 什么时候读 |
 |---|---|---|
 | [README](../README.md) | 项目是什么、怎么跑、命令与参数、数据布局、关键机制索引 | 第一次上手、加命令、换机器 |
-| [GLOSSARY](../GLOSSARY.md) | 领域词表；编号决策与不变量（#1–#16 接口事实，#17 起设计与取舍） | 命名一个概念、改一处机制、想知道「为什么是这样」 |
+| [GLOSSARY](../GLOSSARY.md) | 领域词表：核心名词（含「不是什么」）、分层 | 查词、命名一个概念 |
+| [DECISIONS](../DECISIONS.md) | 编号决策与不变量（#1–#16 接口事实，#17 起设计与取舍） | 想知道「为什么是这样」、按编号引用 |
 | `data/DATA.md`（生成物，**不进仓库**） | data 目录、表结构、字段含义 | 查字段、查表；跑 `hf-data-crawl docs` 生成——各机器的 `data/` 独立，所以这份文档只描述本机数据 |
 | [operations/RECOVERY.md](operations/RECOVERY.md) | 故障恢复、人工复位、归档 / 压缩回滚 | 数据或派生坏了 |
 | [operations/MONITORING.md](operations/MONITORING.md) | 台账字段、监控指标与告警阈值、调度清单 | 排障、核对例行任务 |
@@ -18,7 +19,7 @@
 
 ## 写文档的三条规则
 
-1. **决策进 GLOSSARY，操作进 README / operations，字段进 DATA.md（生成），决策当时的快照进 ADR。**
+1. **决策进 DECISIONS，操作进 README / operations，字段进 DATA.md（生成），决策当时的快照进 ADR，词进 GLOSSARY。**
    README 不把「为什么」讲到最后一段——那一段属于词表。词表编号是稳定引用键，只增不改。
 2. **不抄数**：列数、行数、检查项数量从代码或生成器取，文档只写判据与指向。
    数字会漂，判据不会；抄下来的数一旦过期，读者无法判断该信哪一份。
@@ -52,7 +53,7 @@
 
 相对链接与行内代码里的仓库路径由 [check_docs_links.py](../scripts/check_docs_links.py)
 逐条解析校验，CI 的 `Check documentation` 与 pre-commit 共用这一入口；同一入口还会校验
-`GLOSSARY #nn` 引用指向真有条目、编号不重。本地可跑：
+`DECISIONS #nn` 引用指向真有条目、编号不重。本地可跑：
 
 ```bash
 python scripts/check_docs_links.py

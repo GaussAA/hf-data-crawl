@@ -133,10 +133,10 @@ def test_cp1252_控制台下仍能输出正确结论() -> None:
 
 def test_GLOSSARY重号必须被检出(tmp_path: Path) -> None:
     """重号会让两个读者落到不同条目上，而两处都读得通。"""
-    (tmp_path / "GLOSSARY.md").write_text(
-        "# GLOSSARY\n\n1. 甲。\n2. 乙。\n2. 丙。\n", encoding="utf-8"
+    (tmp_path / "DECISIONS.md").write_text(
+        "# DECISIONS\n\n1. 甲。\n2. 乙。\n2. 丙。\n", encoding="utf-8"
     )
-    (tmp_path / "AGENTS.md").write_text("见 GLOSSARY #2。\n", encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text("见 DECISIONS #2。\n", encoding="utf-8")
 
     result = _run(tmp_path)
 
@@ -146,37 +146,37 @@ def test_GLOSSARY重号必须被检出(tmp_path: Path) -> None:
 
 def test_GLOSSARY悬空引用键必须被检出(tmp_path: Path) -> None:
     """引用键指不到条目就是断链，不能因为「像编号」就放过。"""
-    (tmp_path / "GLOSSARY.md").write_text("# GLOSSARY\n\n1. 甲。\n2. 乙。\n", encoding="utf-8")
+    (tmp_path / "DECISIONS.md").write_text("# DECISIONS\n\n1. 甲。\n2. 乙。\n", encoding="utf-8")
     note = tmp_path / "AGENTS.md"
-    note.write_text("见 GLOSSARY #9。\n", encoding="utf-8")
+    note.write_text("见 DECISIONS #9。\n", encoding="utf-8")
 
     broken = _run(tmp_path)
     assert broken.returncode == 1
-    assert "GLOSSARY #9 不存在" in broken.stderr
+    assert "DECISIONS #9 不存在" in broken.stderr
 
-    note.write_text("见 GLOSSARY #2。\n", encoding="utf-8")
+    note.write_text("见 DECISIONS #2。\n", encoding="utf-8")
     fixed = _run(tmp_path)
     assert fixed.returncode == 0, fixed.stderr
 
 
 def test_GLOSSARY内部的裸引用也要校验(tmp_path: Path) -> None:
-    """词表正文里的 `#17` 是同一套引用键，不能只查外部的 `GLOSSARY #17`。"""
-    (tmp_path / "GLOSSARY.md").write_text(
-        "# GLOSSARY\n\n1. 甲（见 #2）。\n2. 乙。\n3. 丙（见 #9）。\n", encoding="utf-8"
+    """词表正文里的 `#17` 是同一套引用键，不能只查外部的 `DECISIONS #17`。"""
+    (tmp_path / "DECISIONS.md").write_text(
+        "# DECISIONS\n\n1. 甲（见 #2）。\n2. 乙。\n3. 丙（见 #9）。\n", encoding="utf-8"
     )
 
     result = _run(tmp_path)
 
     assert result.returncode == 1
-    assert "GLOSSARY #9 不存在" in result.stderr
+    assert "DECISIONS #9 不存在" in result.stderr
 
 
 def test_PR编号不是词表引用键(tmp_path: Path) -> None:
     """`PR #27` 与词表编号长得一样，但它指的是外部合并请求。"""
-    (tmp_path / "GLOSSARY.md").write_text(
-        "# GLOSSARY\n\n1. 甲（PR #99）。\n2. 乙。\n", encoding="utf-8"
+    (tmp_path / "DECISIONS.md").write_text(
+        "# DECISIONS\n\n1. 甲（PR #99）。\n2. 乙。\n", encoding="utf-8"
     )
-    (tmp_path / "AGENTS.md").write_text("见 GLOSSARY #2，PR #99。\n", encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text("见 DECISIONS #2，PR #99。\n", encoding="utf-8")
 
     result = _run(tmp_path)
 
@@ -221,3 +221,17 @@ def test_本机记忆目录不参与校验(tmp_path: Path) -> None:
     result = _run(tmp_path)
     assert result.returncode == 0, result.stderr
     assert ".workbuddy" not in result.stderr
+
+
+def test_写成_GLOSSARY_编号的引用要被报成已迁移(tmp_path: Path) -> None:
+    """拆分后 `GLOSSARY #nn` 是旧写法：读者按它去词表里找会扑空。
+
+    这条检查只在迁移期有意义——但它便宜，留着能挡住「顺手复制旧文档」的回潮。
+    """
+    (tmp_path / "DECISIONS.md").write_text("# DECISIONS\n\n1. 甲。\n", encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text("见 GLOSSARY #1。\n", encoding="utf-8")
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 1
+    assert "编号已迁到 DECISIONS.md" in result.stderr

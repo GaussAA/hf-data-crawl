@@ -101,7 +101,7 @@ def _readme_clean_sql() -> str:
 #:
 #: 2026-11-19 试过把清洗结果物化成 `readme_clean` 表换时间，实测不成立：导出瓶颈在
 #: 2 GB 文本的解压（读 282 MB 清洗版与读 3 GB 原文代价一样），且 `upsert` 整表重写
-#: 要 11 秒。回滚理由记在 GLOSSARY #137。
+#: 要 11 秒。回滚理由记在 DECISIONS #137。
 
 
 def _sql_path(path: Path) -> str:

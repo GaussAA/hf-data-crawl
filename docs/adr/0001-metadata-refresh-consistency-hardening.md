@@ -96,9 +96,9 @@ ADR 的范围内。原文把「派生完成、删除标记前崩溃」当作未�
 
 ## 参考
 
-- GLOSSARY #27: Watermark 机制
-- GLOSSARY #28: 派生原子性
-- GLOSSARY #29: sha 检测
+- DECISIONS #27: Watermark 机制
+- DECISIONS #28: 派生原子性
+- DECISIONS #29: sha 检测
 - `docs/operations/RECOVERY.md`: 故障恢复
 - `docs/operations/MONITORING.md`: 监控指标
 
@@ -110,13 +110,13 @@ ADR 记的是决策当时的样子；实现被改掉时在文末追加，而不�
 
 - **决策 2 的恢复动作已改**（2026-11-08）：原实现是「清理该日 → 重新派生那一天」，
   现由 `pipeline/recovery.py` 走**从该日起后缀重放**。理由：`current` 用当日帧覆盖同名 id，
-  只重算一天会把当前态整体回退，比不修更坏。现行为以代码与 GLOSSARY #28、#78 为准。
+  只重算一天会把当前态整体回退，比不修更坏。现行为以代码与 DECISIONS #28、#78 为准。
 - **决策 1 的完成态写入已拆开**（2026-11-07）：`save`（游标）/ `save_watermark`（水线）/
-  `finish`（完成）三个入口，见 GLOSSARY #27；原文的「持久化上次运行的最新 lastModified」
+  `finish`（完成）三个入口，见 DECISIONS #27；原文的「持久化上次运行的最新 lastModified」
   仍是目标，只是写入口不止一个。
 - **文中的行数**（如 `watermark.py` 167 行、`marker.py` 120 行）是决策当时的检查结果，
   不随后续实现更新；当前行数以代码为准。
 - **决策 2 的跨日窗口已补上**（2026-11-17）：「折衷」里那句「那段由 `rebuild` 的入口
   守卫负责」是错的——入口守卫只判「观测与当前态非空」，是前提检查，不是崩溃恢复。
   现在标记描述闭区间：`rebuild_from_raw` 在 `clear_derived` 之前写下整段范围，跑完才删，
-  恢复时范围标记优先并吞掉其覆盖的逐日标记。见 GLOSSARY #104。
+  恢复时范围标记优先并吞掉其覆盖的逐日标记。见 DECISIONS #104。

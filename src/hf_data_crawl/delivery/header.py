@@ -10,7 +10,7 @@ import 回填模块，只为了一个纯函数。搬到独立模块后，谁都�
 
 **这里不含 openpyxl**：`parse` 吃的是「单元格的值」，不是单元格本身。开文件、选
 sheet、拒公式都在 `delivery/sheet.py`——否则 `delivery.py`（档案层）会顺着这条
-import 传递依赖 Excel，而 GLOSSARY #86 刚把档案层从「认形态」里摘出来。
+import 传递依赖 Excel，而 DECISIONS #86 刚把档案层从「认形态」里摘出来。
 """
 
 from __future__ import annotations
