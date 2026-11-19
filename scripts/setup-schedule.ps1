@@ -143,7 +143,7 @@ foreach ($job in $jobs) {
 foreach ($name in $legacyNames) {
     if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
         Unregister-ScheduledTask -TaskName $name -Confirm:$false
-        Write-Host "已移除旧任务 $name（已并入 hf-daily）"
+        Write-Host "已移除旧任务 $name（已并入 hf-refresh）"
     }
 }
 
