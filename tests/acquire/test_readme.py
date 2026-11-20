@@ -22,7 +22,7 @@ from typing import Any
 import polars as pl
 import pytest
 
-from hf_data_crawl.acquire.batch import STAGING_ROOT, staged_shards
+from hf_data_crawl.acquire.batch import staged_shards
 from hf_data_crawl.acquire.commands import run_parse_readme
 from hf_data_crawl.acquire.hf.api import HfResponse, TransportError
 from hf_data_crawl.acquire.readme import (
@@ -523,11 +523,6 @@ def test_全文视图可查但不进默认宽表(store_with_data: DatasetStore) 
 
     assert rows["text"].to_list() == ["全文"]
     assert "readme_text" not in wide_column_names(), "全文不进宽表：每行数 KB，会把查询拖重"
-
-
-def test_暂存目录按链路分开() -> None:
-    assert README_STAGING_DIR != ".staging/sizes"
-    assert README_STAGING_DIR.startswith(STAGING_ROOT)
 
 
 # ------------------------------------------------- parse-readme：逐批读正文

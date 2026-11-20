@@ -55,8 +55,11 @@ DEFAULT_ROWS = 3
 #: 200 个库全部 429、吞吐掉到 0.5 req/s。主动匀速是唯一稳的做法（教训同 readme）。
 DEFAULT_RATE = 4.0
 
-#: 暂存分片的子目录名：与 sizes / files / readme 同一套「先落分片、收尾短锁合并」。
-PREVIEW_STAGING_DIR = "preview"
+#: 暂存目录（相对数据根）：与 `.staging/sizes`、`.staging/files`、`.staging/readme`
+#: 并列。写的是完整相对路径而不是裸目录名——`batch.staging_root()` 只做
+#: `store.root / subdir`，传 "preview" 会把分片落到 `data/preview/`，doctor 的
+#: 残留检查与清理都看不见它（2026-11-20 由测试审计发现）。
+PREVIEW_STAGING_DIR = ".staging/preview"
 
 #: 每攒多少条落一次分片。样例一行只有几 KB，200 条一次足够细。
 PREVIEW_FLUSH_EVERY = 200

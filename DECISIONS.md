@@ -2356,3 +2356,17 @@
      **一条通则**：换工具不是换名字。档位、例外的规则名、以及「为什么这一条可以不查」，
      要写进配置注释与 DECISIONS；只写 `typeCheckingMode = "strict"` 而把五条悄悄设成
      none，下一个人会以为严格档真的全开了。
+
+143. **暂存目录必须落在 `.staging` 下，四条链路一起验**（2026-11-20，清理测试时顺带发现）：
+
+     `fetch-preview` 改成暂存分片时，`PREVIEW_STAGING_DIR` 写成了裸名 `"preview"`，
+     而 `batch.staging_root()` 只做 `store.root / subdir`——分片落到 `data/preview/`，
+     doctor 的「抓取暂存」检查扫的是 `data/.staging/`，于是中断留下的分片既不被发现、
+     也不被清理。旧测试 `test_暂存目录按链路分开` 只比了 readme 与 sizes，名字叫
+     「按链路」，判据却漏了第三条。
+
+     **修法**：常量写完整相对路径 `.staging/preview`；测试改为四条链路一起断言
+     「都落在 `.staging` 下、互不重叠」（`tests/acquire/test_staging.py`）。
+
+     **一条通则**：路径约定不能靠调用方记得带前缀——要么 helper 负责拼根，要么常量
+     写全；同类对象的测试要把整组枚举，挑两三个代表等于没验。
