@@ -197,9 +197,15 @@ SIDE_FILES: tuple[tuple[str, str, str], ...] = (
 
 
 def _human_bytes(size: int) -> str:
+    """文档里写「1.2 GB」而不是「1288490188」，读的人才不用自己换算。
+
+    循环只到 GB：剩下的无论多大都以 TB 计。原先写成 `for unit in (..., "TB")` 再
+    在循环后补一句 `return f"{value:.1f} TB"`，那句永远到不了（`unit == "TB"` 时
+    循环内必定先返回），是覆盖率唯一点不亮的一行——删掉，而不是为它编一条测试。
+    """
     value = float(size)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if value < 1024 or unit == "TB":
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024:
             return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
         value /= 1024
     return f"{value:.1f} TB"
