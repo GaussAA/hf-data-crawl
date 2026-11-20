@@ -281,12 +281,15 @@ def test_缺需求成立性一节只提示不拦(tmp_path: Path, capsys: pytest.
     doc.write_text(
         doc.read_text(encoding="utf-8")
         .replace("<!-- 待填：", "<!-- 已填：")
-        .replace("## 需求成立性", "## 需求成立性（已删）"),
+        .replace("## 需求成立性", "## 背景"),
         encoding="utf-8",
     )
 
     assert run(tmp_path, "request", "method", "REQ-0001", "--check") == 0
-    assert "需求成立性" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    # 断言提示的原话，而不是只断「需求成立性」这四个字：原写法把标题改成
+    # 「## 需求成立性（已删）」仍含这四个字，提示其实压根没触发。
+    assert "是症状还是成因" in out
 
 
 def test_交付失败也留运行台账(tmp_path: Path) -> None:
@@ -769,3 +772,584 @@ def test_diff只改标题时明说口径未变(tmp_path: Path, capsys: pytest.Ca
     out = capsys.readouterr().out
     assert "口径未变" in out
     assert "标题" in out and "改名" in out
+
+
+# ---------------------------------------------------------------- 出口的另一半
+#
+# 上面覆盖的是主路径（建、列、看、关、发、收）。这一段补「点名了不存在的东西」
+# 与「可比对的东西不够」这类分支：它们都是用户走错一步时唯一的一句话，
+# 而此前一行都没被走到。
+
+
+def test_列表能念出回填缺_fill_与手写SQL(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from hf_data_crawl.delivery import commands
+    from hf_data_crawl.delivery.requirement import Mode
+
+    spec = load(make(tmp_path))
+
+    assert (
+        commands.criteria_text(replace(spec, kind=Kind.BACKFILL, fill=None))
+        == "回填表格（fill 段待补）"
+    )
+    assert commands.criteria_text(replace(spec, mode=Mode.SQL)) == "手写 SQL（见 spec.yaml）"
+
+
+def test_版本号乱写就报错而不是猜一个() -> None:
+    from hf_data_crawl.delivery import commands
+
+    assert commands._version_of("v3") == 3
+    assert commands._version_of(" 2 ") == 2
+    with pytest.raises(ValueError, match="v2 或 2"):
+        commands._version_of("最新")
+
+
+def test_空备注显示成空而非空白(capsys: pytest.CaptureFixture[str]) -> None:
+    from hf_data_crawl.delivery import commands
+
+    assert commands._brief("  \n ") == "（空）"
+    assert commands._brief("一二三", limit=2) == "一…"
+
+    assert capsys.readouterr().out == ""
+
+
+def test_索引点名不存在的需求时直接失败(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert run(tmp_path, "request", "index", "REQ-9999") == 1
+    assert "失败" in capsys.readouterr().out
+
+
+def test_空目录下没有索引可写(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert run(tmp_path, "request", "index") == 1
+    assert "还没有需求" in capsys.readouterr().out
+
+
+def test_点名清理但没有可清理的产物(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """`--id` 是「我就要清这一份」：没有可清的也要说一句，不能静默退出 0。"""
+    make(tmp_path)
+    folder = resolve_dir(tmp_path / "req", "REQ-0001")
+    delivery = folder / "deliveries" / "20260101T000000Z"
+    delivery.mkdir(parents=True)
+    (delivery / "manifest.json").write_text(
+        json.dumps({"result": {"rows": 1, "files": []}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    assert run(tmp_path, "request", "prune", "REQ-0001", "--keep", "3") == 0
+
+    assert "没有可清理的产物" in capsys.readouterr().out
+
+
+def test_预演清理不动磁盘(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """`--dry-run` 必须真的不删：说「将清理」却删了，比不提供这个开关更糟。"""
+    make(tmp_path)
+    folder = resolve_dir(tmp_path / "req", "REQ-0001")
+    for index in range(3):
+        delivery = folder / "deliveries" / f"2026010{index + 1}T000000Z"
+        delivery.mkdir(parents=True)
+        (delivery / "data.parquet").write_bytes(b"x")
+        (delivery / "manifest.json").write_text(
+            json.dumps(
+                {"result": {"rows": 1, "files": [{"name": "data.parquet"}]}},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+    assert run(tmp_path, "request", "prune", "--keep", "1", "--dry-run") == 0
+
+    out = capsys.readouterr().out
+    assert "将清理" in out and "未动磁盘" in out
+    assert (folder / "deliveries" / "20260101T000000Z" / "data.parquet").is_file()
+
+
+def test_取消样例标记时保留关闭状态(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """样例标记只是 STATUS.json 里的一组键；撤销它不该顺手把「已关闭」也抹掉。"""
+    make(tmp_path)
+    assert run(tmp_path, "request", "sample", "REQ-0001") == 0
+    assert run(tmp_path, "request", "close", "REQ-0001", "--reason", "需求方撤回") == 0
+
+    assert run(tmp_path, "request", "sample", "REQ-0001", "--undo") == 0
+
+    status = json.loads(
+        (resolve_dir(tmp_path / "req", "REQ-0001") / "STATUS.json").read_text(encoding="utf-8")
+    )
+    assert "sample" not in status and status["status"] == "closed"
+    assert "已取消样例标记" in capsys.readouterr().out
+
+
+def test_方法命令会补骨架_登记脚本_报已是最新(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """不带 `--check` 时它是**要写东西**的那一半：补骨架、按目录重算索引。
+
+    这条路径此前一行都没走过——`request new` 已经建好骨架，所以连「骨架缺了
+    会不会补」都没被验过。这里先删掉 method/，再走一遍增、改、删、无变化。
+    """
+    import shutil
+
+    make(tmp_path)
+    folder = resolve_dir(tmp_path / "req", "REQ-0001")
+    shutil.rmtree(folder / "method")
+
+    assert run(tmp_path, "request", "method", "REQ-0001") == 1, "「待填」还在，合规检查该拦"
+    assert "已补过程记录骨架" in capsys.readouterr().out
+
+    scripts = folder / "method" / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    (scripts / "pull.py").write_text("print(1)\n", encoding="utf-8")
+    assert run(tmp_path, "request", "method", "REQ-0001") == 1
+    assert "新登记：pull.py" in capsys.readouterr().out
+
+    (scripts / "pull.py").write_text("print(2)\n", encoding="utf-8")
+    assert run(tmp_path, "request", "method", "REQ-0001") == 1
+    assert "指纹更新：pull.py" in capsys.readouterr().out
+
+    (scripts / "pull.py").unlink()
+    assert run(tmp_path, "request", "method", "REQ-0001") == 1
+    assert "已移除：pull.py" in capsys.readouterr().out
+
+    assert run(tmp_path, "request", "method", "REQ-0001") == 1
+    assert "已是最新" in capsys.readouterr().out
+
+
+def test_旧输入快照读不出表头时只报新表(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """老表被删或被占着，不该让「收新输入」整体失败——只报新表结构即可。"""
+    old = make_header_book(tmp_path / "旧表.xlsx", ["URL", "数据集名称"])
+    assert (
+        run(
+            tmp_path,
+            "request",
+            "new",
+            "REQ-0002",
+            "--title",
+            "清单补全",
+            "--requester",
+            "大帅",
+            "--kind",
+            "backfill",
+            "--source",
+            str(old),
+        )
+        == 0
+    )
+    folder = resolve_dir(tmp_path / "req", "REQ-0002")
+    # 文件还在、但已经不是能读的表：`load_spec` 只校验存在性，读表头时才炸。
+    for path in (folder / "input").rglob("*.xlsx"):
+        path.write_bytes(b"not an xlsx")
+
+    new = make_header_book(tmp_path / "新表.xlsx", ["URL", "数据集名称"])
+    assert run(tmp_path, "request", "input", "REQ-0002", "--add", str(new)) == 0
+
+    out = capsys.readouterr().out
+    assert "读不出表头" in out
+    assert "已收进 input/v2/新表.xlsx" in out
+
+
+def test_收新输入会按版本递增且报列序变化(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """第二版之后是第三版；共同列换了次序不影响按列名取数，但人眼看会串行。"""
+    first = make_header_book(tmp_path / "第一版.xlsx", ["URL", "数据集名称", "下载量"])
+    assert (
+        run(
+            tmp_path,
+            "request",
+            "new",
+            "REQ-0002",
+            "--title",
+            "清单补全",
+            "--requester",
+            "大帅",
+            "--kind",
+            "backfill",
+            "--source",
+            str(first),
+        )
+        == 0
+    )
+    folder = resolve_dir(tmp_path / "req", "REQ-0002")
+
+    second = make_header_book(tmp_path / "第二版.xlsx", ["URL", "数据集名称", "下载量"])
+    assert run(tmp_path, "request", "input", "REQ-0002", "--add", str(second)) == 0
+    reordered = make_header_book(tmp_path / "第三版.xlsx", ["数据集名称", "URL", "下载量"])
+    assert run(tmp_path, "request", "input", "REQ-0002", "--add", str(reordered)) == 0
+
+    out = capsys.readouterr().out
+    assert (folder / "input" / "v2" / "第二版.xlsx").is_file()
+    assert (folder / "input" / "v3" / "第三版.xlsx").is_file()
+    assert "共同列的次序变了" in out
+
+
+def test_点名交付不存在时列出已有的交付(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """只说「没有」等于让人去猜；把现有的列出来，抄一下就对了。"""
+    make(tmp_path)
+    folder = resolve_dir(tmp_path / "req", "REQ-0001")
+    for name in ("20260101T000000Z", "20260102T000000Z"):
+        delivery = folder / "deliveries" / name
+        delivery.mkdir(parents=True)
+        pl_frame = {"id": ["a"], "downloads": [1]}
+        import polars as pl
+
+        pl.DataFrame(pl_frame).write_parquet(delivery / "data.parquet")
+        (delivery / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "kind": "query",
+                    "result": {"rows": 1, "columns": [], "files": [{"name": "data.parquet"}]},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+    assert (
+        run(
+            tmp_path,
+            "request",
+            "compare",
+            "REQ-0001",
+            "20260101T000000Z",
+            "29990101T000000Z",
+        )
+        == 1
+    )
+    out = capsys.readouterr().out
+    assert "没有交付" in out and "20260102T000000Z" in out
+
+
+def test_两版共同列逐格相同时明说(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """没有改值也要说「逐格相同」：静默退出会让人以为比对没跑。"""
+    make(tmp_path)
+    folder = resolve_dir(tmp_path / "req", "REQ-0001")
+    import polars as pl
+
+    for name in ("20260101T000000Z", "20260102T000000Z"):
+        delivery = folder / "deliveries" / name
+        delivery.mkdir(parents=True)
+        pl.DataFrame({"id": ["a"], "downloads": [1]}).write_parquet(delivery / "data.parquet")
+        (delivery / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "kind": "query",
+                    "result": {"rows": 1, "columns": [], "files": [{"name": "data.parquet"}]},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+    assert run(tmp_path, "request", "compare", "REQ-0001") == 0
+
+    assert "逐格相同" in capsys.readouterr().out
+
+
+def test_口径比对点名非法版本号(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    make(tmp_path)
+
+    assert run(tmp_path, "request", "diff", "REQ-0001", "上一版", "2") == 1
+
+    assert "v2 或 2" in capsys.readouterr().out
+
+
+def test_预演被拦下时说原因且退出非零(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """`--preview` 说「只看看」，闸门照样拦：不然人会以为跑通了就能交。"""
+    make(tmp_path)
+
+    code = run(tmp_path, "request", "run", "REQ-0001", "--preview")
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "预览失败" in out or "预演失败" in out
+
+
+def test_预演的提示与交付的三档健康度都要打出来(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """三档：超阈值标疑、首次无基线、读不出上次档案——都不能沉默。"""
+    from hf_data_crawl.delivery import commands
+    from hf_data_crawl.delivery.delivery import DeliveryResult, Health, Preview
+
+    commands._print_preview(
+        Preview(
+            request_id="REQ-0001",
+            kind=Kind.QUERY,
+            rows=2,
+            columns=("id",),
+            lines=["3 行 → 2 行（条件 filtered）"],
+            notes=("重复闸门：与上一版内容相同",),
+        )
+    )
+    out = capsys.readouterr().out
+    assert "未写盘" in out and "重复闸门" in out and "条件 filtered" in out
+
+    def delivered(health: Health) -> None:
+        commands._print_delivery(
+            DeliveryResult(
+                request_id="REQ-0001",
+                directory=tmp_path / "deliveries" / "x",
+                rows=10,
+                columns=("id",),
+                files=(),
+                health=health,
+                spec_version=1,
+                kind=Kind.QUERY,
+            )
+        )
+
+    delivered(Health(status="suspect", baseline_rows=5, delta_pct=100.0))
+    assert "行数突变" in capsys.readouterr().out
+    delivered(Health(status="first"))
+    assert "首次交付" in capsys.readouterr().out
+    delivered(Health(status="unknown", note="上次的 manifest 读不出来"))
+    assert "读不出来" in capsys.readouterr().out
+
+
+def test_新输入本身读不出时拒收且不留半成品(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """对方给的是一份半截下载的表：该说「读不出表头」，不该是一段 traceback。
+
+    原先 `open_sheet` 让 `BadZipFile` 直接穿出去，命令层的 `(HeaderError, OSError)`
+    接不住——`request input` 整条崩栈，前面已经打出的提示全被淹没。
+    """
+    old = make_header_book(tmp_path / "旧表.xlsx", ["URL", "数据集名称"])
+    assert (
+        run(
+            tmp_path,
+            "request",
+            "new",
+            "REQ-0002",
+            "--title",
+            "清单补全",
+            "--requester",
+            "大帅",
+            "--kind",
+            "backfill",
+            "--source",
+            str(old),
+        )
+        == 0
+    )
+    folder = resolve_dir(tmp_path / "req", "REQ-0002")
+    broken = tmp_path / "坏表.xlsx"
+    broken.write_bytes(b"PK\x03\x04 truncated")
+
+    assert run(tmp_path, "request", "input", "REQ-0002", "--add", str(broken)) == 1
+
+    out = capsys.readouterr().out
+    assert "读不出新表表头" in out
+    assert not (folder / "input" / "v2").exists(), "读不出就不该落下半截目录"
+
+
+# ---------------------------------------------------------------- 点名错对象时的每一句
+
+
+def test_词条反查认不出时返回空(tmp_path: Path) -> None:
+    """认不出来就返回 None：猜一个库列名会让影响面算到别人头上。"""
+    from hf_data_crawl.delivery import commands
+
+    assert commands._metric_field("下载量") == "downloads"
+    assert commands._metric_field("这个词条不存在") is None
+
+
+def test_比对点名不存在的需求(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert run(tmp_path, "request", "compare", "REQ-9999") == 1
+    assert "失败" in capsys.readouterr().out
+
+
+def test_口径比对点名不存在的需求(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert run(tmp_path, "request", "diff", "REQ-9999") == 1
+    assert "失败" in capsys.readouterr().out
+
+
+def test_方法命令点名不存在的需求(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert run(tmp_path, "request", "method", "REQ-9999") == 1
+    assert "失败" in capsys.readouterr().out
+
+
+def test_查询型需求没有回填口径可打印(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """`fill` 缺失只该打一句占位，不该在 `show` 里炸。"""
+    from hf_data_crawl.delivery import commands
+
+    spec = load(make(tmp_path))
+    commands._show_fill(spec)
+
+    assert "fill 段缺失" in capsys.readouterr().out
+
+
+def test_输入目录不存在时版本从一说起(tmp_path: Path) -> None:
+    from hf_data_crawl.delivery import commands
+
+    assert commands._next_input_version(tmp_path / "没有这个目录") == 1
+
+
+def test_比对报出新增消失与单边列(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """列集差异不能静默取交集；新增/消失的行也要点名，否则「0 格改动」会误导。"""
+    import polars as pl
+
+    make(tmp_path)
+    folder = resolve_dir(tmp_path / "req", "REQ-0001")
+
+    def delivery(name: str, frame: pl.DataFrame) -> None:
+        directory = folder / "deliveries" / name
+        directory.mkdir(parents=True)
+        frame.write_parquet(directory / "data.parquet")
+        (directory / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "kind": "query",
+                    "result": {
+                        "rows": frame.height,
+                        "columns": [],
+                        "files": [{"name": "data.parquet"}],
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+    delivery("20260101T000000Z", pl.DataFrame({"id": ["a", "b"], "downloads": [1, 2]}))
+    delivery("20260102T000000Z", pl.DataFrame({"id": ["a", "c"], "likes": [7, 8]}))
+
+    assert run(tmp_path, "request", "compare", "REQ-0001") == 0
+
+    out = capsys.readouterr().out
+    assert "新增：c" in out and "消失：b" in out
+    assert "仅旧版有的列" in out and "downloads" in out
+    assert "仅新版有的列" in out and "likes" in out
+
+
+def test_两份交付形态不同时比对失败(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    make(tmp_path)
+    folder = resolve_dir(tmp_path / "req", "REQ-0001")
+    for name, kind in (("20260101T000000Z", "query"), ("20260102T000000Z", "backfill")):
+        directory = folder / "deliveries" / name
+        directory.mkdir(parents=True)
+        (directory / "manifest.json").write_text(
+            json.dumps({"kind": kind, "result": {"rows": 0, "files": []}}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    assert run(tmp_path, "request", "compare", "REQ-0001") == 1
+
+    assert "形态不同" in capsys.readouterr().out
+
+
+def test_清理全部时没有可清理的也正常收工(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """不带 id 是「都看一遍」：某一份没得清就安静跳过，只在末尾说一句。"""
+    make(tmp_path)
+
+    assert run(tmp_path, "request", "prune", "--keep", "2") == 0
+
+    assert "没有可清理的产物" in capsys.readouterr().out
+
+
+def test_历史快照读不出来时说清哪一份(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """history/ 是档案，被人手改坏是常事；这时要看得出是它坏了，而不是「没有差异」。"""
+    path = make(tmp_path)
+    folder = path.parent
+    history = folder / "history"
+    history.mkdir()
+    (history / "v1.yaml").write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+    (history / "v2.yaml").write_text("id: [未闭合\n", encoding="utf-8")
+
+    assert run(tmp_path, "request", "diff", "REQ-0001") == 1
+
+    assert "失败" in capsys.readouterr().out
+
+
+def test_清理全部时某一份没得清就安静跳过(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """不带 id 时逐份看：这一份没得清不该打断后面，也不该刷一行噪声。"""
+    make(tmp_path)
+    book = make_header_book(tmp_path / "表.xlsx", ["URL", "数据集名称"])
+    assert (
+        run(
+            tmp_path,
+            "request",
+            "new",
+            "REQ-0002",
+            "--title",
+            "另一份",
+            "--requester",
+            "大帅",
+            "--kind",
+            "backfill",
+            "--source",
+            str(book),
+        )
+        == 0
+    )
+
+    def seed(request_id: str, count: int) -> None:
+        folder = resolve_dir(tmp_path / "req", request_id)
+        for index in range(count):
+            delivery = folder / "deliveries" / f"2026010{index + 1}T000000Z"
+            delivery.mkdir(parents=True)
+            (delivery / "data.parquet").write_bytes(b"x")
+            (delivery / "manifest.json").write_text(
+                json.dumps(
+                    {"result": {"rows": 1, "files": [{"name": "data.parquet"}]}},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+    seed("REQ-0001", 3)
+    seed("REQ-0002", 1)  # 有交付，但保留 1 条就已无可清
+
+    capsys.readouterr()  # 甩掉前面建需求时的输出
+    assert run(tmp_path, "request", "prune", "--keep", "1") == 0
+
+    out = capsys.readouterr().out
+    assert "已清理 20260101T000000Z" in out
+    assert "REQ-0002" not in out, "没有交付的需求连提都不该提，更不该报「没得清」"
+
+
+def test_只改列宽的展示项差异单独归一行(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """列宽不进口径指纹、不升版本，但会改产物字节——所以必须说，且不能与口径差异混为一谈。"""
+    import copy
+
+    import yaml
+
+    book = make_header_book(tmp_path / "表.xlsx", ["URL", "数据集名称"])
+    assert (
+        run(
+            tmp_path,
+            "request",
+            "new",
+            "REQ-0002",
+            "--title",
+            "清单补全",
+            "--requester",
+            "大帅",
+            "--kind",
+            "backfill",
+            "--source",
+            str(book),
+        )
+        == 0
+    )
+    folder = resolve_dir(tmp_path / "req", "REQ-0002")
+    body = yaml.safe_load((folder / SPEC_NAME).read_text(encoding="utf-8"))
+    history = folder / "history"
+    history.mkdir()
+    for version, width in ((1, 10), (2, 24)):
+        variant = copy.deepcopy(body)
+        first_column = next(iter(variant["fill"]["columns"].values()))
+        first_column["width"] = width
+        (history / f"v{version}.yaml").write_text(
+            yaml.safe_dump(variant, allow_unicode=True), encoding="utf-8"
+        )
+
+    assert run(tmp_path, "request", "diff", "REQ-0002", "1", "2") == 0
+
+    out = capsys.readouterr().out
+    assert "展示项" in out
+    assert "宽 10" in out and "宽 24" in out
+    assert "口径未变" in out, "列宽不属于口径，别把它算进「改了 N 处」"

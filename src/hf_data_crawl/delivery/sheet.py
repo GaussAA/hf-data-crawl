@@ -25,8 +25,18 @@ from .header import Header, HeaderError, parse
 
 
 def open_sheet(path: Path, *, sheet: str | None = None) -> tuple[Any, Any]:
-    """打开工作簿并选定 sheet；文件里没有这个 sheet 就报错。"""
-    workbook = openpyxl.load_workbook(path)
+    """打开工作簿并选定 sheet；文件里没有这个 sheet 就报错。
+
+    `openpyxl` 的几种失败（不是 xlsx、文件损坏、无读权限）一律翻成 `HeaderError`，
+    与 `first_sheet_name` 同一口径：调用方只处理一种异常，也才拦得住。此前这里
+    直接抛 `load_workbook` 的原始异常——`BadZipFile` 既不是 `OSError` 也不是
+    `HeaderError`，命令层的 `except (HeaderError, OSError)` 接不住，收新输入时
+    对方给一份半截下载的表就变成一整段 traceback。
+    """
+    try:
+        workbook = openpyxl.load_workbook(path)
+    except (OSError, BadZipFile, InvalidFileException) as error:
+        raise HeaderError(f"{path} 打不开：{error}") from error
     name = sheet or workbook.sheetnames[0]
     if name not in workbook.sheetnames:
         raise HeaderError(f"{path}: 没有 sheet {name!r}（现有 {workbook.sheetnames}）")
