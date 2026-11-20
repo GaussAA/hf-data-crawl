@@ -191,10 +191,13 @@ uv run python -c "from pathlib import Path; from hf_data_crawl.pipeline.raw impo
 ① 串行   compact → collect --full-scan → build --stale        （current 定稿）
 ② 并行   reconcile ‖ fetch-sizes --changed-all
                     ‖ fetch-readme --changed-all
-                    ‖ fetch-preview --top 20000
-         fetch-files --top 20000 排在 reconcile 之后（同走 /api 配额）
 ③ 串行   parse-readme → export-wide（sizes 合并后即跑）→ report → request run-due → archive → prune → doctor
 ```
+
+**`fetch-files` 与 `fetch-preview` 不在链上**（DECISIONS #149，2026-11-20 起）：两者
+都是按需取用的富化资产，全量一轮要几百 GB 下载与几十小时，塞进每日窗口只会挤掉
+采集。要跑就手动跑，命令见 `README.md`；跑的时候可以用 `refresh --skip files,preview`
+让每日窗口把这两步让开（它们已不在链上，这个开关是给「以后再加回来」留的口子）。
 
 依赖与并发由**编排器**表达，不由钟点表达；前置失败时下游记 `[跳过]`，不相关的
 并行分支照常跑完。**09:00 软边界**：之后不再启动新的抓取，未完成的步骤次日从

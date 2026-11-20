@@ -352,19 +352,6 @@ def test_only点名一步时正常跑完并返回零(tmp_path: Path, monkeypatch
 # ---------------------------------------------------------------- 并行段的分支
 
 
-def test_对账失败时文件抓取跳过(tmp_path: Path, monkeypatch) -> None:
-    """files 与 reconcile 同走 /api：对账没跑完就去抓文件，两边互相抢配额。"""
-    store = DatasetStore(tmp_path / "data")
-    fake_steps(monkeypatch, {"reconcile": 1})
-
-    plan = refresh.execute(store, log=lambda _: None)
-
-    files = _result(plan, "files")
-    assert files is not None and files.code is None
-    assert files.note.startswith("依赖未完成")
-    assert "reconcile" in files.note
-
-
 def test_only点名并行步骤时不看依赖(tmp_path: Path, monkeypatch) -> None:
     """`--only sizes` 只在锁外抓规模，不该因为 reconcile 今天没跑就不动。"""
     store = DatasetStore(tmp_path / "data")
@@ -384,41 +371,6 @@ def test_依赖提示忽略不认识的名字(tmp_path: Path, capsys) -> None:
     assert capsys.readouterr().out == ""
 
 
-def test_only点名文件清单时真的跑一次(tmp_path: Path, monkeypatch) -> None:
-    """`files` 挂在 reconcile 之后：此前 `--only files` 什么都不跑，还退出 0。"""
-    store = DatasetStore(tmp_path / "data")
-    calls = fake_steps(monkeypatch)
-    args = Namespace(only="files", strict=False, budget_hours=8.5, launch_hours=8.0)
-
-    outcome = refresh.run(args, store)
-
-    assert calls == ["files"]
-    assert outcome.code == 0
-
-
-def test_only点名对账时不顺手跑文件清单(tmp_path: Path, monkeypatch) -> None:
-    """`_plan(AFTER_RECONCILE, ...)` 漏传 only：补一次对账会捎带 70 分钟的抓取。"""
-    store = DatasetStore(tmp_path / "data")
-    calls = fake_steps(monkeypatch)
-
-    refresh.execute(store, only=frozenset({"reconcile"}), log=lambda _: None)
-
-    assert calls == ["reconcile"]
-
-
-def test_对账今天已完成时文件清单照跑(tmp_path: Path, monkeypatch) -> None:
-    """续跑那天 reconcile 已成功：files 不能因为「没有 reconcile 在跑」就永不排期。"""
-    store = DatasetStore(tmp_path / "data")
-    seed_run(store, "reconcile")
-
-    calls = fake_steps(monkeypatch)
-    plan = refresh.execute(store, log=lambda _: None)
-
-    assert "files" in calls
-    files = _result(plan, "files")
-    assert files is not None and files.code == 0
-
-
 def test_归档在链上且有排期(tmp_path: Path, monkeypatch) -> None:
     """`doctor` 的 archive_backlog 一过 30 天就报红；没人跑 archive 就是永久红。"""
     store = DatasetStore(tmp_path / "data")
@@ -436,8 +388,6 @@ def test_归档在链上且有排期(tmp_path: Path, monkeypatch) -> None:
 LEDGER_ALIASES = {
     "sizes": "fetch-sizes",
     "readme": "fetch-readme",
-    "preview": "fetch-preview",
-    "files": "fetch-files",
     "parse": "parse-readme",
     "export": "export-wide",
     "deliver": "request-run-due",
@@ -458,7 +408,7 @@ def test_每一步的台账命令名与它实际跑的子命令一致() -> None:
             assert step.ledger == step.args[0], step.name
 
 
-def test_对不上名的七个步骤都能被台账认出来(tmp_path: Path) -> None:
+def test_对不上名的步骤都能被台账认出来(tmp_path: Path) -> None:
     """真实台账按子命令名落盘；续跑必须把这些名字换算回步骤名。"""
     store = DatasetStore(tmp_path / "data")
     for command in LEDGER_ALIASES.values():
@@ -470,10 +420,11 @@ def test_对不上名的七个步骤都能被台账认出来(tmp_path: Path) -> 
     assert "compact" not in done, "没跑过的步骤不能算完成"
 
 
-def test_窗口外不启动新抓取且文件清单也留痕(tmp_path: Path, monkeypatch) -> None:
-    """`files` 排在 reconcile 之后：窗口超时时它也必须出现在摘要里。
+def test_窗口外不启动新抓取但摘要里有留痕(tmp_path: Path, monkeypatch) -> None:
+    """窗口超时时并行段的每一步都必须出现在摘要里。
 
-    原先它压根不进计划——doctor 看不到、人翻日志也看不到「今天少跑了一步」。
+    不标的话它在摘要里连一行都没有——正是「静默少跑一步」的形状，doctor 与
+    翻日志的人都看不出来。
     """
     store = DatasetStore(tmp_path / "data")
     calls = fake_steps(monkeypatch)
@@ -481,30 +432,57 @@ def test_窗口外不启动新抓取且文件清单也留痕(tmp_path: Path, mon
     plan = refresh.execute(store, launch_hours=0.0, log=lambda _: None)
 
     assert "reconcile" not in calls
-    files = _result(plan, "files")
-    assert files is not None and files.code is None
-    assert "启动窗口" in files.note
+    sizes = _result(plan, "sizes")
+    assert sizes is not None and sizes.code is None
+    assert "启动窗口" in sizes.note
 
 
 def test_skip把下游一起跳过() -> None:
     """只跳上游不跳下游，下游就是在旧数据上拼出来的结果，跑它只是白占预算。"""
-    dropped = refresh._skip_closure(refresh.ALL_STEPS, frozenset({"collect"}))
+    dropped = refresh._skip_closure(refresh.ALL_STEPS, frozenset({"readme"}))
 
-    assert "collect" in dropped
-    assert "build" in dropped
-    assert "files" not in dropped
+    assert "readme" in dropped
+    assert "parse" in dropped, "parse 依赖 readme，上游不跑它就是在旧正文上重算"
+    assert "sizes" not in dropped
 
 
 def test_plan里被skip的步骤带原因且不参与依赖判断() -> None:
     ready, skipped = refresh._plan(
-        refresh.ALL_STEPS, done=set(), failed=set(), skip=frozenset({"files"})
+        refresh.ALL_STEPS, done=set(), failed=set(), skip=frozenset({"readme"})
     )
 
     names = [step.name for step in ready]
     notes = {item.name: item.note for item in skipped}
-    assert "files" not in names
-    assert notes["files"] == "被 --skip 跳过"
-    # 下游（依赖 files 的）也一起被跳过，标的是上游原因
-    downstream = [step.name for step in refresh.ALL_STEPS if "files" in step.needs]
+    assert "readme" not in names
+    assert notes["readme"] == "被 --skip 跳过"
+    # 下游（依赖 readme 的）也一起被跳过，标的是上游原因
+    downstream = [step.name for step in refresh.ALL_STEPS if "readme" in step.needs]
+    assert downstream, "readme 至少有一个下游（parse）"
     for name in downstream:
         assert notes.get(name) == "上游被 --skip 跳过"
+
+
+def test_文件清单与样例不在每日链上() -> None:
+    """`fetch-files` / `fetch-preview` 是自由抓取：每日链不该再点名它们。
+
+    两者都是「按下载量取头部」的富化资产，全量一轮几百 GB 下载、几十小时；
+    塞进每日窗口只会挤掉采集本身，还会隔着锁与 /api 配额互相拖慢。
+    """
+    assert "files" not in refresh.STEP_NAMES
+    assert "preview" not in refresh.STEP_NAMES
+
+    commands = {step.args[0] for step in refresh.ALL_STEPS}
+    assert "fetch-files" not in commands
+    assert "fetch-preview" not in commands
+
+
+def test_only点名已下线的文件清单会报未知步骤(tmp_path: Path) -> None:
+    """`--only files` 必须报错，而不是「跑完了、什么都没做」。
+
+    静默成功比报错坏得多：人会以为今天的文件清单已经补过了。
+    """
+    store = DatasetStore(tmp_path / "data")
+    args = Namespace(only="files", strict=False, budget_hours=8.5, launch_hours=8.0)
+
+    with pytest.raises(SystemExit, match="未知步骤名"):
+        refresh.run(args, store)

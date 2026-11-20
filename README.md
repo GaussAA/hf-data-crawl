@@ -100,7 +100,8 @@ DECISIONS #62–#66，版本号在 `delivery/fields.py` 的 `CONTRACT_VERSION`�
 
 **文件清单补采（试点）**：列表接口不返回 `siblings`（见 `data/DATA.md` 第九节），
 单库详情按头部补又会反复超时，故 `fetch-files` 改走 `/tree/main?recursive=true&expand=false`：
-每页固定 1000 条、约 110–230 KB / 0.4–0.7 s。刷新链每天补下载量前 20000 名（`fetch-files --top 20000`），
+每页固定 1000 条、约 110–230 KB / 0.4–0.7 s。**不在刷新链里**（DECISIONS #149）：
+按需手动跑 `fetch-files --top 0`（0 = 全量，暂存分片可中断续跑），
 体检给 10 天年龄红线——漏跑一次不喊，连丢一周才说明停了。默认每库只取第一页，有后续页时
 标 `truncated=true`：此时 `file_count` / `total_bytes` / `file_formats` / `has_readme`
 都只是**这一页的下限**，要完整清单须显式加大 `--max-pages`；`--refresh-truncated` 只重抓

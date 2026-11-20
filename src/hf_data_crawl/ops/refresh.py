@@ -13,9 +13,13 @@
    跑完这一步，`current` 才叫「采集定稿」（DECISIONS #134）。锁外抓取的候选集
    取自 `current`，早于它启动就会漏掉当天新增的库。
 
-② 并行段：`reconcile`（持锁全站扫）‖ `fetch-sizes` / `fetch-readme` /
-   `fetch-preview`（锁外抓取）。`fetch-files` 排在 `reconcile` 之后——两者同走
-   `/api` 配额（约 1000 请求/5 分钟），并行只会互相拖慢。
+② 并行段：`reconcile`（持锁全站扫）‖ `fetch-sizes` / `fetch-readme`（锁外抓取）。
+   三段各走不同端点，限速互不干扰。
+
+`fetch-files` 与 `fetch-preview` **不在链上**（2026-11-20 起）：两者都是「按下载量
+取头部、按需补」的富化资产，全量跑一轮要几百 GB 下载与几十小时，把它塞进每日窗口
+只会挤掉采集本身，还隔着锁与配额互相拖慢。改为**自由抓取**——只在人明确要的时候
+跑 `fetch-files` / `fetch-preview`（两条都支持 `--top 0` 跑全量、暂存分片续抓）。
 
 ③ 串行尾：`export-wide`（`sizes` 合并后即跑，35 列契约只依赖它）→
    `request run-due` → `archive` → `prune` → `doctor`。
@@ -98,25 +102,11 @@ SERIAL_HEAD: tuple[Step, ...] = (
     Step("build", ("build", "--stale"), needs=("collect",)),
 )
 
-#: ② 并行段：对账持锁，三个抓取在锁外。各自走不同端点，限速互不干扰。
+#: ② 并行段：对账持锁，两个抓取在锁外。各自走不同端点，限速互不干扰。
 PARALLEL: tuple[Step, ...] = (
     Step("reconcile", ("reconcile",)),
     Step("sizes", ("fetch-sizes", "--changed-all"), command="fetch-sizes"),
     Step("readme", ("fetch-readme", "--changed-all"), command="fetch-readme"),
-)
-
-#: ②-b 等 reconcile 释放锁后再跑：同走 /api 配额，并行会互相拖慢。
-AFTER_RECONCILE: tuple[Step, ...] = (
-    Step("files", ("fetch-files", "--top", "20000"), needs=("reconcile",), command="fetch-files"),
-    # `fetch-preview` 也走 `/api` 配额（与 reconcile 同一条），并行会互相拖慢——
-    # 2026-11-20 首次刷新链实测：它在并行段跑了 19 分钟，一直撞 429，最后
-    # `aborted=true`、0 行并入。与 files 同组，等 reconcile 释放配额后再跑。
-    Step(
-        "preview",
-        ("fetch-preview", "--top", "20000"),
-        needs=("reconcile",),
-        command="fetch-preview",
-    ),
 )
 
 #: ③ 收尾。导出只依赖 sizes：35 列契约里的 `server_*` 四列来自 `size` 表。
@@ -285,7 +275,7 @@ def _plan(
 
 
 #: 全部步骤，按链上的出现顺序。`--only` 的合法名与续跑的台账映射都从这一份派生。
-ALL_STEPS: tuple[Step, ...] = (*SERIAL_HEAD, *PARALLEL, *AFTER_RECONCILE, *SERIAL_TAIL)
+ALL_STEPS: tuple[Step, ...] = (*SERIAL_HEAD, *PARALLEL, *SERIAL_TAIL)
 
 #: 全部步骤名，供 `--only` 校验。写在这里而不是扫描四个元组，是为了让拼错的步骤名
 #: 在参数解析期就报错——`--only exprot` 静默什么都不跑，比报错坏得多。
@@ -380,58 +370,24 @@ def execute(
         _collect_failure(plan, done, failed, result)
         announce(result)
 
-    # ② 并行段：对账与三个锁外抓取同时跑；files 等 reconcile。
+    # ② 并行段：对账与两个锁外抓取同时跑。各走不同端点，互不干扰。
     ready, skipped = _plan(PARALLEL, done, failed, only)
     for result in skipped:
         plan.results.append(result)
         announce(result)
 
-    # files 只在 reconcile **本轮会跑**时才需要排队等它（同走 /api 配额）。
-    # reconcile 今天已成功、或被 `--only` 排除时当场排：此前这段整个挂在
-    # 「reconcile 在 ready 里」之后，于是 `--only files` 什么都不跑还退出 0，
-    # 而「今天续跑、reconcile 已完成」那条路上 files 同样被静默吞掉。
-    waiting_for_reconcile = any(step.name == "reconcile" for step in ready)
-    deferred: list[Step] = []
-    if not waiting_for_reconcile:
-        deferred, deferred_skipped = _plan(AFTER_RECONCILE, done, failed, only)
-        for item in deferred_skipped:
-            plan.results.append(item)
-            announce(item)
-
-    batch = [*ready, *deferred]
+    batch = list(ready)
     if batch:
         if over_launch():
-            window = list(batch)
-            if waiting_for_reconcile:
-                # files 排在 reconcile 之后：窗口外不再启动，一并标成留给次日。
-                # 不标的话它在摘要里连一行都没有——正是「静默少跑一步」的形状。
-                window.extend(step for step in AFTER_RECONCILE if step.name not in done)
-            for step in window:
+            for step in batch:
                 result = StepResult(step.name, note="超过启动窗口，留给次日续跑")
                 plan.results.append(result)
                 announce(result)
         else:
-            with ThreadPoolExecutor(max_workers=len(batch) + len(AFTER_RECONCILE)) as pool:
+            with ThreadPoolExecutor(max_workers=len(batch)) as pool:
                 futures: dict[Future[StepResult], Step] = {
                     pool.submit(run_step, step, store.root): step for step in batch
                 }
-                for future, step in list(futures.items()):
-                    if step.name != "reconcile":
-                        continue
-                    wait([future])
-                    result = future.result()
-                    _collect_failure(plan, done, failed, result)
-                    announce(result)
-                    del futures[future]
-                    # reconcile 释放锁之后，files 才能不抢 /api 配额。
-                    # `only` 必须传下去：漏传会让 `--only reconcile` 顺手把 files 也跑了。
-                    later_ready, later_skipped = _plan(AFTER_RECONCILE, done, failed, only)
-                    for item in later_skipped:
-                        plan.results.append(item)
-                        announce(item)
-                    for later in later_ready:
-                        futures[pool.submit(run_step, later, store.root)] = later
-
                 for future, _step in list(futures.items()):
                     wait([future])
                     result = future.result()
