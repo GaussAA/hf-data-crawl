@@ -342,3 +342,24 @@ def test_卡片趟受页数上限保护(store: DatasetStore) -> None:
 
     assert summary.card_pages == 2
     assert summary.card_reason == "max_pages"
+
+
+def test_full_scan_无视时间水位线走到末页(store: DatasetStore) -> None:
+    """`--full-scan` 必须把**两条**停止条件都关掉。
+
+    只关「连续 N 页无新记录」还不够：越过旧边界的那一页会因**时间**水位线停下。
+    2026-11-20 首次刷新链实测就是这个形状——6 页、31 秒、`stopped_reason=
+    watermark_timestamp`，而那一轮正是「采集定稿」，列表字段只覆盖了 48.6%。
+    """
+    collector(FakeCursorTransport([page("a", 3)]), store).run(DAY1, limit=100, pages_without_new=5)
+
+    # 次轮：同样的 id、更老的 lastModified——正常增量会在第一页就因 stale 停下。
+    stale_pages = [
+        page("a", 3, last_modified="2026-10-01T00:00:00.000Z"),
+        page("b", 2, last_modified="2026-10-01T00:00:00.000Z"),
+    ]
+    again = FakeCursorTransport(stale_pages)
+    summary = collector(again, store).run(DAY2, limit=100, pages_without_new=2, full_scan=True)
+
+    assert summary.stopped_reason == "end", "full_scan 不该被时间水位线截断"
+    assert len(again.calls) == 2

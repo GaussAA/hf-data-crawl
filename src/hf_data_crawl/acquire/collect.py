@@ -193,7 +193,11 @@ class Collector:
             # 无论是否停止都把本页最新值并入，供完成态统一持久化。
             stale = baseline.is_stale(timestamps)
             current_watermark = current_watermark.update(timestamps)
-            if stale:
+            # `--full-scan` 必须把**两条**停止条件都关掉。只关「连续 N 页无新记录」
+            # 时，扫到越过旧边界的那一页仍会因 `stale` 停下——2026-11-20 首次刷新链
+            # 实测：6 页、31 秒、`stopped_reason=watermark_timestamp`，而那一轮正是
+            # 「采集定稿」，doctor 随即报「列表字段最近一轮覆盖 48.6%，没扫完」。
+            if stale and not full_scan:
                 return "watermark_timestamp"
 
             # 传统 watermark：连续 N 页无新 id（保留作为后备）。

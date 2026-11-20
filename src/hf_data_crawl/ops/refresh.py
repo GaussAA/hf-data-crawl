@@ -102,12 +102,20 @@ PARALLEL: tuple[Step, ...] = (
     Step("reconcile", ("reconcile",)),
     Step("sizes", ("fetch-sizes", "--changed-all"), command="fetch-sizes"),
     Step("readme", ("fetch-readme", "--changed-all"), command="fetch-readme"),
-    Step("preview", ("fetch-preview", "--top", "20000"), command="fetch-preview"),
 )
 
 #: ②-b 等 reconcile 释放锁后再跑：同走 /api 配额，并行会互相拖慢。
 AFTER_RECONCILE: tuple[Step, ...] = (
     Step("files", ("fetch-files", "--top", "20000"), needs=("reconcile",), command="fetch-files"),
+    # `fetch-preview` 也走 `/api` 配额（与 reconcile 同一条），并行会互相拖慢——
+    # 2026-11-20 首次刷新链实测：它在并行段跑了 19 分钟，一直撞 429，最后
+    # `aborted=true`、0 行并入。与 files 同组，等 reconcile 释放配额后再跑。
+    Step(
+        "preview",
+        ("fetch-preview", "--top", "20000"),
+        needs=("reconcile",),
+        command="fetch-preview",
+    ),
 )
 
 #: ③ 收尾。导出只依赖 sizes：35 列契约里的 `server_*` 四列来自 `size` 表。
