@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -11,6 +11,7 @@ import pytest
 
 from hf_data_crawl.pipeline import card, raw, state
 from hf_data_crawl.pipeline.derive import derive_day
+from hf_data_crawl.platform.runs import Outcome, write_run
 from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.query.gold import GoldCatalog
 from hf_data_crawl.query.report import Reporter, _num
@@ -269,14 +270,112 @@ def test_覆盖率与占比都是可比较的形式(store: DatasetStore, tmp_pat
     content = _page(store, tmp_path)
 
     for token in (
-        'class="cover-row"',
-        'class="cover-track"',
         "data-p0=",
         "data-p1=",
         'data-measurable="1"',
         "data-cap1=",
     ):
         assert token in content, token
+
+
+def test_补齐矩阵把四种结局分开画(store: DatasetStore, tmp_path: Path) -> None:
+    """「没有」与「读不到」是两件事，压成一个百分比就分不出来了。
+
+    2026-11-20 之前首屏是四条单值覆盖率：卡片 68.6%、规模 74.4%、增速 98.1%、
+    在架 99.9% 同形并排，单位其实有三种（我们有 / 有两次读数 / 还公开）。这一版把
+    增补层拆成「有 / 没有 / 读不到 / 还没抓」四段，段由数据驱动，图例在行上方。
+    """
+    content = _page(store, tmp_path)
+
+    for token in (
+        'class="fill-legend"',
+        'class="sw have"',
+        'class="sw absent"',
+        'class="sw unknown"',
+        'class="sw pending"',
+        'class="fill-track"',
+    ):
+        assert token in content, token
+    assert content.count('class="fill-row"') == 5
+
+
+def test_补齐矩阵的余量按资产各自的语义算(store: DatasetStore, tmp_path: Path) -> None:
+    """卡片缺行是「没有卡片」，文件清单缺行是「还没抓」——同一个余量，两种事实。
+
+    夹具里两个数据集、只有 alpha 有卡片；文件清单与预览一行都没有。若把余量一律
+    记成「没有」，读者会把「还没抓」当成「作者没写」。
+    """
+    content = _page(store, tmp_path)
+    card_row = content[content.index(">卡片</span>") : content.index(">规模</span>")]
+    files_row = content[content.index(">文件清单</span>") : content.index(">预览</span>")]
+
+    assert "没有 1" in card_row
+    assert "未抓" not in card_row
+    assert "未抓 2" in files_row
+
+
+def test_报头交代这是哪一版(store: DatasetStore, tmp_path: Path) -> None:
+    """每日产物必须说明自己诞生于何时、上一轮链跑完没有。
+
+    `report` 在链尾执行，只能报**上一轮**；没有记录时直说没有，不能编一个「全部成功」。
+    """
+    write_run(
+        store,
+        "refresh",
+        datetime(2026, 11, 20, 0, 30, 6),
+        Outcome(
+            payload={
+                "elapsed_seconds": 1241.6,
+                "steps": [
+                    {"name": "collect", "code": 0, "seconds": 35.5, "note": ""},
+                    {"name": "preview", "code": 1, "seconds": 1124.3, "note": ""},
+                ],
+                "failed": ["preview"],
+            }
+        ),
+    )
+
+    content = _page(store, tmp_path)
+
+    assert "本版生成" in content
+    assert "上一轮链 1/2 步成功" in content
+    assert "preview 返回非 0" in content
+
+
+def test_手工补跑的局部链不算一轮(store: DatasetStore, tmp_path: Path) -> None:
+    """`--only` 的每一步都标着「不在 --only 里」，报成 5/15 会让读者以为链退化了。"""
+    write_run(
+        store,
+        "refresh",
+        datetime(2026, 11, 20, 12, 37),
+        Outcome(
+            payload={
+                "steps": [
+                    {"name": "collect", "code": None, "seconds": 0.0, "note": "不在 --only 里"},
+                    {"name": "sizes", "code": 0, "seconds": 75.0, "note": ""},
+                ],
+                "failed": [],
+            }
+        ),
+    )
+
+    content = _page(store, tmp_path)
+
+    assert "刷新链：无完整记录" in content
+
+
+def test_页脚视图清单来自当前视图而不是手抄(store: DatasetStore, tmp_path: Path) -> None:
+    """页脚曾写着 7 个视图，实际挂着 15 个——手抄的清单不会报错，只会变成假话。"""
+    catalog = GoldCatalog(store)
+    try:
+        expected = catalog.views()
+    finally:
+        catalog.close()
+
+    content = _page(store, tmp_path)
+
+    assert f"视图 {len(expected)} 个" in content
+    assert "preview" in content
 
 
 def test_口径说明集中且默认折叠(store: DatasetStore, tmp_path: Path) -> None:

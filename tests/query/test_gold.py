@@ -690,3 +690,52 @@ def test_宽表has_readme由readme派生而不是files(tmp_path: Path) -> None:
         ("acme/ds-2", False, None),
         ("acme/ds-3", None, None),
     ]
+
+
+# ------------------------------------------------- 增补层可查性（2026-11-20）
+
+
+def test_预览试点也有视图(tmp_path: Path) -> None:
+    """第四份增补资产注册了表、却没有视图，`query` 里报的是「表不存在」。
+
+    2026-11-20 实测：`FROM preview` 抛 CatalogException，于是 `query`、体检、榜单页
+    三处都看不见这份数据——表在磁盘上、字段说明里也写着，唯独接口没有。
+    """
+    store = DatasetStore(tmp_path / "data")
+    seed(store, DAY1, [record(1, downloads=100)])
+
+    catalog = GoldCatalog(store)
+    try:
+        assert catalog.run("SELECT count(*) AS n FROM preview")["n"][0] == 0
+        assert "preview" in catalog.views()
+    finally:
+        catalog.close()
+
+
+def test_规模榜剔除int64溢出报出的行数(tmp_path: Path) -> None:
+    """溢出的量不是行数，却会稳居规模榜首位。
+
+    2026-11-20 实测：`yethss/The-Quettaset` 的 `num_rows` 是 9223372036854775000
+    （落盘时被浮点舍入过，**不等于** int64 上限本身），页面于是把 `9223372.04T`
+    印成「规模上限」的头名。阈值只剔除这一族，作者自己报的大数照旧留着。
+    """
+    store = DatasetStore(tmp_path / "data")
+    seed(store, DAY1, [record(1, downloads=100), record(2, downloads=50)])
+    sizes = store.path("size")
+    sizes.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "id": ["acme/ds-1", "acme/ds-2"],
+            "snapshot_date": [DAY1, DAY1],
+            "status": ["ok", "ok"],
+            "num_rows": [10_000_000, 9_223_372_036_854_775_000],
+        }
+    ).write_parquet(sizes)
+
+    catalog = GoldCatalog(store)
+    try:
+        ids = catalog.board("volume", 10)["id"].to_list()
+    finally:
+        catalog.close()
+
+    assert ids == ["acme/ds-1"]

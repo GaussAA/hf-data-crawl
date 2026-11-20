@@ -34,7 +34,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `query` | 查内置榜单或执行任意只读 SQL | 否 |
 | `bronze` | 按日期从 Raw 现算 Bronze 并打印／导出（只读、不落盘、不写台账）。Bronze 只保留最新一天，历史那几天只能这样回看——**仅限 Raw 里还在的日期**（`archive` 前的 30 天窗口）；已压入冷区的日期回不来，cold 基线按 id 跨天去重、不是某天的快照 | 否 |
 | `request` | 需求与交付管理：`new` 建需求（回填可当场定表头行，`--sample` 标样例）、`list` 看全部、`show` 看口径与台账、`method` 校验过程记录并重算脚本索引、`input` 收新版输入表、`diff` 比两版口径、`compare` 比两次交付、`run` 交付一次（`--dry-run` 只算不写、`--preview` 落草稿区可打开看）、`run-due` 跑到期的、`index` 重写交付索引、`usage` 反查词条影响面、`prune` 清旧产物字节、`close`/`reopen` 关停与恢复、`handoff` 记外发、`sample` 标样例 | 否 |
-| `report` | 生成单文件榜单页（离线可看） | 否 |
+| `report` | 生成单文件榜单页：本版版次（生成时刻 + 上一轮链）、增补层补齐程度、四章榜单（离线可看） | 否 |
 | `doctor` | 体检：调度新鲜度、底库行龄、层间勾稽、派生凭证、产物新鲜度、断日与残留文件；异常写 `ALERT.txt` 并追加体检流水 | 否 |
 | `archive` | 归档早于 N 天的 Raw 分区：合并小分块并去重，先验证 Bronze 逐行相等，原文件移入 `backup/raw/` | 否 |
 | `compact` | 压缩冷区 Raw：跨天去重成一份基线，原分块移入 `backup/raw/` 不删除 | 否 |

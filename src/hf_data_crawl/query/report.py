@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import html
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,8 @@ from typing import Any
 import polars as pl
 
 from ..platform.atomic import write_text
-from .gold import DATASET_URL, GoldCatalog
+from ..platform.runs import read_runs
+from .gold import DATASET_URL, GoldCatalog, share_text
 
 _ASSETS = Path(__file__).parent / "assets"
 
@@ -100,6 +102,98 @@ _STATUS_TERMS = (
     ("restricted", "转私有", "库还在，探测返回 401；不是删除"),
     ("renamed", "已改名", "跟随 307 拿到新 id，观测史仍在"),
 )
+
+
+@dataclass(frozen=True)
+class _Fill:
+    """一份增补资产在补齐矩阵里的一行。
+
+    `remainder` 决定「有」之外的那部分算什么：`absent` 是问过、确实没有（卡片、
+    规模、README 都是全量请求过的），`pending` 是还没抓（文件清单与预览仍是试点）。
+    给的键都是 `gold.FILL_SQL` 的列名，不在这里写数字。
+    """
+
+    label: str
+    note: str
+    have: str
+    remainder: str = "pending"
+    absent: str | None = None
+    unknown: str | None = None
+    unknown_label: str = "读不到"
+
+
+#: 补齐矩阵的五份资产。前三条已按全库补齐，后两条还是按下载量头部的试点——
+#: 「试点」写在同一张矩阵里，读者才能一眼看出哪几行不是同一个量级。
+_FILL_ROWS = (
+    _Fill("卡片", "card 视图的行数；长尾多数没写卡片", "card_have", remainder="absent"),
+    _Fill(
+        "规模",
+        "datasets-server 转码失败的算「不可用」，不是「没测」",
+        "size_have",
+        remainder="absent",
+        unknown="size_unknown",
+        unknown_label="不可用",
+    ),
+    _Fill(
+        "README",
+        "正文与侧栏字段同源；门禁库读不到，不等于作者没写",
+        "readme_have",
+        absent="readme_absent",
+        unknown="readme_unknown",
+        unknown_label="门禁",
+    ),
+    _Fill("文件清单", "试点：只覆盖下载量头部，不是全站", "files_have"),
+    _Fill("预览", "试点：按行取样的样本，与覆盖率不是一个单位", "preview_have"),
+)
+
+
+@dataclass(frozen=True)
+class Edition:
+    """这一版是什么时候、由哪一轮刷新链生成的。"""
+
+    generated_at: str
+    chain: str
+    detail: str
+
+
+def _edition(store: Any) -> Edition:
+    """本版生成时刻 + 最近一轮完整刷新链的结论。
+
+    榜单页在链的尾部生成（parse → export → report），所以它报的是**上一轮**整链的
+    结果，而不是自己这一轮——说清这一点，比假装知道更省事。
+
+    手工 `--only` 补跑的局部链不算「一轮」：那种记录的每一步都标着「不在 --only
+    里」，报成「5/15 步」会让读者以为链退化了。找不到完整记录就直说没有。
+
+    退出码非 0 不等于「没跑成」：`doctor` 有告警就用 1 退出，而摄入步骤被 429
+    中止也是 1。报头写「成功几步」，页脚才点名哪几步返回非 0——两处各自够用。
+    """
+    generated = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")
+    chain = "刷新链：无完整记录"
+    detail = "刷新链：尚无完整一轮的记录"
+    for record in reversed(read_runs(store)):
+        if record.get("command") != "refresh":
+            continue
+        payload = record.get("payload") or {}
+        steps = payload.get("steps") or []
+        if not steps or any("不在 --only" in str(step.get("note", "")) for step in steps):
+            continue
+        ok = sum(1 for step in steps if step.get("code") == 0)
+        total = len(steps)
+        seconds = float(payload.get("elapsed_seconds") or 0)
+        spent = f"{seconds:.0f} 秒" if seconds < 60 else f"{round(seconds / 60)} 分"
+        failed = [str(name) for name in (payload.get("failed") or [])]
+        if failed:
+            chain = f"上一轮链 {ok}/{total} 步成功"
+            detail = (
+                f"上一轮刷新链 {total} 步中 {ok} 步成功，"
+                f"{'、'.join(failed)} 返回非 0（耗时 {spent}）"
+            )
+        else:
+            chain = f"上一轮链 {total}/{total} 步 · {spent}"
+            detail = f"上一轮刷新链 {total} 步全部成功，耗时 {spent}"
+        break
+    return Edition(generated, chain, detail)
 
 
 def _esc(value: object) -> str:
@@ -279,16 +373,62 @@ def _table(
     )
 
 
-def _cover_row(label: str, value: object, total: float, note: str) -> str:
-    pct = _pct(value, total)
-    return (
-        '<div class="cover-row">'
-        f'<span class="cover-label">{_esc(label)}</span>'
-        f'<span class="cover-value">{_num(value)} <em>{pct:.1f}%</em></span>'
-        f'<div class="cover-track"><i style="--w:{pct:.2f}%"></i></div>'
-        f'<p class="cover-note">{_esc(note)}</p>'
-        "</div>"
+def _fills_html(fill: dict[str, Any]) -> str:
+    """五份资产 × 四种结局的分段条。
+
+    单值进度条只能表达「补齐了多少」，而这一层的真实结局是四种：有、确实没有、
+    读不到、还没抓。压成一个百分比，等于把「门禁读不到」画成「作者没写」——
+    2026-11-20 之前首屏那四条就是这么糊的：68.6%（我们有）与 99.9%（它还公开）
+    并排出现在同一列里，读者只能当成同一把尺子。
+    """
+    total = _as_number(fill.get("total"))
+    rows: list[str] = []
+    for spec in _FILL_ROWS:
+        have = _as_number(fill.get(spec.have))
+        unknown = _as_number(fill.get(spec.unknown)) if spec.unknown else 0.0
+        if spec.absent:
+            absent = _as_number(fill.get(spec.absent))
+        elif spec.remainder == "absent":
+            absent = max(0.0, total - have - unknown)
+        else:
+            absent = 0.0
+        pending = max(0.0, total - have - absent - unknown)
+        segments = "".join(
+            f'<i class="{kind}" style="--w:{_pct(value, total):.2f}%"'
+            f' title="{_esc(spec.label)} · {_esc(name)} {_num(value)}"></i>'
+            for kind, name, value in (
+                ("have", "有", have),
+                ("absent", "没有", absent),
+                ("unknown", spec.unknown_label, unknown),
+            )
+            if value > 0
+        )
+        parts = [
+            f"没有 {_num(absent)}" if absent > 0 else "",
+            f"{spec.unknown_label} {_num(unknown)}" if unknown > 0 else "",
+            f"未抓 {_num(pending)}" if pending > 0 else "",
+        ]
+        split = " · ".join(text for text in parts if text)
+        # 条给形状、数字给事实：单看 4.4% 的细条，读者读不出「还剩多少没抓」。
+        split_html = f'<span class="fill-split">{_esc(split)}</span>' if split else ""
+        rows.append(
+            '<div class="fill-row">'
+            f'<span class="fill-label">{_esc(spec.label)}</span>'
+            f'<span class="fill-value">{_num(have)} '
+            f"<em>{share_text(have / total) if total else '0'}</em></span>"
+            f'<div class="fill-track">{segments}</div>'
+            f'<p class="fill-note">{_esc(spec.note)}{split_html}</p>'
+            "</div>"
+        )
+    legend = (
+        '<p class="fill-legend">'
+        '<span class="lg"><i class="sw have"></i>有</span>'
+        '<span class="lg"><i class="sw absent"></i>没有</span>'
+        '<span class="lg"><i class="sw unknown"></i>读不到 / 不可用</span>'
+        '<span class="lg"><i class="sw pending"></i>还没抓</span>'
+        "</p>"
     )
+    return legend + "".join(rows)
 
 
 def _chapter_head(number: str, title: str, note: str) -> str:
@@ -309,22 +449,14 @@ class Reporter:
         return self._catalog.overview()
 
     @staticmethod
-    def _state_html(overview: dict[str, Any]) -> str:
+    def _state_html(overview: dict[str, Any], fill: dict[str, Any]) -> str:
         total = _as_number(overview["datasets"])
-        covers = "".join(
-            _cover_row(label, overview[key], total, note)
-            for label, key, note in (
-                ("卡片已解析", "cards", "card 视图行数；长尾多数没有卡片"),
-                ("规模已实测", "sized", "dataset_size 中 status = ok"),
-                ("可测增速", "growth_ready", "具备两次跨日观测点"),
-                ("在架", "active", "current.status = active"),
-            )
-        )
         splits = "".join(
             f"<div><dt>{_esc(label)}</dt><dd>{_num(overview[key])}</dd><p>{_esc(note)}</p></div>"
             for key, label, note in _STATUS_TERMS
         )
         moved = _num(overview["moved"])
+        filled = _fills_html(fill)
         return (
             '<div class="state-grid">'
             '<div class="headline"><p class="eyebrow">当前态 · current</p>'
@@ -333,7 +465,8 @@ class Reporter:
             "其余各表或是流水、或是子集，行数本就不该相等。</p>"
             f'<p class="headline-foot">最近观测日有 <b>{moved}</b> 个数据集指标发生变化'
             "（不是「今天」，是最后一个有读数的自然日）。</p></div>"
-            f'<div class="coverage"><h3>覆盖率</h3>{covers}</div>'
+            f'<div class="fills"><h3>补齐程度<span>分母 {_num(total)} 行 · current</span></h3>'
+            f"{filled}</div>"
             "</div>"
             f'<dl class="status-split"><div class="split-title"><dt>状态四值</dt>'
             "<dd>「没扫到」不等于删除，四种状态各有去留</dd></div>"
@@ -364,6 +497,9 @@ class Reporter:
     def render(self, *, top: int = 25, overview: dict[str, Any] | None = None) -> str:
         catalog = self._catalog
         overview = overview or self._overview()
+        fill = catalog.fill()
+        edition = _edition(catalog.store)
+        views = catalog.views()
 
         # 每张榜都取自内置榜单，和 `query --board` 同一口径：口径只在 gold.BOARDS
         # 改一处。两个下载榜是各自独立的 LIMIT，不能由同一批行重排得到。
@@ -420,11 +556,12 @@ class Reporter:
             volume,
             _VOLUME_COLUMNS,
             caption="行数为 datasets-server 实测的 parquet 行数，内存为载入内存估算；"
-            "与仓库字节 main_size 不是一回事。",
+            "与仓库字节 main_size 不是一回事。个别库只声明了一列却报出百万亿行、"
+            "内存只有几百 GB——这类观测值不可信，列在这里是为了被看见，不是背书。",
             frozen=frozen,
         )
         growth_html = self._growth_html(growth, overview, frozen)
-        state_html = self._state_html(overview)
+        state_html = self._state_html(overview, fill)
 
         as_of = _esc(overview["as_of"])
         last_seen = _esc(overview["last_seen"])
@@ -449,15 +586,15 @@ class Reporter:
 
 <header class="masthead">
   <div class="masthead-main">
-    <p class="eyebrow">HF DATASET BASE <span>/</span> 离线快照</p>
+    <p class="eyebrow">HF DATASET BASE <span>/</span> 每日刷新</p>
     <h1>数据集底座 · 榜单</h1>
     <p class="lede">每张表都取自 Gold 视图，与 <code>query --board</code> 同一口径。
-    页面不联网、不加载外部资源，数据只到生成那一刻为止。</p>
+    由刷新链每天生成一版，数据只到「本版生成」那一刻；页面不联网。</p>
   </div>
   <dl class="meta">
     <div><dt>观测截至</dt><dd>{as_of}</dd></div>
     <div><dt>最后扫描</dt><dd>{last_seen}</dd></div>
-    <div><dt>每榜条数</dt><dd>Top {top}</dd></div>
+    <div><dt>本版生成</dt><dd>{_esc(edition.generated_at)}<small>{_esc(edition.chain)}</small></dd></div>
     <div><dt>30 天下载合计</dt><dd>{total_downloads}{total_note}</dd></div>
   </dl>
 </header>
@@ -478,7 +615,7 @@ class Reporter:
 </div>
 
 <section id="state" class="chapter">
-  {_chapter_head("01", "底座状态", "先看这份报告能代表多少：各张附表都是子集，覆盖率比绝对数更能说明问题。")}
+  {_chapter_head("01", "底座状态", "先看这份报告能代表多少：每份附表都有各自的覆盖边界，绝对数不如补齐程度能说明问题。")}
   {state_html}
   <details class="glossary">
     <summary>口径说明 <span>六条，点开查看</span></summary>
@@ -493,7 +630,9 @@ class Reporter:
         规模榜的「内存」是载入内存估算，都不是原始文件大小。</dd></div>
       <div><dt>状态</dt><dd><code>active</code> / <code>disappeared</code> / <code>restricted</code> /
         <code>renamed</code> 四值各有去留；「对账没扫到」本身不构成删除结论。</dd></div>
-      <div><dt>覆盖</dt><dd>卡片、规模、增速都是按下载量取头部或按需补齐的子集；
+      <div><dt>覆盖</dt><dd>卡片、规模、README 已按全库补齐；文件清单与预览仍是按下载量头部的试点。
+        矩阵里「没有」是问过、确实没有，「读不到」是门禁或转码挡着，「空槽」是还没抓——
+        三件事不同，混成一个数就会把「读不到」当成「没有」。
         每张榜只列 Top {top}，占比以表内可见条目为分母，不代表全站占比。</dd></div>
     </dl>
   </details>
@@ -519,7 +658,8 @@ class Reporter:
   <div class="board">
     <div class="board-head">
       <div><h3>增速榜</h3>
-        <p class="board-note">最近两个观测点的 30 天下载增量，只列正增长。</p></div>
+        <p class="board-note">最近两个观测点的 30 天下载增量，只列正增长；
+        全库 <strong>{_num(overview["growth_ready"])}</strong> 个数据集具备两次跨日读数。</p></div>
       <div class="controls"><span class="board-count" aria-live="polite"></span></div>
     </div>
     {growth_html}
@@ -560,11 +700,9 @@ class Reporter:
 </section>
 
 <footer>
-  <p>由 <code>hf-data-crawl report</code> 生成 · 单文件、离线可读 ·
-  口径改动只需改 Gold 视图的 SQL，不重跑采集。</p>
-  <p class="views">视图 <code>current</code> / <code>datasets</code> / <code>card</code> /
-  <code>card_config</code> / <code>dataset_size</code> / <code>tag_values</code> /
-  <code>v_growth</code></p>
+  <p>由 <code>hf-data-crawl report</code> 于 {_esc(edition.generated_at)} 生成 ·
+  {_esc(edition.detail)} · 单文件、离线可读 · 口径改动只需改 Gold 视图的 SQL，不重跑采集。</p>
+  <p class="views">视图 {len(views)} 个：{_esc(" · ".join(views))}</p>
 </footer>
 </main><script>{_JS}</script></body></html>
 """

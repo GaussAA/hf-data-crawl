@@ -108,6 +108,10 @@ _VIEWS: tuple[tuple[str, str], ...] = (
     ("card_config", "card_configs"),
     ("dataset_size", "size"),
     ("files", "files"),
+    # 预览是第四份增补资产，注册了表却没有视图：2026-11-20 实测 `FROM preview`
+    # 报 CatalogException，于是 `query`、体检、榜单页三处都看不见它——表在磁盘上、
+    # 字段说明里也写着，唯独接口没有（与 readme_fields 同一类缺口）。
+    ("preview", "preview"),
     ("readme", "readme"),
     # 正文里抽出的侧栏字段（Homepage / Paper / BibTeX / 联系人）。不进宽表：
     # 宽表是交付契约，加列要单独议；但必须可查——否则 78 万条抽出来的字段
@@ -253,6 +257,17 @@ def share_text(ratio: float) -> str:
     return f"{percent:.1f}%" if percent < 10 else f"{percent:.0f}%"
 
 
+#: datasets-server 用 int64 上限表示「行数溢出/未知」，那不是行数。
+#:
+#: 2026-11-20 实测：`yethss/The-Quettaset` 的 `num_rows` 是 9223372036854775000、列数 1，
+#: 于是它稳居规模榜第一位——「规模上限」这一章的门面数字成了一个 9.2e18 的假值（页面
+#: 渲染成 `9223372.04T`）。落盘时这个值被浮点舍入过，**不等于** `int64` 上限本身，
+#: 所以这里用阈值而不是等值比较：只剔除溢出族，不动其余 849,126 行。
+#:
+#: 阈值只治得病根，不治「作者自己报了个不可信的大数」（例如 1e14 行 × 1 列）：
+#: 那是观测到的声明值，删掉它就是在替作者改口。规模榜的 caption 里有一句说明。
+NUM_ROWS_SENTINEL = 9_000_000_000_000_000_000
+
 #: 内置榜单。`?` 为条数上限占位。
 #:
 #: 每个榜都以唯一键收尾（数据集榜用 `id`，聚合榜用分组键）：只按计数排序时，
@@ -321,6 +336,7 @@ BOARDS: dict[str, str] = {
         FROM dataset_size AS ds
         JOIN datasets AS d ON d.id = ds.id
         WHERE ds.status = 'ok' AND ds.num_rows IS NOT NULL
+          AND ds.num_rows < {NUM_ROWS_SENTINEL}
         ORDER BY ds.num_rows DESC NULLS LAST, d.id
         LIMIT ?
     """,
@@ -357,6 +373,32 @@ OVERVIEW_SQL = """
            (SELECT max(snapshot_date) FROM observations) AS as_of,
            (SELECT max(last_seen_at) FROM current) AS last_seen,
            (SELECT coalesce(sum(downloads), 0) FROM current) AS total_downloads
+    """
+
+#: 补齐矩阵：每份增补资产相对 `current` 的四种结局，各自一列。
+#:
+#: 四个结局必须分开取数，不在 SQL 里先合并成「没有」：`absent` 是问过、确实没有，
+#: `unknown` 是读不到（门禁 / 转码失败），`pending` 是还没抓。混成一个数，读者就会
+#: 把「读不到」当成「没有」——2026-11-20 之前首屏那四条单值覆盖率就是这么糊的。
+#:
+#: 每个子查询都 `JOIN current`：增补表里可能留着已删除库的行，直接数会让矩阵各段
+#: 之和超过分母（与 `OVERVIEW_SQL` 里 `sized` 的注解同一条理由）。
+FILL_SQL = """
+    SELECT
+      (SELECT count(*) FROM current) AS total,
+      (SELECT count(*) FROM card AS cd JOIN current AS c ON c.id = cd.id) AS card_have,
+      (SELECT count(*) FROM dataset_size AS ds JOIN current AS c ON c.id = ds.id
+        WHERE ds.status = 'ok') AS size_have,
+      (SELECT count(*) FROM dataset_size AS ds JOIN current AS c ON c.id = ds.id
+        WHERE ds.status = 'unavailable') AS size_unknown,
+      (SELECT count(*) FROM readme AS rm JOIN current AS c ON c.id = rm.id
+        WHERE rm.status = 'ok') AS readme_have,
+      (SELECT count(*) FROM readme AS rm JOIN current AS c ON c.id = rm.id
+        WHERE rm.status = 'absent') AS readme_absent,
+      (SELECT count(*) FROM readme AS rm JOIN current AS c ON c.id = rm.id
+        WHERE rm.status = 'denied') AS readme_unknown,
+      (SELECT count(*) FROM files AS f JOIN current AS c ON c.id = f.id) AS files_have,
+      (SELECT count(*) FROM preview AS p JOIN current AS c ON c.id = p.id) AS preview_have
     """
 
 _DUCKDB_TYPES: dict[PolarsType, str] = {
@@ -507,6 +549,19 @@ class GoldCatalog:
     def overview(self) -> dict[str, Any]:
         """整库概览：单行聚合，返回列名到值。"""
         return self.run(OVERVIEW_SQL).row(0, named=True)
+
+    def fill(self) -> dict[str, Any]:
+        """补齐矩阵：每份增补资产相对 `current` 的四种结局，单行。"""
+        return self.run(FILL_SQL).row(0, named=True)
+
+    def views(self) -> list[str]:
+        """当前挂着的全部视图名，按字母序。
+
+        页脚的视图清单由此现取，不再手抄：2026-11-20 实测页脚写着 7 个视图，
+        实际挂着 15 个——手抄的清单不会报错，只会慢慢变成一句假话。
+        """
+        frame = self.run("SELECT table_name FROM information_schema.tables ORDER BY 1")
+        return [str(name) for name in frame["table_name"].to_list()]
 
     def frozen_ids(self) -> set[str]:
         """非在架 id 集合：这些行的指标停在上次见到的日期，不是当前读数。
