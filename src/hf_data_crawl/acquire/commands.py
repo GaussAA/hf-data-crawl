@@ -34,7 +34,13 @@ from .enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
 from .files import FILES_STAGING_DIR, FileFetcher, FileSummary, HfFilesApi
 from .hf.api import HfDatasetApi, Transport
 from .hf.transport import HttpxTransport
-from .preview import HfPreviewApi, PreviewFetcher, PreviewSummary
+from .preview import (
+    PREVIEW_SCHEMA,
+    PREVIEW_STAGING_DIR,
+    HfPreviewApi,
+    PreviewFetcher,
+    PreviewSummary,
+)
 from .readme import (
     README_STAGING_DIR,
     HfReadmeApi,
@@ -413,9 +419,12 @@ def run_fetch_preview(
         return Outcome({"fetched": 0})
 
     # 已经定过的库不再问：`ok` 与 `unavailable` 都是终局，`error` 才是可救的。
-    # 有这一条就不用暂存分片，中断后重跑同一命令即可从断点续抓。
+    # 暂存分片也算「已经定局」——上一轮中断前抓到的结果不该再请求一遍。
     done: set[str] = set()
     existing = store.read("preview")
+    staged, _ = read_staged_dir(store, PREVIEW_STAGING_DIR, PREVIEW_SCHEMA)
+    if staged.height:
+        existing = pl.concat([existing, staged], how="vertical_relaxed")
     if existing.height:
         done = set(existing.filter(pl.col("status").is_in(["ok", "unavailable"]))["id"].to_list())
     pending = [item for item in candidates if item not in done]
@@ -438,14 +447,29 @@ def run_fetch_preview(
         ),
         workers=args.workers,
         progress=_progress_line,
+        heartbeat=_stall_line,
     )
-    summary, frame = fetcher.run(snapshot, candidates)
+    # 锁外抓取、按批落暂存分片；只有收尾合并那一小段独占数据目录。
+    writer = StagingDirWriter(store, snapshot, PREVIEW_STAGING_DIR)
+    summary, frame = fetcher.run(
+        snapshot,
+        candidates,
+        flush=writer.write,
+        flush_every=args.flush_every,
+    )
+    # `flush` 只在攒满一批时触发；尾巴必须补写，否则合并时漏掉最后几条。
+    if frame.height > writer.flushed:
+        writer.write(frame.slice(writer.flushed, frame.height - writer.flushed))
     # 进度条是 \r 原地刷新，收尾必须换行。
     print()
 
-    if frame.height:
-        with exclusive(store.root, "fetch-preview:merge", lock_wait):
-            store.upsert("preview", frame)
+    # 短锁：把本轮结果与残留分片一次并入正式表。抓不到锁就失败、分片留着，
+    # 下一轮据此续抓，不会丢已抓到的东西。
+    with exclusive(store.root, "fetch-preview:merge", lock_wait):
+        merged, paths = read_staged_dir(store, PREVIEW_STAGING_DIR, PREVIEW_SCHEMA)
+        if merged.height:
+            store.upsert("preview", merged)
+        clear_staged_dir(store, paths, PREVIEW_STAGING_DIR)
 
     _print_preview(summary, store.read("preview").height)
     if summary.aborted:

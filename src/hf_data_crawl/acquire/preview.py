@@ -35,7 +35,6 @@ import json
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any, Literal
@@ -45,6 +44,7 @@ import polars as pl
 
 from ..platform.coerce import as_int
 from ..platform.tables import PREVIEW_SCHEMA, url_for
+from .batch import collect_rows
 from .hf.api import Transport, TransportError
 from .readme import RateLimiter
 
@@ -54,6 +54,12 @@ DEFAULT_ROWS = 3
 #: 默认每秒放行几个请求。`/rows` 比 `/size` 敏感得多：实测 8 并发无节制跑一阵之后，
 #: 200 个库全部 429、吞吐掉到 0.5 req/s。主动匀速是唯一稳的做法（教训同 readme）。
 DEFAULT_RATE = 4.0
+
+#: 暂存分片的子目录名：与 sizes / files / readme 同一套「先落分片、收尾短锁合并」。
+PREVIEW_STAGING_DIR = "preview"
+
+#: 每攒多少条落一次分片。样例一行只有几 KB，200 条一次足够细。
+PREVIEW_FLUSH_EVERY = 200
 
 #: 默认抓多少个库。样例要的是「有代表性的一批」，不是全站；一万个体量下
 #: 截断后约 10 MB。
@@ -209,6 +215,7 @@ class HfPreviewApi:
         """
         if self._config != AUTO_CONFIG:
             return (self._config, self._split)
+        snoozed = 0
         while True:
             if self._gate is not None:
                 self._gate.wait()
@@ -223,8 +230,9 @@ class HfPreviewApi:
                 break
             # `/splits` 撞限流也不能静默记成 error——否则这一头在吞 429、另一头继续打，
             # 实测连吞 26 个才由 `/rows` 发现（2026-11-18）。
-            if not self._snooze():
+            if not self._snooze(snoozed):
                 raise Throttled(f"{dataset_id} 被限流（429）")
+            snoozed += 1
         if response.status in UNAVAILABLE_STATUS:
             return _unavailable(dataset_id, snapshot_date, self._config, self._split)
         if response.status != 200:
@@ -259,6 +267,7 @@ class HfPreviewApi:
             return resolved
         config, split = resolved
         attempt = 0
+        snoozed = 0
         while True:
             if self._gate is not None:
                 self._gate.wait()
@@ -286,7 +295,8 @@ class HfPreviewApi:
                 return _success(dataset_id, snapshot_date, config, split, response.body)
             if response.status == THROTTLED_STATUS:
                 # 按 IP 限流：设了闸门就睡过再试，没设就整轮中止（继续打只会更久）。
-                if self._snooze():
+                if self._snooze(snoozed):
+                    snoozed += 1
                     continue
                 raise Throttled(f"{dataset_id} 被限流（429）")
             if response.status in RETRYABLE_STATUS and attempt < self._max_retries:
@@ -298,13 +308,17 @@ class HfPreviewApi:
                 return _unavailable(dataset_id, snapshot_date, config, split)
             return PreviewResult(dataset_id, "error")
 
-    def _snooze(self) -> bool:
-        """撞 429 之后怎么处理：返回 True 表示「睡过再试」，False 表示整轮中止。
+    def _snooze(self, already: int) -> bool:
+        """撞 429 之后怎么处理：返回 True 表示「睡过再试」，False 表示放弃这个库。
 
         没设 `--throttle-wait` 就中止——那是默认的保守行为；设了就睡一觉继续，
         一个进程能跨过多个限流窗口，把「每天只推进几十行」变成「一次跑够」。
+
+        **上限是按库算的，不是按轮算的**：`already` 是这个库本轮已经睡过几次。
+        原先拿全局计数当上限，于是整轮睡满三次之后任何一次 429 都会中止整轮——
+        2026-11-20 实测：209 个库里跑到第 120 个就整轮停了，前功尽弃。
         """
-        if self._gate is None or self.throttles >= self._max_throttles:
+        if self._gate is None or already >= self._max_throttles:
             return False
         self.throttles += 1
         self._gate.trip()
@@ -402,7 +416,12 @@ def _unavailable(dataset_id: str, snapshot_date: date, config: str, split: str) 
 
 
 class PreviewFetcher:
-    """按名单并发取样例，结果按 id 归并成一张表。"""
+    """按名单并发取样例，结果按 id 归并成一张表。
+
+    并发与落盘全部走 `batch.collect_rows`——和 `fetch-sizes` / `fetch-files` /
+    `fetch-readme` 同一个引擎：滑动窗口、卡住心跳、边跑边落暂存分片。这里不再
+    自己开线程池，否则「暂存再合并」这件事就得在四条链路上各写一遍。
+    """
 
     def __init__(
         self,
@@ -410,33 +429,42 @@ class PreviewFetcher:
         *,
         workers: int = 8,
         progress: Callable[[int, int], None] | None = None,
+        heartbeat: Callable[[int, int], None] | None = None,
     ) -> None:
         self._api = api
         self._workers = max(1, workers)
         self._progress = progress
+        self._heartbeat = heartbeat
 
     def run(
-        self, snapshot_date: date, dataset_ids: list[str]
+        self,
+        snapshot_date: date,
+        dataset_ids: list[str],
+        *,
+        flush: Callable[[pl.DataFrame], object] | None = None,
+        flush_every: int = PREVIEW_FLUSH_EVERY,
     ) -> tuple[PreviewSummary, pl.DataFrame]:
         started = time.monotonic()
+        # `collect_rows` 会把异常直接抛出来，那时它拼好的表也一起没了；用
+        # `on_result` 自己留一份，撞限流中止时还能把已取到的行交出去。
         results: list[PreviewResult] = []
-        total = len(dataset_ids)
-        done = 0
         aborted = False
-        with ThreadPoolExecutor(max_workers=self._workers) as pool:
-            futures = [pool.submit(self._api.fetch, item, snapshot_date) for item in dataset_ids]
-            try:
-                for future in as_completed(futures):
-                    results.append(future.result())
-                    done += 1
-                    if self._progress is not None:
-                        self._progress(done, total)
-            except Throttled:
-                # 按 IP 限流：剩下的请求立刻取消，继续打只会延长封禁。
-                # 已取到的行仍然有效，交给调用方并入。
-                aborted = True
-                for pending in futures:
-                    pending.cancel()
+        try:
+            _, frame = collect_rows(
+                pending=dataset_ids,
+                fetch=lambda item: self._api.fetch(item, snapshot_date),
+                schema=PREVIEW_SCHEMA,
+                workers=self._workers,
+                flush=flush,
+                flush_every=flush_every,
+                progress=self._progress,
+                heartbeat=self._heartbeat,
+                on_result=results.append,
+            )
+        except Throttled:
+            # 按 IP 限流：继续打只会延长封禁。已取到的行仍然有效，交给调用方并入。
+            aborted = True
+            frame = _frame([item.row for item in results if item.row])
 
         rows = [item.row for item in results if item.row]
         summary = PreviewSummary(
@@ -448,7 +476,7 @@ class PreviewFetcher:
             aborted=aborted,
             throttles=self._api.throttles,
         )
-        return summary, _frame(rows)
+        return summary, frame
 
 
 def _frame(rows: list[dict[str, Any]]) -> pl.DataFrame:

@@ -34,6 +34,7 @@ def args(**overrides: object) -> Namespace:
         "rate": 10.0,
         "throttle_wait": 0.0,
         "workers": 1,
+        "flush_every": 200,
         "date": SNAPSHOT.isoformat(),
     }
     base.update(overrides)
@@ -53,8 +54,17 @@ class FakeFetcher:
         self.frame = frame
         self.seen: list[str] = []
 
-    def run(self, snapshot: date, candidates: list[str]) -> tuple[PreviewSummary, pl.DataFrame]:
+    def run(
+        self,
+        snapshot: date,
+        candidates: list[str],
+        *,
+        flush: object = None,
+        flush_every: int = 200,
+    ) -> tuple[PreviewSummary, pl.DataFrame]:
         self.seen = list(candidates)
+        self.flush = flush
+        self.flush_every = flush_every
         return self.summary, self.frame
 
 

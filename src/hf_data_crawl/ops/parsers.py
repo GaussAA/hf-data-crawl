@@ -492,6 +492,12 @@ def build_parser() -> argparse.ArgumentParser:
         "这个接口一个窗口只够几十条，设成 600 才能在一次进程里跨窗口补齐",
     )
     preview.add_argument("--workers", type=int, default=8, help="并发数；吞吐由 --rate 决定")
+    preview.add_argument(
+        "--flush-every",
+        type=int,
+        default=200,
+        help="每攒多少条落一次暂存分片（默认 200）。中断后重跑据此续抓，不丢已抓到的",
+    )
     doctor = subparsers.add_parser("doctor", help="体检：任务是否按时、Raw 是否断日、有无残留文件")
     # 未显式给时沿用全局默认；SUPPRESS 避免把全局 --lock-wait 覆盖回 None。
     doctor.add_argument(

@@ -10,6 +10,7 @@ import json
 from datetime import date
 from typing import Any
 
+import polars as pl
 import pytest
 
 from hf_data_crawl.acquire.hf.api import HfResponse, TransportError
@@ -204,7 +205,10 @@ def test_被限流时整轮中止并保留已取到的行() -> None:
     summary, frame = fetcher.run(DAY, ["a/1", "a/2", "a/3", "a/4", "a/5"])
 
     assert summary.aborted is True
-    assert summary.fetched >= 2
+    # 中止时**在飞**的几个请求随线程池一起收掉，它们的行不会进结果表——所以这里
+    # 只钉「已完成的那些一条不丢」与「帧与计数一致」，不钉具体条数（并发完成顺序
+    # 本就不定，钉死条数会在 xdist 下随机红）。
+    assert summary.fetched >= 1
     assert frame.height == summary.fetched
 
 
@@ -319,3 +323,43 @@ def test_同一个库连续限流到上限就放弃它() -> None:
         api.fetch("a/b", DAY)
 
     assert api.throttles == 3
+
+
+def test_限流等待的次数按库算不按轮算() -> None:
+    """每个库各自最多睡三次：整轮睡过的总次数再多也不该中止。
+
+    2026-11-20 实测的坑：上限原先取自一个**全局**计数，于是整轮睡满三次之后，
+    任何一次 429 都会把整轮掐掉——209 个库里跑到第 120 个就停了，前功尽弃。
+    """
+    responses: list[Any] = []
+    for _ in range(5):
+        responses.append(_error(429))
+        responses.append(_ok({"text": "甲"}))
+    transport = ScriptedTransport(*responses)
+    api = _api(transport, throttle_wait=600)
+
+    for index in range(5):
+        assert api.fetch(f"a/{index}", DAY).status == "ok"
+
+    assert api.throttles == 5
+
+
+def test_抓取时按批交给_flush_而不是全攒在内存里() -> None:
+    """`flush` 让中断只损失一个批次：预览原先只在收尾写一次，进程一断全没了。
+
+    现在它和 `fetch-sizes` / `fetch-files` 共用 `collect_rows`：攒满
+    `flush_every` 条就交出一批，由命令写进暂存分片、收尾再短锁合并。
+    """
+    rows = [{"text": f"第{index}条"} for index in range(5)]
+    transport = ScriptedTransport(*[_ok(row) for row in rows])
+    batches: list[pl.DataFrame] = []
+    fetcher = PreviewFetcher(_api(transport), workers=1)
+
+    summary, frame = fetcher.run(
+        DAY, [f"a/{index}" for index in range(5)], flush=batches.append, flush_every=2
+    )
+
+    assert summary.fetched == 5
+    assert frame.height == 5
+    assert [batch.height for batch in batches] == [2, 2]
+    assert sum(batch.height for batch in batches) + 1 == frame.height
