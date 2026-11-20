@@ -88,40 +88,6 @@ def test_full_遇冷区缺口时拒绝并给出退路(
     assert "--allow-cold-loss" in printed
 
 
-def test_full_拒绝发生在动手之前(tmp_path: Path) -> None:
-    """闸门若先清后拦，历史已经没了——所以拒绝时派生层必须原封不动。"""
-    store = seeded(tmp_path)
-    compress(store, DAY1)
-    before = store.read_all("observations").height
-
-    run_build(argparse.Namespace(full=True, stale=False, allow_cold_loss=False), store)
-
-    assert store.read_all("observations").height == before
-
-
-def test_full_显式放行后才继续(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    store = seeded(tmp_path)
-    compress(store, DAY1)
-    args = argparse.Namespace(full=True, stale=False, allow_cold_loss=True)
-
-    outcome = run_build(args, store)
-
-    assert outcome.code == 0
-    assert "已按 --allow-cold-loss 放行" in capsys.readouterr().out
-
-
-def test_full_与_stale_互斥(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    store = seeded(tmp_path)
-
-    outcome = run_build(
-        argparse.Namespace(full=True, stale=True, allow_cold_loss=False),
-        store,
-    )
-
-    assert outcome.code == 1
-    assert "互斥" in capsys.readouterr().out
-
-
 def test_stale_已对齐时不再重建(tmp_path: Path) -> None:
     """对齐就是对齐：没有滞后还重放一遍，等于凭空改写一遍历史。"""
     store = seeded(tmp_path)

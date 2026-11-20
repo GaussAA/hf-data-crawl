@@ -302,12 +302,6 @@ class Plan:
     results: list[StepResult] = field(default_factory=list)
     started_at: datetime = field(default_factory=datetime.now)
 
-    def by_name(self, name: str) -> StepResult | None:
-        for item in self.results:
-            if item.name == name:
-                return item
-        return None
-
     @property
     def failed(self) -> list[StepResult]:
         return [item for item in self.results if item.code not in (None, 0)]

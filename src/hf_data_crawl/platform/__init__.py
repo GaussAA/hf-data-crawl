@@ -31,6 +31,7 @@ from .runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs, write_run
 from .store import DatasetStore
 from .tables import (
     BRONZE_SCHEMA,
+    BRONZE_SOURCE_FIELDS,
     CARD_CONFIGS_SCHEMA,
     CURRENT_SCHEMA,
     DATASET_URL,
@@ -71,6 +72,7 @@ __all__ = [
     "TIMESTAMP",
     "DATASET_URL",
     "BRONZE_SCHEMA",
+    "BRONZE_SOURCE_FIELDS",
     "SILVER_SCHEMA",
     "CURRENT_SCHEMA",
     "ENRICH_SCHEMA",

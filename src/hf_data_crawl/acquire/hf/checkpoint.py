@@ -1,4 +1,4 @@
-"""断点续爬的落盘与内存实现。
+"""断点续爬的落盘实现。
 
 checkpoint 只记一件事：下一页该从哪个游标开始。
 """
@@ -19,20 +19,6 @@ class Checkpoint(Protocol):
     def cursor(self) -> str | None: ...
 
     def save(self, cursor: str | None) -> None: ...
-
-
-class MemoryCheckpoint:
-    """进程内 checkpoint，供测试与一次性扫描使用。"""
-
-    def __init__(self) -> None:
-        self._cursor: str | None = None
-
-    @property
-    def cursor(self) -> str | None:
-        return self._cursor
-
-    def save(self, cursor: str | None) -> None:
-        self._cursor = cursor
 
 
 class FileCheckpoint:

@@ -16,7 +16,7 @@ import pytest
 from hf_data_crawl.pipeline import raw
 from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.store import DatasetStore
-from hf_data_crawl.platform.tables import CURRENT_SCHEMA
+from hf_data_crawl.platform.tables import CURRENT_SCHEMA, SIZE_SCHEMA
 from hf_data_crawl.query.gold import (
     BOARDS,
     FillKind,
@@ -242,10 +242,29 @@ def test_规模抓取状态不与库状态撞名(catalog: GoldCatalog) -> None:
 
 
 def test_重名列以实际数据为准取current的那一份(catalog: GoldCatalog) -> None:
-    """status 在 current 与 size 里都有，视图里必须是 current 的。"""
-    row = catalog.run("SELECT status FROM datasets LIMIT 1").row(0, named=True)
+    """status 在 current 与 size 里都有：视图里 current 的仍叫 status，size 的改名。
+
+    夹具必须真造一条 size 行，否则「重名被跳过」这条路径根本没走到——删掉
+    `_VIEW_RENAMES` 里的 status 映射，测试照样绿。
+    """
+    data: dict[str, list[Any]] = {name: [None] for name in SIZE_SCHEMA}
+    data["id"] = ["acme/ds-1"]
+    data["snapshot_date"] = [DAY4]
+    data["status"] = ["unavailable"]
+    catalog.store.write("size", pl.DataFrame(data, schema=SIZE_SCHEMA))
+
+    # 视图在 GoldCatalog 构造时挂上；size 是 catalog 建好之后才写的，要重开一次
+    # 才看得见——这也正是「视图读文件、不是物化副本」的应有之义。
+    fresh = GoldCatalog(catalog.store)
+    try:
+        row = fresh.run("SELECT status, size_status FROM datasets WHERE id = 'acme/ds-1'").row(
+            0, named=True
+        )
+    finally:
+        fresh.close()
 
     assert row["status"] == "active"
+    assert row["size_status"] == "unavailable"
 
 
 # ---------------------------------------------------------------- 最新一行只有一个定义

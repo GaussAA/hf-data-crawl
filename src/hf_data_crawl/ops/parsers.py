@@ -21,6 +21,7 @@ from ..acquire import (
 )
 from ..delivery import Cadence, Kind
 from ..platform import ARCHIVE_AFTER_DAYS, BACKUP_KEEP_DAYS, REPLAY_WINDOW_DAYS
+from ..platform.presets import list_presets
 from ..query import BOARDS
 from .refresh import DEFAULT_BUDGET_HOURS, DEFAULT_LAUNCH_HOURS
 
@@ -83,7 +84,8 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--dry-run", action="store_true", help="只探一页并打印字段，不落盘")
     collect.add_argument(
         "--preset",
-        choices=["default", "aggressive", "maximum", "minimal", "conservative"],
+        # 可选值从预设登记表来：手抄一份，新增预设时就会「代码里有、命令行选不到」。
+        choices=[preset.name for preset in list_presets()],
         default=None,
         help=(
             "使用预设配置，只填未显式指定的参数（--refresh-top 等显式值不会被覆盖）。"

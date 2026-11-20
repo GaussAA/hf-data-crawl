@@ -9,7 +9,8 @@ HF 的 `expand[]` 是**白名单裁剪**——传了它就只返回列出的字�
     → 1,115,078 行 100% 为 null，管线照常报 success。
 
 这类缺陷不会抛错、不会让测试变红（除非专门断言），只能靠契约测试钉死。
-因此本文件把 BRONZE_SOURCE_FIELDS 作为唯一真相源，向两侧同时校验。
+因此本文件把 BRONZE_SOURCE_FIELDS 作为唯一真相源，向两侧同时校验：生产侧
+（`bronze.to_row` 按它取值）与请求侧（`LEAN_EXPAND` 必须覆盖它）。
 """
 
 from __future__ import annotations
@@ -32,13 +33,17 @@ from hf_data_crawl.pipeline import bronze, raw
 from hf_data_crawl.pipeline.silver import PLAIN_TAG_COLUMN, TAG_DIMENSIONS
 from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.platform.tables import (
-    BRONZE_DERIVED_COLUMNS,
     BRONZE_SCHEMA,
     BRONZE_SOURCE_FIELDS,
     CURRENT_SCHEMA,
     SILVER_SCHEMA,
-    UNCONDITIONAL_FIELDS,
 )
+
+#: 由本地派生、不对应 HF 响应字段的列。契约测试据此反推源字段清单。
+BRONZE_DERIVED_COLUMNS = frozenset({"raw", "page_file", "snapshot_date", "url"})
+
+#: 列表接口无条件返回、无需写进 `expand[]` 的字段。
+UNCONDITIONAL_FIELDS = frozenset({"id"})
 
 DAY = date(2026, 11, 4)
 

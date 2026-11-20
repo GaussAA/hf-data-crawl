@@ -48,12 +48,6 @@ from .batch import (
 from .batch import (
     read_staged as _read_staged,
 )
-from .batch import (
-    staged_shards as _staged_shards,
-)
-from .batch import (
-    staging_root as _staging_root,
-)
 from .enrich import DEFAULT_TOP
 from .hf.api import Transport, TransportError
 
@@ -365,16 +359,6 @@ def protect_ok_rows(previous: pl.DataFrame, fresh: pl.DataFrame) -> pl.DataFrame
     if degraded.height == 0:
         return fresh
     return fresh.join(degraded.select("id"), on="id", how="anti")
-
-
-def staging_root(store: DatasetStore) -> Path:
-    """规模表的暂存目录。"""
-    return _staging_root(store, STAGING_DIR)
-
-
-def staged_shards(store: DatasetStore) -> list[Path]:
-    """规模表现有暂存分片，按文件名排序。"""
-    return _staged_shards(store, STAGING_DIR)
 
 
 def read_staged(store: DatasetStore) -> tuple[pl.DataFrame, list[Path]]:

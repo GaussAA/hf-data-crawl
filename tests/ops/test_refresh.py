@@ -43,6 +43,11 @@ def seed_run(
     )
 
 
+def _result(plan: refresh.Plan, name: str) -> StepResult | None:
+    """按步骤名取结果。`Plan` 不再自带查询方法：生产代码不按名回查，测试自己取。"""
+    return next((item for item in plan.results if item.name == name), None)
+
+
 def fake_steps(monkeypatch, codes: dict[str, int] | None = None) -> list[str]:
     """把 `run_step` 换成记账的假实现，返回被调用过的步骤名。"""
     calls: list[str] = []
@@ -67,7 +72,7 @@ def test_今天已成功的步骤会被跳过(tmp_path: Path, monkeypatch) -> No
     assert "compact" not in calls
     assert "collect" not in calls
     assert "build" not in calls
-    compact = plan.by_name("compact")
+    compact = _result(plan, "compact")
     assert compact is not None and compact.note == "今天已完成"
     # 采集基于前一步的 current，后两段照常跑。
     assert "reconcile" in calls
@@ -90,7 +95,7 @@ def test_依赖失败的步骤被跳过(tmp_path: Path, monkeypatch) -> None:
 
     plan = refresh.execute(store, log=lambda _: None)
 
-    export = plan.by_name("export")
+    export = _result(plan, "export")
     assert export is not None
     assert export.code is None, "build 失败时导出不该跑"
     assert "依赖未完成" in export.note
@@ -116,7 +121,7 @@ def test_超过启动窗口时并行段跳过(tmp_path: Path, monkeypatch) -> No
     plan = refresh.execute(store, launch_hours=0, budget_hours=0, log=lambda _: None)
 
     assert "reconcile" not in calls
-    reconcile = plan.by_name("reconcile")
+    reconcile = _result(plan, "reconcile")
     assert reconcile is not None and reconcile.note.startswith("超过启动窗口")
     assert "doctor" in calls, "体检是唯一能说明哪里没跑完的环节"
 
@@ -155,7 +160,7 @@ def test_only模式只跑点名的步骤(tmp_path: Path, monkeypatch) -> None:
     plan = refresh.execute(store, only=frozenset({"doctor"}), log=lambda _: None)
 
     assert calls == ["doctor"]
-    export = plan.by_name("export")
+    export = _result(plan, "export")
     assert export is not None and export.note == "不在 --only 里"
 
 
@@ -222,10 +227,10 @@ def test_采集失败时下游整条跳过(tmp_path: Path, monkeypatch) -> None:
 
     plan = refresh.execute(store, log=lambda _: None)
 
-    build = plan.by_name("build")
+    build = _result(plan, "build")
     assert build is not None and build.code is None
     assert build.note.startswith("依赖未完成")
-    export = plan.by_name("export")
+    export = _result(plan, "export")
     assert export is not None and export.code is None
 
 
@@ -237,10 +242,10 @@ def test_超过时间预算时导出与交付留给次日(tmp_path: Path, monkey
     plan = refresh.execute(store, budget_hours=0, launch_hours=8, log=lambda _: None)
 
     for name in ("export", "deliver"):
-        result = plan.by_name(name)
+        result = _result(plan, name)
         assert result is not None and result.code is None
         assert result.note == "超过时间预算，留给次日续跑"
-    assert plan.by_name("doctor") is not None
+    assert _result(plan, "doctor") is not None
 
 
 def test_今天的失败记录不算已完成(tmp_path: Path, monkeypatch) -> None:
@@ -316,7 +321,7 @@ def test_并行段里已完成的那一步不再跑(tmp_path: Path, monkeypatch)
     plan = refresh.execute(store, log=lambda _: None)
 
     assert "sizes" not in calls
-    sizes = plan.by_name("sizes")
+    sizes = _result(plan, "sizes")
     assert sizes is not None and sizes.note == "今天已完成"
 
 
@@ -329,7 +334,7 @@ def test_收尾段里已完成的那一步不再跑(tmp_path: Path, monkeypatch)
     plan = refresh.execute(store, log=lambda _: None)
 
     assert "export" not in calls
-    export = plan.by_name("export")
+    export = _result(plan, "export")
     assert export is not None and export.note == "今天已完成"
 
 
@@ -354,7 +359,7 @@ def test_对账失败时文件抓取跳过(tmp_path: Path, monkeypatch) -> None:
 
     plan = refresh.execute(store, log=lambda _: None)
 
-    files = plan.by_name("files")
+    files = _result(plan, "files")
     assert files is not None and files.code is None
     assert files.note.startswith("依赖未完成")
     assert "reconcile" in files.note
@@ -410,7 +415,7 @@ def test_对账今天已完成时文件清单照跑(tmp_path: Path, monkeypatch)
     plan = refresh.execute(store, log=lambda _: None)
 
     assert "files" in calls
-    files = plan.by_name("files")
+    files = _result(plan, "files")
     assert files is not None and files.code == 0
 
 
@@ -476,7 +481,7 @@ def test_窗口外不启动新抓取且文件清单也留痕(tmp_path: Path, mon
     plan = refresh.execute(store, launch_hours=0.0, log=lambda _: None)
 
     assert "reconcile" not in calls
-    files = plan.by_name("files")
+    files = _result(plan, "files")
     assert files is not None and files.code is None
     assert "启动窗口" in files.note
 

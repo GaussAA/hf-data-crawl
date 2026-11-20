@@ -2370,3 +2370,28 @@
 
      **一条通则**：路径约定不能靠调用方记得带前缀——要么 helper 负责拼根，要么常量
      写全；同类对象的测试要把整组枚举，挑两三个代表等于没验。
+
+144. **只有测试在调用的生产 API 是缺陷，不是覆盖**（2026-11-20，清 TODO 遗留）：
+
+     套件里有十来个「生产零调用、只在测试里出现」的函数与常量。它们不是死代码，因为
+     测试一直把它们跑绿；但那份绿是自证——删除实现，测试会红；删除测试，实现就静静
+     腐烂。两者都不该是常态。
+
+     **能接线的接线，接上就有行为价值**：
+
+     - `presets.list_presets` → `--preset` 的 choices：手抄的五个名字与登记表从此同源；
+     - `RateLimiter.enabled` → `acquire()` 的早退分支：判据只剩一处；
+     - `RawDay.observed` → `observed_days()` 的过滤：谓词只有一处定义；
+     - `batch.STAGING_ROOT` → `staging_root()` 的前缀守卫：裸目录名当场拒绝，
+       正是 #143 那个 bug 的根因；
+     - `tables.BRONZE_SOURCE_FIELDS` → `bronze.to_row` 的唯一取值表：列清单不再
+       手抄第二份，`BRONZE_DERIVED_COLUMNS` / `UNCONDITIONAL_FIELDS` 移进契约测试
+       （它们只描述测试的推导，不是生产行为）。
+
+     **没有语义的删除**：`Plan.by_name`（测试 helper 自己取）、`HealthRecord.healthy`
+     （直接断 `problems == ()`）、`RawDay.read_batches`（生产按文件读，测试改用
+     `load_batches`）、`TableSpec.filename`、`sizes.staging_root`/`staged_shards`
+     两个包装、`MemoryCheckpoint`（测试改用真实的 `FileCheckpoint`）。
+
+     **一条通则**：测试调用一个生产函数，本身就是一种「它被使用」的错觉。要么让生产
+     调它，要么删掉它并把断言移到真正入口；留着它，下一次重构没人敢删。

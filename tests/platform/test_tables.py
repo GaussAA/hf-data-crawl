@@ -44,7 +44,7 @@ def test_分区表的路径模板带日期占位() -> None:
         if not spec.partitioned:
             continue
         assert "{dt}" in spec.path
-        assert spec.relative("2026-11-04").endswith("dt=2026-11-04" + "/" + spec.filename)
+        assert spec.relative("2026-11-04").endswith("dt=2026-11-04" + "/" + Path(spec.path).name)
 
 
 def test_非分区表不需要日期() -> None:

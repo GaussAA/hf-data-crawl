@@ -43,7 +43,7 @@ def test_全部正常时不记问题(tmp_path: Path) -> None:
 
     entry = health.record(store, entries(), NOW)
 
-    assert entry.healthy
+    assert entry.problems == ()
     assert health.read(store)[0].problems == ()
 
 

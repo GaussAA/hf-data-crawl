@@ -292,19 +292,6 @@ def load_batches(path: Path) -> list[Batch]:
     return [Batch(key, records, path.name)]
 
 
-def read_batches(
-    store: DatasetStore, snapshot_date: date, *, label: str | None = None
-) -> list[Batch]:
-    """读出某天的分块并按写入时刻升序排列，同 id 以最后写入者为准。"""
-    batches = [
-        batch
-        for path in batch_files(store, snapshot_date, label=label)
-        for batch in load_batches(path)
-    ]
-    batches.sort(key=lambda batch: batch.key)
-    return batches
-
-
 def _utc_now() -> str:
     """带微秒的 UTC 时刻，作为 Raw 的写入序。
 
@@ -390,7 +377,7 @@ def observed_days(store: DatasetStore) -> list[RawDay]:
             snapshot_date,
             RawDay(snapshot_date=snapshot_date, bronze=(), supplements=(), compacted=True),
         )
-    return [days[key] for key in sorted(days)]
+    return [days[key] for key in sorted(days) if days[key].observed]
 
 
 def replayable_days(store: DatasetStore) -> list[RawDay]:

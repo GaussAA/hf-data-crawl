@@ -89,10 +89,6 @@ class TableSpec:
     def partitioned(self) -> bool:
         return "{dt}" in self.path
 
-    @property
-    def filename(self) -> str:
-        return self.path.rsplit("/", 1)[-1]
-
     def relative(self, snapshot: str | None = None) -> str:
         """把路径模板填成具体相对路径。分区表必须给 snapshot。"""
         if self.partitioned:
@@ -135,14 +131,12 @@ BRONZE_SCHEMA: dict[str, PolarsType] = {
     "snapshot_date": pl.Date,
 }
 
-#: 由本地派生、不对应 HF 响应字段的列。契约测试据此反推源字段清单。
-BRONZE_DERIVED_COLUMNS: frozenset[str] = frozenset({"raw", "page_file", "snapshot_date", "url"})
-
 #: Bronze 列名 → HF 响应字段名。**契约的唯一真相源**。
 #:
 #: 存在的理由：HF 的 `expand[]` 是白名单裁剪，列与请求清单是两份会各自漂移的
 #: 声明。2026-11-04 实测事故即由此而来——`private` 列已声明、请求里却没带，
-#: 于是 111.5 万行整列为空且无任何报错。
+#: 于是 111.5 万行整列为空且无任何报错。`bronze.to_row` 直接按这张表取值，
+#: 契约测试再从同一个源向 `LEAN_EXPAND` 校验。
 BRONZE_SOURCE_FIELDS: dict[str, str] = {
     "id": "id",
     "author": "author",
@@ -162,9 +156,6 @@ BRONZE_SOURCE_FIELDS: dict[str, str] = {
     "tags": "tags",
     "description": "description",
 }
-
-#: 列表接口无条件返回、无需写进 `expand[]` 的字段。
-UNCONDITIONAL_FIELDS: frozenset[str] = frozenset({"id"})
 
 # Silver 是「属性变更流水」：一个 id 只在首次出现或属性变了才追加一行。
 # 指标（downloads / downloads_all_time / likes）不在其中，它们每天有一半的行在变，

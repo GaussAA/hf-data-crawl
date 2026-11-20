@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -18,7 +19,7 @@ from hf_data_crawl.acquire.hf.api import (
     TransportError,
     _parse_rate_limit,
 )
-from hf_data_crawl.acquire.hf.checkpoint import MemoryCheckpoint
+from hf_data_crawl.acquire.hf.checkpoint import FileCheckpoint
 
 
 class FakeTransport:
@@ -237,7 +238,7 @@ def test_配额将尽时先等待再取下一页() -> None:
     assert sleeps == [42]
 
 
-def test_中断后从checkpoint续跑不重复入库() -> None:
+def test_中断后从checkpoint续跑不重复入库(tmp_path: Path) -> None:
     base = "https://huggingface.co/api/datasets"
     pages = [[record("a/1")], [record("a/2")], [record("a/3")]]
     links = [f"{base}?cursor=c2", f"{base}?cursor=c3", None]
@@ -248,7 +249,7 @@ def test_中断后从checkpoint续跑不重复入库() -> None:
         for r in page.records
     ]
 
-    checkpoint = MemoryCheckpoint()
+    checkpoint = FileCheckpoint(tmp_path / "checkpoint.json")
     first_half = [
         r["id"]
         for page in HfDatasetApi(transport=FakeTransport(pages, links)).scan(

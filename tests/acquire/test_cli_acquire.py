@@ -10,8 +10,9 @@ from typing import Any
 import polars as pl
 import pytest
 
+from hf_data_crawl.acquire.batch import staged_shards
 from hf_data_crawl.acquire.hf.api import HfResponse
-from hf_data_crawl.acquire.sizes import SIZE_SCHEMA, StagingWriter, staged_shards
+from hf_data_crawl.acquire.sizes import SIZE_SCHEMA, STAGING_DIR, StagingWriter
 from hf_data_crawl.ops.cli import main
 from hf_data_crawl.pipeline import raw, state
 from hf_data_crawl.pipeline.derive import derive_day
@@ -209,7 +210,7 @@ def test_fetch_sizes抓取期间不持锁(root: Path) -> None:
 
     assert code == 0
     assert store.read("size").height == 3
-    assert staged_shards(store) == [], "成功合并后不应留下分片"
+    assert staged_shards(store, STAGING_DIR) == [], "成功合并后不应留下分片"
 
 
 def test_残留分片会被续抓并合入正式表(root: Path) -> None:
@@ -237,7 +238,7 @@ def test_残留分片会被续抓并合入正式表(root: Path) -> None:
     assert code == 0
     assert transport.calls == ["acme/ds-3"], "残留分片里的 id 应跳过"
     assert sorted(store.read("size")["id"].to_list()) == ["acme/ds-1", "acme/ds-2", "acme/ds-3"]
-    assert staged_shards(store) == []
+    assert staged_shards(store, STAGING_DIR) == []
 
 
 def _put_sizes(root: Path, rows: list[dict[str, Any]]) -> None:
@@ -397,7 +398,7 @@ def test_合并拿不到锁时保留分片供下轮继续(root: Path) -> None:
         )
 
     assert code == 1
-    assert staged_shards(store), "拿不到锁时应把分片留着"
+    assert staged_shards(store, STAGING_DIR), "拿不到锁时应把分片留着"
     assert store.read("size").height == 0
     runs = read_runs(store)
     assert [item["status"] for item in runs] == ["failed"]
@@ -420,7 +421,7 @@ def test_合并拿不到锁时保留分片供下轮继续(root: Path) -> None:
     assert code == 0
     assert transport.calls == []
     assert store.read("size").height == 1
-    assert staged_shards(store) == []
+    assert staged_shards(store, STAGING_DIR) == []
 
 
 def test_补跑过去日期后后缀重放把底库带回最新(root: Path) -> None:

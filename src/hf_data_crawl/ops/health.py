@@ -58,10 +58,6 @@ class HealthRecord:
     #: 这次体检是否在一份一致快照上跑；旧记录没有该字段，读作 True。
     snapshot: bool = True
 
-    @property
-    def healthy(self) -> bool:
-        return not self.problems
-
 
 def read(store: DatasetStore) -> list[HealthRecord]:
     """读全部历史，按时间升序。坏行跳过——体检流水坏掉不该拖垮体检本身。"""

@@ -97,7 +97,7 @@ class RateLimiter:
 
     def acquire(self) -> None:
         """取一个放行名额；必要时睡到下一个名额的时间点。"""
-        if self._interval <= 0:
+        if not self.enabled:
             return
         with self._lock:
             now = self._clock()

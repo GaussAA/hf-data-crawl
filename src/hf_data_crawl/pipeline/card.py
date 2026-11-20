@@ -40,7 +40,7 @@ PARALLEL_MIN_FILES = 64
 MAX_WORKERS = min(8, os.cpu_count() or 1)
 
 #: 一个分块产出的 (排序键, 宽表, 明细表)。按分块而不是整体回传，父进程才能
-#: 按与 `read_batches` 相同的键序归并，保证「同 id 以最后写入者为准」不变。
+#: 按与逐文件 `load_batches` 相同的键序归并，保证「同 id 以最后写入者为准」不变。
 _CardPart = tuple[tuple[Any, ...], pl.DataFrame, pl.DataFrame]
 
 #: 卡片里可直接取出的标量/列表字段：卡片键 → 宽表列。
@@ -87,7 +87,7 @@ def extract_files(
     构造 DataFrame，只回传 Arrow 序列化后的表。
 
     每个分块带回自己的排序键，父进程按既有键序归并后再落表，因此与串行
-    「`read_batches` 排序 → 逐条抽取」逐行等价（见 tests/pipeline/test_card.py 的等价测试）。
+    「`load_batches` 排序 → 逐条抽取」逐行等价（见 tests/pipeline/test_card.py 的等价测试）。
     """
     stamp = snapshot_date.isoformat()
     jobs = [(tuple(str(path) for path in chunk), stamp) for chunk in _chunks(files)]

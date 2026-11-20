@@ -237,7 +237,7 @@ def test_历史gzip分块与新zstd分块混存时都能读(store: DatasetStore)
     # 整天读：两种后缀都要被 batch_files 收进来
     names = {path.name for path in raw.batch_files(store, SNAPSHOT)}
     assert names == {legacy.name, fresh.name}
-    assert len(raw.read_batches(store, SNAPSHOT)) == 2
+    assert sum(len(raw.load_batches(path)) for path in raw.batch_files(store, SNAPSHOT)) == 2
 
     # 混存的一天照样能派生，且两个 id 都在
     bronze.build(store, SNAPSHOT)

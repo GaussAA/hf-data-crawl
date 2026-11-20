@@ -7,12 +7,14 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 import pytest
 
 from hf_data_crawl.pipeline import card, raw, state
 from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.runs import Outcome, write_run
 from hf_data_crawl.platform.store import DatasetStore
+from hf_data_crawl.platform.tables import README_SCHEMA, SIZE_SCHEMA
 from hf_data_crawl.query.gold import GoldCatalog
 from hf_data_crawl.query.report import Reporter, _num
 
@@ -283,7 +285,22 @@ def test_补齐矩阵把四种结局分开画(store: DatasetStore, tmp_path: Pat
     2026-11-20 之前首屏是四条单值覆盖率：卡片 68.6%、规模 74.4%、增速 98.1%、
     在架 99.9% 同形并排，单位其实有三种（我们有 / 有两次读数 / 还公开）。这一版把
     增补层拆成「有 / 没有 / 读不到 / 还没抓」四段，段由数据驱动，图例在行上方。
+
+    夹具必须真的造出 `unavailable` 与 `denied` 两种数据：只断图例 class，把
+    segments 改成只画「有」也照样绿。
     """
+    sizes: dict[str, list[Any]] = {name: [None, None] for name in SIZE_SCHEMA}
+    sizes["id"] = ["acme/alpha", "acme/beta"]
+    sizes["snapshot_date"] = [DAY1] * 2
+    sizes["status"] = ["unavailable", "ok"]
+    store.upsert("size", pl.DataFrame(sizes, schema=SIZE_SCHEMA))
+
+    readmes: dict[str, list[Any]] = {name: [None, None] for name in README_SCHEMA}
+    readmes["id"] = ["acme/alpha", "acme/beta"]
+    readmes["snapshot_date"] = [DAY1] * 2
+    readmes["status"] = ["denied", "absent"]
+    store.upsert("readme", pl.DataFrame(readmes, schema=README_SCHEMA))
+
     content = _page(store, tmp_path)
 
     for token in (
@@ -296,6 +313,13 @@ def test_补齐矩阵把四种结局分开画(store: DatasetStore, tmp_path: Pat
     ):
         assert token in content, token
     assert content.count('class="fill-row"') == 5
+
+    size_row = content[content.index(">规模</span>") : content.index(">README</span>")]
+    assert "不可用 1" in size_row, "规模行的「读不到」必须来自数据，不是模板常量"
+    assert '<i class="unknown"' in size_row
+
+    readme_row = content[content.index(">README</span>") : content.index(">文件清单</span>")]
+    assert "门禁 1" in readme_row and "没有 1" in readme_row
 
 
 def test_补齐矩阵的余量按资产各自的语义算(store: DatasetStore, tmp_path: Path) -> None:

@@ -172,7 +172,14 @@ STAGING_ROOT = ".staging"
 
 
 def staging_root(store: DatasetStore, subdir: str) -> Path:
-    """某条链路的暂存分片目录。"""
+    """某条链路的暂存分片目录。
+
+    `subdir` 必须是完整相对路径（`.staging/<链路>`）：这里只做 `store.root / subdir`，
+    传裸目录名会把分片落到数据根下——doctor 的残留检查只扫 `.staging/`，既看不见也
+    清不掉。2026-11-20 的 preview 就这么漏过一次（DECISIONS #143）。
+    """
+    if not subdir.startswith(f"{STAGING_ROOT}/"):
+        raise ValueError(f"暂存目录必须以 {STAGING_ROOT}/ 开头：{subdir!r}")
     return store.root / subdir
 
 

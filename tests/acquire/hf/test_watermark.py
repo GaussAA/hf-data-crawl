@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from hf_data_crawl.acquire.hf.checkpoint import MemoryCheckpoint
+from hf_data_crawl.acquire.hf.checkpoint import FileCheckpoint
 from hf_data_crawl.acquire.hf.watermark import (
     Watermark,
     WatermarkCheckpoint,
@@ -193,7 +193,7 @@ def test_watermark持久化和加载(tmp_path: Path) -> None:
     """测试 WatermarkCheckpoint 的持久化。"""
     watermark_path = tmp_path / "watermark.txt"
 
-    base_checkpoint = MemoryCheckpoint()
+    base_checkpoint = FileCheckpoint(tmp_path / "base-checkpoint.json")
     wm_checkpoint = WatermarkCheckpoint(base_checkpoint, watermark_path)
 
     # 初始状态：空水位线
@@ -221,7 +221,7 @@ def test_完成时保留水位线且清除游标(tmp_path: Path) -> None:
     """
     watermark_path = tmp_path / "watermark.txt"
 
-    base_checkpoint = MemoryCheckpoint()
+    base_checkpoint = FileCheckpoint(tmp_path / "base-checkpoint.json")
     wm_checkpoint = WatermarkCheckpoint(base_checkpoint, watermark_path)
     wm_checkpoint.save("cursor123", Watermark("2026-11-07T00:20:00Z"))
     assert watermark_path.exists()
@@ -237,7 +237,7 @@ def test_完成时保留水位线且清除游标(tmp_path: Path) -> None:
 def test_水位线可独立写入且不受游标影响(tmp_path: Path) -> None:
     """首轮 cursor 本就是 None，写水线不应被误判成「一轮完成」。"""
     watermark_path = tmp_path / "watermark.txt"
-    base_checkpoint = MemoryCheckpoint()
+    base_checkpoint = FileCheckpoint(tmp_path / "base-checkpoint.json")
     wm_checkpoint = WatermarkCheckpoint(base_checkpoint, watermark_path)
 
     wm_checkpoint.save_watermark(Watermark("2026-11-07T00:20:00Z"))
@@ -254,7 +254,7 @@ def test_损坏的水位线文件返回空水位线(tmp_path: Path) -> None:
     # 写入损坏内容
     watermark_path.write_text("not-a-timestamp", encoding="utf-8")
 
-    base_checkpoint = MemoryCheckpoint()
+    base_checkpoint = FileCheckpoint(tmp_path / "base-checkpoint.json")
     wm_checkpoint = WatermarkCheckpoint(base_checkpoint, watermark_path)
 
     # 应返回空水位线

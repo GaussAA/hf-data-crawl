@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from datetime import date
@@ -29,7 +30,7 @@ from ..platform.coerce import (
     as_list,
     as_text,
 )
-from ..platform.tables import BRONZE_SCHEMA, table, url_for
+from ..platform.tables import BRONZE_SCHEMA, BRONZE_SOURCE_FIELDS, table, url_for
 from . import raw
 
 if TYPE_CHECKING:
@@ -40,40 +41,54 @@ PARALLEL_MIN_FILES = 64
 MAX_WORKERS = 12
 
 
+#: 源字段 → 值的编码器；没列在这里的按文本处理。
+#:
+#: 与 `BRONZE_SOURCE_FIELDS` 分工：那张表回答「请求哪个字段、落到哪一列」，这张
+#: 表只回答「怎么编码」。列清单只写一处，新增字段漏了编码器时，`BRONZE_SCHEMA`
+#: 的类型会当场拒收，不会静默塞进一个字符串。
+_SOURCE_COERCERS: dict[str, Callable[[Any], Any]] = {
+    "created_at": as_datetime,
+    "last_modified": as_datetime,
+    "downloads": as_int,
+    "downloads_all_time": as_int,
+    "likes": as_int,
+    "trending_score": as_float,
+    "private": as_bool,
+    "disabled": as_bool,
+    "main_size": as_int,
+    "xet_enabled": as_bool,
+    "resource_group": as_json,
+    # 走 `as_list` 而不是手写 isinstance 判断：上游可能把标签序列化成字符串，
+    # 而 `[...] if isinstance(tags, list) else []` 会把它静默当成「没有标签」，
+    # 16 个标签维度一次性变空，silver 还把这批空值当属性变更写进流水。
+    "tags": lambda value: as_list(value) or [],
+}
+
+
 def to_row(record: Any, snapshot_date: date, page_file: str) -> dict[str, Any] | None:
-    """一条原始记录 → Bronze 行；缺 id 或形态不对则丢弃。"""
+    """一条原始记录 → Bronze 行；缺 id 或形态不对则丢弃。
+
+    列集合与 HF 字段名的对应关系只来自 `BRONZE_SOURCE_FIELDS`：这里不再手抄第二
+    份，2026-11-04「private 列整列为空」的事故正是两份清单各写各的。
+    """
     if not isinstance(record, dict):
         return None
     dataset_id = record.get("id")
     if not isinstance(dataset_id, str) or not dataset_id:
         return None
-    tags = record.get("tags")
-    return {
-        "id": dataset_id,
-        "url": url_for(dataset_id),
-        "author": as_text(record.get("author")),
-        "sha": as_text(record.get("sha")),
-        "created_at": as_datetime(record.get("createdAt")),
-        "last_modified": as_datetime(record.get("lastModified")),
-        "downloads": as_int(record.get("downloads")),
-        "downloads_all_time": as_int(record.get("downloadsAllTime")),
-        "likes": as_int(record.get("likes")),
-        "trending_score": as_float(record.get("trendingScore")),
-        "gated": as_text(record.get("gated")),
-        "private": as_bool(record.get("private")),
-        "disabled": as_bool(record.get("disabled")),
-        "main_size": as_int(record.get("mainSize")),
-        "xet_enabled": as_bool(record.get("xetEnabled")),
-        "resource_group": as_json(record.get("resourceGroup")),
-        # 走 `as_list` 而不是手写 isinstance 判断：上游可能把标签序列化成字符串，
-        # 而 `[...] if isinstance(tags, list) else []` 会把它静默当成「没有标签」，
-        # 16 个标签维度一次性变空，silver 还把这批空值当属性变更写进流水。
-        "tags": as_list(tags) or [],
-        "description": as_text(record.get("description")),
-        "raw": json.dumps(record, ensure_ascii=False, sort_keys=True),
-        "page_file": page_file,
-        "snapshot_date": snapshot_date,
+    row: dict[str, Any] = {
+        column: _SOURCE_COERCERS.get(column, as_text)(record.get(source))
+        for column, source in BRONZE_SOURCE_FIELDS.items()
     }
+    row.update(
+        {
+            "url": url_for(dataset_id),
+            "raw": json.dumps(record, ensure_ascii=False, sort_keys=True),
+            "page_file": page_file,
+            "snapshot_date": snapshot_date,
+        }
+    )
+    return row
 
 
 def _load_rows(job: tuple[str, str]) -> list[tuple[tuple[Any, ...], pl.DataFrame]]:

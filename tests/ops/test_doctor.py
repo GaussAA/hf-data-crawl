@@ -1179,34 +1179,44 @@ def test_已知缺口之外的新断日照常判红(tmp_path: Path) -> None:
 # ---------------------------------------------------------------- 字段级新鲜度
 
 
-def test_字段新鲜度把标量与富化表分开报(tmp_path: Path) -> None:
-    """一个「新鲜」笼统结论会骗人：标量每日全站刷，规模按内容变才刷。
+def test_字段新鲜度以最近成功对账日为基准而非日历日(tmp_path: Path) -> None:
+    """链条 03:10 才跑：凌晨 01:40 查一次，不能因为「今天还没扫」就判全红。
 
-    这里只验口径：今日全见过的底库不该判红，且四类字段各有各的数字。
+    基准取最近一次成功对账的快照日（这里是 11-09），不是 11-10 这个日历日。
+    四类字段各报各的数：规模「有行」与「有值」必须分开。
     """
+    field_now = datetime(2026, 11, 10, 1, 40)
+    field_sweep = datetime(2026, 11, 9, 23, 50)
     store = DatasetStore(tmp_path / "data")
-    put_current(store, NOW.date())
-    make_run(store, "reconcile", NOW)
+    put_current(store, field_sweep.date(), rows=2)
+    sizes: dict[str, list[Any]] = {name: [None, None] for name in SIZE_SCHEMA}
+    sizes["id"] = ["acme/ds-0", "acme/ds-1"]
+    sizes["snapshot_date"] = [field_sweep.date()] * 2
+    sizes["status"] = ["ok", "unavailable"]
+    sizes["num_rows"] = [100, None]
+    store.write("size", pl.DataFrame(sizes, schema=SIZE_SCHEMA))
+    make_run(store, "reconcile", field_sweep)
 
-    item = next(f for f in diagnose(store, NOW) if f.text.startswith("字段新鲜度"))
+    item = next(f for f in diagnose(store, field_now) if f.text.startswith("字段新鲜度"))
 
-    assert not item.problem
-    assert "列表字段最近一轮（2026-11-10）覆盖 100.0%" in item.text
-    assert "卡片覆盖" in item.text
-    assert "规模待重取" in item.text
+    assert not item.problem, item.text
+    assert "列表字段最近一轮（2026-11-09）覆盖 100.0%" in item.text
+    assert "规模 有行 100% / 有值 50%" in item.text
 
 
 def test_全站扫描没扫完时字段新鲜度判红(tmp_path: Path) -> None:
-    """列表字段今日占比是「这轮扫完没有」的直接证据，低于九成即不合格。
+    """列表字段占比是「这轮扫完没有」的直接证据，低于九成即不合格。
 
     库老了但仍是 active，说明它已连续多轮没被列表扫到——那正是扫描被截断或
     中途失败的样子，而不是「它本来就没变」。
     """
+    field_now = datetime(2026, 11, 10, 1, 40)
+    field_sweep = datetime(2026, 11, 9, 23, 50)
     store = DatasetStore(tmp_path / "data")
-    put_current(store, NOW.date() - timedelta(days=2))
-    make_run(store, "reconcile", NOW)
+    put_current(store, field_sweep.date() - timedelta(days=2))
+    make_run(store, "reconcile", field_sweep)
 
-    item = next(f for f in diagnose(store, NOW) if f.text.startswith("字段新鲜度"))
+    item = next(f for f in diagnose(store, field_now) if f.text.startswith("字段新鲜度"))
 
     assert item.problem
     assert "没扫完" in item.text

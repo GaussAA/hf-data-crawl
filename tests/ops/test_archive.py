@@ -133,11 +133,19 @@ def test_没有raw的日期返回None(store: DatasetStore) -> None:
 def test_card标签只合并不去重(store: DatasetStore) -> None:
     from hf_data_crawl.pipeline import card
 
-    before = [batch.records for batch in raw.read_batches(store, DAY, label=raw.CARD_LABEL)]
+    before = [
+        batch.records
+        for path in raw.batch_files(store, DAY, label=raw.CARD_LABEL)
+        for batch in raw.load_batches(path)
+    ]
 
     archive_day(store, DAY)
 
-    after = [batch.records for batch in raw.read_batches(store, DAY, label=raw.CARD_LABEL)]
+    after = [
+        batch.records
+        for path in raw.batch_files(store, DAY, label=raw.CARD_LABEL)
+        for batch in raw.load_batches(path)
+    ]
     assert after == before
     assert card.build(store, DAY)[0] == 1
 
