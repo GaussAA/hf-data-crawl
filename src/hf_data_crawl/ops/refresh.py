@@ -28,9 +28,11 @@
 ==========
 - **续跑**：启动时读当天的 runs 台账，「命令成功过」就跳过。`collect` 只认
   `stopped_reason == "end"`——水位线早停不算全站扫完。
-- **依赖封闭**：「今天已完成」只在它**每个前置今天也完成**时成立。台账记不住一条
-  命令用的是哪一版数据——白天手动跑过 `build`/`export`、夜里才补采集时，若不收缩，
-  导出会停在旧采集上，而摘要只写一行「今天已完成」。
+- **依赖封闭**：「今天已完成」只在它**每个前置今天也完成、且完成时刻不晚于自己**时
+  成立。台账记不住一条命令用的是哪一版数据——白天手动跑过 `build`/`export`、夜里才补
+  采集时，若不收缩，导出会停在旧采集上，而摘要只写一行「今天已完成」。
+  光比名字不够：2026-11-20 的 `sizes` 00:32 跑完、`collect` 23:08 才定稿，两者都
+  「今天完成」，但前者用的是前一天的底库。所以还要比时刻（见 `_dependency_closed`）。
 - **软边界**：超过 `--launch-hours`（默认 8 小时）不再启动新的抓取；已在跑的
   会自然收尾，总时长可能略超 `--budget-hours`（默认 8.5 小时）。到边界后
   `doctor` 照常跑，它是唯一能说明「今天哪里没跑完」的环节。
@@ -49,6 +51,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 from ..platform.runs import Outcome, read_runs
 from ..platform.store import DatasetStore
@@ -106,10 +109,16 @@ SERIAL_HEAD: tuple[Step, ...] = (
 )
 
 #: ② 并行段：对账持锁，两个抓取在锁外。各自走不同端点，限速互不干扰。
+#:
+#: 两个抓取都 `needs=("build",)`：它们的**候选集来自 `current`**（陈旧 = 内容变过的、
+#: 缺口 = 还没有记录的），而 `current` 由 `collect` + `build` 定稿。不写这条依赖，
+#: 它们就只是「今天跑过」——2026-11-20 实际发生：00:32 按前一天的底库刷了 163 个
+#: 规模 / 6,202 个 README，23:08 全站采集才定稿，摘要里这两步却写着「今天已完成」，
+#: 于是当晚新采到与刚变更的库，一个都没轮到。
 PARALLEL: tuple[Step, ...] = (
     Step("reconcile", ("reconcile",)),
-    Step("sizes", ("fetch-sizes", "--changed-all"), command="fetch-sizes"),
-    Step("readme", ("fetch-readme", "--changed-all"), command="fetch-readme"),
+    Step("sizes", ("fetch-sizes", "--changed-all"), needs=("build",), command="fetch-sizes"),
+    Step("readme", ("fetch-readme", "--changed-all"), needs=("build",), command="fetch-readme"),
 )
 
 #: ③ 收尾。导出只依赖 sizes：35 列契约里的 `server_*` 四列来自 `size` 表。
@@ -155,15 +164,34 @@ class StepResult:
     log: Path | None = None
 
 
-def today_successes(store: DatasetStore) -> set[str]:
-    """今天已经成功跑过的**步骤名**。`collect` 只认「扫到末页」那次。
+def _finished_at(item: dict[str, Any]) -> datetime | None:
+    """一轮运行的完成时刻。缺 `finished_at` 的退回 `started_at`。
+
+    用完成时刻而不是开始时刻：并行段里 `fetch-sizes` 可能比 `collect` 记得晚开始
+    一点、却早结束，比开始时刻会把「谁用的数据更新」判反。
+    """
+    for key in ("finished_at", "started_at"):
+        raw = str(item.get(key) or "")
+        if not raw:
+            continue
+        try:
+            return datetime.fromisoformat(raw)
+        except ValueError:
+            continue
+    return None
+
+
+def _success_times(store: DatasetStore) -> dict[str, datetime]:
+    """今天成功跑过的**步骤名 → 它最后一次成功的完成时刻**。`collect` 只认扫到末页那次。
 
     台账记的是子命令名（`fetch-sizes` / `export-wide` / `request-run-due`），步骤名
     是它的短名（`sizes` / `export` / `deliver`）。这一步换算不能省：直接拿短名去
     比对台账，七个步骤永远比不上，续跑每天白跑一遍，而输出里看不出异常。
+
+    同一命令今天跑过多轮时取**最晚**完成的那次——最晚那次才是当前数据的来源。
     """
     today = date.today().isoformat()
-    commands: set[str] = set()
+    times: dict[str, datetime] = {}
     for item in read_runs(store):
         if item.get("status") != "success":
             continue
@@ -175,11 +203,20 @@ def today_successes(store: DatasetStore) -> set[str]:
             if payload.get("stopped_reason") != "end":
                 # 水位线早停那次不是全站扫完，不算采集定稿。
                 continue
-        commands.add(command)
-    return {step.name for step in ALL_STEPS if step.ledger in commands}
+        stamp = _finished_at(item)
+        if stamp is None:
+            continue
+        if command not in times or stamp > times[command]:
+            times[command] = stamp
+    return {step.name: times[step.ledger] for step in ALL_STEPS if step.ledger in times}
 
 
-def _dependency_closed(done: set[str]) -> set[str]:
+def today_successes(store: DatasetStore) -> set[str]:
+    """今天已经成功跑过的**步骤名**（不含先后关系，供 `--only` 的提示用）。"""
+    return set(_success_times(store))
+
+
+def _dependency_closed(store: DatasetStore) -> set[str]:
     """把「今天已完成」收成依赖封闭集：上游没用今天的结果，下游也不算完成。
 
     台账只记「这条命令今天成功过」，记不住它**用的是哪一版数据**。2026-11-20
@@ -187,18 +224,26 @@ def _dependency_closed(done: set[str]) -> set[str]:
     采集；若照台账办，这两个会被「今天已完成」挡掉，导出的口径就停在旧采集上，
     而摘要里只有一行「今天已完成」，看不出它已经过期。
 
-    规则：一个步骤只有在**它的每个前置今天也完成**时才算完成。链条无环，逐轮
-    剔除即可收敛。
+    规则有两条，缺一不可：
+
+    1. 前置今天也要完成（`needs` 里每一个都在）；
+    2. 前置的**完成时刻不晚于**自己——同一份台账里，`sizes` 可以 00:32 跑完、
+       `collect` 23:08 才跑完，两者都在「今天」，但 `sizes` 用的是昨夜那批库。
+       只比「在不在集合里」会把它当成新鲜产物（2026-11-20 实际发生）。
+
+    链条无环，逐轮剔除即可收敛。
     """
-    keep = set(done)
+    keep = _success_times(store)
     changed = True
     while changed:
         changed = False
         for step in ALL_STEPS:
-            if step.name in keep and any(need not in keep for need in step.needs):
-                keep.discard(step.name)
+            if step.name not in keep:
+                continue
+            if any(need not in keep or keep[need] > keep[step.name] for need in step.needs):
+                del keep[step.name]
                 changed = True
-    return keep
+    return set(keep)
 
 
 def _command(step: Step, root: Path) -> list[str]:
@@ -350,7 +395,7 @@ def execute(
     emit = log or print
     started = time.monotonic()
     plan = Plan()
-    done = _dependency_closed(today_successes(store)) if only is None else set()
+    done = _dependency_closed(store) if only is None else set()
     failed: set[str] = set()
 
     def over_launch() -> bool:

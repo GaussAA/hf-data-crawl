@@ -203,6 +203,11 @@ uv run python -c "from pathlib import Path; from hf_data_crawl.pipeline.raw impo
 并行分支照常跑完。**09:00 软边界**：之后不再启动新的抓取，未完成的步骤次日从
 runs 台账 + staging 分片续跑；次日 00:30 若发现上一条还在跑，跳过本次触发。
 
+**「今天已完成」是有条件的**（DECISIONS #150 / #151）：它要求前置今天也完成，且
+前置的**完成时刻不晚于自己**。同一天里白天手工跑过、夜里才补采集时，`build` /
+`export` / `sizes` / `readme` / `parse` 都会按新底库重开——摘要里会写「今天已完成」
+以外的空备注，表示这一轮真跑了。判断依据只有一处：`runs/` 台账的 `finished_at`。
+
 旧的六个任务（`hf-daily` / `hf-sizes` / `hf-files` / `hf-archive` / `hf-compact` /
 `hf-readme`）已删除并并入本链。README 全量（约 21 小时）仍不排日程，留人工择机。
 

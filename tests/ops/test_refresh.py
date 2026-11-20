@@ -314,8 +314,12 @@ def test_昨天成功的记录不算今天完成(tmp_path: Path, monkeypatch) ->
 def test_并行段里已完成的那一步不再跑(tmp_path: Path, monkeypatch) -> None:
     # 台账记的是子命令名 `fetch-sizes`，步骤短名是 `sizes`。这条用例原先按短名
     # 播种，于是「续跑」在真实台账上从来没有生效过，测试却一直绿。
+    # 采集与派生也要种上：两者的候选集来自 `current`，上游没跑完时「已完成」不算数。
     store = DatasetStore(tmp_path / "data")
-    seed_run(store, "fetch-sizes")
+    base = datetime.now().replace(hour=0, minute=10, second=0, microsecond=0)
+    seed_run(store, "collect", payload={"stopped_reason": "end"}, when=base)
+    seed_run(store, "build", when=base + timedelta(minutes=3))
+    seed_run(store, "fetch-sizes", when=base + timedelta(minutes=5))
 
     calls = fake_steps(monkeypatch)
     plan = refresh.execute(store, log=lambda _: None)
@@ -323,6 +327,32 @@ def test_并行段里已完成的那一步不再跑(tmp_path: Path, monkeypatch)
     assert "sizes" not in calls
     sizes = _result(plan, "sizes")
     assert sizes is not None and sizes.note == "今天已完成"
+
+
+def test_前置比它完成得晚时今天已完成不算数(tmp_path: Path, monkeypatch) -> None:
+    """00:32 刷过规模、23:08 才定稿采集——那份规模用的是昨夜的底库。
+
+    「今天完成过」只回答了名字，没回答先后。2026-11-20 实况：00:32 的
+    `fetch-sizes` 按前一天 11-19 的底库刷了 163 个，22:53 起全站采集才定稿；
+    照集合判定，这两步都算「今天已完成」，于是当晚新采到与刚变更的库一个都没轮到
+    ——摘要里三行「今天已完成」，看着毫无异常。改成比完成时刻之后，
+    上游晚于自己完成的下游一律重开。
+    """
+    store = DatasetStore(tmp_path / "data")
+    base = datetime.now().replace(hour=0, minute=32, second=0, microsecond=0)
+    seed_run(store, "fetch-sizes", when=base)
+    seed_run(store, "fetch-readme", when=base + timedelta(seconds=20))
+    seed_run(store, "collect", payload={"stopped_reason": "end"}, when=base + timedelta(hours=22))
+    seed_run(store, "build", when=base + timedelta(hours=22, minutes=1))
+
+    calls = fake_steps(monkeypatch)
+    plan = refresh.execute(store, log=lambda _: None)
+
+    assert "sizes" in calls, "采集晚于规模抓取，规模必须按新底库重刷"
+    assert "readme" in calls, "采集晚于 README 抓取，README 必须按新底库重抓"
+    assert "build" not in calls, "采集之后已经跑过 build，它不该重跑"
+    sizes = _result(plan, "sizes")
+    assert sizes is not None and sizes.note == "", "不该再记成「今天已完成」"
 
 
 def test_收尾段里已完成的那一步不再跑(tmp_path: Path, monkeypatch) -> None:
