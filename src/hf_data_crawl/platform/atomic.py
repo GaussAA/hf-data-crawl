@@ -26,7 +26,7 @@ import polars as pl
 REPLACE_BACKOFF: tuple[float, ...] = (0.02, 0.06, 0.18)
 
 
-def _temp_for(path: Path) -> Path:
+def temp_for(path: Path) -> Path:
     return path.with_suffix(path.suffix + ".tmp")
 
 
@@ -57,7 +57,7 @@ def replace(temp: Path, target: Path) -> None:
 def write_bytes(path: Path, payload: bytes) -> None:
     """原子写入字节。父目录不存在时自动创建。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = _temp_for(path)
+    temp = temp_for(path)
     temp.write_bytes(payload)
     replace(temp, path)
 
@@ -91,7 +91,7 @@ def write_parquet(
             - 其他格式忽略此参数
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = _temp_for(path)
+    temp = temp_for(path)
     frame.write_parquet(temp, compression=compression, compression_level=compression_level)
     replace(temp, path)
 
@@ -99,6 +99,6 @@ def write_parquet(
 def write_csv(frame: pl.DataFrame, path: Path) -> None:
     """原子写入 CSV。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = _temp_for(path)
+    temp = temp_for(path)
     frame.write_csv(temp)
     replace(temp, path)

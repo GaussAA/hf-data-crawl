@@ -33,6 +33,7 @@
 
 from __future__ import annotations
 
+import argparse
 import subprocess
 import sys
 import time
@@ -537,7 +538,7 @@ def _report_dependencies(
     print(f"[提示] {detail}——今天没有成功记录，产物可能基于旧数据；加 --strict 可改为拒绝")
 
 
-def run(args, store: DatasetStore) -> Outcome:
+def run(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     """`refresh` 子命令入口。"""
     only: frozenset[str] | None = None
     if getattr(args, "only", None):

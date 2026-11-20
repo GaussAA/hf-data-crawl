@@ -2318,3 +2318,41 @@
      作者自己报的大数（1e14 行 × 1 列）照旧留着——删它就是在替作者改口，改用 caption
      说明。次要文字 `--ink-3` 的对比度从 4.1:1 提到 5.3:1（同一暖灰色相内提亮一档），
      覆盖率数字统一走 `share_text`（69%，不是 68.6%），全项目一个写法。
+
+142. **类型检查换成 basedpyright strict：关掉 Unknown 家族，不是关掉严格**（2026-11-20，清测试时顺手把类型门槛提上去）：
+
+     工具侧：`pyright 1.1.408`（standard 档，只查 src）换成 `basedpyright 1.40.2`
+     （内核 pyright 1.1.414；同一套语言服务，多出 recommended / all 两档与 based
+     专属规则）。命令、pre-commit 钩子、CI job、`uv.lock` 一起换，检查范围仍是 src——
+     tests 归 mypy，#125 的双尺子分工不变。
+
+     **为什么不是「开关一拨就完」**：同一份代码在 basedpyright 的 standard 档下仍是
+     0 错，切到 strict 立刻 **759 处**。按规则分组，740 处是 `reportUnknown*` 家族
+     （member 402、variable 194、argument 137、parameter 7）：HF API 的 JSON、
+     `orjson.loads` 的返回值、pyarrow 的运行时属性都没有静态形状，Any 落进 `dict`
+     后沿每个调用点扩散。给它们逐层编 TypedDict 不是「改真实类型」，是给数据加壳；
+     真正的边界在 API 响应与 parquet 文件，而这两处本来也不由类型系统守。
+
+     **取舍**：strict 只关 `reportUnknownMemberType` / `reportUnknownVariableType` /
+     `reportUnknownArgumentType` / `reportUnknownParameterType` / `reportUnknownLambdaType`
+     五条，其余严格规则全开——standard 档不查的 `reportPrivateUsage`、
+     `reportUnusedImport`、`reportDeprecated`、`reportMissingTypeArgument` 都进来了。
+     pyarrow 有内联注解却缺 `py.typed`，用 `allowedUntypedLibraries = ["pyarrow"]`
+     放行这一个包，不关 `reportMissingTypeStubs`——后者会把真正没有类型信息的包一起放过。
+
+     **余下 14 处改的是代码，不是配置**：
+
+     - 两处跨模块用私有名：`watermark._is_reasonable_timestamp` → `is_reasonable_timestamp`，
+       `atomic._temp_for` → `temp_for`——既然别处要用，名字就该是公开的；
+     - `delivery.py` 的「导入即登记」改成显式 re-export（`from . import fill_exec as fill_exec`）：
+       静态检查看不见 import 副作用，`as` 同名是给它的通行信号；
+     - `doctor.py` 五处裸 `dict` 补成 `dict[str, Any]`（运行台账是 JSON，键值本就同质）；
+     - `refresh.run` 的 `args` 补 `argparse.Namespace`（其余 `run_*` 都这么写）；
+     - `lock.exclusive` 的 `@contextmanager` 返回注解按新 typeshed 改成 `Generator[None]`。
+
+     **留证**：strict 全开 759（740 Unknown）→ 关五条后 14 → 修完 0；同一份代码在
+     standard 档也是 0，说明换工具本身不改语义，14 处全是真的、能改类型的事。
+
+     **一条通则**：换工具不是换名字。档位、例外的规则名、以及「为什么这一条可以不查」，
+     要写进配置注释与 DECISIONS；只写 `typeCheckingMode = "strict"` 而把五条悄悄设成
+     none，下一个人会以为严格档真的全开了。

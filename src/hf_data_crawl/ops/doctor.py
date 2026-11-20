@@ -19,6 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 
@@ -145,7 +146,7 @@ class RunContext:
     store: DatasetStore
     #: 判定用的时刻。时序类判据（几小时没跑、几天没动）一律取它。
     now: datetime
-    runs: list[dict]
+    runs: list[dict[str, Any]]
     #: 底库全表。为空时各检查自己判「无法比对」，这里不做统一裁决。
     current: pl.DataFrame
     current_ids: frozenset[str]
@@ -197,7 +198,9 @@ def _run_time(value: object) -> datetime | None:
     return parsed
 
 
-def _last_success(runs: list[dict], command: str, done_reasons: frozenset[str]) -> datetime | None:
+def _last_success(
+    runs: list[dict[str, Any]], command: str, done_reasons: frozenset[str]
+) -> datetime | None:
     latest: datetime | None = None
     for item in runs:
         if item.get("command") != command or item.get("status") != "success":
@@ -214,7 +217,7 @@ def _last_success(runs: list[dict], command: str, done_reasons: frozenset[str]) 
 
 
 def _freshness(
-    runs: list[dict],
+    runs: list[dict[str, Any]],
     now: datetime,
     command: str,
     done_reasons: frozenset[str],
@@ -689,7 +692,7 @@ def _contract_coverage(ctx: RunContext) -> Finding:
     return Finding(False, f"交付面取值：{pending_text}；交付前跑对应采集命令，或注明这几列不提供")
 
 
-def _last_sweep_date(runs: list[dict]) -> date | None:
+def _last_sweep_date(runs: list[dict[str, Any]]) -> date | None:
     """最近一次**完整**全站对账的快照日；没跑完或没跑过则 None。
 
     快照日是「那轮本该覆盖到的那一天」，比 `finished_at` 稳：续跑、跨零点、
@@ -1158,9 +1161,9 @@ def _status_snapshot(ctx: RunContext) -> Finding:
     )
 
 
-def _latest_probe_payload(runs: list[dict]) -> dict | None:
+def _latest_probe_payload(runs: list[dict[str, Any]]) -> dict[str, Any] | None:
     """最近一轮带探测计数的对账摘要；升级前的旧记录没有这些字段，不据以下结论。"""
-    latest: dict | None = None
+    latest: dict[str, Any] | None = None
     for item in runs:
         if item.get("command") != "reconcile":
             continue
@@ -1243,7 +1246,7 @@ def _stale_temp_files(ctx: RunContext) -> Finding:
     return Finding(False, "没有残留的临时文件")
 
 
-def _failure_reason(item: dict) -> str:
+def _failure_reason(item: dict[str, Any]) -> str:
     """失败原因。旧版本只把它写在 `payload.error`，`reason` 为空，两处都要看。"""
     payload = item.get("payload")
     fallback = payload.get("error") if isinstance(payload, dict) else None

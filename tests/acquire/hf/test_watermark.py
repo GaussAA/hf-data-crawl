@@ -16,8 +16,8 @@ from hf_data_crawl.acquire.hf.checkpoint import MemoryCheckpoint
 from hf_data_crawl.acquire.hf.watermark import (
     Watermark,
     WatermarkCheckpoint,
-    _is_reasonable_timestamp,
     extract_last_modified,
+    is_reasonable_timestamp,
 )
 
 
@@ -26,29 +26,29 @@ def test_合理时间戳检查() -> None:
     now = datetime.now(UTC)
 
     # 当前时间合理
-    assert _is_reasonable_timestamp(now.isoformat())
+    assert is_reasonable_timestamp(now.isoformat())
 
     # 昨天合理
     yesterday = now - timedelta(days=1)
-    assert _is_reasonable_timestamp(yesterday.isoformat())
+    assert is_reasonable_timestamp(yesterday.isoformat())
 
     # 未来 6 天合理（在 7 天阈值内）
     future = now + timedelta(days=6)
-    assert _is_reasonable_timestamp(future.isoformat())
+    assert is_reasonable_timestamp(future.isoformat())
 
     # 未来 8 天不合理（超过 7 天阈值）
     far_future = now + timedelta(days=8)
-    assert not _is_reasonable_timestamp(far_future.isoformat())
+    assert not is_reasonable_timestamp(far_future.isoformat())
 
     # 2028 年不合理
-    assert not _is_reasonable_timestamp("2028-12-10T00:00:00Z")
+    assert not is_reasonable_timestamp("2028-12-10T00:00:00Z")
 
     # 2014 年不合理（早于 HF 成立）
-    assert not _is_reasonable_timestamp("2014-01-01T00:00:00Z")
+    assert not is_reasonable_timestamp("2014-01-01T00:00:00Z")
 
     # 无效格式
-    assert not _is_reasonable_timestamp("not-a-timestamp")
-    assert not _is_reasonable_timestamp("")
+    assert not is_reasonable_timestamp("not-a-timestamp")
+    assert not is_reasonable_timestamp("")
 
 
 def test_空水位线不触发停止() -> None:
@@ -345,8 +345,9 @@ def test_同时刻不改写水位线格式() -> None:
 
 
 def test_无时区后缀按UTC处理且不崩() -> None:
-    """naive 值与 aware 边界混用曾让 `min_time <= dt` 抛 TypeError。"""
-    assert _is_reasonable_timestamp("2026-11-07T00:20:00")
+    """naive 值与 aware 基线混用曾让比较抛 TypeError；两个方向各验一次。"""
+    watermark = Watermark("2026-11-07T00:20:00")
 
-    # 结论：is_stale 必须始终拿“开始时的基线”比较；本轮累积的新时间戳
-    # 只用于下一轮边界，不能改变本轮是否越界。
+    assert is_reasonable_timestamp("2026-11-07T00:20:00")
+    assert watermark.is_stale(["2026-11-07T00:19:59"]), "整页早于基线，应停"
+    assert not watermark.is_stale(["2026-11-07T00:20:01"]), "整页晚于基线，应续"

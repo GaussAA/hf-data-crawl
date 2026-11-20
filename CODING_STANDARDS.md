@@ -12,7 +12,7 @@
 | 检查 | 命令 | 范围 |
 | --- | --- | --- |
 | 类型 | `uv run mypy` | `src` + `tests`（`[tool.mypy] files`） |
-| 类型（补充） | `uv run pyright` | `src`（`[tool.pyright] include`） |
+| 类型（补充） | `uv run basedpyright` | `src`（`[tool.basedpyright] include`，`strict` 档） |
 | 静态 | `uv run ruff check .` / `uv run ruff format --check .` | 全仓 |
 | 测试 | `uv run pytest -q` | 全量 |
 | 覆盖率（观测） | `uv run pytest --cov=hf_data_crawl --cov-report=term-missing` | `src`（`[tool.coverage.run]`） |
@@ -32,7 +32,10 @@ lint 判「这行对不对」，覆盖率答「哪块没人看过」；后者没
 「`if` 只走了 true」记成已覆盖。
 
 类型错误必须改真实类型（显式注解、Protocol、让类型承载不变式），
-不得用 `type: ignore` 或临时豁免绕过。
+不得用 `type: ignore` 或临时豁免绕过。`[tool.basedpyright]` 的 strict 档只关
+`reportUnknown*` 五条，并给 pyarrow 登记 `allowedUntypedLibraries`——这是
+配置级、写进 DECISIONS #142 的取舍，不是逐行豁免；新增逐行 `# pyright: ignore`
+仍按临时豁免处理。
 
 **新增工具的收尾清单**：工具装进 `uv.lock` 后，须同步三处——
 `pyproject.toml` 的检查范围、pre-commit 与 CI 的调用命令、根目录
@@ -84,7 +87,7 @@ except Exception:
 外部 API 数据必须验证合理性，过滤异常值：
 
 ```python
-def _is_reasonable_timestamp(value: str) -> bool:
+def is_reasonable_timestamp(value: str) -> bool:
     # 过滤未来 7 天以外的异常值
     ...
 ```

@@ -32,9 +32,9 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "basedpyright==1.40.2",
     "mypy>=1.13,<2",
     "pre-commit>=4.0.0",
-    "pyright==1.1.408",
     "pytest>=9.2.0",
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.8",
@@ -64,18 +64,32 @@ files = ["src", "tests"]
 # `type: ignore`，不如在这一处声明「这个包没有类型信息可用」。
 #
 # 但**这不代表 pyarrow 无人把关**：它其实带内联注解，只是缺 `py.typed` 标记，
-# mypy 因此整包视作 Any，pyright 却能读到。所以涉及 pyarrow 的代码以 pyright 为准
-# ——2026-11-18 正是漏了这一步，十个钩子全过、CI 的 pyright 报 16 处。
+# mypy 因此整包视作 Any，basedpyright 却能读到。所以涉及 pyarrow 的代码以
+# basedpyright 为准——2026-11-18 正是漏了这一步，十个钩子全过、CI 报 16 处。
 module = ["pyarrow.*"]
 ignore_missing_imports = true
 
 
-[tool.pyright]
+[tool.basedpyright]
+# 严格档。换掉 pyright、为什么只关 Unknown 家族、以及 pyarrow 的处置，见
+# DECISIONS #142。
+#
+# 严格档会把「未知类型」沿调用链一路报下去：HF API 的 JSON 与 pyarrow 的运行时
+# 属性没有静态形状，给它们编 TypedDict 只是给数据加壳。因此只关 Unknown 家族五条，
+# 其余严格规则全开（含 reportPrivateUsage / reportUnusedImport / reportDeprecated
+# 等 standard 档不查的规则）。
+#
+# pyarrow 有内联注解却缺 `py.typed`：用 allowedUntypedLibraries 放行这一个包，
+# 而不是把 reportMissingTypeStubs 整条关掉——后者会连真正没类型信息的包一起放过。
 include = ["src"]
-venvPath = "."
-venv = ".venv"
 pythonVersion = "3.13"
-typeCheckingMode = "standard"
+typeCheckingMode = "strict"
+allowedUntypedLibraries = ["pyarrow"]
+reportUnknownMemberType = "none"
+reportUnknownVariableType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownParameterType = "none"
+reportUnknownLambdaType = "none"
 
 [tool.coverage.run]
 # 以包名计，与 CI 的 `--cov=hf_data_crawl` 同源；editable 安装下两者等价。

@@ -6,7 +6,7 @@
 重建这一整块」，而不必逐符号背书。
 
 为什么不逐符号：早期试过用惰性 `__getattr__` 把 15 个符号提到顶层，结果是
-pyright 对 `__all__` 报 15 条 `reportUnsupportedDunderAll`（静态看不见），而环
+basedpyright 对 `__all__` 报 15 条 `reportUnsupportedDunderAll`（静态看不见），而环
 检测同时把 `__init__ → derive` 与 `derive → __init__` 连成一条环。两条都是真信号：
 符号级门面在这个切片上换来的只是「写法好看」，代价却是静态可分析性。
 
@@ -18,9 +18,9 @@ pyright 对 `__all__` 报 15 条 `reportUnsupportedDunderAll`（静态看不见�
 并未成环，只是急切加载下会改变初始化时序。登记制不加载，该顾虑不再存在。
 
 上面那条 `reportUnsupportedDunderAll=false` 只为本文件而设：`__all__` 里写的是
-子模块名，pyright 要求这些名字先在本模块出现，而急切 `from . import raw` 会与
+子模块名，basedpyright 要求这些名字先在本模块出现，而急切 `from . import raw` 会与
 内部模块的 `from . import …` 连成环（环检测会如实报出来）。名字的真实性由
-`tests/test_architecture.py::test_门面登记的名字都真实存在` 逐条核对，不靠 pyright。
+`tests/test_architecture.py::test_门面登记的名字都真实存在` 逐条核对，不靠类型检查。
 """
 
 __all__ = [

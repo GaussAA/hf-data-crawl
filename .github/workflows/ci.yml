@@ -67,7 +67,7 @@ jobs:
         run: uv run ruff check .
 
   types:
-    name: Type check (pyright)
+    name: Type check (basedpyright)
     runs-on: ubuntu-latest
 
     steps:
@@ -82,10 +82,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked
 
-      # mypy 覆盖 src + tests，pyright 补 src 的交叉检查。版本由 uv.lock 钉住；
-      # 钉了却不跑等于没有，且下次升级时没人知道它会不会红。
-      - name: Run pyright
-        run: uv run pyright
+      # mypy 覆盖 src + tests，basedpyright 补 src 的严格档交叉检查。版本由
+      # uv.lock 钉住；钉了却不跑等于没有，且下次升级时没人知道它会不会红。
+      # 严格档只关 Unknown 家族五条的理由见 DECISIONS #142。
+      - name: Run basedpyright
+        run: uv run basedpyright
 
   docs:
     name: Check documentation

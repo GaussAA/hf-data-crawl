@@ -54,7 +54,13 @@ from typing import Any
 from ..platform.atomic import replace, write_bytes
 from ..platform.store import DatasetStore
 from ..query.gold import GoldCatalog, GoldNotReady
-from . import fill_exec, method, query_exec  # noqa: F401
+
+# 显式 re-export（`as` 同名）是给静态检查的信号：这两个模块导进来只为在 import 期
+# 把执行体写进 `EXECUTORS`，本模块不取任何名字。写成 `from . import fill_exec` 时
+# basedpyright strict 会报 reportUnusedImport——它看不见「导入即登记」这个副作用。
+from . import fill_exec as fill_exec
+from . import method
+from . import query_exec as query_exec
 from .contract import EXECUTORS, DeliveryBlocked, DeliveryUnchanged, Payload, RunContext
 from .header import header_change
 from .requirement import (

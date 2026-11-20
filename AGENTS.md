@@ -31,7 +31,7 @@ platform < pipeline < {acquire, query} < delivery < ops
 | 字段 / 数据形状 | `data/DATA.md`（生成物）、DECISIONS #62–#66、#128、`delivery/fields.py` | 表结构、字段含义、默认交付契约、同名列的两份事实与空值语义 |
 | 架构决策 / 术语 | `docs/adr/`、`DECISIONS.md`（编号条目）、`docs/agents/domain.md` | 当时的取舍与事故；术语怎么用 |
 | 提 issue / 写规格 | `docs/agents/issue-tracker.md` | `.scratch/<feature>/` 的目录与 Status 约定 |
-| 改提交钩子 / 质量门槛 | DECISIONS #125；`.pre-commit-config.yaml`（五项与 CI 一一对应）；`.github/workflows/ci.yml` | 本地与 CI 为什么必须是同一把尺子、mypy 与 pyright 各自的盲区 |
+| 改提交钩子 / 质量门槛 | DECISIONS #125、#142；`.pre-commit-config.yaml`（五项与 CI 一一对应）；`.github/workflows/ci.yml` | 本地与 CI 为什么必须是同一把尺子、mypy 与 basedpyright 各自的盲区、严格档为什么只关 Unknown 家族 |
 
 术语一律以 [GLOSSARY.md](GLOSSARY.md) 为准，新词先入表再用；带编号的设计决策与
 接口事实在 [DECISIONS.md](DECISIONS.md)，编号是稳定键（`DECISIONS #74`），只增不改。
@@ -51,12 +51,12 @@ platform < pipeline < {acquire, query} < delivery < ops
 - **一份事实只写一处**：`docs/README.md` 的「谁拥有什么」表说明每类事实该落在哪份文件；
   改文档前先查表，别在 README 里复述词表。
 - **提交前**：先 `uv run pre-commit install` 装一次钩子（新 clone 必做）；之后每次提交
-  由它跑 ruff / mypy / pyright / pytest / 文档链接，五项与 CI 一一对应。手动兜底
+  由它跑 ruff / mypy / basedpyright / pytest / 文档链接，五项与 CI 一一对应。手动兜底
   `uv run pre-commit run --all-files`，别只跑 `pytest`——2026-11-18 三次 CI 红全是
-  「本地漏跑某一项」造成的（ruff format 两次、pyright 一次），钩子没装时没人拦得住。
-- **mypy 与 pyright 是两把尺子，不是重复**：`pyarrow` 有内联注解却缺 `py.typed`，
-  mypy 整包当 Any、pyright 读得到——涉及 pyarrow（百万行表的流式读写）的改动，
-  只跑 mypy 等于没查。详见 DECISIONS #125。
+  「本地漏跑某一项」造成的（ruff format 两次、类型检查一次），钩子没装时没人拦得住。
+- **mypy 与 basedpyright 是两把尺子，不是重复**：`pyarrow` 有内联注解却缺 `py.typed`，
+  mypy 整包当 Any、basedpyright 读得到——涉及 pyarrow（百万行表的流式读写）的改动，
+  只跑 mypy 等于没查。详见 DECISIONS #125；basedpyright 的 strict 档与例外见 #142。
 - **覆盖率是观测，不是闸门**：CI 的 test 步骤跑 `--cov=hf_data_crawl`，但不设
   `--cov-fail-under`，pre-commit 也不含这一项。它答的是「哪块没人看过」，没有正确
   阈值，设死只会诱导为数字补空测试；口径与 `branch = true` 的理由见

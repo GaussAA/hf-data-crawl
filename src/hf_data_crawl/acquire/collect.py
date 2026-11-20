@@ -31,7 +31,7 @@ from .enrich import CARD_PAGES_CAP, scan_changed_cards
 from .hf.api import IDENTITY_EXPAND, MAX_LIMIT, HfDatasetApi, Page
 from .hf.checkpoint import FileCheckpoint
 from .hf.scan import ScanRun, ScanSpec, ScanSummary
-from .hf.watermark import WatermarkCheckpoint, _is_reasonable_timestamp, extract_last_modified
+from .hf.watermark import WatermarkCheckpoint, extract_last_modified, is_reasonable_timestamp
 
 #: 身份与指标基座定义在 `api.IDENTITY_EXPAND`（与 expand[] 白名单同处）：
 #: 任何写入 Raw 的扫描都必须含它，ScanSpec 在构造期校验。
@@ -183,7 +183,7 @@ class Collector:
                 if record["id"] in known
                 and baseline_time is not None
                 and timestamp
-                and _is_reasonable_timestamp(timestamp)
+                and is_reasonable_timestamp(timestamp)
                 and timestamp > baseline_time
             )
             new_ids += page_new

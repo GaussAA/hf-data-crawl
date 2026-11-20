@@ -28,7 +28,7 @@ import json
 import os
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -135,7 +135,7 @@ def _open_lock_file(root: Path, lock_name: str = LOCK_NAME) -> IO[bytes] | None:
 @contextlib.contextmanager
 def exclusive(
     root: Path, command: str, wait_seconds: float = 0.0, *, lock_name: str = LOCK_NAME
-) -> Iterator[None]:
+) -> Generator[None]:
     """持有数据目录的独占写锁；拿不到抛 `LockBusy`。
 
     `wait_seconds` 为 0（默认）时立刻失败，适合人工命令；计划任务给正数，

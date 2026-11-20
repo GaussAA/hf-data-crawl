@@ -16,7 +16,7 @@ import pyarrow as pa
 import pyarrow.dataset as pads
 import pyarrow.parquet as pq
 
-from .atomic import _temp_for, replace, write_parquet
+from .atomic import replace, temp_for, write_parquet
 from .tables import PolarsType, table
 
 __all__ = ["DatasetStore"]
@@ -159,7 +159,7 @@ class DatasetStore:
             return fresh.height
 
         old = pq.ParquetFile(target)
-        temp = _temp_for(target)
+        temp = temp_for(target)
         try:
             schema = old.schema_arrow
             # 列类型以**磁盘上的**为准：polars 的 Utf8 转 arrow 可能得到 large_string，
@@ -168,7 +168,7 @@ class DatasetStore:
             replaced = pa.array(fresh["id"].to_list(), type=schema.field("id").type)
             # 判据写成一条 dataset 表达式而非 `pyarrow.compute` 三步：
             # `pc.is_in` / `pc.invert` / `pc.sum` 是 Cython 运行时生成的属性，
-            # pyarrow 的类型注解里没有它们，pyright 会一并报「未知属性」。
+            # pyarrow 的类型注解里没有它们，basedpyright 会一并报「未知属性」。
             # 表达式这条路两边都认，且取反与计数都能就地表达。
             replace_ids = pads.field("id").isin(replaced)
             sink = pq.ParquetWriter(
@@ -176,7 +176,7 @@ class DatasetStore:
                 schema,
                 compression="zstd",
                 # 逐项传参而不是 `**options: dict[str, object]`：后者会把每个
-                # 关键字都收成 `object`，pyright 逐条报「不能赋给 str/bool」。
+                # 关键字都收成 `object`，basedpyright 逐条报「不能赋给 str/bool」。
                 compression_level=spec.compression_level,
             )
             survivors_total = 0

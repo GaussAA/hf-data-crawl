@@ -28,15 +28,17 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
-      # mypy 与 pyright 不是二选一，是两把不同的尺子。
+      # mypy 与 basedpyright 不是二选一，是两把不同的尺子。
       # 2026-11-18 的教训：pyarrow 26 有内联类型注解，却没有 `py.typed` 标记，
       # mypy 因此把整个包当 Any（`ignore_missing_imports` 更进一步把它静音），
-      # pyright 却能读到那些注解。于是「十个钩子全过」的提交在 CI 的 pyright
-      # 上见红 16 处——本地绿、远端红，最难查的一类偏差。
+      # basedpyright 却能读到那些注解。于是「十个钩子全过」的提交在 CI 上见红
+      # 16 处——本地绿、远端红，最难查的一类偏差。
+      # 2026-11-20 起换成 basedpyright 并开 strict 档；严格档为什么只关 Unknown
+      # 家族五条，见 DECISIONS #142。
       # 钩子时间会多约 40 秒，比一次推送后再补一个修复提交便宜。
-      - id: pyright
-        name: pyright (src)
-        entry: uv run pyright
+      - id: basedpyright
+        name: basedpyright (src, strict)
+        entry: uv run basedpyright
         language: system
         pass_filenames: false
         always_run: true

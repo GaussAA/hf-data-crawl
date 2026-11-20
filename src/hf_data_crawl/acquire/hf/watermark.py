@@ -102,7 +102,7 @@ def _valid_timestamps(values: list[str]) -> list[tuple[str, datetime]]:
     """过滤异常值，给出 (原始字符串, 时间点) 对：写回时保留上游格式。"""
     out: list[tuple[str, datetime]] = []
     for text in values:
-        if not text or not _is_reasonable_timestamp(text):
+        if not text or not is_reasonable_timestamp(text):
             continue
         parsed = _parse_timestamp(text)
         if parsed is not None:
@@ -110,7 +110,7 @@ def _valid_timestamps(values: list[str]) -> list[tuple[str, datetime]]:
     return out
 
 
-def _is_reasonable_timestamp(timestamp: str) -> bool:
+def is_reasonable_timestamp(timestamp: str) -> bool:
     """检查时间戳是否在合理范围内：2015-01-01 ~ 当前时间 + 7 天。"""
     dt = _parse_timestamp(timestamp)
     if dt is None:
@@ -177,7 +177,7 @@ class WatermarkCheckpoint:
                 return Watermark(None)
 
             # 验证是否是合理的时间戳
-            if _is_reasonable_timestamp(content):
+            if is_reasonable_timestamp(content):
                 return Watermark(content)
             else:
                 # 异常值，忽略
