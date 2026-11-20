@@ -188,6 +188,28 @@ def test_429退避后重试成功() -> None:
     assert len(sleeps) == 2 and all(s >= 7 for s in sleeps)
 
 
+def test_扫描撞满窗口的429会等满再继续而不是耗尽重试() -> None:
+    """全站扫 1140 页、配额约 1000/5 分钟，撞 429 是常态，不是故障。
+
+    2026-11-20 首跑：`t=300` 被 30 秒封顶截断，5 轮重试共 150 秒等不满窗口，
+    于是「重试已耗尽（HTTP 429）」，collect 判负、下游全部跳过。
+    改用 honor_window 后，一次退避就跨过窗口，重试次数给 1 次也够。
+    """
+    transport = ScriptedTransport(
+        [
+            (429, {"RateLimit": '"api";r=0;t=300'}, []),
+            (200, {}, [record("a/ok")]),
+        ]
+    )
+    sleeps: list[float] = []
+    api = HfDatasetApi(transport=transport, sleeper=sleeps.append, max_retries=1)
+
+    pages = list(api.scan(sort="lastModified"))
+
+    assert [r["id"] for r in pages[0].records] == ["a/ok"]
+    assert sleeps == [301.0]
+
+
 def test_重试耗尽时错误消息带最后一次状态码() -> None:
     """`持续限流或不可用` 分不清 429 与 5xx，而两者的处置完全不同。
 
@@ -235,7 +257,40 @@ def test_配额将尽时先等待再取下一页() -> None:
 
     list(api.scan(sort="createdAt"))
 
-    assert sleeps == [42]
+    # 3 个请求还剩 42 秒 ⇒ 每请求 14 秒。睡 42 秒等整窗重开也行，但那样剩下的
+    # 3 个配额全废；匀速能把它们用满，且不会在第 4 个请求上撞 429。
+    assert sleeps == [14.0]
+
+
+def test_配额偏紧时按剩余匀速而不是先把配额打光() -> None:
+    """`r=30;t=180` ⇒ 这一页之后每请求还能占 6 秒。
+
+    老逻辑要等剩余掉到 10 以下才停，意味着每轮扫描都得先撞一次 429；匀速把这
+    6 秒摊在每一页上，中途不撞墙。配额宽裕时（`r=400;t=180` ⇒ 0.45 秒，比网络
+    延迟还短）则不睡——那时瓶颈在往返，不在配额。
+    """
+
+    def paced(rate_header: str) -> list[float]:
+        class _T:
+            calls = 0
+
+            def get(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> HfResponse:
+                type(self).calls += 1
+                link = "" if self.calls >= 3 else f'<{url}?cursor=c{self.calls}>; rel="next"'
+                return HfResponse(
+                    status=200,
+                    headers={"RateLimit": rate_header, "Link": link}
+                    if link
+                    else {"RateLimit": rate_header},
+                    body=json.dumps([record(f"a/{self.calls}")]).encode(),
+                )
+
+        sleeps: list[float] = []
+        list(HfDatasetApi(transport=_T(), sleeper=sleeps.append).scan(sort="lastModified"))
+        return sleeps
+
+    assert paced('"api";r=30;t=180') == [6.0, 6.0]
+    assert paced('"api";r=400;t=180') == []
 
 
 def test_中断后从checkpoint续跑不重复入库(tmp_path: Path) -> None:
@@ -306,6 +361,41 @@ def test_连接持续中断超过重试次数即抛出() -> None:
         list(api.scan(sort="createdAt"))
 
 
+def test_扫描能熬过短时的连接中断而探测不行() -> None:
+    """连接中断没有答复可依据，只能靠退避熬；扫描多给 3 次（共约 3 分钟）。
+
+    2026-11-20 00:31 代理抖了一下，`collect` 五次重试共 31 秒没熬过去，当天整链
+    判负、下游全跳过。探测不享受这份宽限：它持写锁，熬久了会拖死整条链。
+    """
+
+    class _Blip:
+        def __init__(self, fails: int) -> None:
+            self.left = fails
+            self.calls = 0
+
+        def get(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> HfResponse:
+            self.calls += 1
+            if self.left > 0:
+                self.left -= 1
+                raise TransportError("SSL: UNEXPECTED_EOF_WHILE_READING")
+            return HfResponse(
+                status=200,
+                headers={"RateLimit": '"api";r=470;t=180'},
+                body=json.dumps([record("a/ok")]).encode(),
+            )
+
+    scanning = _Blip(7)
+    pages = list(HfDatasetApi(transport=scanning, sleeper=lambda _: None).scan(sort="lastModified"))
+    assert [r["id"] for r in pages[0].records] == ["a/ok"]
+    assert scanning.calls == 8
+
+    probing = _Blip(7)
+    assert (
+        HfDatasetApi(transport=probing, sleeper=lambda _: None).probe("a/ok").verdict == "unknown"
+    )
+    assert probing.calls == 6  # 首次 + 5 次重试，不多熬
+
+
 def test_响应头大小写不敏感() -> None:
     """真实接口经 HTTP/2 会把头名规范成小写，按大写查找会静默取空。"""
 
@@ -337,7 +427,8 @@ def test_响应头大小写不敏感() -> None:
 
     assert [r["id"] for page in pages for r in page.records] == ["a/1", "a/2"]
     assert pages[0].rate_remaining == 5
-    assert sleeps == [11]
+    # 顺带验到限流头也走小写读取：`r=5;t=11` ⇒ 每请求 2.2 秒（旧逻辑会睡整窗 11）。
+    assert sleeps == [2.2]
 
 
 # ---------------------------------------------------------------- 单库探测
@@ -439,6 +530,16 @@ def test_退避不睡满整个限流窗口() -> None:
     response = HfResponse(status=429, headers={"RateLimit": '"api";r=0;t=300'}, body=b"{}")
 
     assert api._retry_delay(response, 0) == MAX_RETRY_SLEEP
+    # 但扫描路径必须睡满窗口：`t=300` 截成 30 秒，5 轮重试共 150 秒等不满一个
+    # 窗口，整轮判负——2026-11-20 刷新链首跑就是这么丢掉一整天的。
+    assert api._retry_delay(response, 0, honor_window=True) == 301.0
+    # 上限兜底：窗口再长也不睡过 MAX_RATE_LIMIT_SLEEP（600 秒）。
+    assert (
+        api._retry_delay(
+            HfResponse(429, {"RateLimit": '"api";r=0;t=9000'}, b"{}"), 0, honor_window=True
+        )
+        == 600.0
+    )
     # 没有限流头时仍走指数退避，并保持原有 60 秒上限。
     plain = HfResponse(status=503, headers={}, body=b"{}")
     assert api._retry_delay(plain, 10) == 60.0

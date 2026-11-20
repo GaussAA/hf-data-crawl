@@ -97,7 +97,36 @@ RETRYABLE_STATUS: frozenset[int] = frozenset({429, 500, 502, 503, 504})
 
 #: 单次退避的上限（秒）。服务器给的 `retry-after` / `t=` 可能等于整个限流窗口，
 #: 照单全睡会让一次调用的退避加起来长达半小时以上；封顶后由调用方的预算兜底。
+#:
+#: 仅用于**逐条探测**（`probe` / `record`）：它们各自持着写锁，一次退避拖住整轮，
+#: 2026-11-13 实测堵死日常链 2 小时 50 分。扫描路径见 `MAX_RATE_LIMIT_SLEEP`。
 MAX_RETRY_SLEEP = 30.0
+
+#: 扫描路径（`scan`）单次退避的上限：睡满一个配额窗口。
+#:
+#: 这里的 30 秒封顶是 2026-11-20 刷新链首跑失败的**直接原因**：全站扫 1140 页，
+#: 配额约 1000 请求 / 5 分钟，第 1000 页前后必然撞 429；`t=300` 被截成 30 秒，
+#: 睡 5 轮共 150 秒，等不满一个窗口，于是「重试已耗尽（HTTP 429）」直接判负，
+#: 下游 build / export / deliver 全被跳过。扫描不持写锁、又是链条里最长的活，
+#: 它等得起——把窗口睡满，比假装重试更快地拿到数据。
+MAX_RATE_LIMIT_SLEEP = 600.0
+
+#: 扫描路径遇**连接中断**（非 HTTP 状态）时额外给的尝试次数。
+#:
+#: 与 429 分开：429 有 `t=` 可以照睡，是确定性的；SSL / 连接中断没有答复，只能
+#: 靠退避熬过去，而代理抖动的恢复时间不由我们决定。默认 5 次共 31 秒，2026-11-20
+#: 00:31 那次 SSL EOF 熬不过去，collect 直接判负、下游全跳过。加到 8 次后
+#: 1+2+4+8+16+32+60+60 ≈ 183 秒，够盖住一次短时的握手失败。
+TRANSPORT_RETRY_EXTRA = 3
+
+#: 单页两次请求之间的最小间隔（秒）低于这个数就不做匀速。
+#: 换算过来是 2 请求/秒——配额比这宽松时，网络的往返本身就是瓶颈，
+#: 再睡只是白白拖慢（实测正常一轮全站扫描 12–20 分钟，瓶颈在延迟不在配额）。
+PACE_FLOOR = 0.5
+
+#: 匀速时单页最长睡多久。再长就不如直接等窗口重开：`r=3;t=42`（每请求 14 秒）
+#: 与「睡 42 秒重开」总时长相同，但后者少 2 次白跑的往返。
+MAX_PACE_SLEEP = 60.0
 
 
 class TransportError(RuntimeError):
@@ -223,7 +252,6 @@ class HfDatasetApi:
         max_limit: int = MAX_LIMIT,
         sleeper: Callable[[float], None] | None = None,
         max_retries: int = 5,
-        low_quota_threshold: int = 10,
         retry_base_delay: float = 1.0,
     ) -> None:
         self._transport = transport
@@ -231,7 +259,6 @@ class HfDatasetApi:
         self._max_limit = max_limit
         self._sleeper = sleeper or time.sleep
         self._max_retries = max_retries
-        self._low_quota_threshold = low_quota_threshold
         self._retry_base_delay = retry_base_delay
         #: 重试耗尽时最后一次见到的失败，供错误消息带上。没有它，
         #: `持续限流或不可用` 分不清 429 与 5xx，而两者的处置完全不同
@@ -304,8 +331,11 @@ class HfDatasetApi:
             if max_pages is not None and max_pages > 0 and pages >= max_pages:
                 return
 
-            if remaining is not None and remaining < self._low_quota_threshold and reset_in:
-                self._sleeper(float(reset_in))
+            # 取下一页之前按剩余配额匀速。原先是「剩余 < 10 才等」，等于每次都要
+            # 先把配额打光、撞一次 429、再等窗口——长跑（全站 1140 页）必然如此。
+            pace = self._pace(remaining, reset_in)
+            if pace > 0:
+                self._sleeper(pace)
 
             params["cursor"] = next_cursor
 
@@ -369,7 +399,11 @@ class HfDatasetApi:
         return Probe(status=200, resolved_id=renamed_to or None)
 
     def _request(self, params: dict[str, Any]) -> HfResponse:
-        response = self._fetch(self._base_url, dict(params), {"Accept": "application/json"})
+        # 扫描路径传 `honor_window=True`：见 MAX_RATE_LIMIT_SLEEP 的注释——
+        # 30 秒封顶让它在 429 上必然重试耗尽，而它并不持锁，等得起一个整窗。
+        response = self._fetch(
+            self._base_url, dict(params), {"Accept": "application/json"}, honor_window=True
+        )
         if response is None:
             detail = self._last_failure or "未知"
             raise RuntimeError(f"HF 接口持续限流或不可用（最后一次：{detail}），重试已耗尽")
@@ -378,22 +412,33 @@ class HfDatasetApi:
         raise RuntimeError(f"HF 接口返回 {response.status}: {response.body[:200]!r}")
 
     def _fetch(
-        self, url: str, params: dict[str, Any], headers: dict[str, str]
+        self,
+        url: str,
+        params: dict[str, Any],
+        headers: dict[str, str],
+        *,
+        honor_window: bool = False,
     ) -> HfResponse | None:
         """单次 GET，带退避重试；可重试状态耗尽仍不成功时返回 None。
+
+        `honor_window` 决定 429 退避要不要睡满服务器给的窗口：扫描（长跑、不持锁）
+        要，逐条探测（持写锁、单次调用）不要。两者共用一条实现是刻意的，但**退避
+        策略必须分开**——同一条上限不可能同时对「1140 页」和「2000 次单条」成立。
 
         扫描与探测共用这一条，是刻意的：`probe` 原先直接调 transport，429 会原样
         落成 `unknown`，而 `unknown` 在判定表里是「先别动」——配额紧的时候，一个
         已经在 HF 上删掉的库会永远停在 `active`，既不报错也不再被复核。探测比扫描
         更经不起这种沉默：扫描漏一页下轮还能补，状态判错了却没有任何机制回头查。
         """
+        # 连接中断与 429 用两套预算：前者靠熬（没有答复可依据），后者靠睡 `t=`。
+        transport_limit = self._max_retries + (TRANSPORT_RETRY_EXTRA if honor_window else 0)
         attempt = 0
         while True:
             try:
                 response = self._transport.get(url, params, headers)
             except TransportError:
                 # 连接中断是「没收到答复」，重试耗尽后原样抛出，让调用方知道不是限流。
-                if attempt >= self._max_retries:
+                if attempt >= transport_limit:
                     raise
                 self._sleeper(self._backoff(attempt))
                 attempt += 1
@@ -404,21 +449,50 @@ class HfDatasetApi:
             if attempt >= self._max_retries:
                 self._last_failure = f"HTTP {response.status}"
                 return None
-            self._sleeper(self._retry_delay(response, attempt))
+            self._sleeper(self._retry_delay(response, attempt, honor_window=honor_window))
             attempt += 1
 
     def _backoff(self, attempt: int) -> float:
         return min(self._retry_base_delay * (2**attempt), 60.0)
 
-    def _retry_delay(self, response: HfResponse, attempt: int) -> float:
+    def _retry_delay(
+        self, response: HfResponse, attempt: int, *, honor_window: bool = False
+    ) -> float:
         _, reset_in = _parse_rate_limit(response.headers)
         if reset_in:
-            # `t=` 是「窗口还剩多少秒」，最长等于整个窗口（实测 300 秒）。原来直接
-            # 睡满，一次探测退避 5 次就是 25 分钟；探测阶段 2000 个 × 8 线程足以拖成
-            # 几小时，还攥着写锁不放（2026-11-13 实测堵死日常链 2 小时 50 分）。
-            # 封顶后仍会退避，但「等太久」由调用方的时间预算兜底，不再由单次睡眠决定。
+            # `t=` 是「窗口还剩多少秒」，最长等于整个窗口（实测 300 秒）。
+            # 探测路径封顶 30 秒：一次探测退避 5 次就是 25 分钟，2000 个 × 8 线程
+            # 足以拖成几小时，还攥着写锁不放（2026-11-13 实测堵死日常链 2 小时 50 分）。
+            # 扫描路径睡满窗口：它的瓶颈就是配额，截断只会让重试一次次白跑。
+            # 多睡 1 秒是给服务器时钟留余量——按整秒边界醒来常常还是同一窗口。
+            if honor_window:
+                return min(float(reset_in) + 1.0, MAX_RATE_LIMIT_SLEEP)
             return min(float(reset_in), MAX_RETRY_SLEEP)
         return min(self._retry_base_delay * (2**attempt), 60.0)
+
+    def _pace(self, remaining: int | None, reset_in: int | None) -> float:
+        """按剩余配额算出「取下一页前该睡多久」，不睡则返回 0。
+
+        原先只在「剩余 < 10」时睡满整窗，等于每次都先把配额打光、撞一次 429。
+        一页 1000 条的扫描要 1140 页，配额约 1000 请求 / 5 分钟——打光之后必然
+        卡在窗口上，而重试上限又等不满窗口，于是整轮判负。
+
+        这里改成匀速：`reset_in / remaining` 就是「这一个请求还能占多少秒」。
+        配额宽裕时它小于 PACE_FLOOR（网络延迟本来就更慢），不睡；配额紧时它
+        自然变长，把一轮扫描摊进多个窗口，中途不撞 429。比「撞了再退」稳，
+        也比固定延时诚实——速率来自服务器自己给的头，不是猜的。
+        """
+        if not remaining or not reset_in:
+            return 0.0
+        if remaining <= 0:
+            return min(float(reset_in) + 1.0, MAX_RATE_LIMIT_SLEEP)
+        rate = reset_in / remaining
+        if rate < PACE_FLOOR:
+            return 0.0
+        if rate > MAX_PACE_SLEEP:
+            # 配额将尽：与其按 60 秒一个请求慢慢磨，不如等窗口重开一次拿满。
+            return min(float(reset_in) + 1.0, MAX_RATE_LIMIT_SLEEP)
+        return rate
 
     @staticmethod
     def _valid_records(payload: Any) -> tuple[list[dict[str, Any]], int]:
