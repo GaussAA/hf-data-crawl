@@ -246,7 +246,7 @@ def test_配额将尽时先等待再取下一页() -> None:
         if len(transport.calls) == 1:
             return HfResponse(
                 status=response.status,
-                headers={**response.headers, "RateLimit": '"api";r=3;t=42'},
+                headers={**response.headers, "RateLimit": '"api";r=1;t=42'},
                 body=response.body,
             )
         return response
@@ -257,16 +257,17 @@ def test_配额将尽时先等待再取下一页() -> None:
 
     list(api.scan(sort="createdAt"))
 
-    # `r=3` 已经不够再翻一页（一页要扣近三十个单位），必须等窗口重开再走。
+    # 只剩 1 个请求的额度，不够再翻一页，等窗口重开（`t=42` + 1 秒余量）再走。
     assert sleeps == [43.0]
 
 
-def test_配额不够再翻一页时先等窗口而不是撞上去() -> None:
-    """阈值按「一页的成本」算，不按「还剩几次请求」算。
+def test_配额不够再翻一页时先等窗口() -> None:
+    """判据是「还够不够再翻一页」：一个请求一个单位，剩两个以内就等。
 
-    2026-11-20 实测：`limit=1000` 一页扣 28–31 个单位，配额 1000/5 分钟。老阈值
-    `r < 10` 落在一页成本之下，等你觉得该等了，其实已经不够翻下一页——那天对账
-    三十五分鐘里二十八分钟在等窗口，每跑六十来页就停四分钟，就是这么来的。
+    别把这个阈值按「一页很贵」来设。2026-11-20 臣一度按「一页三十个单位」定成 35，
+    依据是连发时 `r` 每次掉 28–31；做对照后才发现那是同一账号的另一个 token 在
+    别处同时扣费（同批 9 次请求，`limit=1` 共降 60、`limit=1000` 共降 158）。
+    按 35 设会在还剩三十多个请求时就白等一个窗口。
     """
 
     def paced(rate_header: str) -> list[float]:
@@ -288,10 +289,11 @@ def test_配额不够再翻一页时先等窗口而不是撞上去() -> None:
         list(HfDatasetApi(transport=_T(), sleeper=sleeps.append).scan(sort="lastModified"))
         return sleeps
 
-    # 剩 30 个单位：不够翻下一页（成本 35），等窗口；剩 400：够，直接走。
-    assert paced('"api";r=30;t=180') == [181.0, 181.0]
+    # 剩 30：够翻三十页，直接走（按「一页三十单位」设成 35 就会在这里白等）。
+    assert paced('"api";r=30;t=180') == []
     assert paced('"api";r=400;t=180') == []
-    # `r=0` 是「已经用光」，不是「不知道」——必须等窗口重开，不能当成不用等。
+    # 剩 1 个：不够再翻一页，等窗口；`r=0` 同理——那是「用光」，不是「不知道」。
+    assert paced('"api";r=1;t=180') == [181.0, 181.0]
     assert paced('"api";r=0;t=300') == [301.0, 301.0]
 
 
@@ -429,8 +431,8 @@ def test_响应头大小写不敏感() -> None:
 
     assert [r["id"] for page in pages for r in page.records] == ["a/1", "a/2"]
     assert pages[0].rate_remaining == 5
-    # 顺带验到限流头也走小写读取：`r=5` 不够再翻一页，等窗口重开（`t=11` + 1 秒余量）。
-    assert sleeps == [12.0]
+    # 剩 5 个请求的额度，够再翻几页，不睡——大小写只影响「读不读得到」，不影响判据。
+    assert sleeps == []
 
 
 # ---------------------------------------------------------------- 单库探测
