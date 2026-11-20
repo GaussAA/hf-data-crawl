@@ -482,7 +482,9 @@ class HfDatasetApi:
         自然变长，把一轮扫描摊进多个窗口，中途不撞 429。比「撞了再退」稳，
         也比固定延时诚实——速率来自服务器自己给的头，不是猜的。
         """
-        if not remaining or not reset_in:
+        # `remaining is None` 才是「不知道」；`r=0` 是「已经用光」，恰恰最该等。
+        # 写成 `not remaining` 会把后者一起当成「不用等」，配额见底时反而全速撞墙。
+        if remaining is None or not reset_in:
             return 0.0
         if remaining <= 0:
             return min(float(reset_in) + 1.0, MAX_RATE_LIMIT_SLEEP)

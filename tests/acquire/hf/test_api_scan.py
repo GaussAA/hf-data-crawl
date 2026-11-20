@@ -291,6 +291,8 @@ def test_配额偏紧时按剩余匀速而不是先把配额打光() -> None:
 
     assert paced('"api";r=30;t=180') == [6.0, 6.0]
     assert paced('"api";r=400;t=180') == []
+    # `r=0` 是「已经用光」，不是「不知道」——必须等窗口重开，不能当成不用等。
+    assert paced('"api";r=0;t=300') == [301.0, 301.0]
 
 
 def test_中断后从checkpoint续跑不重复入库(tmp_path: Path) -> None:
