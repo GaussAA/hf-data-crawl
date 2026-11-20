@@ -119,14 +119,19 @@ MAX_RATE_LIMIT_SLEEP = 600.0
 #: 1+2+4+8+16+32+60+60 ≈ 183 秒，够盖住一次短时的握手失败。
 TRANSPORT_RETRY_EXTRA = 3
 
-#: 单页两次请求之间的最小间隔（秒）低于这个数就不做匀速。
-#: 换算过来是 2 请求/秒——配额比这宽松时，网络的往返本身就是瓶颈，
-#: 再睡只是白白拖慢（实测正常一轮全站扫描 12–20 分钟，瓶颈在延迟不在配额）。
-PACE_FLOOR = 0.5
-
-#: 匀速时单页最长睡多久。再长就不如直接等窗口重开：`r=3;t=42`（每请求 14 秒）
-#: 与「睡 42 秒重开」总时长相同，但后者少 2 次白跑的往返。
-MAX_PACE_SLEEP = 60.0
+#: 一页列表要吃掉多少个配额单位——**不是 1**。
+#:
+#: 2026-11-20 实测（连发取 `RateLimit` 头的 `r`，逐次相减）：`limit=1` 每请求扣
+#: 10–14，`limit=1000` 每请求扣 28–31。配额仍是一分钟不进、五分钟一千（HF 报错
+#: 原文：`you hit the quota of 1000 api requests per 5 minutes`），于是**满页扫描
+#: 一个窗口只够三四十页**，而不是一千页。
+#:
+#: 这条实测解释了那天的两件事：对账每跑六十来页就停四分钟（配额见底），以及
+#: 「往常十几分钟跑完的全站扫描」突然要半个多小时——计费口径变了，而代码里的
+#: 阈值还停在「剩 10 个」这种按「页=1 单位」估出来的数。
+#:
+#: 阈值取 35 而不是 30：留一页的余量，避免正好卡在边界上白撞一次 429。
+PAGE_COST_UNITS = 35
 
 
 class TransportError(RuntimeError):
@@ -331,8 +336,8 @@ class HfDatasetApi:
             if max_pages is not None and max_pages > 0 and pages >= max_pages:
                 return
 
-            # 取下一页之前按剩余配额匀速。原先是「剩余 < 10 才等」，等于每次都要
-            # 先把配额打光、撞一次 429、再等窗口——长跑（全站 1140 页）必然如此。
+            # 取下一页之前先看「配额还够不够再翻一页」。原先只在剩余 < 10 时才等，
+            # 而一页要扣近三十个单位——等它掉到 10 以下，早就撞 429 了。
             pace = self._pace(remaining, reset_in)
             if pace > 0:
                 self._sleeper(pace)
@@ -473,28 +478,19 @@ class HfDatasetApi:
     def _pace(self, remaining: int | None, reset_in: int | None) -> float:
         """按剩余配额算出「取下一页前该睡多久」，不睡则返回 0。
 
-        原先只在「剩余 < 10」时睡满整窗，等于每次都先把配额打光、撞一次 429。
-        一页 1000 条的扫描要 1140 页，配额约 1000 请求 / 5 分钟——打光之后必然
-        卡在窗口上，而重试上限又等不满窗口，于是整轮判负。
+        原先只在「剩余 < 10」时睡满整窗。按「一页算一个请求」估，10 是个合理的
+        安全边界；实测一页要扣 `PAGE_COST_UNITS`（近三十个单位）之后，这个阈值
+        就落在**一页的成本之下**——等你反应过来时早就不够翻下一页了，于是每次
+        都要先撞一次 429 才肯等（2026-11-20 对账三十五分鐘里有二十八分钟在等）。
 
-        这里改成匀速：`reset_in / remaining` 就是「这一个请求还能占多少秒」。
-        配额宽裕时它小于 PACE_FLOOR（网络延迟本来就更慢），不睡；配额紧时它
-        自然变长，把一轮扫描摊进多个窗口，中途不撞 429。比「撞了再退」稳，
-        也比固定延时诚实——速率来自服务器自己给的头，不是猜的。
+        现在按「钱够不够再翻一页」判：不够就等窗口重开，够了就走。`r=0` 与
+        「不知道」（`None`）分开处理——前者是已经用光，恰恰最该等。
         """
-        # `remaining is None` 才是「不知道」；`r=0` 是「已经用光」，恰恰最该等。
-        # 写成 `not remaining` 会把后者一起当成「不用等」，配额见底时反而全速撞墙。
         if remaining is None or not reset_in:
             return 0.0
-        if remaining <= 0:
+        if remaining <= PAGE_COST_UNITS:
             return min(float(reset_in) + 1.0, MAX_RATE_LIMIT_SLEEP)
-        rate = reset_in / remaining
-        if rate < PACE_FLOOR:
-            return 0.0
-        if rate > MAX_PACE_SLEEP:
-            # 配额将尽：与其按 60 秒一个请求慢慢磨，不如等窗口重开一次拿满。
-            return min(float(reset_in) + 1.0, MAX_RATE_LIMIT_SLEEP)
-        return rate
+        return 0.0
 
     @staticmethod
     def _valid_records(payload: Any) -> tuple[list[dict[str, Any]], int]:
