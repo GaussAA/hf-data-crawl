@@ -237,14 +237,16 @@ def test_预演放行但把拦下的理由写在最上面(tmp_path: Path) -> Non
 
 
 def test_stamp钉住文档脚本判读表与环境(tmp_path: Path) -> None:
-    root, folder = request_dir(tmp_path)
+    _, folder = request_dir(tmp_path)
     build_method(folder)
     add_script(folder)
     method.sync(folder, request_id="REQ-0001", title="测试需求", kind="query")
     overrides = folder / "overrides.json"
     overrides.write_text('{"acme/ds-1": {"训练阶段": "后训练"}}', encoding="utf-8")
 
+    before = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
     stamp = method.stamp(folder, method.read(folder))
+    after = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
 
     doc = folder / method.METHOD_DIR / method.METHOD_DOC
     assert stamp["doc"]["sha256"] == method.digest(doc)
@@ -253,7 +255,7 @@ def test_stamp钉住文档脚本判读表与环境(tmp_path: Path) -> None:
     # 环境不复制源码，只钉版本：变了由 doctor 报出来。
     assert stamp["env"]["contract_version"] == CONTRACT_VERSION
     assert "package" in stamp["env"]
-    assert root.exists()  # 只有需求目录被读，没有任何东西写到外面
+    assert after == before, "stamp 只读，不该写任何文件（含缓存）"
 
 
 def test_换行风格不同不算脚本改过(tmp_path: Path) -> None:
@@ -352,4 +354,4 @@ def test_env带上代码指纹() -> None:
     body = method.env()
 
     assert "code_sha256" in body
-    assert body["code_sha256"] is None or len(str(body["code_sha256"])) == 64
+    assert len(str(body["code_sha256"])) == 64

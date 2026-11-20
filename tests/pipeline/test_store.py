@@ -181,12 +181,22 @@ def test_同页多次写入以后写者为准(store: DatasetStore) -> None:
 
 
 def test_后写入的新字段不会被先写入的空值覆盖(store: DatasetStore) -> None:
-    """先写的记录没有 mainSize，后写的有时，结果必须取后写的。"""
+    """先写的记录没有 mainSize，后写的有时，结果必须取后写的。
+
+    排序只看 payload 里的 `written_at`。这里把先写的 part 的 **mtime 调到未来**，
+    若实现偷看 mtime，就会让「没有 mainSize 的 part」胜出，断言立刻红。
+    """
     import os
     import time
 
     raw.write(
-        store, snapshot_date=SNAPSHOT, page_index=1, records=[record(1)], meta={}, label="part"
+        store,
+        snapshot_date=SNAPSHOT,
+        page_index=1,
+        records=[record(1)],
+        meta={},
+        label="part",
+        written_at="2026-11-01T00:00:00.000000+00:00",
     )
     raw.write(
         store,
@@ -195,14 +205,12 @@ def test_后写入的新字段不会被先写入的空值覆盖(store: DatasetSt
         records=[record(1) | {"mainSize": 999}],
         meta={},
         label="top",
+        written_at="2026-11-01T01:00:00.000000+00:00",
     )
 
-    # 让 part 的 mtime 更早，模拟真实时序（collect 先跑增量、再跑顶部刷新）。
-    now = time.time()
+    future = time.time() + 3600
     for path in (store.raw_dir / f"dt={SNAPSHOT.isoformat()}").glob(f"part-*{raw.SUFFIX}"):
-        os.utime(path, (now - 10, now - 10))
-    for path in (store.raw_dir / f"dt={SNAPSHOT.isoformat()}").glob(f"top-*{raw.SUFFIX}"):
-        os.utime(path, (now, now))
+        os.utime(path, (future, future))
 
     bronze.build(store, SNAPSHOT)
 

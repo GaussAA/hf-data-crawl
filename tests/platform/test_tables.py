@@ -84,9 +84,12 @@ def test_视图引用的表都已登记() -> None:
         assert name in TABLES, f"视图 {view} 指向未登记的表 {name}"
 
 
-def test_视图路径由登记表生成() -> None:
+def test_分区表glob由路径模板生成() -> None:
+    """只验模板替换；真正的建视图在 gold 层，由 `test_gold.py` 的视图用例覆盖。"""
     spec = table("bronze")
+
     assert spec.glob() == "bronze/dt=*/bronze.parquet"
+    assert spec.glob().count("*") == 1
 
 
 def test_重建只跳过网络来源的表(tmp_path: Path) -> None:

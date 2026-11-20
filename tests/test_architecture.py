@@ -224,6 +224,21 @@ def test_cross_slice_imports_use_public_names() -> None:
     assert violations == [], "\n".join(violations)
 
 
+def _executor_modules() -> set[str]:
+    """在 `delivery/` 里找 `EXECUTORS[...] = ...` 的模块。
+
+    名单若手写，新增第四种执行体时它不会进禁入集合——档案层可以直接 import 它，
+    而这条规则仍然全绿。从登记动作反推，新执行体自动受约束。
+    """
+    modules = {
+        path.stem
+        for path in (SRC / "delivery").glob("*.py")
+        if "EXECUTORS[" in path.read_text(encoding="utf-8")
+    }
+    assert {"fill_exec", "query_exec"} <= modules, "没找到执行体登记，规则会空转"
+    return modules
+
+
 def test_档案层只认契约不认形态() -> None:
     """`delivery/delivery.py` 只许看见契约，不许看见任何一种形态。
 
@@ -239,7 +254,7 @@ def test_档案层只认契约不认形态() -> None:
     后者会被 `from hf_data_crawl.delivery.backfill import FillError` 整条跳过，
     档案层重新与回填绑死仍然全绿。
     """
-    executor_modules = {"backfill", "query_exec", "fill_exec"}
+    executor_modules = _executor_modules() | {"backfill"}
     package = f"{PACKAGE}.delivery"
     violations: list[str] = []
 

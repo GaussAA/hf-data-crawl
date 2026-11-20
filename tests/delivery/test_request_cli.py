@@ -258,14 +258,20 @@ def test_新建即带过程记录骨架且标明未填(tmp_path: Path) -> None:
 
 def test_method命令只判不写且以退出码表达(tmp_path: Path) -> None:
     path = make(tmp_path)
-    assert run(tmp_path, "request", "method", "REQ-0001", "--check") == 1
-
     doc = path.parent / "method" / "METHOD.md"
+    index = path.parent / "method" / "method.json"
+    before = (doc.read_bytes(), index.read_bytes())
+
+    assert run(tmp_path, "request", "method", "REQ-0001", "--check") == 1
+    assert (doc.read_bytes(), index.read_bytes()) == before, "--check 只判不写"
+
     doc.write_text(
         doc.read_text(encoding="utf-8").replace("<!-- 待填：", "<!-- 已填："), encoding="utf-8"
     )
+    before = (doc.read_bytes(), index.read_bytes())
 
     assert run(tmp_path, "request", "method", "REQ-0001", "--check") == 0
+    assert (doc.read_bytes(), index.read_bytes()) == before, "通过时也不该顺手改文件"
 
 
 def test_缺需求成立性一节只提示不拦(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

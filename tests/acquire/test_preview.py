@@ -205,11 +205,14 @@ def test_被限流时整轮中止并保留已取到的行() -> None:
     summary, frame = fetcher.run(DAY, ["a/1", "a/2", "a/3", "a/4", "a/5"])
 
     assert summary.aborted is True
-    # 中止时**在飞**的几个请求随线程池一起收掉，它们的行不会进结果表——所以这里
-    # 只钉「已完成的那些一条不丢」与「帧与计数一致」，不钉具体条数（并发完成顺序
-    # 本就不定，钉死条数会在 xdist 下随机红）。
+    # workers=1 时请求顺序确定：前三条依次是 a/1、a/2、a/3。但**完成条数不定**：
+    # 已提交的 4/5 仍会被线程池跑完，而 `wait(FIRST_COMPLETED)` 返回的是集合，
+    # 遍历顺序随时可变（实测同一用例 1 与 3 都出现过）。所以只钉能打红的：
+    # 至少保留一条已完成的、帧与计数一致、429 确实让整轮标记为中止。
+    assert [call["dataset"] for call in transport.calls[:3]] == ["a/1", "a/2", "a/3"]
     assert summary.fetched >= 1
     assert frame.height == summary.fetched
+    assert frame["status"].to_list() == ["ok"] * summary.fetched
 
 
 def test_限流不重试而是立刻抛出() -> None:

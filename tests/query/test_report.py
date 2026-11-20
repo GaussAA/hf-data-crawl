@@ -404,11 +404,11 @@ def test_页脚视图清单来自当前视图而不是手抄(store: DatasetStore
 def test_口径说明集中且默认折叠(store: DatasetStore, tmp_path: Path) -> None:
     """六段 caption 各说一句，不如一处可展开的对照表。"""
     content = _page(store, tmp_path)
+    glossary = content[content.index('<details class="glossary">') : content.index("</details>")]
 
-    assert '<details class="glossary">' in content
-    assert "downloads_all_time" in content
-    assert "card_num_rows" in content
-    assert "main_size" in content
+    assert glossary.count("<dt>") == 6, "删掉一条口径说明，读者就少一个对照"
+    for topic in ("下载量", "观测与增速", "行数", "体积", "状态", "覆盖"):
+        assert f"<dt>{topic}</dt>" in glossary
 
 
 def test_页面暴露完整交互契约(store: DatasetStore, tmp_path: Path) -> None:

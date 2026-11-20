@@ -62,6 +62,11 @@ _EXCLUDED = {
 }
 #: `.agents/` 下唯一要跳过的子树；其余（尤其 skills）仍是仓库文档。
 _WORKTREE_PARTS = (".agents", "worktrees")
+#: 两段路径的排除集合：单段 `_EXCLUDED` 表达不了 `.agents/memory` 这种嵌套。
+#: `.agents/*` 在 .gitignore 里是本机状态，但 `!` 白名单让 `.agents/skills` 入库；
+#: 校验器不读 .gitignore，必须在这里与白名单对齐，否则本机记忆里的旧路径会
+#: 永远报断链、CI 却全绿（2026-11-20 审计发现）。
+_EXCLUDED_PREFIXES: tuple[tuple[str, ...], ...] = ((".agents", "memory"),)
 #: 写在行内代码里、且以这些前缀开头的路径，按仓库根解析。
 _REPO_PREFIXES = ("docs/", "scripts/", "src/", "tests/", ".github/")
 #: 路径里出现空白、占位符或通配符，说明是命令片段/模板而非单一路径。
@@ -81,7 +86,7 @@ def markdown_files(root: Path) -> list[Path]:
         relative = path.relative_to(root)
         if _EXCLUDED & set(relative.parts):
             continue
-        if relative.parts[:2] == _WORKTREE_PARTS:
+        if relative.parts[:2] in {*_EXCLUDED_PREFIXES, _WORKTREE_PARTS}:
             continue
         files.append(path)
     return sorted(files)

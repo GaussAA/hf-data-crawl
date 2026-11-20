@@ -223,12 +223,17 @@ def test_冷区已登记不会误报断日(tmp_path: Path) -> None:
     assert not any("断日" in text for text in problems(store))
 
 
-def test_冷区档案损坏时体检不崩(tmp_path: Path) -> None:
+def test_冷区档案损坏时按没有冷区处理(tmp_path: Path) -> None:
+    """坏档案不能让体检崩，也不能把已压走的日子误判成断日，更不能顺手改档案。"""
     store = DatasetStore(tmp_path / "data")
     healthy(store)
-    manifest_path(store).write_text("{ 坏档案", encoding="utf-8")
+    manifest = manifest_path(store)
+    manifest.write_text("{ 坏档案", encoding="utf-8")
 
-    assert isinstance(problems(store), list)
+    result = problems(store)
+
+    assert not any("断日" in text for text in result), "读不出冷区就少算，不该凭空报断日"
+    assert manifest.read_text(encoding="utf-8") == "{ 坏档案", "体检是只读诊断"
 
 
 def test_一切正常时没有问题(tmp_path: Path) -> None:

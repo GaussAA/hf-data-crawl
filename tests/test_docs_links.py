@@ -55,11 +55,14 @@ def test_本地杂物目录不参与校验(tmp_path: Path) -> None:
     scratch = tmp_path / ".scratch" / "draft"
     scratch.mkdir(parents=True)
     (scratch / "note.md").write_text("`docs/DATA.md`\n", encoding="utf-8")
+    memory = tmp_path / ".agents" / "memory"
+    memory.mkdir(parents=True)
+    (memory / "2026-11-15.md").write_text("旧路径 `docs/old-plan.md` 已删\n", encoding="utf-8")
 
     result = _run(tmp_path)
 
     assert result.returncode == 0, result.stderr
-    assert ".workbuddy" not in result.stderr and ".scratch" not in result.stderr
+    assert ".agents/memory" not in result.stderr
 
 
 def test_断链必须被检出并报出文件与位置(tmp_path: Path) -> None:
