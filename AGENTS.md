@@ -39,6 +39,13 @@ platform < pipeline < {acquire, query} < delivery < ops
 
 ## 硬规则
 
+- **提交前先 `git fetch`**：`git push` 被拒是**事后**通知，那时提交已经写好、可能已经
+  rebase 过。若 `origin/main` 有本地没有的提交，先 `git pull --rebase`。2026-11-20 实测：
+  另一个会话推了 4 个提交重构同一文件，推送被拒 → rebase 冲突 → 只能丢掉重做。
+- **多行 Python 写脚本，不用 `python -c`**：PowerShell 对 `"` 与反引号的解析叠在 Python
+  字符串转义上，`python -c "..."` 几乎必错（2026-11-20 一次会话失败 8 次：反引号被吞、
+  `\"` 丢失、`\d` 触发 SyntaxWarning）。多行逻辑或含引号的命令写成 `.scratch/<name>.py`
+  再 `uv run python` 跑；`.scratch/` 已在 `.gitignore` 里。
 - **生成物不手改**：`data/DATA.md` 由 `hf-data-crawl docs` 生成；字段含义改
   `ops/fielddocs.py` 后重新生成。
 - **一份事实只写一处**：`docs/README.md` 的「谁拥有什么」表说明每类事实该落在哪份文件；

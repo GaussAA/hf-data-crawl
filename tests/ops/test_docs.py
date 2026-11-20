@@ -146,3 +146,28 @@ def test_文档提到的源码文件必须真的存在(tmp_path: Path) -> None:
         if not (repo / ref).is_file() and not (repo / "src" / "hf_data_crawl" / ref).is_file()
     ]
     assert missing == [], f"文档引用了不存在的源码文件：{missing}"
+
+
+def test_文档里的列数与代码一致() -> None:
+    """散文里硬编码的列数必须等于代码当前的契约列数与视图列数。
+
+    2026-11-20 实测：契约 v6 从 31 涨到 35，DATA.md 里有 4 处文案没跟上（「含
+    tags / plain_tags」「readme 不进默认导出」）。结构与字段由其它测试守着，
+    但「这段散文说的列数对不对」没人管——这条把它补上。
+
+    只认**明确指契约/视图**的两句：文里还有「current 只有 19 列」「有 5 列不在
+    视图里」这类别的语义，抓全部「N 列」会把它们一起误伤（第一版就这么红过）。
+
+    DATA.md 是本机生成物（`data/` 已 gitignore），CI 上没有，跳过。
+    """
+    from hf_data_crawl.delivery.fields import DEFAULT_COLUMNS, VIEW_COLUMNS
+
+    page = Path(__file__).resolve().parents[2] / "data" / "DATA.md"
+    if not page.exists():
+        pytest.skip("DATA.md 是本机生成物，CI 上没有")
+
+    text = page.read_text(encoding="utf-8")
+
+    assert f"默认契约 {len(DEFAULT_COLUMNS)} 列" in text
+    assert f"视图里的 {len(VIEW_COLUMNS)} 列" in text
+    assert "31 列" not in text, "契约 v5 的列数（31）还在文档里"
