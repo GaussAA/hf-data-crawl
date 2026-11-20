@@ -326,8 +326,18 @@ def test_并行段里已完成的那一步不再跑(tmp_path: Path, monkeypatch)
 
 
 def test_收尾段里已完成的那一步不再跑(tmp_path: Path, monkeypatch) -> None:
-    """导出已交过就不再导：同一天重导一次，档案里会多出一条没人要的版本。"""
+    """导出已交过就不再导：同一天重导一次，档案里会多出一条没人要的版本。
+
+    前置也要一并种上——只种 `export-wide` 而 build/parse/sizes/readme 都没种时，
+    「已完成」会因依赖封闭被收回（那份导出用的是没更新的底层数据），见下一条。
+    """
     store = DatasetStore(tmp_path / "data")
+    seed_run(store, "collect", payload={"stopped_reason": "end"})
+    seed_run(store, "build")
+    seed_run(store, "reconcile")
+    seed_run(store, "fetch-sizes")
+    seed_run(store, "fetch-readme")
+    seed_run(store, "parse-readme")
     seed_run(store, "export-wide")
 
     calls = fake_steps(monkeypatch)
@@ -336,6 +346,29 @@ def test_收尾段里已完成的那一步不再跑(tmp_path: Path, monkeypatch)
     assert "export" not in calls
     export = _result(plan, "export")
     assert export is not None and export.note == "今天已完成"
+
+
+def test_上游重跑时下游不算已完成(tmp_path: Path, monkeypatch) -> None:
+    """台账只记「今天成功过」，记不住它用的是哪一版数据。
+
+    2026-11-20：白天手动跑过 build / export，夜里 collect 才补上当天采集。照台账
+    办，这两个会被「今天已完成」挡掉，导出就停在旧采集上，而摘要只写一行「今天
+    已完成」——看起来一切正常。
+    """
+    store = DatasetStore(tmp_path / "data")
+    seed_run(store, "build")
+    seed_run(store, "export-wide")
+    seed_run(store, "fetch-sizes")
+    seed_run(store, "fetch-readme")
+    seed_run(store, "parse-readme")
+    # collect 今天没有一次「扫到末页」，所以 build 的前置没成。
+
+    calls = fake_steps(monkeypatch)
+    refresh.execute(store, log=lambda _: None)
+
+    assert "collect" in calls
+    assert "build" in calls, "上游重跑，build 必须重建"
+    assert "export" in calls, "导出要基于重建后的 current"
 
 
 def test_only点名一步时正常跑完并返回零(tmp_path: Path, monkeypatch) -> None:

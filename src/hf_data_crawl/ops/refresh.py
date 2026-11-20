@@ -28,6 +28,9 @@
 ==========
 - **续跑**：启动时读当天的 runs 台账，「命令成功过」就跳过。`collect` 只认
   `stopped_reason == "end"`——水位线早停不算全站扫完。
+- **依赖封闭**：「今天已完成」只在它**每个前置今天也完成**时成立。台账记不住一条
+  命令用的是哪一版数据——白天手动跑过 `build`/`export`、夜里才补采集时，若不收缩，
+  导出会停在旧采集上，而摘要只写一行「今天已完成」。
 - **软边界**：超过 `--launch-hours`（默认 8 小时）不再启动新的抓取；已在跑的
   会自然收尾，总时长可能略超 `--budget-hours`（默认 8.5 小时）。到边界后
   `doctor` 照常跑，它是唯一能说明「今天哪里没跑完」的环节。
@@ -174,6 +177,28 @@ def today_successes(store: DatasetStore) -> set[str]:
                 continue
         commands.add(command)
     return {step.name for step in ALL_STEPS if step.ledger in commands}
+
+
+def _dependency_closed(done: set[str]) -> set[str]:
+    """把「今天已完成」收成依赖封闭集：上游没用今天的结果，下游也不算完成。
+
+    台账只记「这条命令今天成功过」，记不住它**用的是哪一版数据**。2026-11-20
+    白天手动跑过 `build --stale` 与 `export-wide`，夜里 `collect` 才补上今天的
+    采集；若照台账办，这两个会被「今天已完成」挡掉，导出的口径就停在旧采集上，
+    而摘要里只有一行「今天已完成」，看不出它已经过期。
+
+    规则：一个步骤只有在**它的每个前置今天也完成**时才算完成。链条无环，逐轮
+    剔除即可收敛。
+    """
+    keep = set(done)
+    changed = True
+    while changed:
+        changed = False
+        for step in ALL_STEPS:
+            if step.name in keep and any(need not in keep for need in step.needs):
+                keep.discard(step.name)
+                changed = True
+    return keep
 
 
 def _command(step: Step, root: Path) -> list[str]:
@@ -325,7 +350,7 @@ def execute(
     emit = log or print
     started = time.monotonic()
     plan = Plan()
-    done = today_successes(store) if only is None else set()
+    done = _dependency_closed(today_successes(store)) if only is None else set()
     failed: set[str] = set()
 
     def over_launch() -> bool:
