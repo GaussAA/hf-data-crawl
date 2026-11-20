@@ -223,11 +223,31 @@ def run_step(step: Step, root: Path) -> StepResult:
     return StepResult(step.name, result.returncode, time.monotonic() - started, log=log_path)
 
 
+def _skip_closure(steps: tuple[Step, ...], skip: frozenset[str]) -> frozenset[str]:
+    """把 `--skip` 扩成「这些步骤 + 依赖它们的所有下游」。
+
+    只跳上游不跳下游，下游就是在旧数据上拼出来的结果，跑它只是白占预算：
+    `--skip collect` 若只跳过 collect，build 会拿昨天的 silver 重建一遍并报成成功。
+    """
+    dropped = set(skip)
+    changed = True
+    while changed:
+        changed = False
+        for step in steps:
+            if step.name in dropped:
+                continue
+            if any(need in dropped for need in step.needs):
+                dropped.add(step.name)
+                changed = True
+    return frozenset(dropped)
+
+
 def _plan(
     steps: tuple[Step, ...],
     done: set[str],
     failed: set[str],
     only: frozenset[str] | None = None,
+    skip: frozenset[str] = frozenset(),
 ) -> tuple[list[Step], list[StepResult]]:
     """把步骤分成「要跑」与「跳过」，跳过的带上原因。
 
@@ -235,10 +255,18 @@ def _plan(
     `--only export` 的人知道自己在干什么，让他先拼一串前置只会把「补一步」
     变成「补整条」。代价写在 `--only` 的 help 里：导出的口径取决于底层数据
     今天是否真的更新过。
+
+    `skip` 是「今天别跑这些」，用于让出配额给正在跑的手动长任务：与 `only`
+    相反，它**会**把下游一起跳过（见 `_skip_closure`）。
     """
     ready: list[Step] = []
     skipped: list[StepResult] = []
+    dropped = _skip_closure(steps, skip) if skip else frozenset()
     for step in steps:
+        if step.name in dropped:
+            note = "被 --skip 跳过" if step.name in skip else "上游被 --skip 跳过"
+            skipped.append(StepResult(step.name, note=note))
+            continue
         if only is not None and step.name not in only:
             skipped.append(StepResult(step.name, note="不在 --only 里"))
             continue
@@ -298,6 +326,7 @@ def execute(
     budget_hours: float = DEFAULT_BUDGET_HOURS,
     launch_hours: float = DEFAULT_LAUNCH_HOURS,
     only: frozenset[str] | None = None,
+    skip: frozenset[str] = frozenset(),
     log: Callable[[str], None] | None = None,
 ) -> Plan:
     """跑完整条链，或（`only` 非空时）只跑点名的步骤。
@@ -519,12 +548,24 @@ def run(args, store: DatasetStore) -> Outcome:
                 f"未知步骤名：{', '.join(unknown)}；可选：{', '.join(sorted(STEP_NAMES))}"
             )
         only = names
+    skip: frozenset[str] = frozenset()
+    if getattr(args, "skip", None):
+        names = frozenset(item.strip() for item in args.skip.split(",") if item.strip())
+        unknown = sorted(names - STEP_NAMES)
+        if unknown:
+            raise SystemExit(
+                f"未知步骤名：{', '.join(unknown)}；可选：{', '.join(sorted(STEP_NAMES))}"
+            )
+        skip = names
+    if only is not None and skip:
+        raise SystemExit("--only 与 --skip 不能同时给：一个说只跑这些，一个说别跑这些")
     _report_dependencies(store, only, strict=getattr(args, "strict", False))
     plan = execute(
         store,
         budget_hours=args.budget_hours,
         launch_hours=args.launch_hours,
         only=only,
+        skip=skip,
     )
     # 体检非零只代表**有告警**（导出落后、Raw 断日这类待办也计入非零），不让它
     # 拖垮整条链——告警与故障挤进同一个退出码，铃声很快就没人听。详情在

@@ -493,6 +493,19 @@ def _print_preview(summary: PreviewSummary, total_rows: int) -> None:
     )
 
 
+def resolve_files_top(args_top: int, candidates: int, *, named: bool) -> int:
+    """把 `--top` 解析成实际的候选截断数。
+
+    `0` 表示全量——与 `fetch-readme` / `fetch-sizes` / `fetch-preview` 同一个约定。
+    原先这里写的是 `max(1, args.top)`，于是 `--top 0` 被悄悄改成 1：命令看起来
+    「跑完了」，其实只抓了一个库，而且不报错。点名的场合名单本身就是范围，
+    `--top` 不参与截断（与 `resolve_size_top` 同一条道理）。
+    """
+    if named or args_top <= 0:
+        return candidates
+    return min(args_top, candidates)
+
+
 def run_fetch_files(
     args: argparse.Namespace,
     store: DatasetStore,
@@ -547,7 +560,7 @@ def run_fetch_files(
         snapshot,
         dataset_ids=ordered["id"].to_list(),
         # 点了名就按名单来（名单已过滤成正好这几个），否则照旧按下载量取前 N。
-        top=max(1, ordered.height if args.ids else args.top),
+        top=resolve_files_top(args.top, ordered.height, named=bool(args.ids)),
         retry_unavailable=args.retry_unavailable,
         refresh_truncated=args.refresh_truncated,
         existing=existing,

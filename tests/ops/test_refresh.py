@@ -473,3 +473,27 @@ def test_窗口外不启动新抓取且文件清单也留痕(tmp_path: Path, mon
     files = plan.by_name("files")
     assert files is not None and files.code is None
     assert "启动窗口" in files.note
+
+
+def test_skip把下游一起跳过() -> None:
+    """只跳上游不跳下游，下游就是在旧数据上拼出来的结果，跑它只是白占预算。"""
+    dropped = refresh._skip_closure(refresh.ALL_STEPS, frozenset({"collect"}))
+
+    assert "collect" in dropped
+    assert "build" in dropped
+    assert "files" not in dropped
+
+
+def test_plan里被skip的步骤带原因且不参与依赖判断() -> None:
+    ready, skipped = refresh._plan(
+        refresh.ALL_STEPS, done=set(), failed=set(), skip=frozenset({"files"})
+    )
+
+    names = [step.name for step in ready]
+    notes = {item.name: item.note for item in skipped}
+    assert "files" not in names
+    assert notes["files"] == "被 --skip 跳过"
+    # 下游（依赖 files 的）也一起被跳过，标的是上游原因
+    downstream = [step.name for step in refresh.ALL_STEPS if "files" in step.needs]
+    for name in downstream:
+        assert notes.get(name) == "上游被 --skip 跳过"

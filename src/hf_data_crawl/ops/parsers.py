@@ -590,6 +590,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="只跑点名的步骤（逗号分隔），手动补跑用：不看依赖、不读今天已完成的台账、"
         "不套时间边界。可选值见 python -m hf_data_crawl.ops.refresh 的 STEP_NAMES",
     )
+    refresh.add_argument(
+        "--skip",
+        default=None,
+        help="今天不跑这些步骤（逗号分隔），它们的下游也一起跳过。"
+        "手动长跑占着配额时，用它把 files/preview 让出来",
+    )
 
     refresh.add_argument(
         "--strict",
