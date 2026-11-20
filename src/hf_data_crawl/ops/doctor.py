@@ -75,10 +75,16 @@ COLLECT_MAX_AGE = timedelta(hours=36)
 RECONCILE_MAX_AGE = timedelta(hours=48)
 #: 回看多少天的 Raw 是否断日。
 GAP_WINDOW_DAYS = 14
-#: Raw 某日的分块数低于近期中位的这个比例，就认为那天没采全。实测 11-11..11-18
-#: 稳定在 1,155–1,171（波动 1.4%），90% 的线抓得住「只跑了一半」，又不会被
-#: 个别块的加减触发。
-RAW_VOLUME_FLOOR = 0.9
+#: 「采集分量」不数的来源：对账把全站按 `createdAt` 翻一遍，页数由 `--max-pages`
+#: 决定（旧链 600 页分批、新链扫全站约 1130 页），与「采集完不完整」无关。
+#: 2026-11-19 它占了当日 641 块里的 600 块——把两种来源混在一起数，等于拿对账的
+#: 批次大小充当采集完整度（该日采集类 34 块，与前一日分毫不差）。
+_RECONCILE_SOURCE = "reconcile_createdAt"
+#: 采集类分块数的告警线：低于近期中位的这个比例就算那天没采全。
+#: 实测 11-13..11-19 的采集类（lean + top + card）落在 30–38 块，中位 34；
+#: 取 70%（约 24 块）既能抓住「某一路整条没跑」（少 20 块）与「跑了一半」，
+#: 又不会被 lean 页数随变化量起伏（5–9 页）震到。
+RAW_VOLUME_FLOOR = 0.7
 #: 算中位与判异常的回看天数。取 7：一周足够盖住工作日的常规波动。
 RAW_VOLUME_WINDOW_DAYS = 7
 #: 临时文件超过这个年纪才算残留；正在写的文件只会存在几秒。
@@ -310,7 +316,7 @@ def _raw_gaps(ctx: RunContext) -> Finding:
 
 
 def _raw_volume(ctx: RunContext) -> Finding:
-    """某一天的 Raw 分块数是否明显少于近期常态。
+    """某一天的**采集类** Raw 分块数是否明显少于近期常态。
 
     与 `_raw_gaps` 互补：那条只抓「整天没采」，抓不到「采了一半就断了」——目录
     在、分块在，断日判据看不见。这里补的正是这一格。
@@ -319,12 +325,17 @@ def _raw_volume(ctx: RunContext) -> Finding:
     上游计数没动（11-14 只有 2,188 行，而当日 Raw 完整、1,160 块）。拿它当采集
     完整度会天天误报，且误报的恰恰是「上游很平静」这种好日子。
 
-    分块数只由采集自己决定：一页一块、每块约一千条，跑到一半断掉，块数就少一半。
+    为什么要把对账那一路剔掉：`reconcile_createdAt` 占全天分块数的 97%，而它的
+    页数由 `--max-pages` 决定——旧链按 600 页分批、新链扫全站约 1,130 页。混在
+    一起数，判据实际度量的是「对账批次有多大」，而不是「采集停没停」。2026-11-20
+    就栽在这上面：11-19 有 641 块被判成「采了一半」，可那天采集类 34 块，与前一日
+    分毫不差，少的 530 块全是对账换成了分批模式。判据选错对象，比没有判据更糟。
+
     压缩过的日期已并档（数不出块数），今天可能还在采，两者都不判。
     """
     store, today = ctx.store, ctx.today
     counts = [
-        (day.snapshot_date, len(raw.batch_files(store, day.snapshot_date)))
+        (day.snapshot_date, _collect_shards(day))
         for day in raw.observed_days(store)
         if not day.compacted and day.snapshot_date < today
     ]
@@ -346,7 +357,19 @@ def _raw_volume(ctx: RunContext) -> Finding:
             f"Raw 分量：{shown}{more} 明显少于近期中位 {median:.0f} 块；"
             "那天可能只采了一部分，核对该日的 collect 与补抓是否中途退出",
         )
-    return Finding(False, f"Raw 分量：近 {len(window)} 天分块数与中位 {median:.0f} 块相当")
+    return Finding(False, f"Raw 分量：近 {len(window)} 天采集类分块数与中位 {median:.0f} 块相当")
+
+
+def _collect_shards(day: raw.RawDay) -> int:
+    """当天由**采集**写入的分块数：剔掉对账那一路，理由见 `_raw_volume`。
+
+    按排除法而非白名单：来源命名空间会新增（`lean` / `top` / `card` / 将来还有），
+    白名单会让新来源静默不计；而对账由 `--max-pages` 直接决定页数，是唯一需要
+    摘出去的一类。
+    """
+    return sum(
+        1 for path in (*day.bronze, *day.supplements) if raw.source_of(path) != _RECONCILE_SOURCE
+    )
 
 
 def _derive_state(ctx: RunContext) -> Finding:

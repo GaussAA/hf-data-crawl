@@ -324,6 +324,33 @@ def test_Raw分量骤降要点名日期(tmp_path: Path) -> None:
     assert len(found) == 1 and short_day.isoformat() in found[0]
 
 
+def test_Raw分量只数采集不数对账(tmp_path: Path) -> None:
+    """对账那一路的页数由 `--max-pages` 决定，不代表采集停没停。
+
+    2026-11-20 实际误判过一次：11-19 有 641 块被判成「采了一半」，而那天采集类
+    34 块与前一日分毫不差，少的 530 块全是对账从「扫全站」换成了「600 页分批」。
+    """
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    short_day = NOW.date() - timedelta(days=3)
+    for offset in range(1, 7):
+        day = NOW.date() - timedelta(days=offset)
+        directory = store.raw_dir / f"dt={day.isoformat()}"
+        if day == short_day:
+            # 采集类保持 healthy 给的那 1 块，只补 20 块对账分片——总量反而更多。
+            for index in range(20):
+                name = f"part-reconcile_createdAt-{index:06d}-deadbeef.json.gz"
+                (directory / name).write_bytes(b"x")
+            continue
+        for index in range(2, 6):
+            (directory / f"part-{index}.json.gz").write_bytes(b"x")
+
+    found = [text for text in problems(store) if "Raw 分量" in text]
+
+    assert found, "采集类只有 1 块，应当告警"
+    assert short_day.isoformat() in found[0], "对账分片不该把采集缺口填平"
+
+
 def test_Raw分量样本不足四天时不判(tmp_path: Path) -> None:
     """只有一两天分块时，所谓「中位」就是它自己，拿它判会自说自话。
 
