@@ -90,13 +90,21 @@ class HttpxTransport:
         try:
             # 创建 Client 也在 try 里：代理或 NO_PROXY 写坏时 InvalidURL 在这里抛。
             response = self._get_client().get(url, params=params, headers=request_headers)
-        except (httpx.HTTPError, httpx.InvalidURL) as error:
+        except (httpx.HTTPError, httpx.InvalidURL, RuntimeError) as error:
             # 统一成 TransportError，让上层只依赖一种失败类型，且无需 import httpx。
             # InvalidURL 不是 HTTPError 的子类（实测 MRO：InvalidURL → Exception），
             # 漏掉它会绕过重试与失败留痕。
             #
             # **先换池再抛**：这次的失败可能已经弄脏了连接池，若不换，上层的重试
             # 会撞进同一个坏池并永久挂住——那正是 2026-11-18 两次卡死的形状。
+            #
+            # `RuntimeError` 只接「client has been closed」这一种：并发下别的线程
+            # 刚 `_discard_client()` 会关掉我们手里这个，再发请求 httpx 就抛它。
+            # 那是「池子在换」而不是程序错，必须走重试而不是整轮崩掉
+            # （2026-11-20 实测：`fetch-files` 跑到 1,400 条时被它掀翻整轮）。
+            # 其它 RuntimeError 一律原样抛，别把真 bug 也吞成「网络抖动」。
+            if isinstance(error, RuntimeError) and "has been closed" not in str(error):
+                raise
             self._discard_client()
             raise TransportError(f"{type(error).__name__}: {error}") from error
         return HfResponse(

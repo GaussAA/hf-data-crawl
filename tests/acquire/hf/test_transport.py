@@ -179,3 +179,34 @@ def test_关闭失败不盖住原始错误(monkeypatch: pytest.MonkeyPatch) -> N
         transport.get("https://example.test/x", {}, {})
 
     assert real_client is not None
+
+
+def test_别的线程换池后这次请求归一为传输错误而不是整轮崩掉() -> None:
+    """并发下 `_discard_client()` 会关掉别人手里的 Client，再发请求 httpx 抛 RuntimeError。
+
+    那是「池子在换」而不是程序错：必须归一成 `TransportError` 去走重试。2026-11-20
+    实测：`fetch-files` 跑到 1,400 条时被这条运行时异常掀翻整轮，30 分钟的活只剩暂存分片。
+    """
+    transport = HttpxTransport(proxy=LOCAL_PROXY)
+    closed = transport._get_client()
+    closed.close()  # 模拟另一个线程刚刚换池
+
+    with pytest.raises(TransportError):
+        transport.get("https://huggingface.co/api/datasets", {}, {})
+
+    # 换池之后拿到的是新 Client，不再是那个关掉的。
+    assert transport._get_client() is not closed
+
+
+def test_其它_runtime_error_不许被吞掉(monkeypatch) -> None:
+    """只接「client has been closed」这一种：别的 RuntimeError 要原样抛，别当网络抖动。"""
+    transport = HttpxTransport(proxy=LOCAL_PROXY)
+
+    class Boom:
+        def get(self, *_args, **_kwargs):
+            raise RuntimeError("真的代码 bug")
+
+    monkeypatch.setattr(transport, "_get_client", lambda: Boom())
+
+    with pytest.raises(RuntimeError, match="真的代码 bug"):
+        transport.get("https://huggingface.co/api/datasets", {}, {})
