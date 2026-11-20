@@ -299,22 +299,13 @@ def test_交付失败也留运行台账(tmp_path: Path) -> None:
     assert body["reason"]
 
 
-def test_预演与预览不写运行台账(tmp_path: Path) -> None:
-    """`--dry-run` / `--preview` 是草稿：写进台账只会让「最近的失败运行」混进一堆草稿。"""
+def test_预演不写运行台账(tmp_path: Path) -> None:
+    """`--dry-run` 是草稿：写进台账只会让「最近的失败运行」混进一堆草稿。"""
     make(tmp_path)
 
     assert run(tmp_path, "request", "run", "REQ-0001", "--dry-run") == 1
 
     assert not list((tmp_path / "data" / "runs").glob("*-request-run.json"))
-
-
-def test_预演与预览同时给出被拒(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """两个开关说的是不同的「只看不写」；同时给出时谁先谁后都是猜。"""
-    make(tmp_path)
-
-    assert run(tmp_path, "request", "run", "REQ-0001", "--dry-run", "--preview") == 1
-
-    assert "选一个" in capsys.readouterr().out
 
 
 def test_show区分交过的版本与只有快照的版本(

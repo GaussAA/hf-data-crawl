@@ -10,13 +10,12 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-import polars as pl
 import pytest
 
 from hf_data_crawl.pipeline import bronze, raw
 from hf_data_crawl.pipeline.rebuild import _clear, clear_derived
 from hf_data_crawl.platform.store import DatasetStore
-from hf_data_crawl.platform.tables import TABLES, Origin, TableSpec, table
+from hf_data_crawl.platform.tables import TABLES, Origin, table
 from hf_data_crawl.query import gold
 
 # ---------------------------------------------------------------- 登记完整性
@@ -37,7 +36,7 @@ def test_落盘路径互不重复() -> None:
 def test_每张表的schema非空且列名唯一() -> None:
     for spec in TABLES.values():
         assert spec.schema, f"{spec.name} 没有列定义"
-        assert len(spec.schema) == len(set(spec.schema)), f"{spec.name} 有重复列名"
+        # 列名唯一由 `dict[str, PolarsType]` 这个形状保证，不必再断一遍。
 
 
 def test_分区表的路径模板带日期占位() -> None:
@@ -155,12 +154,12 @@ def test_登记表的schema与实际落盘列一致(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("name", sorted(TABLES))
-def test_每张表都能构造出空帧(name: str) -> None:
+def test_每张表都能构造出空帧(name: str, tmp_path: Path) -> None:
     """空库时读表不报错，是「刚装好就能连上」的前提。"""
-    spec: TableSpec = table(name)
-    empty = pl.DataFrame(schema=spec.schema)
-    assert empty.height == 0
-    assert list(empty.columns) == list(spec.schema)
+    frame = DatasetStore(tmp_path).read(name, date(2026, 11, 4))
+
+    assert frame.height == 0
+    assert list(frame.columns) == list(table(name).schema)
 
 
 # ---------------------------------------------------------------- 页面地址

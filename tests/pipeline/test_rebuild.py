@@ -421,13 +421,14 @@ def test_cli定点重放修好被重写的Raw(tmp_path: Path) -> None:
     assert "acme/ds-3" in set(state.read_current(store)["id"].to_list())
 
 
-def test_cli全量与定点互斥(tmp_path: Path) -> None:
+def test_cli全量与定点互斥(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     store = DatasetStore(tmp_path / "data")
     seed(store, DAY1, [record(1, 100)])
 
     code = main(["--data-dir", str(store.root), "build", "--full", "--stale"])
 
     assert code == 1
+    assert "互斥" in capsys.readouterr().out, "要说明为什么拒绝，而不只是退出 1"
     assert [item for item in (store.root / "runs").glob("*build*")]
 
 

@@ -238,7 +238,7 @@ def lookup(term: str) -> Metric:
     try:
         return _INDEX[term]
     except KeyError:
-        raise UnknownMetric(term, (metric.term for metric in METRICS)) from None
+        raise UnknownMetric(term, terms()) from None
 
 
 def terms() -> tuple[str, ...]:

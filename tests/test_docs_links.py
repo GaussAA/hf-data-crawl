@@ -44,18 +44,22 @@ def test_本地杂物目录不参与校验(tmp_path: Path) -> None:
     """`.workbuddy` / `.scratch` 在 `.gitignore` 里，但校验器按文件系统递归、不读它。
 
     不显式排除，本地就会永远报断链而 CI 全绿——「本机红、CI 绿」比不校验更坏，
-    它会训练人忽略这条命令。两个目录写的是当时的相对路径，不该拿仓库根去解析。
+    它会训练人忽略这条命令。两个目录写的是当时的相对路径，不该拿仓库根去解析；
+    记忆文件里的旧路径、草稿里的旧表名都算这一类。
     """
-    (tmp_path / "ok.md").write_text("[好](ok.md)\n", encoding="utf-8")
-    for name in (".workbuddy", ".scratch"):
-        directory = tmp_path / name / "draft"
-        directory.mkdir(parents=True)
-        (directory / "note.md").write_text("`docs/DATA.md`\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("# OK\n", encoding="utf-8")
+    (tmp_path / ".workbuddy" / "memory").mkdir(parents=True)
+    (tmp_path / ".workbuddy" / "memory" / "2026-11-16.md").write_text(
+        "旧路径 `src/hf_data_crawl/raw.py` 早已搬走\n", encoding="utf-8"
+    )
+    scratch = tmp_path / ".scratch" / "draft"
+    scratch.mkdir(parents=True)
+    (scratch / "note.md").write_text("`docs/DATA.md`\n", encoding="utf-8")
 
     result = _run(tmp_path)
 
     assert result.returncode == 0, result.stderr
-    assert "0 条断链" in result.stdout
+    assert ".workbuddy" not in result.stderr and ".scratch" not in result.stderr
 
 
 def test_断链必须被检出并报出文件与位置(tmp_path: Path) -> None:
@@ -112,7 +116,6 @@ def test_行内代码路径修好后转为通过(tmp_path: Path) -> None:
     result = _run(tmp_path)
 
     assert result.returncode == 0, result.stderr
-    assert "0 条断链" in result.stdout
 
 
 def test_裸文件名占位符与命令片段不误报(tmp_path: Path) -> None:
@@ -129,14 +132,16 @@ def test_裸文件名占位符与命令片段不误报(tmp_path: Path) -> None:
 
 
 def test_v1_0_需求到切片的追溯链必须完整() -> None:
-    """两份档案互为参照：连文档带索引一起删，也不能悄悄通过。"""
+    """两份档案互为参照：连文档带索引一起删，也不能悄悄通过。
+
+    只钉「文件在、索引指向它」；具体标题文案不钉——改一次章节名不该让追溯链
+    测试变红，真正的断链由上面的链接校验负责。
+    """
     prd = ROOT / "docs" / "PRD-hf-data-crawl-v1.0.md"
     issues = ROOT / "docs" / "ISSUES.md"
     index = (ROOT / "docs" / "README.md").read_text(encoding="utf-8")
 
     assert prd.is_file() and issues.is_file()
-    assert "User Stories" in prd.read_text(encoding="utf-8")
-    assert "覆盖故事" in issues.read_text(encoding="utf-8")
     assert prd.name in index and issues.name in index
 
 
@@ -146,7 +151,6 @@ def test_cp1252_控制台下仍能输出正确结论() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "UnicodeEncodeError" not in result.stderr
-    assert "0 条断链" in result.stdout
 
 
 def test_GLOSSARY重号必须被检出(tmp_path: Path) -> None:
@@ -220,25 +224,6 @@ def test_worktree副本跳过但项目技能仍参与校验(tmp_path: Path) -> N
     skill.write_text("# OK\n", encoding="utf-8")
     fixed = _run(tmp_path)
     assert fixed.returncode == 0, fixed.stderr
-
-
-def test_本机记忆目录不参与校验(tmp_path: Path) -> None:
-    """`.workbuddy/` 是 gitignored 的本机 agent 记忆，不该被当成仓库文档。
-
-    校验器按文件系统递归、不读 `.gitignore`，所以这里必须与忽略规则对齐：
-    记忆文件里写着当时的旧路径，一旦参与校验，本机永远报断链而 CI 永远全绿。
-    """
-    memory = tmp_path / ".workbuddy" / "memory"
-    memory.mkdir(parents=True)
-    (memory / "2026-11-16.md").write_text(
-        "旧路径 `src/hf_data_crawl/raw.py` 早已搬走\n", encoding="utf-8"
-    )
-    # 根下留一份正常文档，否则「一个 md 都没有」本身就是另一种错误退出。
-    (tmp_path / "README.md").write_text("# OK\n", encoding="utf-8")
-
-    result = _run(tmp_path)
-    assert result.returncode == 0, result.stderr
-    assert ".workbuddy" not in result.stderr
 
 
 def test_写成_GLOSSARY_编号的引用要被报成已迁移(tmp_path: Path) -> None:

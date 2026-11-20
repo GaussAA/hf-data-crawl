@@ -146,8 +146,7 @@ def test_legacy分片名保持旧格式() -> None:
     )
 
 
-def test_去重类别只有一份真相源() -> None:
-    assert archive.DEDUPE_LABELS is raw.BRONZE_LABELS
+def test_去重类别只覆盖Bronze两类() -> None:
     assert raw.CARD_LABEL not in raw.BRONZE_LABELS
 
 

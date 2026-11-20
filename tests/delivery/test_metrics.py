@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from hf_data_crawl.delivery.metrics import (
@@ -18,7 +16,6 @@ from hf_data_crawl.delivery.metrics import (
     _build_index,
     lookup,
     mismatched_fields,
-    terms,
 )
 
 
@@ -74,19 +71,12 @@ def test_拼错的列名会被当场指出来() -> None:
     assert bad["累计下载量"] == "downloads_all_time"
 
 
-def test_全部词条都能在完整视图列里找到() -> None:
-    from hf_data_crawl.platform.store import DatasetStore
-    from hf_data_crawl.query.gold import GoldCatalog
+def test_全部词条都能在视图定义里找到() -> None:
+    """词表指向的列必须真在 `datasets` 视图里。
 
-    store = DatasetStore(Path("data"))
-    if not store.has("current"):
-        pytest.skip("本机尚无底库，跳过与真实视图的对照")
+    用视图定义（`wide_column_names()`，由登记表拼出）而不是本机底库验证：后者要
+    `data/` 存在，CI 上恒 skip——一个永不执行的判据等于没有。
+    """
+    from hf_data_crawl.query.gold import wide_column_names
 
-    columns = GoldCatalog(store).run("DESCRIBE SELECT * FROM datasets")["column_name"].to_list()
-
-    assert mismatched_fields(columns) == {}
-
-
-def test_词条数量与列举一致() -> None:
-    assert len(terms()) == len(METRICS)
-    assert "下载量" in terms()
+    assert mismatched_fields(wide_column_names()) == {}

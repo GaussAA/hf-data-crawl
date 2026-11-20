@@ -255,7 +255,6 @@ def test_自动解析_config_与_split() -> None:
     result = _api(transport, config="auto").fetch("a/b", DAY)
 
     assert result.status == "ok"
-    assert result.row is not None
     assert (result.row["config"], result.row["split"]) == ("main", "train")
     # 一次 `/splits`、一次 `/rows`
     assert len(transport.calls) == 2

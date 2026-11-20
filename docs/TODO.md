@@ -10,12 +10,26 @@
 [CODING_STANDARDS.md](../CODING_STANDARDS.md) 的「工具链口径」：
 
 ```bash
-uv run mypy      # src + tests，当前 0 错
-uv run pyright   # src 补充检查
+uv run mypy          # src + tests，当前 0 错
+uv run basedpyright  # src 严格档（为什么只关 Unknown 家族五条见 DECISIONS #142）
 ```
 
 新增模块若出现类型错误，须改真实类型（显式注解、Protocol、让类型承载不变式），
 不得用 `type: ignore` 或临时豁免绕过。
+
+### 测试审计遗留（2026-11-20）
+套件按「失效 / 不实 / 无用 / 冗余」清过一轮，剩两类没有动，需要时再收：
+
+- **只有测试在调用的生产函数**：`refresh.Plan.by_name`、`health.HealthRecord.healthy`、
+  `presets.list_presets`、`readme.RateLimiter.enabled`、`raw.RawDay.observed`、
+  `raw.read_batches`、`batch.STAGING_ROOT`、`checkpoint.MemoryCheckpoint`、
+  `sizes.staged_shards` / `sizes.staging_root`、`tables.TableSpec.filename`、
+  `tables.BRONZE_SOURCE_FIELDS` 等。要么接上真实调用点，要么删函数并把断言移到
+  真正被调用的入口——现在它们让人误以为有覆盖。
+- **中等置信、证据不足未改的用例**：`test_commands.py` 的四条 `--full` 闸门
+  （与 `test_rebuild.py` 重复）、`test_gold.py` 的重名列表、`test_doctor.py` 的
+  字段新鲜度基准日、`test_report.py` 的补齐矩阵数据侧。要动先补「能打红」的
+  反例再改。
 
 ### CI 性能（已定口径，别再照着旧建议改）
 本地钩子的 `pytest` 用 `-n 8` 并行（140 秒 → 约 45 秒），**CI 保持串行全量**。

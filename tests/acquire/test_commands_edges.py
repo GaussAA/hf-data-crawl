@@ -217,7 +217,7 @@ class RecordingTransport:
         self.kwargs = kwargs
 
 
-def test_补规模沿用注入的传输(tmp_path: Path) -> None:
+def test_注入的传输原样传出() -> None:
     """注入的传输必须原样传出：测试与离线回放靠的就是这个口子，不能被包装掉。"""
     sentinel = cast("Transport", object())
 

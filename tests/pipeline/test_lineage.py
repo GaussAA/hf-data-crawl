@@ -20,13 +20,6 @@ def put_raw(store: DatasetStore, day: date, names: tuple[str, ...] = ("part-1.js
         (directory / name).write_bytes(b"x")
 
 
-def test_同一批分块两次指纹相同(tmp_path: Path) -> None:
-    store = DatasetStore(tmp_path / "data")
-    put_raw(store, DAY, ("part-1.json.gz", "part-2.json.gz"))
-
-    assert lineage.source_fingerprint(store, DAY) == lineage.source_fingerprint(store, DAY)
-
-
 def test_分块增减会改变指纹(tmp_path: Path) -> None:
     store = DatasetStore(tmp_path / "data")
     put_raw(store, DAY)

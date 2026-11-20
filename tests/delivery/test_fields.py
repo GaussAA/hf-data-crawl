@@ -26,7 +26,6 @@ from hf_data_crawl.delivery.fields import (
     VIEW_COLUMNS,
     contract_errors,
     display_expr,
-    display_value,
     projection_sql,
     type_family,
 )
@@ -166,17 +165,6 @@ def test_卡片兜底只作用于三列且别名不变() -> None:
     assert not set(FALLBACKS.values()) & set(DEFAULT_COLUMNS)
 
 
-def test_可读值映射不猜未知值() -> None:
-    assert display_value("languages", "ko") == "Korean"
-    assert display_value("languages", "zh") == "Chinese"
-    assert display_value("languages", "yue") == "yue"  # 无 639-1 码，原样留
-    assert display_value("task_categories", "text-generation") == "Text Generation"
-    assert display_value("size_categories", "100K<n<1M") == "100K - 1M"
-    assert display_value("size_categories", "n<1K") == "< 1K"
-    assert display_value("size_categories", "n>1T") == "> 1T"
-    assert display_value("formats", "json") == "json"  # 无映射的列不动
-
-
 def test_CSV展平用原生表达式换成页面形式() -> None:
     frame = pl.DataFrame(
         {
@@ -197,12 +185,6 @@ def test_CSV展平用原生表达式换成页面形式() -> None:
     assert out["tags"][0] == "keyword;reranking"  # 无映射的列保持机器码
 
 
-def test_契约自检盯住新增的两张表() -> None:
-    """对照表 / 兜底表指错列名，也要在改完当场炸。"""
-    assert contract_errors() == []
-    assert not set(DISPLAY_COLUMNS) - set(DEFAULT_COLUMNS)
-
-
 # ---------------------------------------------------------------- v5：撤销扁平化
 
 
@@ -214,14 +196,6 @@ def test_默认投影不再压平列表() -> None:
     for column in ("languages", "task_categories", "tags", "arxiv_ids"):
         assert f'"{column}"' in sql
     assert CONTRACT_VERSION >= 6
-
-
-def test_卡片兜底仍保留且不改变列类型() -> None:
-    """兜底只是取另一列的同义值，两边都是 LIST，不引入类型转换。"""
-    sql = projection_sql()
-
-    for column, source in FALLBACKS.items():
-        assert f'ELSE coalesce("{source}", CAST([] AS VARCHAR[])) END AS "{column}"' in sql
 
 
 def test_兜底未命中时保持空列表而非塌成NULL() -> None:

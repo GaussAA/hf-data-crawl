@@ -94,12 +94,6 @@ def test_跳过计数被累计(store: DatasetStore) -> None:
     assert summary.skipped == 4
 
 
-def test_停止原因走到末页时为end(store: DatasetStore) -> None:
-    api = FakeScanApi([page("a", cursor=None)])
-
-    assert ScanRun(api, store).run(DAY, spec()).stopped_reason == "end"
-
-
 def test_dry_run不写盘(store: DatasetStore) -> None:
     api = FakeScanApi([page("a", cursor=None)])
 
@@ -256,10 +250,11 @@ def test_页数上限为零表示不设上限(store: DatasetStore) -> None:
     assert summary.stopped_reason == "end"
 
 
-def test_不把页数上限交给生成器(store: DatasetStore) -> None:
-    """交给生成器会得到错误的停止原因，且钩子看不到最后一页之后的状态。"""
-    api = FakeScanApi([page("a", cursor=None)])
+def test_页数上限由ScanRun自己数(store: DatasetStore) -> None:
+    """上限若交给 API 生成器，停止原因与已落盘页数都会错。"""
+    api = FakeScanApi([page("a", cursor="next"), page("b", cursor="next"), page("c", cursor=None)])
 
-    ScanRun(api, store).run(DAY, spec(max_pages=5))
+    summary = ScanRun(api, store).run(DAY, spec(max_pages=2))
 
-    assert "max_pages" not in api.kwargs
+    assert summary.pages == 2
+    assert summary.stopped_reason == "max_pages"

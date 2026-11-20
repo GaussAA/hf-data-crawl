@@ -26,8 +26,11 @@ def test_代理地址写坏时归一为TransportError() -> None:
         transport.get("https://huggingface.co/api/datasets", {}, {})
 
 
-def test_构造本身不创建连接即使代理写坏() -> None:
+def test_构造本身不创建连接即使代理写坏(counted_clients: list[httpx.Client]) -> None:
+    """懒创建：构造只存参数，代理写坏也要等到第一次 `get()` 才报。"""
     HttpxTransport(proxy="http://127.0.0.1:bad-port")
+
+    assert counted_clients == []
 
 
 @pytest.fixture()

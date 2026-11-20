@@ -177,7 +177,7 @@ def test_交付期间口径被改动不影响这次档案(
         body["criteria"] = [{"metric": "下载量", "op": ">", "value": 800}]
         spec_path.write_text(yaml.safe_dump(body, allow_unicode=True), encoding="utf-8")
 
-    monkeypatch.setattr("hf_data_crawl.delivery.delivery._refuse_unchanged", tamper)
+    monkeypatch.setattr("hf_data_crawl.delivery.delivery._worktree_gate", tamper)
 
     result = deliver(store, root, "REQ-0001", now=NOW)
 
@@ -421,7 +421,7 @@ def test_行数突变标疑但不阻断(store: DatasetStore, tmp_path: Path) -> 
 
 
 def test_小波动不标疑(store: DatasetStore, tmp_path: Path) -> None:
-    """12 行变 15 行是 +25%，但绝对差只有 3 行——只判百分比会天天误报。"""
+    """1 行变 2 行是 +100%，但绝对差只有 1 行——只判百分比会天天误报。"""
     root = tmp_path / "req"
     make_request(root)
     previous = root / "REQ-0001" / DELIVERIES_DIR / "20261101T000000"
@@ -738,8 +738,20 @@ def test_底库缺失时整体失败(tmp_path: Path) -> None:
         run_due(empty, root, now=NOW)
 
 
-def test_批量交付共享一次底库指纹(store: DatasetStore, tmp_path: Path) -> None:
+def test_批量交付共享一次底库指纹(
+    store: DatasetStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """十个需求算十遍 70MB 的 md5 是纯浪费。"""
+    from hf_data_crawl.delivery import delivery as delivery_module
+
+    calls: list[int] = []
+    original = delivery_module._stamp
+
+    def counted(current: DatasetStore):
+        calls.append(1)
+        return original(current)
+
+    monkeypatch.setattr(delivery_module, "_stamp", counted)
     root = tmp_path / "req"
     make_request(root, id="REQ-0001")
     make_request(root, id="REQ-0002")
@@ -747,6 +759,7 @@ def test_批量交付共享一次底库指纹(store: DatasetStore, tmp_path: Pat
     report = run_due(store, root, now=NOW)
 
     assert len(report.delivered) == 2
+    assert len(calls) == 1, "底库指纹必须整批算一次，不能每个需求各算一遍"
 
 
 # ---------------------------------------------------------------- 统一生命周期
@@ -1373,11 +1386,7 @@ def test_判读表换了子目录就算换了口径(tmp_path: Path) -> None:
 
 
 def test_台账把缺档案与坏档案分开说(tmp_path: Path) -> None:
-    """「缺 manifest」与「读不出来」引向两种不同的处置，不能折成一句话。
-
-    这条同时钉住读取只有一处：`manifest_summary` 与 `compare` 都走
-    `delivery.read_manifest`，文件名不再由各自拼。
-    """
+    """「缺 manifest」与「读不出来」引向两种不同的处置，不能折成一句话。"""
     from hf_data_crawl.delivery.commands import manifest_summary
 
     missing = tmp_path / "20261101-120000"

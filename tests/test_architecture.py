@@ -172,17 +172,6 @@ def test_跨切片依赖边与登记表一致() -> None:
     assert actual == EDGES, _edge_diff(actual)
 
 
-def test_platform_depends_on_nothing_else() -> None:
-    """platform 是最底层：不得 import 任何其他切片。"""
-    leaks = [
-        f"{path.relative_to(SRC)}:{lineno} -> {target}"
-        for path in (SRC / "platform").rglob("*.py")
-        for lineno, target in _imports(path)
-        if (_slice_of(target) or "platform") != "platform"
-    ]
-    assert leaks == [], "\n".join(leaks)
-
-
 def test_no_import_cycles_between_modules() -> None:
     """模块级无环：含函数内延迟导入与 TYPE_CHECKING 导入。"""
     known = {_module_name(path) for path in _sources()}

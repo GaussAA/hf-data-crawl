@@ -444,23 +444,6 @@ def projection_sql() -> str:
     return ", ".join(parts)
 
 
-def display_value(column: str, value: str) -> str:
-    """单个标签值 → 页面上的可读形式。未知取值原样返回，绝不猜。"""
-    if column == "languages":
-        return _LANGUAGE_NAMES.get(value.lower(), value)
-    if column == "task_categories":
-        return value.replace("-", " ").title()
-    if column == "size_categories":
-        if "<n<" in value:
-            low, high = value.split("<n<", 1)
-            return f"{low} - {high}"
-        if value.startswith("n<"):
-            return f"< {value[2:]}"
-        if value.startswith("n>"):
-            return f"> {value[2:]}"
-    return value
-
-
 def _display_item(column: str) -> pl.Expr:
     """逐元素映射表达式；必须用在 `list.eval` 里（`pl.element()` 的上下文）。
 

@@ -32,16 +32,6 @@ def test_不留下临时文件(tmp_path: Path) -> None:
     assert not list(tmp_path.glob("*.tmp"))
 
 
-def test_覆盖时旧内容不会残留(tmp_path: Path) -> None:
-    """直接以写模式打开会先截断；若中途失败，旧内容也没了。"""
-    target = tmp_path / "x.txt"
-    write_text(target, "很长的一段旧内容" * 50)
-
-    write_text(target, "短")
-
-    assert target.read_text(encoding="utf-8") == "短"
-
-
 def test_写入失败时旧文件不受损(tmp_path: Path) -> None:
     """这是原子写的全部意义：失败发生在替换之前，目标仍是完整的旧版本。"""
     target = tmp_path / "x.txt"

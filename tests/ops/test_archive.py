@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import date
+import hashlib
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -106,12 +107,16 @@ def test_同id的胜负不变且重复记录被去掉(store: DatasetStore) -> No
 
 def test_原文件移入备份目录而不是删除(store: DatasetStore) -> None:
     sources = raw.batch_files(store, DAY)
+    before = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sources}
 
     result = archive_day(store, DAY)
 
     assert result is not None and result.backup_dir is not None
-    backed_up = sorted(path.name for path in result.backup_dir.iterdir())
-    assert backed_up == sorted(path.name for path in sources)
+    backed_up = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in result.backup_dir.iterdir()
+    }
+    assert backed_up == before, "备份是回滚的唯一依据，必须逐字节相同"
     assert all(raw.is_archive(path) for path in raw.batch_files(store, DAY))
 
 
@@ -167,11 +172,30 @@ def test_验证失败时撤销新分片且原文件不动(
     assert not (store.root / "backup").exists()
 
 
-def test_cli按天数门槛只归档老分区(store: DatasetStore) -> None:
+def test_cli按天数门槛只归档老分区(tmp_path: Path) -> None:
+    """门槛按「今天 - N 天」算；用相对日期造两个分区，老的归档、新的不动。
+
+    原先只造一个固定日期（2026-11-03），过了 12 月上旬它就成了「老分区」，
+    断言会在某天无声翻红——时间炸弹比没测试更糟。
+    """
+    store = DatasetStore(tmp_path / "data")
+    old = date.today() - timedelta(days=31)
+    fresh = date.today() - timedelta(days=1)
+    for day in (old, fresh):
+        raw.write(
+            store,
+            snapshot_date=day,
+            page_index=1,
+            records=[record(1, 10)],
+            meta={},
+            written_at=f"{day.isoformat()}T00:00:00.000000+00:00",
+        )
+
     code = main(["--data-dir", str(store.root), "archive", "--older-than-days", "30"])
 
     assert code == 0
-    assert not any(raw.is_archive(path) for path in raw.batch_files(store, DAY))
+    assert all(raw.is_archive(path) for path in raw.batch_files(store, old))
+    assert not any(raw.is_archive(path) for path in raw.batch_files(store, fresh))
 
 
 def test_cli指定日期会无视天数门槛(store: DatasetStore) -> None:

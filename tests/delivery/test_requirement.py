@@ -253,8 +253,8 @@ def test_快照复制原文件字节且幂等(tmp_path: Path) -> None:
     path.write_text("id: REQ-0001\n", encoding="utf-8")
     second = snapshot_history(path, 1)
 
-    assert first == second
     assert first.read_bytes() == original
+    assert second.read_bytes() == original, "已存在的快照不该被后一次调用覆盖"
 
 
 def test_快照版本可列举(tmp_path: Path) -> None:

@@ -90,3 +90,4 @@ def test_空列表不碰磁盘(store: DatasetStore) -> None:
     summary = backfill(store, [], SNAPSHOT, fetch=fetch)
 
     assert summary == summary.__class__(requested=0, fetched=0, with_card=0, rows=0)
+    assert not list(store.root.rglob("*.parquet")), "空清单不该写出任何表文件"

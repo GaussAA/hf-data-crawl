@@ -24,7 +24,6 @@ from hf_data_crawl.delivery.backfill import (
     run,
 )
 from hf_data_crawl.delivery.delivery import SourceStamp
-from hf_data_crawl.delivery.header import header_digest
 from hf_data_crawl.delivery.requirement import SpecError
 from hf_data_crawl.delivery.requirement import load as load_request
 from hf_data_crawl.platform.store import DatasetStore
@@ -737,7 +736,6 @@ def test_追加列的表头没有加进输入表头指纹(tmp_path: Path) -> Non
     second = run_it(spec, [ROW], tmp_path=tmp_path)
 
     assert first.header == second.header == tuple(HEADERS)
-    assert header_digest(first.header) == header_digest(tuple(HEADERS))
 
 
 # ---------------------------------------------------------------- 输入表头

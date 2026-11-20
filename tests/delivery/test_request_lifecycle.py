@@ -264,7 +264,7 @@ def write_spec(root: Path, request_id: str, threshold: int) -> None:
 def test_对不存在的需求号一律如实报错(
     tmp_path: Path, capsys, action: str, extra: tuple[str, ...]
 ) -> None:
-    """五条命令都先 `resolve_dir`，各自抄了一遍 `except SpecError`——但没人验证过。
+    """六条命令都先 `resolve_dir`，各自抄了一遍 `except SpecError`——但没人验证过。
 
     抄漏一条的表现不是崩溃，而是 traceback 直接糊到终端：用户看到栈，不知道
     「是我输错了需求号」。

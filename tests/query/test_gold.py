@@ -136,11 +136,15 @@ def test_可按许可证与gated过滤(catalog: GoldCatalog) -> None:
 
 
 def test_分类榜按任务类别聚合(catalog: GoldCatalog) -> None:
-    rows = catalog.run(
-        "SELECT unnest(task_categories) AS category, count(*) AS n FROM datasets GROUP BY 1"
-    )
+    """分类榜走 `board("categories")`，一行是一个任务类别。
 
-    assert rows.height >= 1
+    原先这里另写一条 SQL，`board` 的 SQL 改坏也不会红——测的与跑的不是同一条。
+    """
+    frame = catalog.board("categories", 5)
+
+    assert set(frame.columns) == {"category", "datasets", "downloads"}
+    assert frame["category"].to_list() == ["text-classification"]
+    assert frame["datasets"][0] >= 1
 
 
 def test_新增数据在同一连接内即时可见(catalog: GoldCatalog) -> None:
@@ -198,6 +202,7 @@ def test_宽视图包含附表的全部有效列(catalog: GoldCatalog) -> None:
         ("silver", {"snapshot_date"}),
         ("carddata", {"snapshot_date"}),
         ("size", {"snapshot_date"}),
+        ("files", {"snapshot_date"}),
     ):
         renames = _VIEW_RENAMES.get(name, {})
         expected = {renames.get(column, column) for column in set(table(name).schema) - excluded}

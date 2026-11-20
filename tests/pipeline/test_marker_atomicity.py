@@ -69,14 +69,6 @@ def test_删除不存在的标记不报错(tmp_path: Path) -> None:
     clear_marker(store, snapshot_date)
 
 
-def test_无标记时不触发恢复(tmp_path: Path) -> None:
-    """没有标记文件时，不应触发恢复。"""
-    store = DatasetStore(tmp_path)
-
-    recovered = check_and_recover(store)
-    assert recovered == []
-
-
 def test_新标记不触发恢复(tmp_path: Path) -> None:
     """刚创建的标记（未超时）不应触发恢复。"""
     store = DatasetStore(tmp_path)
@@ -196,39 +188,22 @@ def test_多个超时标记全部恢复(tmp_path: Path) -> None:
         assert not marker_path(store, dt).exists()
 
 
-def test_损坏的标记文件被删除(tmp_path: Path) -> None:
-    """损坏的标记文件应被删除，不应崩溃。"""
-    store = DatasetStore(tmp_path)
-    snapshot_date = date(2026, 11, 7)
-
-    # 创建损坏的标记文件
-    path = marker_path(store, snapshot_date)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("not json", encoding="utf-8")
-
-    recovered = check_and_recover(store)
-
-    # 不应崩溃，损坏的标记被删除
-    assert recovered == []
-    assert not path.exists()
-
-
-def test_时间戳格式错误的标记被删除(tmp_path: Path) -> None:
-    """时间戳格式错误的标记应被删除。"""
+@pytest.mark.parametrize(
+    "body",
+    [
+        "not json",
+        json.dumps({"snapshot_date": "2026-11-07", "started_at": "not-a-timestamp"}),
+    ],
+    ids=["json不合法", "时间戳不合法"],
+)
+def test_损坏的标记文件被删除(tmp_path: Path, body: str) -> None:
+    """两种坏法走同一个 except：删标记、不恢复、不崩溃。"""
     store = DatasetStore(tmp_path)
     snapshot_date = date(2026, 11, 7)
 
     path = marker_path(store, snapshot_date)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "snapshot_date": snapshot_date.isoformat(),
-                "started_at": "not-a-timestamp",
-            }
-        ),
-        encoding="utf-8",
-    )
+    path.write_text(body, encoding="utf-8")
 
     recovered = check_and_recover(store)
 

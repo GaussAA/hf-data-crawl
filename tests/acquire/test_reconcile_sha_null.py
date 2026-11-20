@@ -229,53 +229,29 @@ def test_空基线空已见() -> None:
     assert diff.undetectable_change == []
 
 
-def test_只有新增() -> None:
-    """只有新增的库。"""
-    baseline: Baseline = {}
-    seen = {
-        "dataset/a": "sha123",
-        "dataset/b": None,
-    }
-
-    diff = diff_sets(baseline, seen)
-
-    assert set(diff.new) == {"dataset/a", "dataset/b"}
-    assert diff.sha_changed == []
-    assert diff.undetectable_change == []
-
-
-def test_只有消失() -> None:
-    """只有消失的库。"""
-    baseline = {
-        "dataset/a": ("sha123", Status.ACTIVE.value),
-        "dataset/b": (None, Status.ACTIVE.value),
-    }
-    seen: Seen = {}
-
-    diff = diff_sets(baseline, seen)
-
-    assert set(diff.missing) == {"dataset/a", "dataset/b"}
-    assert diff.sha_changed == []
-    assert diff.undetectable_change == []
-
-
 def test_结果排序() -> None:
-    """所有列表应该是排序的（便于测试和报告）。"""
+    """所有列表必须是排序的：报告与下游都按这个顺序读。
+
+    每一类都放两个**逆序写入**的 id——单元素列表永远「有序」，那样排序实现
+    整个删掉也测不出来。
+    """
     baseline = {
         "z/z": ("shaZ", Status.ACTIVE.value),
-        "a/a": ("shaA", Status.ACTIVE.value),
-        "m/m": (None, Status.ACTIVE.value),
+        "b/b": ("shaB", Status.ACTIVE.value),
+        "m/z": (None, Status.ACTIVE.value),
+        "m/a": (None, Status.ACTIVE.value),
     }
     seen = {
         "z/z": "shaZ2",  # 变更
-        "a/a": "shaA",  # 不变
-        "m/m": "shaM",  # 无法检测
-        "x/x": "shaX",  # 新增
+        "b/b": "shaB2",  # 变更
+        "m/z": "shaM",  # 无法检测
+        "m/a": "shaM",  # 无法检测
+        "x/z": "shaX",  # 新增
+        "x/a": "shaX",  # 新增
     }
 
     diff = diff_sets(baseline, seen)
 
-    # 检查排序
-    assert diff.sha_changed == ["z/z"]  # 已排序
-    assert diff.undetectable_change == ["m/m"]  # 已排序
-    assert diff.new == ["x/x"]  # 已排序
+    assert diff.sha_changed == ["b/b", "z/z"]
+    assert diff.undetectable_change == ["m/a", "m/z"]
+    assert diff.new == ["x/a", "x/z"]

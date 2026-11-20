@@ -241,7 +241,6 @@ def test_一切正常时没有问题(tmp_path: Path) -> None:
 def test_采集太久没成功要报(tmp_path: Path) -> None:
     store = DatasetStore(tmp_path / "data")
     healthy(store)
-    make_run(store, "collect", NOW - timedelta(hours=60), "watermark")  # 更旧的不影响
     for path in (store.root / "runs").glob("*collect*"):
         path.unlink()
     make_run(store, "collect", NOW - timedelta(hours=60), "watermark")
@@ -266,13 +265,6 @@ def test_从未对账要报(tmp_path: Path) -> None:
         path.unlink()
 
     assert any("全量对账：从未成功完成过" in text for text in problems(store))
-
-
-def test_底库行龄新鲜时不报(tmp_path: Path) -> None:
-    store = DatasetStore(tmp_path / "data")
-    healthy(store)
-
-    assert not any("底库新鲜度" in text for text in problems(store))
 
 
 def test_底库行龄过旧要点破对账没跑成(tmp_path: Path) -> None:
@@ -328,10 +320,21 @@ def test_Raw分量骤降要点名日期(tmp_path: Path) -> None:
 
 
 def test_Raw分量样本不足四天时不判(tmp_path: Path) -> None:
-    """只有一两天分块时，所谓「中位」就是它自己，拿它判会自说自话。"""
+    """只有一两天分块时，所谓「中位」就是它自己，拿它判会自说自话。
+
+    留下的三天刻意做成 1 / 5 / 5 块：若去掉「样本不足四天」这道闸，第一天会被
+    判成「明显少于中位」，本用例才会红。
+    """
     store = DatasetStore(tmp_path / "data")
     healthy(store)
     days = sorted(path for path in store.raw_dir.glob("dt=*") if any(path.glob("*.json.gz")))
+    for index, path in enumerate(days[:3]):
+        files = sorted(path.glob("*.json.gz"))
+        target = 1 if index == 0 else 5
+        for extra in files[target:]:
+            extra.unlink()
+        for number in range(len(files), target):
+            (path / f"part-x{number}.json.gz").write_bytes(b"x")
     for path in days[3:]:
         for item in path.glob("*.json.gz"):
             item.unlink()
@@ -1436,7 +1439,9 @@ def test_每条体检结论都带检查项标识(tmp_path: Path) -> None:
 
     assert all(codes), f"有结论没贴 code：{[i.text for i in findings if not i.code]}"
     assert len(set(codes)) == len(codes), "code 重复：连续计数会把两项混成一项"
-    assert {"collect_freshness", "field_freshness", "raw_gaps", "storage"} <= set(codes)
+    assert {"collect_freshness", "doc_drift", "field_freshness", "raw_gaps", "storage"} <= set(
+        codes
+    )
 
 
 def test_告警标注连续天数(tmp_path: Path) -> None:

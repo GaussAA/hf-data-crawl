@@ -78,7 +78,7 @@ def test_并行时同id仍以最后写入者为准(store: DatasetStore, monkeypa
 def test_进程池崩溃时退回串行且结果相同(
     store: DatasetStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """并行只是加速；子进程异常终止不能让可重算的 build 整体失败。"""
+    """并行只是加速：池坏了，build 照样要出同样的结果，而不是整体失败。"""
     from concurrent.futures.process import BrokenProcessPool
 
     class Broken:
@@ -104,34 +104,3 @@ def test_进程池崩溃时退回串行且结果相同(
     bronze.build(store, DAY)
 
     assert store.read("bronze", DAY).sort("id").equals(serial)
-
-
-def test_进程池崩溃时降级为串行且结果不变(
-    store: DatasetStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """并行只是加速：池坏了，build 照样要出同样的结果，而不是整体失败。"""
-    from concurrent.futures.process import BrokenProcessPool
-
-    seed(store)
-    monkeypatch.setattr(bronze, "PARALLEL_MIN_FILES", 10_000)
-    bronze.build(store, DAY)
-    expected = store.read("bronze", DAY).sort("id")
-
-    class BrokenPool:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            pass
-
-        def __enter__(self) -> BrokenPool:
-            return self
-
-        def __exit__(self, *exc: object) -> None:
-            return None
-
-        def map(self, *args: object, **kwargs: object) -> list[object]:
-            raise BrokenProcessPool("子进程异常终止")
-
-    monkeypatch.setattr(bronze, "PARALLEL_MIN_FILES", 1)
-    monkeypatch.setattr(bronze, "ProcessPoolExecutor", BrokenPool)
-    bronze.build(store, DAY)
-
-    assert store.read("bronze", DAY).sort("id").equals(expected)

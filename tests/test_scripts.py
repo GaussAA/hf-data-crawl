@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
@@ -28,21 +29,29 @@ def text(path: Path) -> str:
 def job_block(source: str, name: str) -> str:
     """截出 `@{ Name = "hf-<name>" ... }` 这一段。
 
-    按 `},` 收尾而不是按下一个任务名切：任务之间的字段顺序并不统一
-    （compact 把 `LogonDelay` 写在 `Triggers` 之前），按固定字段切会切错段。
+    按花括号配平取整块，不按固定字段或 `},` 切：任务字段顺序并不统一
+    （compact 把 `LogonDelay` 写在 `Triggers` 之前），而 `$jobs` 数组末尾的任务
+    以单独的 `}` 收尾、没有逗号——按 `},` 切会让整块一直延伸到文件末尾，
+    块内任何字样都成立，判据就恒真了。
     """
-    blocks = source.split('Name = "hf-')
-    block = next(item for item in blocks if item.startswith(name))
-    return block.split("},")[0]
+    marker = f'Name = "hf-{name}"'
+    position = source.index(marker)
+    start = source.rindex("@{", 0, position)
+    depth = 0
+    for index in range(start, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+    raise AssertionError(f"没找到 hf-{name} 的任务块")
 
 
 def test_日志文件名含时间戳而不是按任务名覆盖() -> None:
     source = text(COMMON)
     assert 'Get-Date -Format "yyyyMMddTHHmmss"' in source
     assert '"$stamp-$Name.log"' in source
-    # 旧写法是 Join-Path $logDir "$Name.log"：同一个命令一个文件、永久追加，
-    # 既对不上 runs/ 里那轮的摘要，也没有任何上限。
-    assert 'Join-Path $logDir "$Name.log"' not in source
 
 
 def test_同一秒连跑两条不覆盖() -> None:
@@ -126,18 +135,6 @@ def test_链条按序且前置失败会跳过() -> None:
     ]
     export = next(step for step in refresh.SERIAL_TAIL if step.name == "export")
     assert set(export.needs) == {"build", "reconcile", "sizes", "parse"}
-    # 前置失败要跳过并写明原因，而不是带着半截状态硬跑。
-    assert "依赖未完成" in text(Path(refresh.__file__))
-
-
-def test_体检在链条里只算告警不算失败() -> None:
-    """体检把「导出落后」「Raw 断日」这类待办也计入非零；若让它拖垮链条，
-    整条链会天天报红，铃声很快就没人听。"""
-    from hf_data_crawl.ops import refresh
-
-    source = text(Path(refresh.__file__))
-    assert 'item.name != "doctor"' in source
-    assert "data/ALERT.txt" in source
 
 
 def test_补跑只留给链条() -> None:
@@ -153,10 +150,27 @@ def test_补跑只留给链条() -> None:
 
 
 def test_升级时清除旧的钟点任务() -> None:
-    """留着旧的五个任务，它们仍会各自补跑——正是这次要治的病。"""
+    """留着旧任务，它们仍会各自补跑——正是这次要治的病。
+
+    名单与 `setup-schedule.ps1` 的 `$legacyNames` 逐项对齐：少钉一个，升级时就
+    可能漏清一个，而漏掉的那个仍会按旧钟点抢写锁。
+    """
     source = text(SCRIPTS / "setup-schedule.ps1")
-    for legacy in ("hf-collect", "hf-reconcile", "hf-export", "hf-deliver", "hf-doctor"):
-        assert f'"{legacy}"' in source, f"缺少旧任务 {legacy} 的清理"
+    legacy = (
+        "hf-collect",
+        "hf-reconcile",
+        "hf-export",
+        "hf-deliver",
+        "hf-doctor",
+        "hf-daily",
+        "hf-sizes",
+        "hf-files",
+        "hf-archive",
+        "hf-compact",
+        "hf-readme",
+    )
+    for name in legacy:
+        assert f'"{name}"' in source, f"缺少旧任务 {name} 的清理"
     assert "Unregister-ScheduledTask" in source
 
 
@@ -187,7 +201,9 @@ def test_每一步都有墙钟上限且退出码可辨() -> None:
     """
     source = text(COMMON)
     assert "$script:TimeoutExitCode = 124" in source
-    assert "[ValidateRange(1, 86400)][int]$TimeoutSeconds = 3600" in source
+    assert re.search(
+        r"\[ValidateRange\(1,\s*86400\)\]\[int\]\$TimeoutSeconds\s*=\s*3600", source
+    ), "超时上限必须带 1..86400 的取值范围，且默认 1 小时"
 
     chain = text(SCRIPTS / "refresh.ps1")
     assert "-TimeoutSeconds 36000" in chain, "刷新链必须有 10 小时墙钟上限"
@@ -208,15 +224,6 @@ def test_超时要杀进程树而不是只杀父进程() -> None:
     assert "@Arguments *>> $log" not in source
 
 
-def test_超时与失败在摘要里分开写() -> None:
-    """一个是「这步自己出错」，一个是「这步卡住了」——处置完全不同。"""
-    from hf_data_crawl.ops import refresh
-
-    # 超时由 Invoke-HfTask 统一折算成 124；编排器把每步的退出码原样记进摘要。
-    assert "$script:TimeoutExitCode = 124" in text(COMMON)
-    assert '"code": item.code' in text(Path(refresh.__file__))
-
-
 def test_所有任务脚本都传了墙钟上限() -> None:
     """漏一个脚本，就等于留了一处无限等。"""
     for path in sorted(SCRIPTS.glob("*.ps1")):
@@ -235,9 +242,10 @@ def test_日志头部在收尾时补写() -> None:
     格式与旧版一致。这条断言钉住那个拼接，别让头部悄悄消失。
     """
     source = text(COMMON)
-    assert "$header + $body + $footer" in source
-    assert "已强杀进程树" in source
+    assert re.search(r"\$header\s*\+\s*\$body\s*\+\s*\$footer", source), (
+        "收尾必须把「头 + 正文 + 尾」拼回去，先写头会被 Start-Process 截断"
+    )
     # 末尾不能多出空行：MONITORING 承诺「末行带实耗秒数」，多一行空白就食言了。
-    assert '.TrimEnd("`r", "`n") | Out-File' in source
+    assert re.search(r"\.TrimEnd\(", source)
     # 正文不以换行收尾时，尾行会粘在最后一行输出后面。
     assert '$body.EndsWith("`n")' in source

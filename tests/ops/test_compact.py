@@ -107,13 +107,32 @@ def test_基线只留每个id的最后写入记录(store: DatasetStore) -> None:
 
 
 def test_基线groups保留来源命名空间与写入序(store: DatasetStore) -> None:
+    """groups 是读回时切回原分块的唯一依据：来源与次序都不能丢。"""
+    # 再补两个各带唯一 id 的分块：否则同 id 被后面的天覆盖，基线里只剩一个 group，
+    # 次序断言就退化成「单元素永远有序」。
+    for offset in (1, 2):
+        raw.write(
+            store,
+            snapshot_date=COLD[0],
+            page_index=10 + offset,
+            records=[record(20 + offset, 1, f"x{offset}")],
+            meta={},
+            written_at=f"2026-09-{offset:02d}T00:00:00.000000+00:00",
+        )
+
     compact(store, COLD[:2])
 
     path = next((store.root / "cold" / "raw").glob(f"baseline-*{raw.SUFFIX}"))
     payload = json.loads(raw.unpack(path.read_bytes(), name=path.name).decode("utf-8"))
+    groups = payload["groups"]
 
     assert payload["meta"]["baseline"] is True
-    assert all("key" in group and "source" in group for group in payload["groups"])
+    assert len(groups) > 1, "夹具没有造出多个分块，次序断言没有意义"
+    assert [group["source"] for group in groups] == [raw.LEGACY_SOURCE] * len(groups), (
+        "组的来源命名空间必须原样保留，否则读回时会被当成另一个名字空间"
+    )
+    keys = [tuple(group["key"]) for group in groups]
+    assert keys == sorted(keys), "groups 必须按写入序排，读回的分块顺序才与压缩前一致"
 
 
 def test_原分块完整移入backup不删除(store: DatasetStore) -> None:

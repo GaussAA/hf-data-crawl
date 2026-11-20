@@ -69,7 +69,6 @@ def test_生成单文件页面且含关键数据(store: DatasetStore, tmp_path: 
     summary = reporter.write(tmp_path / "out" / "dashboard.html", top=10)
 
     content = summary.path.read_text(encoding="utf-8")
-    assert summary.path.exists()
     assert summary.bytes > 1000
     assert "<!DOCTYPE html>" in content
     assert "acme/alpha" in content
@@ -265,8 +264,8 @@ def test_状态按四值分开列(store: DatasetStore, tmp_path: Path) -> None:
     assert 'class="status-split"' in content
 
 
-def test_覆盖率与占比都是可比较的形式(store: DatasetStore, tmp_path: Path) -> None:
-    """孤立绝对数不能说明「这张榜能代表全站多少」。"""
+def test_占比用统一的data属性标注(store: DatasetStore, tmp_path: Path) -> None:
+    """孤立绝对数不能说明「这张榜能代表全站多少」；占比的可比性靠属性而非文案。"""
     content = _page(store, tmp_path)
 
     for token in (

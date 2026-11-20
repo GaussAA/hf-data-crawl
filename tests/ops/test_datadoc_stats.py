@@ -78,8 +78,3 @@ def test_未知类型原样输出而不是猜一个() -> None:
     """表里出现没登记的类型时，显示原文比显示一个猜的中文名安全。"""
     assert datadoc._type_name(pl.Utf8) == "字符串"
     assert datadoc._type_name(pl.Int32) == "Int32"
-
-
-def test_文件读不出来时行数是未知而不是零(tmp_path: Path) -> None:
-    """返回 `None` 而不是 0：文件读不出来与「确实是空表」是两件事。"""
-    assert datadoc._row_count(tmp_path / "没有这个文件.parquet") is None

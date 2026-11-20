@@ -29,25 +29,6 @@ def doc(tmp_path: Path) -> str:
     return render(tmp_path / "data", STAMP)
 
 
-def test_本机已生成的文档与结构一致() -> None:
-    """`data/DATA.md` 不进仓库：它的每个数字都由本机数据算出，而各机器 `data/` 独立。
-
-    所以这条不再读仓库文件（CI 上本就没有），只在**本机已经生成过**时校验结构：
-    改了 schema 却忘记跑 `hf-data-crawl docs` 时，这里会红。数字不比——行数、体积
-    随采集天天变，比它只会制造噪声。
-    """
-    root = Path(__file__).resolve().parents[2]
-    generated = root / "data" / "DATA.md"
-    if not generated.exists():
-        pytest.skip("本机还没跑过 docs；CI 上没有 data/，本就不该有这份文件")
-
-    committed = generated.read_text(encoding="utf-8")
-    for name, spec in TABLES.items():
-        assert f"逻辑名：`{name}`" in committed, f"{name} 没进本机文档，跑 docs 重新生成"
-        for column in spec.schema:
-            assert f"| `{column}` |" in committed, f"{name}.{column} 没进本机文档"
-
-
 def test_每张表都出现在文档里(doc: str) -> None:
     for name, spec in TABLES.items():
         assert f"`{spec.path}`" in doc, f"{name} 的路径没进文档"
@@ -116,14 +97,22 @@ def test_缺字段时台账里也留一条失败(tmp_path: Path, monkeypatch: py
 
 
 def test_命令生成的文档与渲染函数一致(tmp_path: Path) -> None:
-    """两条路径写出同一份内容，避免「命令跑出来的」和「测试验过的」不是一回事。"""
+    """两条路径写出同一份内容，避免「命令跑出来的」和「测试验过的」不是一回事。
+
+    只比两个子串曾让「命令漏拼一章」照样绿；这里归一化生成时刻后逐字节比较。
+    """
+    import re
+
+    def normalized(text: str) -> str:
+        return re.sub(r"生成于 \d{4}-\d{2}-\d{2} \d{2}:\d{2}", "生成于 <stamp>", text)
+
+    # 先渲染期望值：命令会顺手写 runs/ 台账，之后再渲染看到的目录就不一样了。
+    expected = normalized(render(tmp_path / "data"))
     target = tmp_path / "DATA.md"
-    main(["--data-dir", str(tmp_path / "data"), "docs", "--out", str(target)])
+    code = main(["--data-dir", str(tmp_path / "data"), "docs", "--out", str(target)])
+    assert code == 0
 
-    written = target.read_text(encoding="utf-8")
-
-    assert "## 五、几个容易误解的地方" in written
-    assert "请勿手工编辑" in written
+    assert normalized(target.read_text(encoding="utf-8")) == expected
 
 
 def test_文档提到的源码文件必须真的存在(tmp_path: Path) -> None:
@@ -148,7 +137,7 @@ def test_文档提到的源码文件必须真的存在(tmp_path: Path) -> None:
     assert missing == [], f"文档引用了不存在的源码文件：{missing}"
 
 
-def test_文档里的列数与代码一致() -> None:
+def test_文档里的列数与代码一致(doc: str) -> None:
     """散文里硬编码的列数必须等于代码当前的契约列数与视图列数。
 
     2026-11-20 实测：契约 v6 从 31 涨到 35，DATA.md 里有 4 处文案没跟上（「含
@@ -158,16 +147,11 @@ def test_文档里的列数与代码一致() -> None:
     只认**明确指契约/视图**的两句：文里还有「current 只有 19 列」「有 5 列不在
     视图里」这类别的语义，抓全部「N 列」会把它们一起误伤（第一版就这么红过）。
 
-    DATA.md 是本机生成物（`data/` 已 gitignore），CI 上没有，跳过。
+    用 `render()` 现生成而不是读 `data/DATA.md`：后者在 CI 上不存在，skip 等于
+    把这条守门从 PR 门槛里删掉。
     """
     from hf_data_crawl.delivery.fields import DEFAULT_COLUMNS, VIEW_COLUMNS
 
-    page = Path(__file__).resolve().parents[2] / "data" / "DATA.md"
-    if not page.exists():
-        pytest.skip("DATA.md 是本机生成物，CI 上没有")
-
-    text = page.read_text(encoding="utf-8")
-
-    assert f"默认契约 {len(DEFAULT_COLUMNS)} 列" in text
-    assert f"视图里的 {len(VIEW_COLUMNS)} 列" in text
-    assert "31 列" not in text, "契约 v5 的列数（31）还在文档里"
+    assert f"默认契约 {len(DEFAULT_COLUMNS)} 列" in doc
+    assert f"视图里的 {len(VIEW_COLUMNS)} 列" in doc
+    assert "31 列" not in doc, "契约 v5 的列数（31）还在文档里"

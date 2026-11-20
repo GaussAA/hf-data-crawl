@@ -254,7 +254,7 @@ def test_今天的失败记录不算已完成(tmp_path: Path, monkeypatch) -> No
 
 
 def test_全部成功时退出码为零(tmp_path: Path, monkeypatch) -> None:
-    """doctor 非零算告警不算故障，但这一步全成功时不该带着退出码 1 回去。"""
+    """全成功时不该带着退出码 1 回去。"""
     store = DatasetStore(tmp_path / "data")
     fake_steps(monkeypatch)
     args = Namespace(budget_hours=8.5, launch_hours=8.0)
@@ -263,6 +263,18 @@ def test_全部成功时退出码为零(tmp_path: Path, monkeypatch) -> None:
 
     assert outcome.code == 0
     assert outcome.reason is None
+
+
+def test_doctor非零只算告警不算链条失败(tmp_path: Path, monkeypatch) -> None:
+    """体检把「导出落后」「Raw 断日」这类待办也计入非零；若让它拖垮链条，
+    整条链会天天报红，铃声很快就没人听。详情由 `data/ALERT.txt` 承载。"""
+    store = DatasetStore(tmp_path / "data")
+    fake_steps(monkeypatch, {"doctor": 1})
+    args = Namespace(budget_hours=8.5, launch_hours=8.0)
+
+    outcome = refresh.run(args, store)
+
+    assert outcome.code == 0, outcome.reason
 
 
 def test_run_step把子进程输出写进日志(tmp_path: Path) -> None:
@@ -409,7 +421,6 @@ def test_归档在链上且有排期(tmp_path: Path, monkeypatch) -> None:
 
     refresh.execute(store, log=lambda _: None)
 
-    assert "archive" in refresh.STEP_NAMES
     assert "archive" in calls
 
 
@@ -436,7 +447,8 @@ def test_每一步的台账命令名与它实际跑的子命令一致() -> None:
     """
     for step in refresh.ALL_STEPS:
         if step.args[0] == "request":
-            assert step.ledger == "request-run-due", step.name
+            # cli 按 `args[1]` 记命令名（request-run / request-run-due），不是写死一个。
+            assert step.ledger == "-".join(step.args[:2]), step.name
         else:
             assert step.ledger == step.args[0], step.name
 
@@ -451,12 +463,6 @@ def test_对不上名的七个步骤都能被台账认出来(tmp_path: Path) -> 
 
     assert set(LEDGER_ALIASES) <= done
     assert "compact" not in done, "没跑过的步骤不能算完成"
-
-
-def test_查不到的步骤返回None(tmp_path: Path) -> None:
-    plan = refresh.Plan()
-
-    assert plan.by_name("nope") is None
 
 
 def test_窗口外不启动新抓取且文件清单也留痕(tmp_path: Path, monkeypatch) -> None:

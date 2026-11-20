@@ -2,13 +2,7 @@
 
 import argparse
 
-from hf_data_crawl.platform.presets import PRESETS, get_preset, list_presets
-
-
-def test_预设数量():
-    """验证预设数量。"""
-    assert len(PRESETS) == 5
-    assert len(list_presets()) == 5
+from hf_data_crawl.platform.presets import get_preset, list_presets
 
 
 def test_获取default预设():

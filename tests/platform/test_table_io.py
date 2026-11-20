@@ -117,12 +117,6 @@ def test_旧分区缺列时观测表仍可读且补空(store: DatasetStore) -> N
     assert old["downloads_all_time"] is None
 
 
-def test_read_all对非分区表等同于read(store: DatasetStore) -> None:
-    store.upsert("size", sizes(size_row("acme/a", 1)))
-
-    assert store.read_all("size").equals(store.read("size"))
-
-
 # ---------------------------------------------------------------- 登记表驱动
 
 

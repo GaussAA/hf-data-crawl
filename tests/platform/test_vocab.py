@@ -18,6 +18,5 @@ def test_词表恰好四值() -> None:
     }
 
 
-def test_非在架集合不含active() -> None:
-    assert Status.ACTIVE not in INACTIVE
+def test_非在架集合恰好是另外三值() -> None:
     assert INACTIVE == {Status.DISAPPEARED, Status.RESTRICTED, Status.RENAMED}

@@ -312,15 +312,6 @@ def test_临时失败不落库() -> None:
     assert len(transport.calls) == 3
 
 
-def test_429退避后重试成功() -> None:
-    transport = FakeFilesTransport({"acme/x": (429, tree())})
-
-    result = api(transport).fetch("acme/x", DAY)
-
-    assert result.status == "ok"
-    assert result.row["file_count"] == 5
-
-
 def test_429按上游RetryAfter退避后重试成功() -> None:
     delays: list[float] = []
     transport = FakeFilesTransport({"acme/x": (RateLimited(7.0), tree())})

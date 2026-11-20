@@ -108,5 +108,4 @@ def test_边跑边落库每批一次() -> None:
         flush_every=3,
     )
 
-    assert sum(batches) <= 10
-    assert len(batches) >= 3, batches
+    assert batches == [3, 3, 3], f"每满 flush_every 条落一次；尾巴留在返回值里：{batches}"

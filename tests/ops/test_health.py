@@ -9,7 +9,7 @@ import pytest
 
 from hf_data_crawl.ops import health
 from hf_data_crawl.ops.doctor import Finding, diagnose
-from hf_data_crawl.ops.health import HEALTH_NAME, HealthRecord
+from hf_data_crawl.ops.health import HEALTH_NAME
 from hf_data_crawl.platform.store import DatasetStore
 
 NOW = datetime(2026, 11, 10, 12, 0, 0)
@@ -163,7 +163,6 @@ def test_记录的是问题原文而不是序号(tmp_path: Path) -> None:
     health.record(store, entries("层间勾稽：3 个数据集缺属性行"), NOW)
 
     assert health.read(store)[0].problems[0].startswith("层间勾稽")
-    assert isinstance(health.read(store)[0], HealthRecord)
 
 
 def test_并发写流水不丢记录(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

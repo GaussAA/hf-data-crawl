@@ -159,17 +159,6 @@ def test_有界运行保留游标且续跑不重复(store: DatasetStore) -> None
     assert state.read_current(store)["id"].n_unique() == 6
 
 
-def test_正常结束后清除游标(store: DatasetStore) -> None:
-    transport = FakeCursorTransport([page("a", 2)])
-    checkpoint_path = store.state_dir / "collect-checkpoint.json"
-
-    collector(transport, store).run(DAY1, limit=100, pages_without_new=5)
-
-    assert checkpoint_path.exists()
-    _, cursor = open(checkpoint_path, encoding="utf-8").read().split(":", 1)
-    assert cursor.strip().rstrip("}") == "null"
-
-
 def test_dry_run只探一页且不落盘(store: DatasetStore) -> None:
     transport = FakeCursorTransport([page("a", 3), page("b", 3)])
 

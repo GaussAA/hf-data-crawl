@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from hf_data_crawl.pipeline import bronze, card, derive, raw, silver, state
+from hf_data_crawl.pipeline import bronze, card, raw, silver, state
 from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.pipeline.raw import CARD_LABEL
 from hf_data_crawl.platform.store import DatasetStore
@@ -147,14 +147,6 @@ def test_空日不提前返回且保留现有当前态行数(store: DatasetStore
     assert result.silver_rows == 0
     assert result.state.appended == 0
     assert result.state.current_rows == 2
-
-
-def test_入口模块直接引用各步而非store转发() -> None:
-    """删除 store 上的转发方法时，推导入口不应受影响。"""
-    assert derive.bronze is bronze
-    assert derive.silver is silver
-    assert derive.card is card
-    assert derive.state is state
 
 
 def test_只保留最新一天的bronze且旧分区可重建(store: DatasetStore) -> None:
