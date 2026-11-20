@@ -88,8 +88,6 @@ allowedUntypedLibraries = ["pyarrow"]
 reportUnknownMemberType = "none"
 reportUnknownVariableType = "none"
 reportUnknownArgumentType = "none"
-reportUnknownParameterType = "none"
-reportUnknownLambdaType = "none"
 
 [tool.coverage.run]
 # 以包名计，与 CI 的 `--cov=hf_data_crawl` 同源；editable 安装下两者等价。

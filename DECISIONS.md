@@ -2395,3 +2395,19 @@
 
      **一条通则**：测试调用一个生产函数，本身就是一种「它被使用」的错觉。要么让生产
      调它，要么删掉它并把断言移到真正入口；留着它，下一次重构没人敢删。
+
+145. **Unknown 家族再收两条：Parameter / Lambda 为零成本**（2026-11-20，收紧 #142 的例外）：
+
+     #142 关掉五条 `reportUnknown*` 时没有分开量。实测把
+     `reportUnknownParameterType` 与 `reportUnknownLambdaType` 打开、其余三条保持关闭，
+     全 `src` 是 **0 错**：这两条只查「函数参数 / lambda 的类型有没有 Unknown」，而项目里
+     的泛型回调都写在有注解的边界上。于是它们从例外里删除，例外只剩三条。
+
+     其余三条不跟进，也是量过的：只对 `platform` + `pipeline` 全开是 174 错 / 25 文件，
+     其中 118 条 `reportUnknownMemberType` 来自 polars 自己的方法签名（`select` /
+     `filter` / `unique` 的参数联合类型里带 `Unknown`），不是我们的变量；为它们加 cast
+     只会把库的类型缺口抄进业务代码。`VariableType` / `ArgumentType` 则集中在 card /
+     gold 的 JSON dict 边界，与 #142 的判断一致：这些值本来就要在运行时收窄。
+
+     **口径**：以后想再开一条，先按切片量错误数并抽样看归属；确认不是库注解泄漏再开，
+     不要凭「strict 应该全开」直接改配置。
