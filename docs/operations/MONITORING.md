@@ -190,7 +190,7 @@ uv run python -c "from pathlib import Path; from hf_data_crawl.pipeline.raw impo
                     ‖ fetch-readme --changed-all
                     ‖ fetch-preview --top 20000
          fetch-files --top 20000 排在 reconcile 之后（同走 /api 配额）
-③ 串行   parse-readme → export-wide（sizes 合并后即跑）→ request run-due → prune → doctor
+③ 串行   parse-readme → export-wide（sizes 合并后即跑）→ report → request run-due → archive → prune → doctor
 ```
 
 依赖与并发由**编排器**表达，不由钟点表达；前置失败时下游记 `[跳过]`，不相关的

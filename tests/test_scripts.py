@@ -118,6 +118,7 @@ def test_链条按序且前置失败会跳过() -> None:
     assert [step.name for step in refresh.SERIAL_TAIL] == [
         "parse",
         "export",
+        "report",
         "deliver",
         "archive",
         "prune",

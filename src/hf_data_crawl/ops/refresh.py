@@ -130,6 +130,10 @@ SERIAL_TAIL: tuple[Step, ...] = (
         needs=("build", "reconcile", "sizes", "parse"),
         command="export-wide",
     ),
+    # 榜单页是 `reports/` 的产物（`query/report.py` 渲染 `assets/` 的 css/js），
+    # 13 秒的事——但 2026-11-20 实测它停在 4 天前，因为刷新链里没有这一步。
+    # 只依赖 `build`：它读 `datasets` 视图与观测流水，不读导出物。
+    Step("report", ("report",), needs=("build",), command="report"),
     Step(
         "deliver",
         ("request", "run-due"),
