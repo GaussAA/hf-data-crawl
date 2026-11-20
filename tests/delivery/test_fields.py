@@ -10,9 +10,11 @@ from __future__ import annotations
 import re
 
 import polars as pl
+import pytest
 
 from hf_data_crawl.delivery.fields import (
     COLUMN_NOTES,
+    COLUMN_SOURCES,
     COLUMN_TYPES,
     CONTRACT_VERSION,
     DEFAULT_COLUMNS,
@@ -342,3 +344,87 @@ def test_与数据字典共用的列两边都要有说明() -> None:
     for column in shared:
         assert COMMON[column].strip(), f"{column} 在 fielddocs 里没有说明"
         assert COLUMN_NOTES[column].strip(), f"{column} 在 COLUMN_NOTES 里没有说明"
+
+
+# ---------------------------------------------------------------- 契约自检的每一条判据
+
+#: 每一格都是一次「有人改坏了契约」：把常量换成坏值，自检必须当场报出对应那句话。
+#: 这些分支此前一条都没走到——自检本身写错（比如判错变量、文案接错条件）也没人会发现。
+CONTRACT_BREAKAGES: list[tuple[str, object, str]] = [
+    ("DEFAULT_COLUMNS", DEFAULT_COLUMNS + ("nope",), "宽视图不存在的列"),
+    ("DEFAULT_COLUMNS", DEFAULT_COLUMNS + (DEFAULT_COLUMNS[0],), "重复列"),
+    ("DEFAULT_COLUMNS", ("downloads", *DEFAULT_COLUMNS[1:]), "第一列必须是 id"),
+    (
+        "COLUMN_NOTES",
+        {key: value for key, value in COLUMN_NOTES.items() if key != DEFAULT_COLUMNS[0]},
+        "缺中文说明",
+    ),
+    (
+        "COLUMN_TYPES",
+        {key: value for key, value in COLUMN_TYPES.items() if key != DEFAULT_COLUMNS[0]},
+        "缺类型声明",
+    ),
+    ("COLUMN_TYPES", {**COLUMN_TYPES, "nope": "text"}, "类型声明里有契约之外的列"),
+    ("COLUMN_NOTES", {**COLUMN_NOTES, "nope": "说明"}, "说明里有契约之外的列"),
+    ("FALLBACKS", {**FALLBACKS, DEFAULT_COLUMNS[0]: "nope"}, "兜底列在契约或宽视图里找不到"),
+    ("PAGE_FIELDS", (*PAGE_FIELDS, ("Ghost", ("nope",), "x")), "页面对照表指向契约之外的列"),
+    ("DISPLAY_COLUMNS", frozenset({"nope"}), "CSV 展平映射里有契约之外的列"),
+    ("EXTENDED_FIELDS", (*EXTENDED_FIELDS, EXTENDED_FIELDS[0]), "扩展字段清单里有重复列"),
+    ("EXTENDED_FIELDS", (*EXTENDED_FIELDS, ("nope", "x")), "扩展字段清单里有视图不存在的列"),
+    (
+        "EXTENDED_FIELDS",
+        (*EXTENDED_FIELDS, (DEFAULT_COLUMNS[0], "x")),
+        "扩展字段清单与默认面重复",
+    ),
+    ("COLUMN_SOURCES", {"nope": "nope"}, "来源登记指向契约之外的列或不存在的表"),
+]
+
+
+@pytest.mark.parametrize(("attr", "broken", "fragment"), CONTRACT_BREAKAGES)
+def test_契约自检能抓出每一类改坏(
+    monkeypatch: pytest.MonkeyPatch, attr: str, broken: object, fragment: str
+) -> None:
+    from hf_data_crawl.delivery import fields
+
+    monkeypatch.setattr(fields, attr, broken)
+
+    problems = fields.contract_errors()
+
+    assert any(fragment in item for item in problems), f"没抓到「{fragment}」：{problems}"
+
+
+def test_未登记的来源不会被误判成错误() -> None:
+    """自检只查「指向有效」不查「是否覆盖」：漏登一列是缺口，交付照常跑得通。"""
+    from hf_data_crawl.delivery import fields
+
+    dropped = {key: value for key, value in COLUMN_SOURCES.items() if key != "id"}
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(fields, "COLUMN_SOURCES", dropped)
+        assert fields.contract_errors() == []
+
+
+# ---------------------------------------------------------------- 展示映射
+
+
+def test_展示映射认三种取值范围写法其余原样() -> None:
+    """HF 的 `size_categories` 只有三种写法；第四种不许猜——猜错比不转换更糟。"""
+    frame = pl.DataFrame({"size_categories": [["100K<n<1M", "n<1K", "n>1B", "1M", ""]]})
+
+    rendered = frame.select(display_expr("size_categories"))["size_categories"][0]
+
+    assert rendered == "100K - 1M;< 1K;> 1B;1M;"
+
+
+def test_展示清单之外的列原样透传() -> None:
+    """`tags` 没有页面写法，逐元素映射必须原样返回，否则等于悄悄改了机器码。"""
+    frame = pl.DataFrame({"tags": [["keyword", "reranking"]]})
+
+    rendered = frame.select(display_expr("tags"))["tags"][0]
+
+    assert rendered == "keyword;reranking"
+
+
+def test_不认识的类型返回类型本身() -> None:
+    """折不成四种族时给类型本名：比对时能一眼看出是哪列、什么类型。"""
+    assert type_family(pl.Binary) == "Binary"
