@@ -1305,6 +1305,13 @@ def _recent_failures(ctx: RunContext) -> Finding:
         # `request-run-due` 不在此列：那是没人盯着的定时路径，坏了必须报。
         if item.get("command") == "request-run":
             continue
+        # `refresh` 是编排器：它每一步另有判据（日增量采集、全量对账、README 全文…），
+        # 退出码只是「今天哪一步不成」的汇总。把汇总也记一条失败会**自锁**——
+        # doctor 报一条历史告警 → refresh 因此退出 1 → 台账多一条失败 → 明天照旧，
+        # 永远恢复不了。2026-11-20 就这么亮了一整天。子步骤的失败仍各自入列，
+        # 少算这一条不会漏掉任何信号。
+        if item.get("command") == "refresh":
+            continue
         # `fetch-preview` 撞 429 是**设计内的主动停车**：`preview.py` 规定撞上就整轮
         # 中止（CloudFront 按 IP 限流，各线程各自退避只会把封禁拖长，实测吞吐掉到
         # 0.5 req/s）。下次重跑会接着抓，把「主动刹车」算成故障只会让红点变噪音。

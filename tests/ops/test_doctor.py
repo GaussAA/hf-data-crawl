@@ -437,6 +437,25 @@ def test_单次交付被拦不算故障但批量交付失败要报(tmp_path: Pat
     assert any("失败运行" in text for text in problems(store))
 
 
+def test_编排器自身的失败不入七天红点(tmp_path: Path) -> None:
+    """`refresh` 的退出码是「今天哪一步不成」的汇总，不能当一条独立的失败来记。
+
+    记了会自锁：doctor 报一条历史告警 → refresh 因此退出 1 → 台账多一条失败 →
+    明天照旧，永远恢复不了。2026-11-20 实测亮了一整天，直到夜里把这条判据改掉。
+    子步骤的失败仍各自入列，少算这一条不会漏掉任何信号。
+    """
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    write_run(
+        store,
+        "refresh",
+        NOW - timedelta(hours=2),
+        Outcome({}, code=1, reason="刷新鲜未全部成功：collect(退出 1)"),
+    )
+
+    assert not any("失败运行" in text for text in problems(store))
+
+
 def test_预览被限流停车不算故障但真崩了要报(tmp_path: Path) -> None:
     """`fetch-preview` 撞 429 是设计内的主动停车。
 
