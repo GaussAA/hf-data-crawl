@@ -412,7 +412,9 @@ def run_fetch_preview(
         candidates = ordered["id"].to_list()
     else:
         fetchable = set(store.read("size").filter(pl.col("status") == "ok")["id"].to_list())
-        candidates = [item for item in ordered["id"].to_list() if item in fetchable][: args.top]
+        pool = [item for item in ordered["id"].to_list() if item in fetchable]
+        # `--top 0` 表示全量：与 fetch-files / fetch-readme / fetch-sizes 同一个约定。
+        candidates = pool[: args.top] if args.top > 0 else pool
 
     if not candidates:
         print("没有可抓的库：size 表里没有 status=ok 的记录，先跑 `fetch-sizes`。")

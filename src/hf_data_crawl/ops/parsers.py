@@ -468,7 +468,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     preview.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
     preview.add_argument(
-        "--top", type=int, default=PREVIEW_TOP, help="按下载量取前多少名（默认 10000）"
+        "--top",
+        type=int,
+        default=PREVIEW_TOP,
+        help="按下载量取前多少名（默认 10000；0 表示全量，能跑多久算多久）",
     )
     preview.add_argument("--ids", default=None, help="只抓这些 id（逗号分隔），忽略 --top")
     preview.add_argument("--rows", type=int, default=3, help="每个库取几行（默认 3，上限 100）")

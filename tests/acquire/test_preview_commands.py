@@ -196,3 +196,39 @@ def test_被限流中止时退出码非零且给出降速建议(tmp_path: Path, 
     out = capsys.readouterr().out
     assert "降低 --rate" in out and "20.0" in out
     assert store.read("preview").height == 1, "已抓到的行不该因为中止被丢掉"
+
+
+def test_top为零时抓全量而不是一条都不抓(tmp_path: Path, monkeypatch) -> None:
+    """`--top 0` = 全量：与 fetch-files / fetch-readme / fetch-sizes 同一个约定。
+
+    预览原先直接切 `[: args.top]`，`0` 会切出空列表——命令看起来「跑完了」，
+    其实一条没抓，而且不报错。
+    """
+    store = DatasetStore(tmp_path / "data")
+    seed(
+        store,
+        "current",
+        [{"id": f"a/{index}", "downloads": 100 - index} for index in range(5)],
+    )
+    seed(store, "size", [{"id": f"a/{index}", "status": "ok"} for index in range(5)])
+    fake = patch_fetcher(monkeypatch)
+
+    commands.run_fetch_preview(args(top=0), store, None)
+
+    assert len(fake.seen) == 5
+
+
+def test_top非零时仍按下载量截断(tmp_path: Path, monkeypatch) -> None:
+    """`--top N` 照旧只抓前 N 名——别把「0 表示全量」写成「<=0 都全量」的通融。"""
+    store = DatasetStore(tmp_path / "data")
+    seed(
+        store,
+        "current",
+        [{"id": f"a/{index}", "downloads": 100 - index} for index in range(5)],
+    )
+    seed(store, "size", [{"id": f"a/{index}", "status": "ok"} for index in range(5)])
+    fake = patch_fetcher(monkeypatch)
+
+    commands.run_fetch_preview(args(top=3), store, None)
+
+    assert fake.seen == ["a/0", "a/1", "a/2"]
