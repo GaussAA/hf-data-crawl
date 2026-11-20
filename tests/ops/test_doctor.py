@@ -1736,3 +1736,25 @@ def test_讲历史的那一行不算漂移(tmp_path: Path) -> None:
     finding = _doc_drift(ctx_of([], tmp_path))
 
     assert not finding.problem
+
+
+def test_文档口径不扫工作区副本与本机记忆(tmp_path: Path) -> None:
+    """`.agents/worktrees` / `.agents/memory` 是本机状态；扫它们只会本机红、CI 绿。"""
+    from hf_data_crawl.ops.doctor import _doc_drift
+
+    skill = tmp_path / ".agents" / "skills" / "hf-request" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("当前契约是 31 列。\n", encoding="utf-8")
+    worktree = tmp_path / ".agents" / "worktrees" / "x"
+    worktree.mkdir(parents=True)
+    (worktree / "DECISIONS.md").write_text("当时是 31 列。\n", encoding="utf-8")
+    memory = tmp_path / ".agents" / "memory"
+    memory.mkdir(parents=True)
+    (memory / "2026-11-15.md").write_text("任务 hf-daily 仍在用。\n", encoding="utf-8")
+
+    finding = _doc_drift(ctx_of([], tmp_path))
+
+    assert finding.problem
+    assert "SKILL.md" in finding.text, "skills 仍要扫，别把整个 .agents 跳过"
+    assert "DECISIONS.md" not in finding.text
+    assert "2026-11-15.md" not in finding.text

@@ -1661,6 +1661,23 @@ _HISTORY_MARKERS = (
 )
 
 
+#: `.agents` 下的本机状态，不属于「讲现在」的仓库文档。
+#:
+#: `worktrees/` 是 git worktree 的完整副本，里面带着历史的 DECISIONS/ADR；扫它等于
+#: 把本机开发副本当成项目文档，制造一条 CI 永远看不到的假红。`memory/` 同理。
+_LOCAL_AGENT_DIRS = frozenset({"worktrees", "memory"})
+
+
+def _agent_docs(root: Path) -> list[Path]:
+    """`.agents/**/*.md`，跳过 worktree 副本与本机记忆。"""
+    base = root / ".agents"
+    return [
+        path
+        for path in sorted(base.rglob("*.md"))
+        if not (_LOCAL_AGENT_DIRS & set(path.relative_to(base).parts))
+    ]
+
+
 def _doc_drift(ctx: RunContext) -> Finding:
     """「讲现在」的文档里，还有没有在讲已弃用的概念。
 
@@ -1672,6 +1689,10 @@ def _doc_drift(ctx: RunContext) -> Finding:
     判定刻意**窄**：只认一份固定的弃用词表，不猜「这句话是否过时」。宁可漏，
     不可误报——体检红了没人看，比漏报更糟。行内带「已删除 / 已并入 / 历史」这类
     词的豁免：MONITORING 里「旧的六个任务已删除」是现状说明，不是漂移。
+
+    `.agents/worktrees` 与 `.agents/memory` 是本机状态，不参与扫描：前者会把整份
+    历史 DECISIONS/ADR 带进来（2026-11-20 实测本机 34 条假红，CI 全绿），后者是
+    记忆文件，里面的旧路径本就不该按「当前口径」要求。
     """
     root = ctx.store.root.parent
     targets = [
@@ -1682,7 +1703,7 @@ def _doc_drift(ctx: RunContext) -> Finding:
         root / "docs" / "TODO.md",
         *sorted((root / "docs" / "operations").glob("*.md")),
         *sorted((root / "docs" / "agents").glob("*.md")),
-        *sorted((root / ".agents").rglob("*.md")),
+        *_agent_docs(root),
     ]
     found: list[str] = []
     scanned = 0
