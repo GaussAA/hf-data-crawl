@@ -20,7 +20,7 @@ from typing import Any
 
 import polars as pl
 
-from ..pipeline import state
+from ..pipeline import raw, state
 from ..pipeline.derive import derive_day
 from ..platform.atomic import write_parquet, write_text
 from ..platform.store import DatasetStore
@@ -136,6 +136,8 @@ class ReconcileSummary:
     probe_deferred: int = 0
     #: 连续 `PROBE_DEGRADE_AFTER` 轮都拿不到结论的库数；具体 id 见差异清单。
     probe_degraded: int = 0
+    #: 因「当天已有相同内容」而未落盘的记录数（详见 `raw.DayRecords`）。
+    deduped: int = 0
 
 
 class Reconciler:
@@ -183,6 +185,14 @@ class Reconciler:
             session.remember(page.records)
             return None
 
+        # 当天 `collect --full-scan` 通常已经把全站落过一遍（11-21 实测 99.95%
+        # 逐字段相同）。先读当天已落分块建指纹索引，本轮只落「还没出现过」的
+        # 记录：内容变了的照落（sha 不同即指纹不同），重复的整页不写。
+        #
+        # 若当天还没有分块（单独跑对账、collect 未跑），索引为空、全部照落——
+        # 此时本轮的分块就是唯一数据源，去重必须自动退化成「不丢」。
+        dedup = raw.DayRecords.load(self._store, snapshot_date, label="part")
+
         scan = ScanRun(self._api, self._store).run(
             snapshot_date,
             ScanSpec(
@@ -193,6 +203,7 @@ class Reconciler:
                 max_pages=max_pages,
                 checkpoint=session.checkpoint,
                 on_page=remember,
+                dedup=dedup,
             ),
         )
         stopped_reason = scan.stopped_reason
@@ -277,6 +288,7 @@ class Reconciler:
             probe_failed=failed,
             probe_deferred=deferred,
             probe_degraded=len(self._probe_degraded),
+            deduped=scan.deduped,
         )
 
     def _classify_missing(

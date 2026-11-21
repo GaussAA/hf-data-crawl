@@ -1,7 +1,9 @@
 """Raw 层：原始响应落盘，以及按写入序读回。
 
 Raw 是唯一不可重算的一层，其余各层都由它派生。这里只做两件事：写一页、读一天。
-哪个标签对应哪种派生（`part` / `top` → Bronze，`card` → 卡片表）也在此约定，
+一页响应默认原样落盘；扫描方若给了 `DayRecords`，则只落「当天还没出现过相同
+内容」的记录——那是「同一批数据今天已经存过」，不是「这一页不重要」，详见该类
+的说明。哪个标签对应哪种派生（`part` / `top` → Bronze，`card` → 卡片表）也在此约定，
 写入方与读取方都引用这里的常量，而不是各写一份字面量。
 
 文件名是「类别 + 命名空间 + 页码 + 内容摘要」：`part-lean_lastModified-000001-xxxx.json.zst`。
@@ -20,6 +22,7 @@ import gzip
 import hashlib
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -112,6 +115,70 @@ class Batch(NamedTuple):
 
 def partition_dir(store: DatasetStore, snapshot_date: date) -> Path:
     return store.raw_dir / f"dt={snapshot_date.isoformat()}"
+
+
+#: 记录指纹的字节数。8 字节足够：一天百万条，按生日界 n²/2⁶⁵ ≈ 3e-8；
+#: 真撞了也只是把一条**不同**的记录误判成重复而少落一份——所以判据取「id 与
+#: 全部字段一起哈希」，不是只哈希 id：只按 id 判会把「内容变了」当成「已有」，
+#: 那才是真的丢数据。
+FP_BYTES = 8
+
+
+def fingerprint(record: dict[str, Any]) -> bytes:
+    """一条记录的内容指纹，键序无关。
+
+    用 orjson 而非 `json.dumps`：这里只算指纹、不经手任何参与文件名的字节，
+    不违反「写入端只此一份 json.dumps」的约定。百万条上快 3 倍。
+    """
+    return hashlib.blake2b(
+        orjson.dumps(record, option=orjson.OPT_SORT_KEYS), digest_size=FP_BYTES
+    ).digest()
+
+
+class DayRecords:
+    """某天已落分块里出现过的记录指纹，用于「同样的内容当天只落一份」。
+
+    为什么需要：2026-11-19 起日常链既有 `collect --full-scan` 又有 `reconcile`，
+    两者都全站扫描、都用同一个 expand。11-21 实测 1,140,886 条交集里
+    1,140,360 条**逐字段相同**（99.95%），第二份落盘等于把同一批数据存两遍——
+    每天 165 MB，21 天留存就是 3.4 GB。
+
+    给它一份当天的指纹集合，写盘方就只落「当天还没出现过」的记录：内容变了的
+    照落（sha 不同即指纹不同），一行不丢；重复的整页一条都不写。
+
+    集合只存 8 字节指纹，百万条约 80 MB 常驻。`load` 要读完当天全部分块
+    （实测约 25 秒），故只在确实要写盘的扫描里构造——只读预览不要建它。
+    """
+
+    def __init__(self, keys: set[bytes] | None = None) -> None:
+        self._keys: set[bytes] = set() if keys is None else keys
+
+    @classmethod
+    def load(
+        cls, store: DatasetStore, snapshot_date: date, *, label: str | None = None
+    ) -> DayRecords:
+        """读当天已落分块，收集指纹。
+
+        没有分块（当天尚未采过）就是空集合，去重退化为「全部照落」——这正是
+        单独跑 `reconcile` 而 `collect` 还没跑的情形，此时它的分块是唯一数据源。
+        """
+        keys: set[bytes] = set()
+        for path in batch_files(store, snapshot_date, label=label):
+            for batch in load_batches(path):
+                keys.update(fingerprint(record) for record in batch.records)
+        return cls(keys)
+
+    def __len__(self) -> int:
+        return len(self._keys)
+
+    def unseen(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """这些记录里当天还没出现过相同内容的那些，保持原序。"""
+        return [record for record in records if fingerprint(record) not in self._keys]
+
+    def remember(self, records: Iterable[dict[str, Any]]) -> None:
+        """把刚写盘的记录记进来：同一轮里两页出现同一条也只落一次。"""
+        for record in records:
+            self._keys.add(fingerprint(record))
 
 
 def write(

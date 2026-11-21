@@ -675,3 +675,44 @@ def test_重新扫到的库仍按设计自愈为在架(store: DatasetStore) -> N
 
     assert status_of(store, "acme/b") == "active"
     assert summary.reactivated >= 1
+
+
+# ---------------------------------------------------------------- 与当天已有分块去重
+
+
+def test_与当天已有内容重复的记录不再落盘(store: DatasetStore) -> None:
+    """当天 `collect --full-scan` 已扫过全站，对账再落一遍就是每天多存 165 MB。
+
+    11-21 实测两份交集 1,140,886 条里 1,140,360 条逐字段相同（99.95%）。
+    这里让对账在同一天重扫同一批内容：一条新分块都不该产生。
+    """
+    before = set(raw.batch_files(store, DAY1))
+    transport = FakeCursorTransport([[record("a", "sha-a1"), record("b", "sha-b1")]])
+
+    summary = reconciler(transport, store).run(DAY1, limit=100)
+
+    assert summary.deduped == 2
+    assert set(raw.batch_files(store, DAY1)) == before, "没有新内容就不该有新分块"
+    assert summary.records == 2, "抓到的条数照实记，不能被去重数改掉"
+
+
+def test_内容变化的记录照旧落盘(store: DatasetStore) -> None:
+    """只按 id 判重会把「内容变了」当「已有」：那 526 条变化会被静默丢掉。"""
+    before = set(raw.batch_files(store, DAY1))
+    transport = FakeCursorTransport([[record("a", "sha-a1", downloads=999), record("b", "sha-b1")]])
+
+    summary = reconciler(transport, store).run(DAY1, limit=100)
+
+    assert summary.deduped == 1
+    fresh = set(raw.batch_files(store, DAY1)) - before
+    assert len(fresh) == 1
+
+
+def test_当天尚无分块时全部照落(store: DatasetStore) -> None:
+    """单独跑对账（`collect` 未跑）：本轮的分块就是唯一数据源，去重须退化成不丢。"""
+    transport = FakeCursorTransport([[record("a", "sha-a2"), record("c", "sha-c1")]])
+
+    summary = reconciler(transport, store).run(DAY2, limit=100)
+
+    assert summary.deduped == 0
+    assert raw.batch_files(store, DAY2), "对账的分块必须落盘"

@@ -799,6 +799,7 @@ def _print_reconcile(summary: ReconcileSummary) -> None:
     print(
         f"{summary.snapshot_date} 对账完成{tag}："
         f"{summary.pages} 页 / {summary.records} 条 / 耗时 {summary.elapsed_seconds:.1f}s"
+        + (f" / 与当天已有分块重复 {summary.deduped} 条未再落盘" if summary.deduped else "")
     )
     print(
         f"  新增 {summary.new_ids} · 删除 {summary.disappeared} · "

@@ -72,6 +72,13 @@ class ScanSpec:
     checkpoint: Checkpoint | None = None
     #: 是否落盘。唯一的 False 用途是 dry-run 预览。
     write: bool = True
+    #: 当天已落记录的指纹（见 `raw.DayRecords`）。给了就只落「当天还没出现过
+    #: 相同内容」的记录，整页重复则一个文件都不写；不给就原样整页落盘。
+    #:
+    #: 这不是「少写一点」的优化，而是承认一个事实：日常链里 `collect --full-scan`
+    #: 与 `reconcile` 都全站扫、都用同一个 expand，11-21 实测 99.95% 的记录逐字段
+    #: 相同。原样落第二份，等于每天多存 165 MB 的同一批数据。
+    dedup: raw.DayRecords | None = None
     on_page: PageHook | None = None
 
     def __post_init__(self) -> None:
@@ -100,6 +107,9 @@ class ScanSummary:
     skipped: int
     rate_remaining: int | None
     stopped_reason: str
+    #: 因「当天已有相同内容」而没落盘的记录数。`records` 仍是**扫到的**总数，
+    #: 两者之差才是落盘量——分开记，才不会把「没抓到」和「不必再存」混成一本账。
+    deduped: int = 0
 
 
 class ScanRun:
@@ -113,6 +123,7 @@ class ScanRun:
         pages = 0
         records = 0
         skipped = 0
+        deduped = 0
         rate_remaining: int | None = None
         stopped_reason = "end"
 
@@ -130,20 +141,35 @@ class ScanRun:
                 rate_remaining = page.rate_remaining
 
             if spec.write:
-                raw.write(
-                    self.store,
-                    snapshot_date=snapshot_date,
-                    page_index=pages,
-                    records=page.records,
-                    meta={
+                content = page.records
+                if spec.dedup is not None:
+                    content = spec.dedup.unseen(page.records)
+                fresh = len(page.records) - len(content)
+                deduped += fresh
+                # 整页都已在当天落过：一个文件都不写。写一个空分块只会让
+                # 「当天采了多少页」这个数虚高，而它本就没有新内容可存。
+                if content:
+                    meta: dict[str, object] = {
                         "sort": spec.sort,
                         "direction": spec.direction,
                         "mode": spec.mode,
                         "source": spec.source,
-                    },
-                    label=spec.label,
-                    source=spec.source,
-                )
+                    }
+                    # 只有真正去重过才写这个键：给所有分块加一个新 meta 字段会改变
+                    # 内容摘要，让「同内容重写复用旧文件」失效，历史分块的幂等就断了。
+                    if spec.dedup is not None:
+                        meta["deduped"] = fresh
+                    raw.write(
+                        self.store,
+                        snapshot_date=snapshot_date,
+                        page_index=pages,
+                        records=content,
+                        meta=meta,
+                        label=spec.label,
+                        source=spec.source,
+                    )
+                    if spec.dedup is not None:
+                        spec.dedup.remember(content)
 
             # 顺序：写盘 → 钩子 → 存游标 → 判停止。
             # 钩子在存游标之前：钩子可能带副作用（如对账追加已见集合），若游标先存、
@@ -171,4 +197,5 @@ class ScanRun:
             skipped=skipped,
             rate_remaining=rate_remaining,
             stopped_reason=stopped_reason,
+            deduped=deduped,
         )

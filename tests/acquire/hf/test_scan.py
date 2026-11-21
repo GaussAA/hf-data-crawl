@@ -258,3 +258,82 @@ def test_页数上限由ScanRun自己数(store: DatasetStore) -> None:
 
     assert summary.pages == 2
     assert summary.stopped_reason == "max_pages"
+
+
+# ---------------------------------------------------------------- 当天去重
+
+
+def stored(store: DatasetStore) -> list[Path]:
+    partition = store.raw_dir / f"dt={DAY.isoformat()}"
+    return sorted(partition.glob(f"*{raw.SUFFIX}")) if partition.exists() else []
+
+
+def test_整页都已存在则一个文件都不写(store: DatasetStore) -> None:
+    """日常链里 `collect --full-scan` 与 `reconcile` 都全站扫、都用同一个 expand。
+
+    11-21 实测两份交集 1,140,886 条，其中 1,140,360 条逐字段相同（99.95%）——
+    第二份原样落盘就是每天多存 165 MB 的同一批数据。重复页整页不写，
+    不是「少写一点」，是「同一份内容当天只存一次」。
+    """
+    existing = raw.DayRecords()
+    existing.remember([{"id": "a"}, {"id": "b"}])
+    api = FakeScanApi([page("a", "b", cursor=None)])
+
+    summary = ScanRun(api, store).run(DAY, spec(dedup=existing))
+
+    assert summary.records == 2, "扫到的条数照实记"
+    assert summary.deduped == 2, "落盘量与抓取量分开记"
+    assert stored(store) == []
+
+
+def test_部分重复只落差额并记下跳过数(store: DatasetStore) -> None:
+    import json
+
+    existing = raw.DayRecords()
+    existing.remember([{"id": "a"}, {"id": "b"}])
+    api = FakeScanApi([page("a", "b", "c", cursor=None)])
+
+    summary = ScanRun(api, store).run(DAY, spec(dedup=existing))
+
+    assert summary.deduped == 2
+    (path,) = stored(store)
+    payload = json.loads(raw.unpack(path.read_bytes(), name=path.name))
+    assert [item["id"] for item in payload["records"]] == ["c"]
+    assert payload["meta"]["deduped"] == 2
+
+
+def test_内容变了即使id相同也照落(store: DatasetStore) -> None:
+    """只按 id 判重会把「内容变了」当成「已有」，那才是真的丢数据。
+
+    11-21 两份之间有 526 条 id 相同、内容不同（相隔 19 分钟里下载量等变了）。
+    指纹取「id 与全部字段」，所以它们一定会落盘、且以更晚的 written_at 胜出。
+    """
+    existing = raw.DayRecords()
+    existing.remember([{"id": "a", "value": 1}])
+    api = FakeScanApi(
+        [Page(records=[{"id": "a", "value": 2}], next_cursor=None, rate_remaining=1, skipped=0)]
+    )
+
+    summary = ScanRun(api, store).run(DAY, spec(dedup=existing))
+
+    assert summary.deduped == 0
+    assert len(stored(store)) == 1
+
+
+def test_同一轮里两页出现同一条只落一次(store: DatasetStore) -> None:
+    api = FakeScanApi([page("a"), page("a", cursor=None)])
+
+    summary = ScanRun(api, store).run(DAY, spec(dedup=raw.DayRecords()))
+
+    assert summary.deduped == 1
+    assert len(stored(store)) == 1
+
+
+def test_不传指纹集合时照旧整页落盘(store: DatasetStore) -> None:
+    """`collect` / 顶部刷新 / 卡片补齐都不去重：第一份必须原样落。"""
+    api = FakeScanApi([page("a", "b", cursor=None)])
+
+    summary = ScanRun(api, store).run(DAY, spec())
+
+    assert summary.deduped == 0
+    assert len(stored(store)) == 1
