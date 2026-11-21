@@ -30,7 +30,13 @@ from typing import TYPE_CHECKING, Any
 
 from ..pipeline import raw
 from ..platform.atomic import write_bytes
-from ..platform.retention import backup_raw_dir, cold_dir, manifest_path, read_compressed_dates
+from ..platform.retention import (
+    BASELINE_PREFIX,
+    backup_raw_dir,
+    cold_dir,
+    manifest_path,
+    read_compressed_dates,
+)
 
 if TYPE_CHECKING:
     from ..platform.store import DatasetStore
@@ -38,7 +44,8 @@ if TYPE_CHECKING:
 #: 与 archive 分片同量级，保留并行度。
 BASELINE_RECORDS = 10_000
 #: 不带后缀：新基线是 `.json.zst`、历史基线是 `.json.gz`，两者都要能被认出来。
-_BASELINE_GLOB = "baseline-*"
+#: 前缀来自 `retention`，与 `prune` 扫 `backup/cold` 用的是同一份。
+_BASELINE_GLOB = f"{BASELINE_PREFIX}*"
 
 
 class CompactMismatch(RuntimeError):
@@ -113,7 +120,10 @@ def _write_baseline(
         "records": records,
     }
     body = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    path = directory / f"baseline-{index:06d}-{hashlib.sha256(body).hexdigest()[:8]}{raw.SUFFIX}"
+    path = (
+        directory
+        / f"{BASELINE_PREFIX}{index:06d}-{hashlib.sha256(body).hexdigest()[:8]}{raw.SUFFIX}"
+    )
     if not path.exists():
         write_bytes(path, raw.pack(body))
     return path

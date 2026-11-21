@@ -120,16 +120,88 @@ def test_默认阈值下真正过期的备份仍会清理(store: DatasetStore) -
     assert [item.path.name for item in targets] == [f"dt={expired.isoformat()}"]
 
 
-def test_旧基线按龄一并清理(store: DatasetStore) -> None:
+def make_generation(
+    store: DatasetStore, index: int, pieces: int = 2, *, at: datetime
+) -> list[Path]:
+    """造一代旧基线：同一时刻写出的 `pieces` 个分片。"""
     cold = store.root / "backup" / "cold"
-    cold.mkdir(parents=True)
-    stale = cold / "baseline-000001-aaaaaaaa.json.gz"
-    stale.write_bytes(b"y" * 50)
-    long_ago = (NOW - timedelta(days=30)).timestamp()
-    os.utime(stale, (long_ago, long_ago))
-    fresh = cold / "baseline-000002-bbbbbbbb.json.gz"
-    fresh.write_bytes(b"z" * 50)
+    cold.mkdir(parents=True, exist_ok=True)
+    stamp = at.timestamp()
+    created: list[Path] = []
+    for piece in range(1, pieces + 1):
+        path = cold / f"baseline-{piece:06d}-{index:02x}{piece:02x}abcd.json.zst"
+        path.write_bytes(b"y" * 50)
+        os.utime(path, (stamp, stamp))
+        created.append(path)
+    return created
 
-    targets = plan(store, now=NOW, keep_days=7)
 
-    assert [item.path.name for item in targets] == [stale.name]
+def test_旧基线按代保留_更早的整代清理(store: DatasetStore) -> None:
+    """旧基线是「整条冷区基线的上一版」，一代 150 MB，回滚只需最近两代。
+
+    按天判龄会让 14 份几乎相同的快照并存（实测 1.58 GB），故改按代计数。
+    """
+    base = datetime(2026, 11, 1, 0, 30)
+    generations = [
+        make_generation(store, index, at=base + timedelta(days=index)) for index in range(4)
+    ]
+
+    targets = plan(store, now=NOW, keep_generations=2)
+
+    assert {item.path.name for item in targets} == {
+        path.name for generation in generations[:2] for path in generation
+    }
+    assert {item.kind for item in targets} == {"backup/cold"}
+
+
+def test_一整代同去同留_不留残缺基线(store: DatasetStore) -> None:
+    """半份基线既不能回滚也占着磁盘，比不删更糟：按代删，不按片删。"""
+    base = datetime(2026, 11, 1, 0, 30)
+    big = make_generation(store, 0, pieces=3, at=base)
+    small = make_generation(store, 1, pieces=2, at=base + timedelta(days=1))
+
+    targets = plan(store, now=NOW, keep_generations=1)
+
+    assert {item.path.name for item in targets} == {path.name for path in big}
+    assert all(path.exists() for path in small)
+
+
+def test_yzst_基线同样计入代际(store: DatasetStore) -> None:
+    """`prune` 曾只匹配 `*.gz`，新格式 `.zst` 的旧基线永远漏网（1.58 GB 的来历）。"""
+    base = datetime(2026, 11, 1, 0, 30)
+    old = make_generation(store, 0, at=base)
+    new = make_generation(store, 1, at=base + timedelta(days=1))
+    # 混入一份历史 `.gz` 基线，两代都要被认出来
+    legacy = store.root / "backup" / "cold" / "baseline-000009-legacy1.json.gz"
+    legacy.write_bytes(b"z" * 50)
+    os.utime(legacy, (base.timestamp(), base.timestamp()))
+
+    targets = plan(store, now=NOW, keep_generations=1)
+
+    assert {item.path.name for item in targets} == {path.name for path in old} | {legacy.name}
+    assert all(path.exists() for path in new)
+
+
+def test_代数不足保留数时一份不删(store: DatasetStore) -> None:
+    base = datetime(2026, 11, 1, 0, 30)
+    make_generation(store, 0, at=base)
+    make_generation(store, 1, at=base + timedelta(days=1))
+
+    assert plan(store, now=NOW) == ()
+
+
+def test_不清理开关下旧基线全留(store: DatasetStore) -> None:
+    """基线可疑时的一键急救：只清 `backup/raw`，`backup/cold` 一片不动。"""
+    base = datetime(2026, 11, 1, 0, 30)
+    for index in range(3):
+        make_generation(store, index, at=base + timedelta(days=index))
+
+    assert plan(store, now=NOW, keep_generations=None) == ()
+
+
+def test_保留代数为负时拒绝(store: DatasetStore) -> None:
+    base = datetime(2026, 11, 1, 0, 30)
+    make_generation(store, 0, at=base)
+
+    with pytest.raises(ValueError, match="不能为负"):
+        plan(store, now=NOW, keep_generations=-1)

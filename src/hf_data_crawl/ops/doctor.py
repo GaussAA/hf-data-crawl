@@ -55,6 +55,7 @@ from ..platform.lock import read_holder
 from ..platform.retention import (
     ARCHIVE_AFTER_DAYS,
     BACKUP_KEEP_DAYS,
+    COLD_BASELINE_GENERATIONS,
     REPLAY_WINDOW_DAYS,
 )
 from ..platform.runs import COLLECT_COMPLETE_REASONS, FULL_SCAN, last_success, read_runs, run_time
@@ -1234,22 +1235,27 @@ def _staging_backlog(ctx: RunContext) -> Finding:
 def _backup_backlog(ctx: RunContext) -> Finding:
     """archive / compact 只移不删；销毁归 `prune`，这里只盯它有没有跟上。
 
-    判龄与清理共用 `prune.plan()`：若这里按 mtime、那边按目录名，两边会各说各话
+    判据与清理共用 `prune.plan()`：若这里按 mtime、那边按目录名，两边会各说各话
     ——体检报「已清理」而实际没删，或反之。同一条规则只能有一处实现。
+    两类备份的阈值不同（raw 按天、cold 按代），故文案分开说，不合成一个数字。
     """
     store, now = ctx.store, ctx.now
     from .prune import plan as plan_prune
 
     targets = plan_prune(store, now=now)
     if not targets:
-        return Finding(False, f"备份清理：无超过 {BACKUP_KEEP_DAYS} 天的待清理对象")
+        return Finding(
+            False,
+            f"备份清理：无待清理对象（backup/raw 未超 {BACKUP_KEEP_DAYS} 天、"
+            f"backup/cold 未超 {COLD_BASELINE_GENERATIONS} 代）",
+        )
 
     shown = "、".join(item.path.name.removeprefix("dt=") for item in targets[:5])
     reclaimable = sum(item.bytes for item in targets) / 1e6
     kinds = "、".join(sorted({item.kind for item in targets}))
     return Finding(
         True,
-        f"{kinds} 有 {len(targets)} 处超过 {BACKUP_KEEP_DAYS} 天未清理（{shown}），"
+        f"{kinds} 有 {len(targets)} 处积压未清理（{shown}），"
         f"可释放约 {reclaimable:.1f} MB；跑 hf-data-crawl prune",
     )
 

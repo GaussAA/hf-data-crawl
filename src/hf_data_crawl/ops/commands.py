@@ -8,7 +8,7 @@ from pathlib import Path
 
 from ..pipeline.lineage import STALE, compare, restamp
 from ..platform.lock import LockBusy, exclusive
-from ..platform.retention import BACKUP_KEEP_DAYS
+from ..platform.retention import BACKUP_KEEP_DAYS, COLD_BASELINE_GENERATIONS
 from ..platform.runs import Outcome
 from ..platform.store import DatasetStore
 from .doctor import diagnose, sync_alert
@@ -130,7 +130,10 @@ def run_prune(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     targets = plan(store)
     before = total_size(store)
     if not targets:
-        print(f"备份没有需要清理的分区（阈值 {BACKUP_KEEP_DAYS} 天）：{before / 1e6:.1f} MB")
+        print(
+            f"备份没有需要清理的对象（backup/raw 阈值 {BACKUP_KEEP_DAYS} 天、"
+            f"backup/cold 保留 {COLD_BASELINE_GENERATIONS} 代）：{before / 1e6:.1f} MB"
+        )
         return Outcome({"removed": [], "freed": 0, "backup_mb": round(before / 1e6, 1)})
 
     reclaimable = sum(item.bytes for item in targets)

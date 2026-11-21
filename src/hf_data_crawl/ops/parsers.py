@@ -21,7 +21,12 @@ from ..acquire import (
     PROBE_DAILY_LIMIT,
 )
 from ..delivery import Cadence, Kind
-from ..platform import ARCHIVE_AFTER_DAYS, BACKUP_KEEP_DAYS, REPLAY_WINDOW_DAYS
+from ..platform import (
+    ARCHIVE_AFTER_DAYS,
+    BACKUP_KEEP_DAYS,
+    COLD_BASELINE_GENERATIONS,
+    REPLAY_WINDOW_DAYS,
+)
 from ..platform.presets import DEFAULT_PRESET_NAME, get_preset, list_presets
 from ..query import BOARDS
 from .refresh import DEFAULT_BUDGET_HOURS, DEFAULT_LAUNCH_HOURS
@@ -562,7 +567,10 @@ def build_parser() -> argparse.ArgumentParser:
     pruning.add_argument(
         "--dry-run",
         action="store_true",
-        help=f"只算不删：列出会清理哪些、能释放多少（阈值 {BACKUP_KEEP_DAYS} 天）",
+        help=(
+            "只算不删：列出会清理哪些、能释放多少"
+            f"（backup/raw 阈值 {BACKUP_KEEP_DAYS} 天，backup/cold 保留 {COLD_BASELINE_GENERATIONS} 代）"
+        ),
     )
 
     report = subparsers.add_parser("report", help="生成静态榜单页（不联网）")

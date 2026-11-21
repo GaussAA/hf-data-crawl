@@ -54,6 +54,26 @@ COLD_SUBDIR = ("cold", "raw")
 BACKUP_SUBDIR = ("backup", "raw")
 MANIFEST_NAME = "manifest.json"
 
+#: 冷区基线的文件名前缀。不带后缀：新基线是 `.json.zst`、历史基线是 `.json.gz`。
+#:
+#: `compact` 用它扫当前基线、`prune` 用它扫 `backup/cold` 的旧基线。各写一份
+#: 字面量的话，改了命名只有一处跟着变，另一处会**静默**看不见文件——2026-11-21
+#: 的体积审计就是这么发现的：`prune` 只匹配 `*.gz`，`.zst` 旧基线全部漏网，
+#: 一年多攒到 1.58 GB。
+BASELINE_PREFIX = "baseline-"
+
+#: `backup/cold` 保留的**代**数。一代 = 一次 `compact` 搬入的整批旧基线。
+#:
+#: 为什么不按天数：一代约 150 MB 且代际内容高度重合（都是「全量去重后的旧态」），
+#: 留 14 天等于留 14 份几乎相同的快照。回滚只需「上一版」，留 2 代即
+#: 「当前 + 上一代 + 上上代」，够用且不再每天涨 175 MB。
+COLD_BASELINE_GENERATIONS = 2
+
+#: 同代分片由一次 `compact` 连续写出，不同代之间至少隔一天。
+#: 实测 11-11~11-20 九代：代内最大间隔 6.9 秒、代间最小 23 小时；取 1 小时，
+#: 两侧余量都够。误聚只可能把两代并成一代，那只会少删，不会误删。
+COLD_GENERATION_GAP_SECONDS = 3600.0
+
 
 def cold_dir(store: DatasetStore) -> Path:
     return store.root.joinpath(*COLD_SUBDIR)
