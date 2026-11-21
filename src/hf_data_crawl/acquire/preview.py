@@ -46,6 +46,7 @@ from ..platform.coerce import as_int
 from ..platform.tables import PREVIEW_SCHEMA, url_for
 from .batch import collect_rows
 from .hf.api import Transport, TransportError
+from .hf.retry import StatusPolicy, exponential_seconds
 from .readme import RateLimiter
 
 #: 默认取几行。样例的用途是「看一眼」，三条足够看出列与值的形状。
@@ -90,13 +91,16 @@ DEFAULT_SPLITS_URL = "https://datasets-server.huggingface.co/splits"
 #: 像限流，实际是参数错（2026-11-18 实测：top 20 里 9 个「临时失败」全是这一类）。
 AUTO_CONFIG = "auto"
 
-#: `/rows` 用 404 表示「这个库没有 viewer」，401 表示受限或不存在——都是永久缺失。
-UNAVAILABLE_STATUS = frozenset({401, 404})
-
-#: 5xx 是瞬时的，退避重试。429 不在此列：CloudFront 的限流是**按 IP** 的，撞上之后
-#: 每个线程各自退避只会把封禁拖长（实测 8 并发跑了一阵后，200 个库全部 429、
-#: 吞吐掉到 0.5 req/s）。故 429 直接中止整轮，让人降速重跑。
-RETRYABLE_STATUS = frozenset({500, 502, 503, 504})
+#: 这张端点的状态分区。`/rows` 用 404 表示「这个库没有 viewer」，401 表示受限或
+#: 不存在——都是永久缺失。5xx 是瞬时的，退避重试。
+#:
+#: **429 不在分区里**：CloudFront 按 IP 限流，撞上之后每个线程各自退避只会把封禁
+#: 拖长（实测 8 并发跑了一阵后，200 个库全部 429、吞吐掉到 0.5 req/s）。故它由
+#: 请求循环单独处理：设了 `--throttle-wait` 就睡过再试，没设就整轮中止。
+POLICY = StatusPolicy(
+    retryable=frozenset({500, 502, 503, 504}),
+    permanent={401: "unavailable", 404: "unavailable"},
+)
 
 #: 撞到限流。整轮立即停：继续请求只会延长封禁。
 THROTTLED_STATUS = 429
@@ -236,7 +240,7 @@ class HfPreviewApi:
             if not self._snooze(snoozed):
                 raise Throttled(f"{dataset_id} 被限流（429）")
             snoozed += 1
-        if response.status in UNAVAILABLE_STATUS:
+        if POLICY.terminal(response.status) is not None:
             return _unavailable(dataset_id, snapshot_date, self._config, self._split)
         if response.status != 200:
             return PreviewResult(dataset_id, "error")
@@ -290,7 +294,7 @@ class HfPreviewApi:
             except TransportError:
                 if attempt >= self._max_retries:
                     return PreviewResult(dataset_id, "error")
-                self._sleeper(self._backoff(attempt))
+                self._sleeper(exponential_seconds(attempt, base=self._retry_base_delay))
                 attempt += 1
                 continue
 
@@ -302,11 +306,11 @@ class HfPreviewApi:
                     snoozed += 1
                     continue
                 raise Throttled(f"{dataset_id} 被限流（429）")
-            if response.status in RETRYABLE_STATUS and attempt < self._max_retries:
-                self._sleeper(self._backoff(attempt))
+            if POLICY.retry(response.status) and attempt < self._max_retries:
+                self._sleeper(exponential_seconds(attempt, base=self._retry_base_delay))
                 attempt += 1
                 continue
-            if response.status in UNAVAILABLE_STATUS:
+            if POLICY.terminal(response.status) is not None:
                 # 永久缺失：记下来，下轮不再为它烧一次请求。
                 return _unavailable(dataset_id, snapshot_date, config, split)
             return PreviewResult(dataset_id, "error")
@@ -326,9 +330,6 @@ class HfPreviewApi:
         self.throttles += 1
         self._gate.trip()
         return True
-
-    def _backoff(self, attempt: int) -> float:
-        return min(self._retry_base_delay * (2**attempt), 30.0)
 
 
 def _success(

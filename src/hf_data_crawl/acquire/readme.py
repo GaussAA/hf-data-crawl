@@ -34,7 +34,6 @@ YAML 头，正文不在任何一次列表响应里。全文只有一个来源：
 
 from __future__ import annotations
 
-import math
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
@@ -46,7 +45,8 @@ import polars as pl
 
 from ..platform.tables import README_SCHEMA, url_for
 from .batch import collect_rows
-from .hf.api import RETRYABLE_STATUS, HfResponse, Transport, TransportError
+from .hf.api import HfResponse, Transport, TransportError
+from .hf.retry import StatusPolicy, delay_seconds, exponential_seconds
 
 #: 站点根（非 API 域）：README 正文在 `huggingface.co/<id>/raw/...` 下。
 SITE_BASE_URL = "https://huggingface.co"
@@ -57,15 +57,16 @@ DEFAULT_RATE = 15.0
 #: 暂存目录（相对数据根）。与规模表的 `.staging/sizes` 并列，互不干扰。
 README_STAGING_DIR = ".staging/readme"
 
-#: 仓库没有 README：重试无意义，落 `absent`。
-ABSENT_STATUS: frozenset[int] = frozenset({404})
-
-#: 门禁或资源被禁：匿名读不到，带令牌也基本仍被拒（`manual` gated、`auto` gated
-#: 未接受条款、仓库被 disabled）。2026-11-18 实测：500 条带令牌重试全 403 零命中，
-#: 而同一令牌读 `ok` 组建库全部 200——是数据属性，不是凭据问题。
-DENIED_STATUS: frozenset[int] = frozenset({401, 403})
-
-#: 限流与网关抖动的判据与数据集列表接口共用一份，见 `hf.api.RETRYABLE_STATUS`。
+#: 这张端点的状态分区。三种「空」必须分开记账：`absent` 是作者本来没写，
+#: `denied` 是我们读不到，`error` 是这次没抓到（不落库，下轮重试）。
+#:
+#: `denied` 别指望带令牌重来一遍就能补上：全量 51,860 条里 join `current.gated`
+#: 后 99.75% 是门禁库（`manual` / `auto`），且 `private` 无一为真——不是私有库，
+#: 是公开但受限。带令牌抽 500 条实测零命中。要重试它得显式 `--retry-denied`。
+POLICY = StatusPolicy(
+    retryable=frozenset({429, 500, 502, 503, 504}),
+    permanent={401: "denied", 403: "denied", 404: "absent"},
+)
 
 
 class RateLimiter:
@@ -170,44 +171,26 @@ class HfReadmeApi:
             except TransportError:
                 if attempt >= self._max_retries:
                     return _row(dataset_id, snapshot_date, source_sha, "error")
-                self._sleeper(self._backoff(attempt))
+                self._sleeper(exponential_seconds(attempt, base=self._retry_base_delay))
                 continue
 
             if response.status == 200:
                 return _success(dataset_id, snapshot_date, source_sha, response)
-            if response.status in DENIED_STATUS:
-                return _row(dataset_id, snapshot_date, source_sha, "denied")
-            if response.status in ABSENT_STATUS:
-                return _row(dataset_id, snapshot_date, source_sha, "absent")
-            if response.status in RETRYABLE_STATUS and attempt < self._max_retries:
-                self._sleeper(self._delay_for(response, attempt))
+            terminal = POLICY.terminal(response.status)
+            if terminal is not None:
+                return _row(dataset_id, snapshot_date, source_sha, terminal)
+            if POLICY.retry(response.status) and attempt < self._max_retries:
+                self._sleeper(
+                    delay_seconds(
+                        response.status,
+                        response.headers,
+                        attempt,
+                        base=self._retry_base_delay,
+                    )
+                )
                 continue
             return _row(dataset_id, snapshot_date, source_sha, "error")
         return _row(dataset_id, snapshot_date, source_sha, "error")
-
-    def _delay_for(self, response: HfResponse, attempt: int) -> float:
-        """429 优先听上游的 `Retry-After`；没给或给脏值才用指数退避。
-
-        与 `files` 同一理由：固定退避可能在窗口重置前就重试，白烧次数。
-        合法值夹在 60 秒内，防止上游脏值把进程睡死。
-        """
-        if response.status == 429:
-            raw = next(
-                (value for key, value in response.headers.items() if key.lower() == "retry-after"),
-                None,
-            )
-            if raw is not None:
-                try:
-                    seconds = float(raw)
-                except ValueError:
-                    pass
-                else:
-                    if math.isfinite(seconds) and seconds >= 0:
-                        return min(seconds, 60.0)
-        return self._backoff(attempt)
-
-    def _backoff(self, attempt: int) -> float:
-        return min(self._retry_base_delay * (2**attempt), 30.0)
 
 
 def _success(

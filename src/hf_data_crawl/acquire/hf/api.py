@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urlparse
 import orjson
 
 from .checkpoint import Checkpoint
+from .retry import exponential_seconds, header_value
 
 #: 列表接口根（API 域）。同仓 `readme.SITE_BASE_URL` 是站点根，两者的路径段
 #: 不可互换——曾同名 `DEFAULT_BASE_URL` 并存，读代码时极易拿错一个。
@@ -167,19 +168,6 @@ class Page:
     skipped: int = 0
 
 
-def _header(headers: Mapping[str, str], name: str) -> str | None:
-    """大小写不敏感取头。
-
-    真实接口经 HTTP/2 会把头名规范成小写；按大写字面量查找会静默取空，
-    进而导致分页在首页就「正常终止」——这类失败不报错，只会丢数据。
-    """
-    target = name.lower()
-    for key, value in headers.items():
-        if key.lower() == target:
-            return value
-    return None
-
-
 def _parse_next_cursor(link_header: str | None) -> str | None:
     """从 `Link: <...cursor=xxx>; rel="next"` 中取出并解码游标。"""
     if not link_header:
@@ -199,7 +187,7 @@ def _parse_next_cursor(link_header: str | None) -> str | None:
 
 def _parse_rate_limit(headers: Mapping[str, str]) -> tuple[int | None, int | None]:
     """解析 `RateLimit: "api";r=<剩余>;t=<重置秒>`，返回 (剩余, 重置秒)。"""
-    raw = _header(headers, "RateLimit")
+    raw = header_value(headers, "RateLimit")
     if not raw:
         return None, None
     remaining: int | None = None
@@ -315,7 +303,7 @@ class HfDatasetApi:
             response = self._request(params)
             payload = orjson.loads(response.body)
             records, skipped = self._valid_records(payload)
-            next_cursor = _parse_next_cursor(_header(response.headers, "Link"))
+            next_cursor = _parse_next_cursor(header_value(response.headers, "Link"))
             remaining, reset_in = _parse_rate_limit(response.headers)
 
             yield Page(
@@ -445,7 +433,7 @@ class HfDatasetApi:
                 # 连接中断是「没收到答复」，重试耗尽后原样抛出，让调用方知道不是限流。
                 if attempt >= transport_limit:
                     raise
-                self._sleeper(self._backoff(attempt))
+                self._sleeper(exponential_seconds(attempt, base=self._retry_base_delay, cap=60.0))
                 attempt += 1
                 continue
 
@@ -456,9 +444,6 @@ class HfDatasetApi:
                 return None
             self._sleeper(self._retry_delay(response, attempt, honor_window=honor_window))
             attempt += 1
-
-    def _backoff(self, attempt: int) -> float:
-        return min(self._retry_base_delay * (2**attempt), 60.0)
 
     def _retry_delay(
         self, response: HfResponse, attempt: int, *, honor_window: bool = False

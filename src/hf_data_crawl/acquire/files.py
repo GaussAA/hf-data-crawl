@@ -35,7 +35,6 @@ next 也一律标成截断：宁可承认是下限，也不假装完整。
 from __future__ import annotations
 
 import json
-import math
 import re
 import time
 from collections import Counter
@@ -52,7 +51,8 @@ import polars as pl
 from ..platform.coerce import as_int
 from ..platform.tables import FILES_SCHEMA, url_for
 from .batch import collect_rows
-from .hf.api import API_BASE_URL, RETRYABLE_STATUS, HfResponse, Transport, TransportError
+from .hf.api import API_BASE_URL, HfResponse, Transport, TransportError
+from .hf.retry import StatusPolicy, delay_seconds, exponential_seconds, header_value
 
 #: tree 接口每页硬上限；显式带上 limit，免得哪天上游默认值变了口径跟着漂。
 TREE_LIMIT = 1000
@@ -67,12 +67,12 @@ FILES_STAGING_DIR = ".staging/files"
 #: 只在**还没看到任何文件**时生效：一旦见到文件就严格按 `max_pages` 收工。
 EMPTY_PAGE_GRACE = 3
 
-#: 明确表示「这个库没有可看的树」的状态码，重试无意义。
-UNAVAILABLE_STATUS: frozenset[int] = frozenset({401, 403, 404})
-
-#: 限流与网关抖动的判据与数据集列表接口共用一份，见 `hf.api.RETRYABLE_STATUS`。
-#: 不在这里另写：同一组状态码抄两遍，改一处漏一处不会报错，只会让两类请求
-#: 悄悄按不同规则重试。
+#: 这张端点的状态分区。`/tree` 用 401/403/404 表示「这个库没有可看的树」，
+#: 重试无意义；5xx 与 429 才是瞬时故障（与列表接口同一组，见 `hf.api.RETRYABLE_STATUS`）。
+POLICY = StatusPolicy(
+    retryable=frozenset({429, 500, 502, 503, 504}),
+    permanent={401: "unavailable", 403: "unavailable", 404: "unavailable"},
+)
 
 _NEXT_LINK = re.compile(r'<([^>]+)>\s*;\s*rel="?next"?', re.IGNORECASE)
 
@@ -106,7 +106,7 @@ def next_cursor(headers: Mapping[str, str]) -> str | None:
 
     响应头大小写不敏感；取不到 next 就返回 None，让调用方按「已到末页」处理。
     """
-    link = next((value for key, value in headers.items() if key.lower() == "link"), None)
+    link = header_value(headers, "link")
     if not link:
         return None
     match = _NEXT_LINK.search(link)
@@ -169,10 +169,9 @@ class HfFilesApi:
             if response is None:
                 return _failure(dataset_id, "error", payload_bytes=payload_bytes)
             payload_bytes += len(response.body)
-            if response.status in UNAVAILABLE_STATUS:
-                return _failure(
-                    dataset_id, "unavailable", snapshot_date, payload_bytes=payload_bytes
-                )
+            terminal = POLICY.terminal(response.status)
+            if terminal is not None:
+                return _failure(dataset_id, terminal, snapshot_date, payload_bytes=payload_bytes)
             if response.status != 200:
                 return _failure(dataset_id, "error", payload_bytes=payload_bytes)
 
@@ -211,41 +210,22 @@ class HfFilesApi:
             except TransportError:
                 if attempt >= self._max_retries:
                     return None
-                self._sleeper(self._backoff(attempt))
+                self._sleeper(exponential_seconds(attempt, base=self._retry_base_delay))
                 continue
-            if response.status in UNAVAILABLE_STATUS or response.status == 200:
+            if response.status == 200 or POLICY.terminal(response.status) is not None:
                 return response
-            if response.status in RETRYABLE_STATUS and attempt < self._max_retries:
-                self._sleeper(self._delay_for(response, attempt))
+            if POLICY.retry(response.status) and attempt < self._max_retries:
+                self._sleeper(
+                    delay_seconds(
+                        response.status,
+                        response.headers,
+                        attempt,
+                        base=self._retry_base_delay,
+                    )
+                )
                 continue
             return response
         return None
-
-    def _delay_for(self, response: HfResponse, attempt: int) -> float:
-        """429 优先听上游的 Retry-After；没给或给脏值才用指数退避。
-
-        实测匿名配额是 500 请求 / 300 秒固定窗口，429 的 `retry-after` 是窗口
-        剩余秒数。固定退避 2 秒会在窗口重置前就重试，白白烧掉重试次数——首轮
-        top 1000 有 321 个库因此被记成临时失败。非有限值与负数一律回退，
-        合法值夹在 60 秒内，防止上游脏值把进程睡死。
-        """
-        if response.status == 429:
-            raw = next(
-                (value for key, value in response.headers.items() if key.lower() == "retry-after"),
-                None,
-            )
-            if raw is not None:
-                try:
-                    seconds = float(raw)
-                except ValueError:
-                    pass
-                else:
-                    if math.isfinite(seconds) and seconds >= 0:
-                        return min(seconds, 60.0)
-        return self._backoff(attempt)
-
-    def _backoff(self, attempt: int) -> float:
-        return min(self._retry_base_delay * (2**attempt), 30.0)
 
 
 def _summarize(

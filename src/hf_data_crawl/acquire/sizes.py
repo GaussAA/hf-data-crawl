@@ -50,27 +50,29 @@ from .batch import (
 )
 from .enrich import DEFAULT_TOP
 from .hf.api import Transport, TransportError
+from .hf.retry import StatusPolicy, exponential_seconds
 
 if TYPE_CHECKING:
     from ..platform.store import DatasetStore
 
 DEFAULT_SIZE_URL = "https://datasets-server.huggingface.co/size"
 
-#: 明确表示「这个数据集没有规模数据」的状态码。重试无意义。
-#:
-#: 401/403 是权限，404 是「上游确实没有」。**500/501 也在这里，尽管 HTTP 语义上
-#: 它们是服务器错误**——因为 HF 的 `/size` 接口用这两个码表示「不支持该数据集」，
-#: 而不是瞬时故障。
-#:
-#: 实测（2026-11-17）：抽样 15 个此前标记为 unavailable 的库，全部在 0.3–0.9 秒
-#: 返回 500/501/404，无一挂起、无一恢复；同批 `ok` 的库抽样 5 个全部 200。
-#: 曾按 HTTP 语义把它们挪进 `RETRYABLE_STATUS`，结果每个库空转 5 次重试 + 退避
+#: 这张端点的状态分区。**500/501 在这里是终态，不是瞬时故障**——HF 的 `/size`
+#: 用它们表示「不支持该数据集」。实测（2026-11-17）：抽样 15 个此前标记 unavailable
+#: 的库，全部 0.3–0.9 秒返回 500/501/404，无一挂起、无一恢复；同批 `ok` 的库抽样
+#: 5 个全部 200。曾按 HTTP 语义把它们挪进可重试，结果每个库空转 5 次重试 + 退避
 #: 约 31 秒，1,269 个这样的库折算 3.6 小时——那次「卡住」的真相就在这里。
 #: 要再动这一行，先重跑上面那个抽样。
-UNAVAILABLE_STATUS: frozenset[int] = frozenset({401, 403, 404, 500, 501})
-
-#: 可重试：429 限流与网关抖动（502/503/504）。这些才是真正的瞬时故障。
-RETRYABLE_STATUS: frozenset[int] = frozenset({429, 502, 503, 504})
+POLICY = StatusPolicy(
+    retryable=frozenset({429, 502, 503, 504}),
+    permanent={
+        401: "unavailable",
+        403: "unavailable",
+        404: "unavailable",
+        500: "unavailable",
+        501: "unavailable",
+    },
+)
 
 
 @dataclass(frozen=True)
@@ -122,23 +124,21 @@ class HfSizeApi:
             except TransportError:
                 if attempt >= self._max_retries:
                     return _failure(dataset_id, "error")
-                self._sleeper(self._backoff(attempt))
+                self._sleeper(exponential_seconds(attempt, base=self._retry_base_delay))
                 attempt += 1
                 continue
 
             if response.status == 200:
                 return _success(dataset_id, snapshot_date, response.body)
-            if response.status in UNAVAILABLE_STATUS:
+            terminal = POLICY.terminal(response.status)
+            if terminal is not None:
                 # 永久缺失：记下来，下次不再浪费一次请求。
-                return _failure(dataset_id, "unavailable", snapshot_date)
-            if response.status in RETRYABLE_STATUS and attempt < self._max_retries:
-                self._sleeper(self._backoff(attempt))
+                return _failure(dataset_id, terminal, snapshot_date)
+            if POLICY.retry(response.status) and attempt < self._max_retries:
+                self._sleeper(exponential_seconds(attempt, base=self._retry_base_delay))
                 attempt += 1
                 continue
             return _failure(dataset_id, "error")
-
-    def _backoff(self, attempt: int) -> float:
-        return min(self._retry_base_delay * (2**attempt), 30.0)
 
 
 def _success(dataset_id: str, snapshot_date: date, body: bytes) -> SizeResult:
@@ -300,7 +300,7 @@ def protect_ok_rows(previous: pl.DataFrame, fresh: pl.DataFrame) -> pl.DataFrame
     """不让「不可用」覆盖「已拿到」。
 
     为什么需要：`store.upsert` 的替换键是整行，而 `unavailable` 行除 `status` 与
-    `snapshot_date` 外全是 null。一次瞬时 500（它在 `UNAVAILABLE_STATUS` 里，与
+    `snapshot_date` 外全是 null。一次瞬时 500（它在 `POLICY.permanent` 里，与
     404 同等对待）就会把旧行的 `num_rows` / `configs` 一起抹掉；此后
     `_resolved_ids` 把该 id 长期跳过——它只认「有没有行」，不看状态——只有周任务
     的 `--retry-unavailable` 可能把它救回来。而那次降级在表里只表现为「值变空」。
