@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 from collections.abc import Mapping
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -467,6 +467,71 @@ def test_编排器自身的失败不入七天红点(tmp_path: Path) -> None:
     )
 
     assert not any("失败运行" in text for text in problems(store))
+
+
+def _enrich_current(store: DatasetStore, ids: list[str], *, born_days_ago: int) -> None:
+    """造一张只带富化判据关心的列的 current：id / status / sha / created_at。
+
+    `healthy` 那张 `current` 的 `status` 与 `created_at` 全是空（其余判据不看），
+    而这一项要靠 `status == "active"` 圈定在架、靠 `created_at` 给新库宽限。
+    """
+    data: dict[str, list[Any]] = {name: [None] * len(ids) for name in CURRENT_SCHEMA}
+    day = NOW.date() - timedelta(days=born_days_ago)
+    data["id"] = ids
+    data["status"] = ["active"] * len(ids)
+    data["sha"] = ["current-sha"] * len(ids)
+    data["created_at"] = [datetime(day.year, day.month, day.day, tzinfo=UTC)] * len(ids)
+    data["last_seen_at"] = [NOW.date()] * len(ids)
+    store.write("current", pl.DataFrame(data, schema=CURRENT_SCHEMA))
+
+
+def test_富化内容过期太久要报(tmp_path: Path) -> None:
+    """2026-11-20 的形态：sizes / readme 整层落后几千个，而体检 30 项全 ok。
+
+    当时 `_readme_freshness` 看「表里最新快照日」（凌晨刚写过 6,029 行 → 0 天），
+    `_field_freshness` 报「规模有行 99.8%」（把 29 万个 unavailable 也算覆盖）——
+    两者答的都是「最近有没有抓」，不是「该抓的抓到了没有」。
+    """
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    ids = [f"acme/lag-{index}" for index in range(2_100)]
+    _enrich_current(store, ids, born_days_ago=30)
+    # 表里还是十天前的正文，且 commit 已经换过（source_sha != current.sha）。
+    put_readme(store, NOW.date() - timedelta(days=10), dict.fromkeys(ids, "old-sha"))
+
+    found = [text for text in problems(store) if "富化滞后" in text]
+
+    assert len(found) == 1, found
+    assert "README 超期 2,100" in found[0]
+
+
+def test_从没抓过的老库也算富化滞后(tmp_path: Path) -> None:
+    """没有行不是「干净」，是「从没问过」——新库尤其容易被这一格漏掉。
+
+    与 `stale_ids` 那条缺口同源：`inner join` 只看得见「有记录且过期」的，
+    「从没记录」的那一类会静默落空。
+    """
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    ids = [f"acme/noreadme-{index}" for index in range(2_100)]
+    _enrich_current(store, ids, born_days_ago=30)
+
+    found = [text for text in problems(store) if "富化滞后" in text]
+
+    assert len(found) == 1, found
+    assert "从未抓 2,100" in found[0]
+
+
+def test_宽限期内的新库不算富化滞后(tmp_path: Path) -> None:
+    """每天新增上千个库，昨天出现的今天还没抓到是正常的；三天后才算落后。"""
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    ids = [f"acme/fresh-{index}" for index in range(2_100)]
+    _enrich_current(store, ids, born_days_ago=1)
+
+    found = [text for text in problems(store) if "富化滞后" in text]
+
+    assert not found, found
 
 
 def test_预览被限流停车不算故障但真崩了要报(tmp_path: Path) -> None:

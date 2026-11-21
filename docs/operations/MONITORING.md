@@ -177,6 +177,13 @@ uv run python -c "from pathlib import Path; from hf_data_crawl.pipeline.raw impo
 - Collect 耗时 > 600 秒
 - 成功率 < 90%
 - Raw 规模超阈值 / 冷区未压缩 / 归档积压 / backup 超期未清理
+- **富化滞后**：README 与规模两项合计超期 > 2,000 个在架库。「超期」指内容已经变了
+  （`source_sha` 与当前 `sha` 不一致、或 `lastModified` 晚于抓取日）或从来没有记录，
+  且已超过 3 天没被刷到；新库有 3 天宽限。判据复用抓取端同一套
+  `stale_readme_ids` / `stale_ids`，所以体检说「该刷」的，就是下一轮真会去刷的那批。
+  它补的是另外两项看不见的格子：`readme_freshness` 看「最近抓过没有」（表里最新
+  快照日）、`field_freshness` 看「有行占比」，两者答的都是「最近有没有动」，
+  整层落后几千个时照样全绿（2026-11-20 实测：落后 5,416 + 6,731 个，体检 30 项全 ok）
 - 文档口径漂移：README / AGENTS / operations / skill 里出现已弃用的任务名或列数
   （判据是一份固定的弃用词表，行内带「已删除 / 已并入 / 历史」的豁免）
 

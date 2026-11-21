@@ -81,6 +81,14 @@ RAW_VOLUME_FLOOR = 0.9
 RAW_VOLUME_WINDOW_DAYS = 7
 #: 临时文件超过这个年纪才算残留；正在写的文件只会存在几秒。
 TMP_STALE_AFTER = timedelta(hours=1)
+#: 富化滞后的宽限天数：内容已变（或新库从没抓过）超过这么多天没被刷到，才计入。
+#: 取 3：每日链一天刷一轮，连续三天还没跟上就不是抖动；新库也有三天时间排队。
+ENRICH_LAG_DAYS = 3
+#: README 与规模两项的超期库合计到这个数就报警。正常运转实测 69 个（0.01%，
+#: 2026-11-21 补跑之后）；而 11-20 那次 sizes/readme 被误判「今天已完成」时，
+#: 两项合计 7,995 个——阈值放在两者之间，既能抓住这种整层落后，又不会被
+#: 日常的日内滞后（几十个）触发。
+ENRICH_LAG_FLOOR = 2000
 #: Raw 是唯一不可重算、也是唯一会无限增长的一层。归档只压同一天内的重复，
 #: 跨天全量快照仍会累积；超过阈值说明归档没跟上或 backup 没清。
 RAW_MAX_BYTES = 5 * 1024**3
@@ -992,6 +1000,74 @@ def _readme_freshness(ctx: RunContext) -> Finding:
     return Finding(False, f"README 全文：正常（{age_days} 天前刷新，{counts}）")
 
 
+def _enrich_lag(ctx: RunContext) -> Finding:
+    """富化资产跟上了没有：看「该刷的刷了没」，不看「最近抓过没」。
+
+    2026-11-21 的教训。11-20 夜里那条链把 `sizes` / `readme` 判成「今天已完成」
+    （依据是当天凌晨用 11-19 底库跑的那一次），实测 readme 落后 5,416 个、size
+    落后 6,731 个，而体检 **30 项全 ok**：
+
+    - `_readme_freshness` 看「表里最新快照日」，凌晨刚写过 6,029 行，于是
+      「几天没刷新」永远是 0；
+    - `_field_freshness` 报「规模有行 99.8%」，把 29 万个 `unavailable` 也算覆盖。
+
+    两者答的都是「最近有没有抓」，不是「该抓的抓到了没有」，所以整层落后照样全绿。
+    这一条补的是后者：直接用抓取端**同一套判据**（`stale_readme_ids` / `stale_ids`）
+    算「内容已变」与「从没抓过」的在架库，只留超过 `ENRICH_LAG_DAYS` 天的，
+    合计过 `ENRICH_LAG_FLOOR` 才报——口径与 `fetch-readme` / `fetch-sizes` 完全一致，
+    体检说「该刷」的就是它们下一轮真会去刷的那批。
+
+    宽限是给新库的：每天新增上千个库，它们明天才排到，今天没抓不算出问题。
+    """
+    current = ctx.current
+    if current.height == 0:
+        return Finding(True, "富化滞后：current 为空，无法判定")
+    live = current.filter(pl.col("status") == "active")
+    if live.height == 0:
+        return Finding(False, "富化滞后：没有在架库")
+
+    cutoff = ctx.now.date() - timedelta(days=ENRICH_LAG_DAYS)
+    # 只有「出生已超过宽限期」的库，缺失才算落后；昨天刚出现的等下一轮。
+    settled = set(live.filter(pl.col("created_at").dt.date() <= cutoff)["id"].to_list())
+
+    over = 0
+    notes: list[str] = []
+    for label, kind, checker in (
+        ("README", "readme", stale_readme_ids),
+        ("规模", "size", stale_ids),
+    ):
+        frame = ctx.store.read(kind)
+        if frame.height == 0:
+            notes.append(f"{label} 未抓过")
+            continue
+        # 判据复用抓取端的那两个函数：口径分叉过一次（体检全绿、抓取却在漏），
+        # 别再让两处各写一份「什么算陈旧」。
+        stale = set(checker(live, frame)["id"].to_list())
+        aged = (
+            frame.filter(pl.col("id").is_in(sorted(stale)))
+            .filter(pl.col("snapshot_date") < cutoff)
+            .height
+            if stale
+            else 0
+        )
+        missing = len(settled - set(frame["id"].to_list()))
+        over += aged + missing
+        notes.append(f"{label} 超期 {aged:,} · 从未抓 {missing:,}")
+
+    detail = " · ".join(notes)
+    if over >= ENRICH_LAG_FLOOR:
+        return Finding(
+            True,
+            f"富化滞后：{detail}；合计 {over:,} 个在架库的富化数据已过期超过 "
+            f"{ENRICH_LAG_DAYS} 天。跑 fetch-sizes --changed-all 与 "
+            "fetch-readme --changed-all（再 parse-readme），并确认链上这两步真的跑成了",
+        )
+    return Finding(
+        False,
+        f"富化滞后：{detail}，合计 {over:,} 个（阈值 {ENRICH_LAG_FLOOR:,}）",
+    )
+
+
 def _raw_growth(ctx: RunContext) -> Finding:
     """盯住 Raw 规模：compact 压跨天重复，热区仍会逐日增长，靠阈值兜底。"""
     store = ctx.store
@@ -1785,6 +1861,7 @@ CHECKS: tuple[Check, ...] = (
     Check("field_freshness", _field_freshness, snapshot_dependent=True),
     Check("card_provenance", _card_provenance, snapshot_dependent=True),
     Check("readme_freshness", _readme_freshness, snapshot_dependent=True),
+    Check("enrich_lag", _enrich_lag, snapshot_dependent=True),
     Check("raw_growth", _raw_growth),
     Check("cold_backlog", _cold_backlog),
     Check("archive_backlog", _archive_backlog),
