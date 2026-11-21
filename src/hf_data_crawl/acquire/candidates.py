@@ -44,6 +44,14 @@ SHA: Final = "source_sha"
 #: 证据种类：规模是内容的函数，只能按「库最后一次改动 vs 上次抓取时刻」判。
 MODIFIED: Final = "last_modified"
 
+#: 证据种类：这张表不记版本凭据，只能判缺口。
+#:
+#: `files` 既没有 `source_sha` 也没有抓取时刻，拿 `snapshot_date` 凑一个按日判据
+#: 只会得到「同日改动永久漏判」的老问题；`preview` 虽有 `fetched_at`，但它抓的是
+#: 某一刻的切片，本身就是快照。两者又都是**覆盖面任务**——名额该给「没看过」的库，
+#: 不是「看过又变了」的库，否则头部天天变，长尾永远排不到。故显式声明「无凭据」。
+NONE: Final = "none"
+
 #: 缺口在一轮里的上限。与 `--top` 默认值同量级：16 并发实测约 22 req/s，
 #: 两万个约 15 分钟，仍在夜链给的预算之内。设上限防的是「某轮全量失败后缺口涨到
 #: 几十万」——那种情况该由周日的 `--top 0` 兜底，不该让一次日常刷新跑成几小时。
@@ -68,8 +76,10 @@ class EnrichPolicy:
     retry_states: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
-        if self.evidence not in (SHA, MODIFIED):
+        if self.evidence not in (SHA, MODIFIED, NONE):
             raise ValueError(f"{self.table}：未知的证据种类 {self.evidence!r}")
+        if self.evidence == NONE and self.fresh_states:
+            raise ValueError(f"{self.table}：没有版本凭据的表不该声明新鲜状态")
         if not self.fresh_states <= self.resolved_states:
             raise ValueError(f"{self.table}：新鲜状态必须是结论的一部分")
         if not self.retry_states <= self.resolved_states:
@@ -94,6 +104,25 @@ SIZE_POLICY = EnrichPolicy(
     table="size",
     evidence=MODIFIED,
     fresh_states=frozenset({"ok"}),
+    resolved_states=frozenset({"ok", "unavailable"}),
+    retry_states=frozenset({"unavailable"}),
+)
+
+#: 文件清单：只判缺口。`truncated`（清单没取完）不是状态而是「结论不完整」，
+#: 由 `fetch-files --refresh-truncated` 单独点名，不进这里的判据——那是另一根轴。
+FILES_POLICY = EnrichPolicy(
+    table="files",
+    evidence=NONE,
+    fresh_states=frozenset(),
+    resolved_states=frozenset({"ok", "unavailable"}),
+    retry_states=frozenset({"unavailable"}),
+)
+
+#: 预览样例：只判缺口。`ok` 与 `unavailable`（没有 viewer / 受限）都是终局。
+PREVIEW_POLICY = EnrichPolicy(
+    table="preview",
+    evidence=NONE,
+    fresh_states=frozenset(),
     resolved_states=frozenset({"ok", "unavailable"}),
     retry_states=frozenset({"unavailable"}),
 )
@@ -196,7 +225,7 @@ def _stale(
 ) -> pl.DataFrame:
     """有结论、但结论对应的内容已经变了。"""
     empty = current.head(0)
-    if observed is None:
+    if observed is None or policy.evidence == NONE:
         return empty
     if policy.evidence == SHA:
         if "sha" not in current.columns:

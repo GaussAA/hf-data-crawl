@@ -29,10 +29,17 @@ from .batch import (
 from .batch import (
     read_staged as read_staged_dir,
 )
-from .candidates import GAP_BUDGET, README_POLICY, SIZE_POLICY, refresh_candidates
+from .candidates import (
+    FILES_POLICY,
+    GAP_BUDGET,
+    PREVIEW_POLICY,
+    README_POLICY,
+    SIZE_POLICY,
+    refresh_candidates,
+)
 from .collect import Collector, CollectSummary
 from .enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
-from .files import FILES_STAGING_DIR, FileFetcher, FileSummary, HfFilesApi
+from .files import FILES_STAGING_DIR, FileFetcher, FileSummary, HfFilesApi, truncated_ids
 from .hf.api import HfDatasetApi, Transport
 from .hf.transport import HttpxTransport
 from .preview import (
@@ -407,39 +414,48 @@ def run_fetch_preview(
         print("尚无采集数据，请先运行 `hf-data-crawl collect`。")
         return Outcome({"error": "empty"}, code=1, reason="尚无采集数据，请先运行 collect")
 
-    ordered = current.sort("downloads", descending=True, nulls_last=True)
+    # 已经定过的库不再问：`ok` 与 `unavailable` 都是终局，`error` 才是可救的。
+    # 暂存分片也算「已经定局」——上一轮中断前抓到的结果不该再请求一遍。
+    existing = store.read("preview")
+    staged, _ = read_staged_dir(store, PREVIEW_STAGING_DIR, PREVIEW_SCHEMA)
+    if staged.height:
+        existing = pl.concat([existing, staged], how="vertical_relaxed")
+
+    if args.ids:
+        # 点名不看 `size`：名单即范围，用户可能就是要试一个没有规模记录的库。
+        base = current
+    else:
+        # 只抓 `size` 表里 status=ok 的库——没有 viewer 的库连请求都不该发。
+        base = current.join(
+            store.read("size").filter(pl.col("status") == "ok").select("id"),
+            on="id",
+            how="semi",
+        )
+    ordered = base.sort("downloads", descending=True, nulls_last=True)
     if args.ids:
         ordered, problem = pick_ids(ordered, args.ids)
         if problem:
             print(f"失败：{problem}")
             return Outcome({"error": "ids"}, code=1, reason=problem)
-        candidates = ordered["id"].to_list()
-    else:
-        fetchable = set(store.read("size").filter(pl.col("status") == "ok")["id"].to_list())
-        pool = [item for item in ordered["id"].to_list() if item in fetchable]
-        # `--top 0` 表示全量：与 fetch-files / fetch-readme / fetch-sizes 同一个约定。
-        candidates = pool[: args.top] if args.top > 0 else pool
-
-    if not candidates:
+    if ordered.height == 0:
         print("没有可抓的库：size 表里没有 status=ok 的记录，先跑 `fetch-sizes`。")
         return Outcome({"fetched": 0})
 
-    # 已经定过的库不再问：`ok` 与 `unavailable` 都是终局，`error` 才是可救的。
-    # 暂存分片也算「已经定局」——上一轮中断前抓到的结果不该再请求一遍。
-    done: set[str] = set()
-    existing = store.read("preview")
-    staged, _ = read_staged_dir(store, PREVIEW_STAGING_DIR, PREVIEW_SCHEMA)
-    if staged.height:
-        existing = pl.concat([existing, staged], how="vertical_relaxed")
-    if existing.height:
-        done = set(existing.filter(pl.col("status").is_in(["ok", "unavailable"]))["id"].to_list())
-    pending = [item for item in candidates if item not in done]
-    if not pending:
-        print(f"无需抓取：{len(candidates)} 个候选都已定局（preview 表 {existing.height} 行）。")
+    # 候选 = 缺口，再按名额截断：`--top N` 是这一轮最多发多少个请求。
+    # 此前它截的是底库前 N 名，已定局的库也占名额——覆盖率过半时，「--top 10000」
+    # 可能只发出几百个请求。`--top 0` 表示全量（与其余抓取命令同一个约定）。
+    found = refresh_candidates(
+        ordered, existing, PREVIEW_POLICY, budget=None if args.ids or args.top <= 0 else args.top
+    )
+    candidates = found.picked["id"].to_list()
+    if not candidates:
+        print(f"无需抓取：{ordered.height} 个候选都已定局（preview 表 {existing.height} 行）。")
         return Outcome({"fetched": 0})
-    if len(pending) < len(candidates):
-        print(f"跳过 {len(candidates) - len(pending)} 个已定局的库，本轮抓 {len(pending)} 个")
-    candidates = pending
+    resolved = ordered.height - found.gap.height
+    if resolved:
+        print(f"跳过 {resolved} 个已定局的库，本轮抓 {len(candidates)} 个")
+    if found.deferred:
+        print(f"另有 {found.deferred} 个缺口排到下一轮（--top 名额已满）")
 
     print(f"取样例：{len(candidates)} 个库 × 最多 {args.rows} 行，匀速 {args.rate} req/s")
     fetcher = PreviewFetcher(
@@ -497,19 +513,6 @@ def _print_preview(summary: PreviewSummary, total_rows: int) -> None:
     )
 
 
-def resolve_files_top(args_top: int, candidates: int, *, named: bool) -> int:
-    """把 `--top` 解析成实际的候选截断数。
-
-    `0` 表示全量——与 `fetch-readme` / `fetch-sizes` / `fetch-preview` 同一个约定。
-    原先这里写的是 `max(1, args.top)`，于是 `--top 0` 被悄悄改成 1：命令看起来
-    「跑完了」，其实只抓了一个库，而且不报错。点名的场合名单本身就是范围，
-    `--top` 不参与截断（与 `resolve_size_top` 同一条道理）。
-    """
-    if named or args_top <= 0:
-        return candidates
-    return min(args_top, candidates)
-
-
 def run_fetch_files(
     args: argparse.Namespace,
     store: DatasetStore,
@@ -535,6 +538,12 @@ def run_fetch_files(
         print("尚无采集数据，请先运行 `hf-data-crawl collect`。")
         return Outcome({"error": "empty"}, code=1, reason="尚无采集数据，请先运行 collect")
 
+    # 残留分片同样是「已处理」的 id：上一轮中断前抓到的结果不该再请求一遍。
+    existing = store.read("files")
+    staged, _ = read_staged_dir(store, FILES_STAGING_DIR, FILES_SCHEMA)
+    if staged.height:
+        existing = pl.concat([existing, staged], how="vertical_relaxed")
+
     ordered = current.sort("downloads", descending=True, nulls_last=True)
     if args.ids:
         # 与 fetch-sizes / fetch-readme 同一套按需补：名单即范围，`--top` 不参与。
@@ -542,12 +551,34 @@ def run_fetch_files(
         if problem:
             print(f"失败：{problem}")
             return Outcome({"error": "ids"}, code=1, reason=problem)
-
-    # 残留分片同样是「已处理」的 id：上一轮中断前抓到的结果不该再请求一遍。
-    existing = store.read("files")
-    staged, _ = read_staged_dir(store, FILES_STAGING_DIR, FILES_SCHEMA)
-    if staged.height:
-        existing = pl.concat([existing, staged], how="vertical_relaxed")
+        names = ordered["id"].to_list()
+    else:
+        # 候选 = 缺口（没有结论的库），再按名额截断——`--top N` 是这一轮最多发多少
+        # 个请求。此前它截的是底库前 N 名，已经抓过的也占名额：覆盖率过半时，
+        # `--top 1000` 可能只发出几十个请求，而命令看上去「跑完了」。
+        found = refresh_candidates(
+            current, existing, FILES_POLICY, budget=None if args.top <= 0 else args.top
+        )
+        picked = found.picked
+        # 截断是「有结论但清单没取完」（status=ok），判据看不见这一类，故显式并进来，
+        # 且排在缺口之前——它是这一趟唯一的目的，本身已由 `--max-pages>1` 校验过。
+        if args.refresh_truncated:
+            retry = current.join(
+                pl.DataFrame({"id": sorted(truncated_ids(existing))}, schema={"id": pl.Utf8}),
+                on="id",
+                how="semi",
+            ).sort("downloads", descending=True, nulls_last=True)
+            if retry.height:
+                picked = pl.concat([retry, picked]).unique(subset="id", maintain_order=True)
+                if args.top > 0:
+                    picked = picked.head(args.top)
+        names = picked["id"].to_list()
+        if not names:
+            print(f"文件清单无缺口：`files` 表已覆盖全部 {current.height:,} 个库。")
+            return Outcome({"fetched": 0})
+        print(f"文件清单：缺口 {found.gap.height:,} 个，本轮取 {len(names):,} 个（按下载量）")
+        if found.deferred:
+            print(f"另有 {found.deferred:,} 个排到下一轮（--top 名额已满）")
 
     fetcher = FileFetcher(
         api=HfFilesApi(
@@ -562,9 +593,9 @@ def run_fetch_files(
     writer = StagingDirWriter(store, snapshot, FILES_STAGING_DIR)
     summary, frame = fetcher.run(
         snapshot,
-        dataset_ids=ordered["id"].to_list(),
-        # 点了名就按名单来（名单已过滤成正好这几个），否则照旧按下载量取前 N。
-        top=resolve_files_top(args.top, ordered.height, named=bool(args.ids)),
+        # 名单已按名额截断（点名时名单即范围）；这里不再切第二刀。
+        dataset_ids=names,
+        top=len(names),
         retry_unavailable=args.retry_unavailable,
         refresh_truncated=args.refresh_truncated,
         existing=existing,

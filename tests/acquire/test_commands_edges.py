@@ -527,23 +527,3 @@ def test_README点名不到在架库时拒绝(tmp_path: Path, capsys) -> None:
     assert outcome.code == 1
     assert outcome.reason == "--ids 无有效 id"
     assert "没有有效" in capsys.readouterr().out
-
-
-def test_files的top为零表示全量() -> None:
-    """`--top 0` 必须是全量：原先的 `max(1, 0)` 会静默改成只抓一个库。
-
-    四条抓取链路（files / readme / sizes / preview）对 `--top 0` 必须是同一个意思，
-    否则「跑全量」这件事得靠人记住每条命令各自的方言。
-    """
-    assert commands.resolve_files_top(0, 1234, named=False) == 1234
-    assert commands.resolve_files_top(-5, 1234, named=False) == 1234
-
-
-def test_files按下载量截断且不超过候选数() -> None:
-    assert commands.resolve_files_top(10, 1234, named=False) == 10
-    assert commands.resolve_files_top(99_999, 1234, named=False) == 1234
-
-
-def test_files点名时不按top截断() -> None:
-    """名单本身就是范围：`--ids` 与 `--top` 同时给，点名优先。"""
-    assert commands.resolve_files_top(10, 50, named=True) == 50

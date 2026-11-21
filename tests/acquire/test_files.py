@@ -622,6 +622,47 @@ def test_命令行按ids只补点名的库(tmp_path: Path) -> None:
     assert sorted(store.read("files")["id"].to_list()) == ["acme/ds-1", "acme/ds-3"]
 
 
+def test_top算的是本轮请求数而不是底库前N名(tmp_path: Path) -> None:
+    """`--top N` 是这一轮最多发多少个请求，不是「底库前 N 名」。
+
+    此前它截的是底库前 N 名：已经抓过的库也占名额，头部有结论之后，
+    `--top 1000` 可能只发出几十个请求，而命令看上去「跑完了」——名义额度与实际
+    消耗必须是一个数（与 `fetch-sizes --changed` 同一个教训，DECISIONS #155）。
+    """
+    root = tmp_path / "data"
+    store = DatasetStore(root)
+    seed(store, 5)
+    transport = FakeFilesTransport({f"acme/ds-{i}": tree() for i in range(1, 6)})
+
+    # 先让下载量最高的 3 个有结论。
+    assert main(["--data-dir", str(root), "fetch-files", "--top", "3"], transport=transport) == 0
+    assert sorted(transport.calls) == ["acme/ds-3", "acme/ds-4", "acme/ds-5"]
+
+    transport.calls.clear()
+    code = main(["--data-dir", str(root), "fetch-files", "--top", "2"], transport=transport)
+
+    assert code == 0
+    assert sorted(transport.calls) == ["acme/ds-1", "acme/ds-2"], "名额该给还没有结论的库"
+    assert store.read("files").height == 5
+
+
+def test_top为零抓全量缺口(tmp_path: Path) -> None:
+    """`--top 0` = 全量：四条抓取链路同一个约定。
+
+    原先这里写的是 `max(1, args.top)`，于是 `--top 0` 被悄悄改成 1：命令看起来
+    「跑完了」，其实只抓了一个库，而且不报错。
+    """
+    root = tmp_path / "data"
+    store = DatasetStore(root)
+    seed(store, 4)
+    transport = FakeFilesTransport({f"acme/ds-{i}": tree() for i in range(1, 5)})
+
+    code = main(["--data-dir", str(root), "fetch-files", "--top", "0"], transport=transport)
+
+    assert code == 0
+    assert len(transport.calls) == 4
+
+
 def test_命令行可显式加大页数(tmp_path: Path) -> None:
     root = tmp_path / "data"
     store = DatasetStore(root)

@@ -17,7 +17,9 @@ import polars as pl
 import pytest
 
 from hf_data_crawl.acquire.candidates import (
+    FILES_POLICY,
     GAP_BUDGET,
+    NONE,
     README_POLICY,
     SIZE_POLICY,
     EnrichPolicy,
@@ -180,6 +182,32 @@ def test_规模表的不可用算结论而错误不算() -> None:
     found = refresh_candidates(current, existing, SIZE_POLICY)
 
     assert set(found.gap["id"].to_list()) == {"acme/err", "acme/new"}
+
+
+def test_无凭据的表只判缺口() -> None:
+    """`files` / `preview` 不记版本凭据：内容变了判不出来，只能判「没看过」。
+
+    这是刻意的取舍：两者都是覆盖面任务，名额该给「没看过」的库，不是「看过又变了」
+    的库——否则头部天天有人改，长尾永远排不到。要判陈旧，先给表加 `source_sha`。
+    """
+    current = pl.DataFrame({"id": ["a/x", "a/y"], "sha": ["new", "new"], "downloads": [2, 1]})
+    existing = pl.DataFrame({"id": ["a/x"], "status": ["ok"], "source_sha": ["old"]})
+
+    found = refresh_candidates(current, existing, FILES_POLICY)
+
+    assert found.stale.height == 0, "没有凭据就不该声称谁陈旧"
+    assert found.gap["id"].to_list() == ["a/y"]
+
+
+def test_无凭据的策略不许声明新鲜状态() -> None:
+    """声明了 `evidence=NONE` 又列新鲜状态，是自相矛盾——那份名单永远不会被用到。"""
+    with pytest.raises(ValueError):
+        EnrichPolicy(
+            table="files",
+            evidence=NONE,
+            fresh_states=frozenset({"ok"}),
+            resolved_states=frozenset({"ok"}),
+        )
 
 
 # ---------------------------------------------------------------- 名额

@@ -198,6 +198,34 @@ def test_被限流中止时退出码非零且给出降速建议(tmp_path: Path, 
     assert store.read("preview").height == 1, "已抓到的行不该因为中止被丢掉"
 
 
+def test_top算的是本轮请求数而不是底库前N名(tmp_path: Path, monkeypatch) -> None:
+    """`--top N` 是这一轮最多发多少个请求，不是「底库前 N 名」。
+
+    此前截的是底库前 N 名：已定局的库也占名额，覆盖率过半之后，
+    `--top 10000` 可能只发出几百个请求，而命令看上去「跑完了」。
+    """
+    store = DatasetStore(tmp_path / "data")
+    seed(
+        store,
+        "current",
+        [{"id": f"a/{index}", "downloads": 100 - index} for index in range(5)],
+    )
+    seed(store, "size", [{"id": f"a/{index}", "status": "ok"} for index in range(5)])
+    seed(
+        store,
+        "preview",
+        [
+            {"id": "a/0", "status": "ok", "snapshot_date": SNAPSHOT},
+            {"id": "a/1", "status": "ok", "snapshot_date": SNAPSHOT},
+        ],
+    )
+    fake = patch_fetcher(monkeypatch)
+
+    commands.run_fetch_preview(args(top=3), store, None)
+
+    assert fake.seen == ["a/2", "a/3", "a/4"], "名额该给还没定局的库"
+
+
 def test_top为零时抓全量而不是一条都不抓(tmp_path: Path, monkeypatch) -> None:
     """`--top 0` = 全量：与 fetch-files / fetch-readme / fetch-sizes 同一个约定。
 

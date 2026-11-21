@@ -27,7 +27,7 @@
 | **Card Config** | 卡片里一个配置（子集）及其 split 明细，带行数、字节、列结构 | 不是数据集本身；一个 Dataset 可有数十个 Config |
 | **Dataset Size** | datasets-server 给出的转换后规模（`num_rows` / `num_columns` / 内存字节） | 不是仓库字节（`mainSize`），也不是原始文件大小 |
 | **富化**（Enrich） | 底库之上按需补齐的资产：规模（`size`）、README 全文（`readme`）、卡片、文件清单。一律按 `id` 覆盖、都是 `Origin.NETWORK`——删掉就得重抓 | 不是采集的一部分；采集只读列表接口，富化逐库补 |
-| **陈旧**（stale） | 富化行还在，但它记的版本已不是当前版本：README 的 `source_sha` 落后于 `current.sha`，规模的抓取时刻早于 `last_modified`。比什么由 `acquire.candidates.EnrichPolicy.evidence` 声明 | 不是「抓得早」——抓得早但内容没变不算陈旧，重抓等于白烧配额 |
+| **陈旧**（stale） | 富化行还在，但它记的版本已不是当前版本：README 的 `source_sha` 落后于 `current.sha`，规模的抓取时刻早于 `last_modified`。比什么由 `acquire.candidates.EnrichPolicy.evidence` 声明；`files` / `preview` 没有版本凭据（`evidence=NONE`），只判缺口 | 不是「抓得早」——抓得早但内容没变不算陈旧，重抓等于白烧配额 |
 | **缺口**（gap） | 没有可用结论：从没抓过，或上次是 `error`。`denied`（门禁）与 `unavailable`（上游没做 parquet 转换）是结论，不算缺口 | 不是「表里没有行」——`error` 行占了一行，但它不是结论 |
 | **候选集**（Candidates） | 一轮该重取的对象：陈旧 ∪ 缺口，按下载量降序，再按名额截断。产出是 `acquire.candidates.Candidates`（`picked` / `stale` / `gap` / `truncated` / `deferred`） | 不是「表里过期的行」——还要并上缺口；更不是抓取端与体检各算一遍 |
 | **名额**（budget） | 一轮最多发多少个请求。`--changed N` 的 N 就是它：陈旧先吃，余额给缺口；`--changed-all` 不设名额（陈旧全取），缺口另受 `GAP_BUDGET` 限制 | 不是「最多补多少陈旧」——缺口曾在名额之外再偷偷加两万个请求 |

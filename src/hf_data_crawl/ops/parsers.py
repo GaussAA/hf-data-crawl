@@ -479,7 +479,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--top",
         type=int,
         default=PREVIEW_TOP,
-        help="按下载量取前多少名（默认 10000；0 表示全量，能跑多久算多久）",
+        help=(
+            "这一轮最多发多少个请求（默认 10000）：先算缺口再截断，名额给还没定局的"
+            "库；0 表示全量缺口，能跑多久算多久"
+        ),
     )
     preview.add_argument("--ids", default=None, help="只抓这些 id（逗号分隔），忽略 --top")
     preview.add_argument("--rows", type=int, default=3, help="每个库取几行（默认 3，上限 100）")

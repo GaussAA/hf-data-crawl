@@ -316,8 +316,12 @@ def _failure(
     return FileResult(dataset_id=dataset_id, status=status, row=row, payload_bytes=payload_bytes)
 
 
-def _truncated_ids(existing: pl.DataFrame | None) -> set[str]:
-    """上次标了截断的 id。升级前的旧表没有该列，一律当作未截断，不擅自重抓。"""
+def truncated_ids(existing: pl.DataFrame | None) -> set[str]:
+    """上次标了截断的 id。升级前的旧表没有该列，一律当作未截断，不擅自重抓。
+
+    公开给命令层：候选集按状态判（`candidates.FILES_POLICY`），看不见「清单没取完」
+    这一类，`--refresh-truncated` 要把它们显式并进名单。
+    """
     if existing is None or not existing.height or "truncated" not in existing.columns:
         return set()
     return set(existing.filter(pl.col("truncated").fill_null(False))["id"].to_list())
@@ -360,7 +364,7 @@ class FileFetcher:
         started = time.monotonic()
         candidates = list(dataset_ids or [])[:top]
         # 截断等于「清单没取完」，不能按「已处理」跳过——否则它们永远是下限。
-        stale = _truncated_ids(existing) if refresh_truncated else set()
+        stale = truncated_ids(existing) if refresh_truncated else set()
         if existing is not None and existing.height:
             done = (
                 set(existing.filter(pl.col("status") == "ok")["id"].to_list())

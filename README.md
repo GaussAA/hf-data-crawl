@@ -27,7 +27,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 | `collect` | 日增量：按 `lastModified` 倒序扫到水位线；`--full-scan` 忽略水位线扫到末页（刷新链用，约 1,140 页） | 是 |
 | `enrich` | 按下载量取头部补抓 `cardData`（标签、config/split 明细、行数列数）；`--ids a,b,c` 按需补（上限 200） | 是 |
 | `fetch-sizes` | 经 datasets-server 补规模与列数（`num_rows` / `num_columns_max`）；`--changed N` 是这一轮的总请求数（候选＝内容已变 ∪ 还没有结论，陈旧优先，余额补缺口），`--top 0` 表示全量（按 `current` 实际行数，不写死常量），`--ids a,b,c` 只补点名的库（上限 200，忽略 `--top`） | 是 |
-| `fetch-files` | 按下载量取头部，经 `/tree/main` 补文件清单汇总（试点：top 1000，每库默认 1 页）；`--ids a,b,c` 只补点名的库（上限 200，忽略 `--top`） | 是 |
+| `fetch-files` | 按下载量取头部，经 `/tree/main` 补文件清单汇总（试点：默认 1000；`--top N` 是这一轮的总请求数——先算缺口再截断，已抓过的不占名额）；`--ids a,b,c` 只补点名的库（上限 200，忽略 `--top`） | 是 |
 | `fetch-readme` | 逐库抓 README 全文（`description` 只有约 600 字符摘要）；`--ids` 按需、`--top N` 取头部、`--top 0` 全量、`--changed N` 是这一轮的总请求数（判据同 `fetch-sizes`）、`--rate 15` 匀速（配额 5000 次/5 分钟）；正文进默认导出（契约 v6，清洗后） | 是 |
 | `reconcile` | 全量对账：按 `createdAt` 稳定序扫全站，产出新增/删除/转私有/改名/sha 变更 | 是 |
 | `build` | 重建派生层：默认只重放近 7 天热区，`--stale` 只修派生滞后的日子及其后，`--full` 全量重放 | 否 |
