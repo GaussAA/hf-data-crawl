@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import hashlib
-import statistics
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
@@ -75,17 +74,10 @@ COLLECT_MAX_AGE = timedelta(hours=36)
 RECONCILE_MAX_AGE = timedelta(hours=48)
 #: 回看多少天的 Raw 是否断日。
 GAP_WINDOW_DAYS = 14
-#: 「采集分量」不数的来源：对账把全站按 `createdAt` 翻一遍，页数由 `--max-pages`
-#: 决定（旧链 600 页分批、新链扫全站约 1130 页），与「采集完不完整」无关。
-#: 2026-11-19 它占了当日 641 块里的 600 块——把两种来源混在一起数，等于拿对账的
-#: 批次大小充当采集完整度（该日采集类 34 块，与前一日分毫不差）。
-_RECONCILE_SOURCE = "reconcile_createdAt"
-#: 采集类分块数的告警线：低于近期中位的这个比例就算那天没采全。
-#: 实测 11-13..11-19 的采集类（lean + top + card）落在 30–38 块，中位 34；
-#: 取 70%（约 24 块）既能抓住「某一路整条没跑」（少 20 块）与「跑了一半」，
-#: 又不会被 lean 页数随变化量起伏（5–9 页）震到。
-RAW_VOLUME_FLOOR = 0.7
-#: 算中位与判异常的回看天数。取 7：一周足够盖住工作日的常规波动。
+#: 完整对账会话的 `records / current` 低于此比例，就认为那轮没扫完。
+#: 对账是全站扫描，缺一成不是波动，是截断或续跑没接上。
+RAW_VOLUME_FLOOR = 0.9
+#: 回看多少天内的完整对账会话。取 7：一周足够盖住跨日续跑。
 RAW_VOLUME_WINDOW_DAYS = 7
 #: 临时文件超过这个年纪才算残留；正在写的文件只会存在几秒。
 TMP_STALE_AFTER = timedelta(hours=1)
@@ -315,60 +307,82 @@ def _raw_gaps(ctx: RunContext) -> Finding:
     return Finding(False, f"Raw：近 {GAP_WINDOW_DAYS} 天没有断日")
 
 
-def _raw_volume(ctx: RunContext) -> Finding:
-    """某一天的**采集类** Raw 分块数是否明显少于近期常态。
+def _reconcile_sessions(runs: list[dict[str, Any]]) -> list[tuple[datetime | None, int, int]]:
+    """把 reconcile 台账拼成完整会话：(完成时刻, 页数, 记录数)。
 
-    与 `_raw_gaps` 互补：那条只抓「整天没采」，抓不到「采了一半就断了」——目录
-    在、分块在，断日判据看不见。这里补的正是这一格。
-
-    为什么不用观测行数判：`observations` 只追加指标真变过的行，行数少往往说明
-    上游计数没动（11-14 只有 2,188 行，而当日 Raw 完整、1,160 块）。拿它当采集
-    完整度会天天误报，且误报的恰恰是「上游很平静」这种好日子。
-
-    为什么要把对账那一路剔掉：`reconcile_createdAt` 占全天分块数的 97%，而它的
-    页数由 `--max-pages` 决定——旧链按 600 页分批、新链扫全站约 1,130 页。混在
-    一起数，判据实际度量的是「对账批次有多大」，而不是「采集停没停」。2026-11-20
-    就栽在这上面：11-19 有 641 块被判成「采了一半」，可那天采集类 34 块，与前一日
-    分毫不差，少的 530 块全是对账换成了分批模式。判据选错对象，比没有判据更糟。
-
-    压缩过的日期已并档（数不出块数），今天可能还在采，两者都不判。
+    `--max-pages` 的一次跑完只是一段；续跑由下一条 `resumed=true` 接上，直到
+    `stopped_reason=end` 才算一个完整会话。11-18 的 600 页与 11-19 的 536 页
+    就是这么拼成 1,136 页的——只看单日会把它判成两次「只扫了一半」。
     """
-    store, today = ctx.store, ctx.today
-    counts = [
-        (day.snapshot_date, _collect_shards(day))
-        for day in raw.observed_days(store)
-        if not day.compacted and day.snapshot_date < today
-    ]
-    if len(counts) < 4:
-        return Finding(False, f"Raw 分量：可比的完整日只有 {len(counts)} 天，不足以比较")
-    median = statistics.median(n for _, n in counts)
-    if median <= 0:
-        return Finding(False, "Raw 分量：近期分块数为零，无法比较")
-    floor = median * RAW_VOLUME_FLOOR
-    window = [
-        (day, n) for day, n in counts if day >= today - timedelta(days=RAW_VOLUME_WINDOW_DAYS)
-    ]
-    short = [(day, n) for day, n in window if n < floor]
-    if short:
-        shown = "、".join(f"{day.isoformat()}（{n} 块）" for day, n in short[:3])
-        more = f" 等 {len(short)} 天" if len(short) > 3 else ""
+    sessions: list[tuple[datetime | None, int, int]] = []
+    pages = records = 0
+    for item in runs:
+        if item.get("command") != "reconcile" or item.get("status") != "success":
+            continue
+        payload = item.get("payload") or {}
+        try:
+            run_pages = int(payload.get("pages") or 0)
+            run_records = int(payload.get("records") or 0)
+        except (TypeError, ValueError):
+            continue
+        if run_pages <= 0 and run_records <= 0:
+            continue
+        if not payload.get("resumed"):
+            pages = records = 0
+        pages += run_pages
+        records += run_records
+        if payload.get("stopped_reason") != "end":
+            continue
+        finished: datetime | None = None
+        raw_time = item.get("finished_at") or item.get("started_at")
+        if raw_time:
+            try:
+                finished = datetime.fromisoformat(str(raw_time))
+            except ValueError:
+                finished = None
+        sessions.append((finished, pages, records))
+        pages = records = 0
+    return sessions
+
+
+def _raw_volume(ctx: RunContext) -> Finding:
+    """最近一次**完整对账会话**覆盖了底库多少。
+
+    原先数「当天分块数」，但分块数由三件事同时决定：采集是增量还是全扫、对账是
+    扫全站还是 `--max-pages` 分批、卡片/顶部补抓跑了多少。把三者相加，判据实际
+    度量的是「那天跑了哪些模式」。2026-11-21 实测：11-17/19 的全站对账分别是
+    1,134 / 1,136 块（完整），但少了 1,145 块的 lean 全扫，就被判成「只采了
+    26/34 块」；而 11-18 的 600 块 + 11-19 的 536 块合成一轮完整会话，单日看
+    反而像两次半轮。
+
+    改读 runs 台账：把 `resumed` 的续跑拼到 `stopped_reason=end`，拿这个会话的
+    `records` 与当前 `current` 比。页数大小不再参与判断，`--max-pages` 的显式
+    分批也不会误报；没有可判定的会话时不判，交给 `_reconcile_freshness`。
+    """
+    if ctx.current.height == 0:
+        return Finding(False, "Raw 分量：current 为空，无法判定")
+    sessions = _reconcile_sessions(ctx.runs)
+    if not sessions:
+        return Finding(False, "Raw 分量：没有可判定的完整对账会话，不判")
+    cutoff = ctx.today - timedelta(days=RAW_VOLUME_WINDOW_DAYS)
+    recent = [item for item in sessions if item[0] is None or item[0].date() >= cutoff]
+    if not recent:
+        return Finding(
+            False,
+            f"Raw 分量：近 {RAW_VOLUME_WINDOW_DAYS} 天没有完成的对账会话，不判",
+        )
+    finished, _pages, records = recent[-1]
+    share = records / ctx.current.height
+    when = finished.date().isoformat() if finished else "最近一轮"
+    if share < RAW_VOLUME_FLOOR:
         return Finding(
             True,
-            f"Raw 分量：{shown}{more} 明显少于近期中位 {median:.0f} 块；"
-            "那天可能只采了一部分，核对该日的 collect 与补抓是否中途退出",
+            f"Raw 分量：{when} 的完整对账只覆盖 {records:,}/{ctx.current.height:,}"
+            f"（{share:.1%}）；核对那轮是否中途退出、或续跑没接上",
         )
-    return Finding(False, f"Raw 分量：近 {len(window)} 天采集类分块数与中位 {median:.0f} 块相当")
-
-
-def _collect_shards(day: raw.RawDay) -> int:
-    """当天由**采集**写入的分块数：剔掉对账那一路，理由见 `_raw_volume`。
-
-    按排除法而非白名单：来源命名空间会新增（`lean` / `top` / `card` / 将来还有），
-    白名单会让新来源静默不计；而对账由 `--max-pages` 直接决定页数，是唯一需要
-    摘出去的一类。
-    """
-    return sum(
-        1 for path in (*day.bronze, *day.supplements) if raw.source_of(path) != _RECONCILE_SOURCE
+    return Finding(
+        False,
+        f"Raw 分量：{when} 的完整对账覆盖 {records:,}/{ctx.current.height:,}（{share:.1%}）",
     )
 
 

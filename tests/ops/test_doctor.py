@@ -20,6 +20,7 @@ from hf_data_crawl.ops.doctor import (
     LOCK_STATE,
     Finding,
     RunContext,
+    _raw_volume,
     _snapshot_dependent,
     diagnose,
     sync_alert,
@@ -301,78 +302,90 @@ def test_Raw断日要点名日期(tmp_path: Path) -> None:
     assert any("Raw 断日" in text and missing.isoformat() in text for text in problems(store))
 
 
-def test_Raw分量骤降要点名日期(tmp_path: Path) -> None:
-    """「采了一半」与「整天没采」是两件事：目录在、分块在，断日判据看不见。
+def test_对账会话跨轮续跑后覆盖全库不告警(tmp_path: Path) -> None:
+    """600 页 + 400 页续跑 = 一轮完整对账；不能按单日分块数判成两次半轮。"""
+    current = pl.DataFrame({"id": [f"acme/ds-{index}" for index in range(1000)]})
+    runs = [
+        {
+            "command": "reconcile",
+            "status": "success",
+            "finished_at": (NOW - timedelta(days=2)).isoformat(),
+            "payload": {
+                "pages": 600,
+                "records": 600,
+                "resumed": False,
+                "stopped_reason": "max_pages",
+            },
+        },
+        {
+            "command": "reconcile",
+            "status": "success",
+            "finished_at": (NOW - timedelta(days=1)).isoformat(),
+            "payload": {"pages": 400, "records": 400, "resumed": True, "stopped_reason": "end"},
+        },
+    ]
 
-    判据用分块数而不是观测行数——后者只追加指标真变过的行，上游平静的日子
-    行数本来就少（11-14 只有 2,188 行而 Raw 完整），拿它判会天天误报。
-    """
-    store = DatasetStore(tmp_path / "data")
-    healthy(store)
-    # healthy 每天只有 1 块；补到 5 块，只留下一天是 1 块。
-    short_day = NOW.date() - timedelta(days=3)
-    for offset in range(1, 7):
-        day = NOW.date() - timedelta(days=offset)
-        if day == short_day:
-            continue
-        directory = store.raw_dir / f"dt={day.isoformat()}"
-        for index in range(2, 6):
-            (directory / f"part-{index}.json.gz").write_bytes(b"x")
+    finding = _raw_volume(ctx_of(runs, tmp_path, current=current))
 
-    found = [text for text in problems(store) if "Raw 分量" in text]
-
-    assert len(found) == 1 and short_day.isoformat() in found[0]
-
-
-def test_Raw分量只数采集不数对账(tmp_path: Path) -> None:
-    """对账那一路的页数由 `--max-pages` 决定，不代表采集停没停。
-
-    2026-11-20 实际误判过一次：11-19 有 641 块被判成「采了一半」，而那天采集类
-    34 块与前一日分毫不差，少的 530 块全是对账从「扫全站」换成了「600 页分批」。
-    """
-    store = DatasetStore(tmp_path / "data")
-    healthy(store)
-    short_day = NOW.date() - timedelta(days=3)
-    for offset in range(1, 7):
-        day = NOW.date() - timedelta(days=offset)
-        directory = store.raw_dir / f"dt={day.isoformat()}"
-        if day == short_day:
-            # 采集类保持 healthy 给的那 1 块，只补 20 块对账分片——总量反而更多。
-            for index in range(20):
-                name = f"part-reconcile_createdAt-{index:06d}-deadbeef.json.gz"
-                (directory / name).write_bytes(b"x")
-            continue
-        for index in range(2, 6):
-            (directory / f"part-{index}.json.gz").write_bytes(b"x")
-
-    found = [text for text in problems(store) if "Raw 分量" in text]
-
-    assert found, "采集类只有 1 块，应当告警"
-    assert short_day.isoformat() in found[0], "对账分片不该把采集缺口填平"
+    assert not finding.problem, finding.text
+    assert "100.0%" in finding.text
 
 
-def test_Raw分量样本不足四天时不判(tmp_path: Path) -> None:
-    """只有一两天分块时，所谓「中位」就是它自己，拿它判会自说自话。
+def test_完整对账只覆盖部分时告警(tmp_path: Path) -> None:
+    current = pl.DataFrame({"id": [f"acme/ds-{index}" for index in range(1000)]})
+    runs = [
+        {
+            "command": "reconcile",
+            "status": "success",
+            "finished_at": (NOW - timedelta(hours=2)).isoformat(),
+            "payload": {"pages": 600, "records": 600, "resumed": False, "stopped_reason": "end"},
+        }
+    ]
 
-    留下的三天刻意做成 1 / 5 / 5 块：若去掉「样本不足四天」这道闸，第一天会被
-    判成「明显少于中位」，本用例才会红。
-    """
-    store = DatasetStore(tmp_path / "data")
-    healthy(store)
-    days = sorted(path for path in store.raw_dir.glob("dt=*") if any(path.glob("*.json.gz")))
-    for index, path in enumerate(days[:3]):
-        files = sorted(path.glob("*.json.gz"))
-        target = 1 if index == 0 else 5
-        for extra in files[target:]:
-            extra.unlink()
-        for number in range(len(files), target):
-            (path / f"part-x{number}.json.gz").write_bytes(b"x")
-    for path in days[3:]:
-        for item in path.glob("*.json.gz"):
-            item.unlink()
-        path.rmdir()
+    finding = _raw_volume(ctx_of(runs, tmp_path, current=current))
 
-    assert not any("明显少于" in text for text in problems(store))
+    assert finding.problem
+    assert "600" in finding.text and "60.0%" in finding.text
+
+
+def test_只看最近一次完整对账会话(tmp_path: Path) -> None:
+    """旧会话只覆盖 60%，但最近一轮已经扫全——不能拿旧账判现在的覆盖。"""
+    current = pl.DataFrame({"id": [f"acme/ds-{index}" for index in range(1000)]})
+    runs = [
+        {
+            "command": "reconcile",
+            "status": "success",
+            "finished_at": "2026-11-01T10:00:00",
+            "payload": {"pages": 600, "records": 600, "resumed": False, "stopped_reason": "end"},
+        },
+        {
+            "command": "reconcile",
+            "status": "success",
+            "finished_at": "2026-11-09T10:00:00",
+            "payload": {"pages": 1000, "records": 1000, "resumed": False, "stopped_reason": "end"},
+        },
+    ]
+
+    finding = _raw_volume(ctx_of(runs, tmp_path, current=current))
+
+    assert not finding.problem, finding.text
+    assert "2026-11-09" in finding.text
+
+
+def test_没有可判定的对账会话时不判(tmp_path: Path) -> None:
+    """旧台账没有 pages/records；不能把「读不出」当成「没扫完」。"""
+    runs = [
+        {
+            "command": "reconcile",
+            "status": "success",
+            "payload": {"stopped_reason": "end"},
+        }
+    ]
+
+    finding = _raw_volume(ctx_of(runs, tmp_path, current=pl.DataFrame({"id": ["a"]})))
+
+    assert not finding.problem
+    assert "不判" in finding.text
 
 
 def test_残留临时文件超过一小时才算(tmp_path: Path) -> None:
@@ -1276,18 +1289,25 @@ def test_全站扫描没扫完时字段新鲜度判红(tmp_path: Path) -> None:
 # ---------------------------------------------------------------- 失败覆盖的时间口径
 
 
-def ctx_of(runs: list[dict], root: Path, now: datetime = NOW) -> RunContext:
+def ctx_of(
+    runs: list[dict],
+    root: Path,
+    now: datetime = NOW,
+    current: pl.DataFrame | None = None,
+) -> RunContext:
     """只造检查函数真正用到的那部分上下文，不落盘。
 
     直接调单项检查的测试用它，比 `diagnose` 快也更好定位：一条判据坏掉时，
     不必先被另外二十条搅一遍。
     """
+    frame = pl.DataFrame() if current is None else current
+    ids = frozenset(frame["id"].to_list()) if "id" in frame.columns else frozenset()
     return RunContext(
         store=DatasetStore(root / "data"),
         now=now,
         runs=runs,
-        current=pl.DataFrame(),
-        current_ids=frozenset(),
+        current=frame,
+        current_ids=ids,
     )
 
 
