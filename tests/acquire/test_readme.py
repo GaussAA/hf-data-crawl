@@ -25,12 +25,13 @@ import pytest
 from hf_data_crawl.acquire.batch import staged_shards
 from hf_data_crawl.acquire.commands import run_parse_readme
 from hf_data_crawl.acquire.hf.api import HfResponse, TransportError
+from hf_data_crawl.acquire.merge import keep_ok_rows
 from hf_data_crawl.acquire.readme import (
+    README_MERGE,
     README_STAGING_DIR,
     HfReadmeApi,
     RateLimiter,
     ReadmeFetcher,
-    keep_previous_ok,
 )
 from hf_data_crawl.ops.cli import SELF_LOCKED_COMMANDS, WRITE_COMMANDS, main
 from hf_data_crawl.pipeline import raw
@@ -305,7 +306,7 @@ def test_临时失败不覆盖已拿到的全文() -> None:
         {"id": "acme/b", "status": "absent"},
     )
 
-    kept = keep_previous_ok(previous, fresh)
+    kept = keep_ok_rows(previous, fresh, degraded=README_MERGE.degraded)
 
     assert kept["id"].to_list() == ["acme/b"], "error 行被挡下，absent 是明确结论可以覆盖"
 
@@ -313,7 +314,7 @@ def test_临时失败不覆盖已拿到的全文() -> None:
 def test_没有旧行时照常写入() -> None:
     fresh = existing_frame({"id": "acme/a", "status": "error"})
 
-    assert keep_previous_ok(existing_frame(), fresh).height == 1
+    assert keep_ok_rows(existing_frame(), fresh, degraded=README_MERGE.degraded).height == 1
 
 
 def test_流式抓取不把全文留在内存() -> None:

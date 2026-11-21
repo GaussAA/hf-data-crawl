@@ -28,7 +28,6 @@ import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import orjson
@@ -40,17 +39,12 @@ from .batch import (
     StagingWriter as _StagingWriter,
 )
 from .batch import (
-    clear_staged as _clear_staged,
-)
-from .batch import (
     collect_rows,
-)
-from .batch import (
-    read_staged as _read_staged,
 )
 from .enrich import DEFAULT_TOP
 from .hf.api import Transport, TransportError
 from .hf.retry import StatusPolicy, exponential_seconds
+from .merge import MergeSpec
 
 if TYPE_CHECKING:
     from ..platform.store import DatasetStore
@@ -296,33 +290,20 @@ def _resolved_ids(
 STAGING_DIR = ".staging/sizes"
 
 
-def protect_ok_rows(previous: pl.DataFrame, fresh: pl.DataFrame) -> pl.DataFrame:
-    """不让「不可用」覆盖「已拿到」。
-
-    为什么需要：`store.upsert` 的替换键是整行，而 `unavailable` 行除 `status` 与
-    `snapshot_date` 外全是 null。一次瞬时 500（它在 `POLICY.permanent` 里，与
-    404 同等对待）就会把旧行的 `num_rows` / `configs` 一起抹掉；此后
-    `_resolved_ids` 把该 id 长期跳过——它只认「有没有行」，不看状态——只有周任务
-    的 `--retry-unavailable` 可能把它救回来。而那次降级在表里只表现为「值变空」。
-
-    判据只看「旧行是不是 ok」：从未成功抓过的 id 照常写 `unavailable`（那是真实
-    结论，也是永久结论），已经拿到数字的 id 保持原样——`snapshot_date` 因此诚实地
-    表示「这个值是哪天取得的」，而不是「哪天问过」（data/DATA.md 第五节第 14 条）。
-    """
-    if previous.height == 0 or fresh.height == 0:
-        return fresh
-    protected = previous.filter(pl.col("status") == "ok").select("id")
-    if protected.height == 0:
-        return fresh
-    degraded = fresh.filter(pl.col("status") != "ok").join(protected, on="id", how="semi")
-    if degraded.height == 0:
-        return fresh
-    return fresh.join(degraded.select("id"), on="id", how="anti")
-
-
-def read_staged(store: DatasetStore) -> tuple[pl.DataFrame, list[Path]]:
-    """读出上次中断留下的规模分片，返回 (结果表, 分片路径)。"""
-    return _read_staged(store, STAGING_DIR, SIZE_SCHEMA)
+#: 收尾合并的声明：短锁内读残留分片、保护已拿到的数字、并入正式表、清分片。
+#:
+#: `degraded` 显式列出「这次没拿到结论」的状态，而不是写 `status != "ok"`：写反了
+#: 会有同样的效果，写漏了也有——新增状态时没人被提醒去想「它算不算降级」。
+#: 规模表的状态只有三种（`ok` / `unavailable` / `error`），后两种都算降级：
+#: 一次瞬时 500（`/size` 用它表示「不支持」）会把 `num_rows` / `configs` 一起抹掉，
+#: 此后该 id 被长期跳过——只认「有没有行」的那套判据不看状态。
+SIZE_MERGE = MergeSpec(
+    table="size",
+    staging_dir=STAGING_DIR,
+    schema=SIZE_SCHEMA,
+    lock="fetch-sizes:merge",
+    degraded=frozenset({"unavailable", "error"}),
+)
 
 
 class StagingWriter(_StagingWriter):
@@ -330,11 +311,6 @@ class StagingWriter(_StagingWriter):
 
     def __init__(self, store: DatasetStore, snapshot_date: date) -> None:
         super().__init__(store, snapshot_date, STAGING_DIR)
-
-
-def clear_staged(store: DatasetStore, paths: Sequence[Path] | None = None) -> None:
-    """删除已并入正式表的规模分片；不给路径就清空暂存目录。"""
-    _clear_staged(store, paths, STAGING_DIR)
 
 
 def tail(count: int, total: int) -> int:

@@ -53,6 +53,7 @@ from ..platform.tables import FILES_SCHEMA, url_for
 from .batch import collect_rows
 from .hf.api import API_BASE_URL, HfResponse, Transport, TransportError
 from .hf.retry import StatusPolicy, delay_seconds, exponential_seconds, header_value
+from .merge import MergeSpec
 
 #: tree 接口每页硬上限；显式带上 limit，免得哪天上游默认值变了口径跟着漂。
 TREE_LIMIT = 1000
@@ -62,6 +63,19 @@ TREE_LIMIT = 1000
 #: 与 `.staging/sizes`、`.staging/readme` 并列。`fetch-files` 原先整段持锁，
 #: 每日 2 万条约 70 分钟——刷新链要它与 reconcile 并行，落盘只能走分片 + 短锁。
 FILES_STAGING_DIR = ".staging/files"
+
+#: 收尾合并的声明。
+#:
+#: **不做旧值保护**，这是既定取舍而非遗漏：`files` 的 `unavailable` 是真实结论
+#: （这个库现在读不到树），覆盖旧的 `ok` 只说明事实变了；而「清单没取完」那一类
+#: （`truncated`）由 `--refresh-truncated --max-pages>1` 显式点名，不靠合并阶段
+#: 去猜「哪一份更全」。要改这条，先想清楚「旧清单 vs 新 404」哪个更接近真相。
+FILES_MERGE = MergeSpec(
+    table="files",
+    staging_dir=FILES_STAGING_DIR,
+    schema=FILES_SCHEMA,
+    lock="fetch-files:merge",
+)
 
 #: 一页全是目录时额外允许翻的页数，防止「目录排在文件前」被误报成 0 个文件。
 #: 只在**还没看到任何文件**时生效：一旦见到文件就严格按 `max_pages` 收工。

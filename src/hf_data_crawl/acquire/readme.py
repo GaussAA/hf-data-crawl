@@ -47,6 +47,7 @@ from ..platform.tables import README_SCHEMA, url_for
 from .batch import collect_rows
 from .hf.api import HfResponse, Transport, TransportError
 from .hf.retry import StatusPolicy, delay_seconds, exponential_seconds
+from .merge import MergeSpec
 
 #: 站点根（非 API 域）：README 正文在 `huggingface.co/<id>/raw/...` 下。
 SITE_BASE_URL = "https://huggingface.co"
@@ -56,6 +57,24 @@ DEFAULT_RATE = 15.0
 
 #: 暂存目录（相对数据根）。与规模表的 `.staging/sizes` 并列，互不干扰。
 README_STAGING_DIR = ".staging/readme"
+
+#: 收尾合并的声明。
+#:
+#: `degraded` 只有 `error`：`absent` / `denied` 是明确结论，可以覆盖旧值（README
+#: 可能真被删了或转私有），而一次瞬时故障不该抹掉几 KB 正文——抹掉之后该 id 仍
+#: 「有行」，下次照样被跳过，等于永久丢全文。
+#:
+#: `previous_columns` 与 `streaming` 都是为表体积：正文全量 2.8 GB，整表读入会在
+#: 收尾时把峰值推到十几 GB（2026-11-18 实测 16 GB 机器 OOM）。
+README_MERGE = MergeSpec(
+    table="readme",
+    staging_dir=README_STAGING_DIR,
+    schema=README_SCHEMA,
+    lock="fetch-readme:merge",
+    degraded=frozenset({"error"}),
+    previous_columns=("id", "status"),
+    streaming=True,
+)
 
 #: 这张端点的状态分区。三种「空」必须分开记账：`absent` 是作者本来没写，
 #: `denied` 是我们读不到，`error` 是这次没抓到（不落库，下轮重试）。
@@ -343,21 +362,3 @@ def _resolved_ids(
     if not retry_denied:
         keep = pl.concat([keep, existing.filter(pl.col("status") == "denied")])
     return set(keep["id"].to_list()) - set(refresh)
-
-
-def keep_previous_ok(previous: pl.DataFrame, fresh: pl.DataFrame) -> pl.DataFrame:
-    """不让临时失败覆盖已拿到的全文。
-
-    `absent` / `denied` 是明确结论，可以覆盖旧值（README 可能真被删了或转私有）；
-    `error` 不是结论——一次瞬时 500 就把几 KB 的正文抹掉，下次还会因为「有行」
-    被跳过，等于永久丢全文。只挡这一种。
-    """
-    if previous.height == 0 or fresh.height == 0:
-        return fresh
-    protected = previous.filter(pl.col("status") == "ok").select("id")
-    if protected.height == 0:
-        return fresh
-    degraded = fresh.filter(pl.col("status") == "error").join(protected, on="id", how="semi")
-    if degraded.height == 0:
-        return fresh
-    return fresh.join(degraded.select("id"), on="id", how="anti")

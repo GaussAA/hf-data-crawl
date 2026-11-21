@@ -2879,3 +2879,39 @@
      **通则**：写进 docstring 的承诺要能被一个断言验证。验不了就删掉那句话——留着
      它比没有更坏，因为它让人以为已经有人守着了。#158 / #160 与本条同形：声明与实现
      分离之后，声明会先腐坏。
+
+163. **四段收尾合并成同一份形状**（2026-11-21，富化表写入路径）：
+     `fetch-sizes` / `fetch-readme` / `fetch-files` / `fetch-preview` 的收尾（读残留
+     分片 → 保护旧值 → 并入正式表 → 清分片）各写一遍，形状完全相同，差别只有四处：
+     分片目录、保护策略、写入方式、锁名。而「保护旧值」的那两份是**逐字相同的复制品**
+     ——`sizes.protect_ok_rows` 与 `readme.keep_previous_ok`，函数体一字不差，只有
+     那行 `filter` 里的判断不同（前者 `status != "ok"`，后者 `status == "error"`）。
+
+     这不是风格问题：两份复制品的差异是**语义**（哪些状态算「这次没拿到结论」），
+     而它只写在两个相距很远的函数的注释里。改一份不会让另一份报错。
+
+     收成 `acquire/merge.py`：
+
+     - `MergeSpec(table, staging_dir, schema, lock, degraded, previous_columns,
+       streaming)`：一段收尾的**声明**。四张表各自在自己的模块里声明一份
+       （`SIZE_MERGE` / `README_MERGE` / `FILES_MERGE` / `PREVIEW_MERGE`），
+       因为只有它们知道自己的分片目录与 schema；
+     - `merge_staged(store, spec, lock_wait)`：形状只此一份——短锁内读分片、保护、
+       写入、**并入成功之后**才删分片（先删后并，中途失败等于把这批结果扔了）；
+     - `keep_ok_rows(previous, fresh, *, degraded)`：一份保护函数，`degraded` 由声明给。
+
+     **`degraded` 显式列出状态，不写 `status != "ok"`**。两者当下等价，但新增状态时
+     前者逼人回答「它算不算降级」，后者会默默把它当降级——这条与 #156 的
+     `evidence=NONE` 是同一个理由：把「怎么判」变成必须填的空。
+
+     `files` / `preview` 声明 `degraded=frozenset()`（不保护），这是**既定取舍而非
+     遗漏**，已写进各自的注释：`files` 的 `unavailable` 是真实结论（这库现在读不到
+     树），`preview` 的样例是某一刻的切片、没有「谁更全」的次序；而 `size` / `readme`
+     的旧值是**观测结果**（行数、正文），不该被一次失败抹掉。
+
+     行为一分未改：四条命令的 150 项测试原样通过，全量 1,601 通过。历史决策条目里
+     仍写着 `protect_ok_rows` / `keep_previous_ok`——那是当时的名字，不复改；现在
+     都叫 `keep_ok_rows`。
+
+     **通则**：两段代码「形状相同、只有一个表达式不同」时，那个表达式往往就是这段
+     代码的**全部意义**。把它提取成参数（而不是复制整段），是为了让意义显形。

@@ -16,15 +16,12 @@ from ..platform.lock import exclusive
 from ..platform.presets import DEFAULT_PRESET_NAME, get_preset
 from ..platform.runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs
 from ..platform.store import DatasetStore
-from ..platform.tables import FILES_SCHEMA, README_FIELDS_SCHEMA, README_SCHEMA
+from ..platform.tables import README_FIELDS_SCHEMA
 from .batch import (
     STALL_HEARTBEAT_SECONDS,
 )
 from .batch import (
     StagingWriter as StagingDirWriter,
-)
-from .batch import (
-    clear_staged as clear_staged_dir,
 )
 from .batch import (
     read_staged as read_staged_dir,
@@ -39,32 +36,29 @@ from .candidates import (
 )
 from .collect import Collector, CollectSummary
 from .enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
-from .files import FILES_STAGING_DIR, FileFetcher, FileSummary, HfFilesApi
+from .files import FILES_MERGE, FileFetcher, FileSummary, HfFilesApi
 from .hf.api import HfDatasetApi, Transport
 from .hf.transport import HttpxTransport
+from .merge import merge_staged
 from .preview import (
-    PREVIEW_SCHEMA,
-    PREVIEW_STAGING_DIR,
+    PREVIEW_MERGE,
     HfPreviewApi,
     PreviewFetcher,
     PreviewSummary,
 )
 from .readme import (
-    README_STAGING_DIR,
+    README_MERGE,
     HfReadmeApi,
     ReadmeFetcher,
     ReadmeSummary,
-    keep_previous_ok,
 )
 from .reconcile import PROBE_DEGRADE_AFTER, Reconciler, ReconcileSummary
 from .sizes import (
+    SIZE_MERGE,
     HfSizeApi,
     SizeFetcher,
     SizeSummary,
     StagingWriter,
-    clear_staged,
-    protect_ok_rows,
-    read_staged,
     tail,
 )
 
@@ -306,7 +300,7 @@ def run_fetch_sizes(
 
     # 残留分片同样是「已处理」的 id：上一轮中断前抓到的结果不该再请求一遍。
     existing = store.read("size")
-    staged, _ = read_staged(store)
+    staged, _ = read_staged_dir(store, SIZE_MERGE.staging_dir, SIZE_MERGE.schema)
     if staged.height:
         existing = pl.concat([existing, staged], how="vertical_relaxed")
 
@@ -379,14 +373,8 @@ def run_fetch_sizes(
     # 进度条走的是 \r 原地刷新，收尾必须换行，否则摘要会贴在同一行上。
     print()
 
-    # 短锁：只在这段独占数据目录，把本轮结果与残留分片一次并入正式表。
-    # 抓不到锁就失败，分片原样留着，下一轮继续（不丢已抓到的数据）。
-    with exclusive(store.root, "fetch-sizes:merge", lock_wait):
-        merged, paths = read_staged(store)
-        if merged.height:
-            # 整行替换的下手对象是「已经拿到数字」的行：一次瞬时 500 不该把它抹空。
-            store.upsert("size", protect_ok_rows(store.read("size"), merged))
-        clear_staged(store, paths)
+    # 短锁收尾：长耗时抓取全程不持锁，只在这几秒独占数据目录（细节见 `merge_staged`）。
+    merge_staged(store, SIZE_MERGE, lock_wait)
 
     _print_sizes(summary, store.read("size").height)
     return Outcome(summary)
@@ -417,7 +405,7 @@ def run_fetch_preview(
     # 已经定过的库不再问：`ok` 与 `unavailable` 都是终局，`error` 才是可救的。
     # 暂存分片也算「已经定局」——上一轮中断前抓到的结果不该再请求一遍。
     existing = store.read("preview")
-    staged, _ = read_staged_dir(store, PREVIEW_STAGING_DIR, PREVIEW_SCHEMA)
+    staged, _ = read_staged_dir(store, PREVIEW_MERGE.staging_dir, PREVIEW_MERGE.schema)
     if staged.height:
         existing = pl.concat([existing, staged], how="vertical_relaxed")
 
@@ -472,7 +460,7 @@ def run_fetch_preview(
         heartbeat=_stall_line,
     )
     # 锁外抓取、按批落暂存分片；只有收尾合并那一小段独占数据目录。
-    writer = StagingDirWriter(store, snapshot, PREVIEW_STAGING_DIR)
+    writer = StagingDirWriter(store, snapshot, PREVIEW_MERGE.staging_dir)
     summary, frame = fetcher.run(
         snapshot,
         candidates,
@@ -485,13 +473,8 @@ def run_fetch_preview(
     # 进度条是 \r 原地刷新，收尾必须换行。
     print()
 
-    # 短锁：把本轮结果与残留分片一次并入正式表。抓不到锁就失败、分片留着，
-    # 下一轮据此续抓，不会丢已抓到的东西。
-    with exclusive(store.root, "fetch-preview:merge", lock_wait):
-        merged, paths = read_staged_dir(store, PREVIEW_STAGING_DIR, PREVIEW_SCHEMA)
-        if merged.height:
-            store.upsert("preview", merged)
-        clear_staged_dir(store, paths, PREVIEW_STAGING_DIR)
+    # 短锁收尾：抓不到锁就失败、分片留着，下一轮据此续抓（细节见 `merge_staged`）。
+    merge_staged(store, PREVIEW_MERGE, lock_wait)
 
     _print_preview(summary, store.read("preview").height)
     if summary.aborted:
@@ -540,7 +523,7 @@ def run_fetch_files(
 
     # 残留分片同样是「已处理」的 id：上一轮中断前抓到的结果不该再请求一遍。
     existing = store.read("files")
-    staged, _ = read_staged_dir(store, FILES_STAGING_DIR, FILES_SCHEMA)
+    staged, _ = read_staged_dir(store, FILES_MERGE.staging_dir, FILES_MERGE.schema)
     if staged.height:
         existing = pl.concat([existing, staged], how="vertical_relaxed")
 
@@ -594,7 +577,7 @@ def run_fetch_files(
         progress=lambda done, total: _progress_line(done, total, "补齐文件清单"),
         heartbeat=lambda done, total: _stall_line(done, total, "补齐文件清单"),
     )
-    writer = StagingDirWriter(store, snapshot, FILES_STAGING_DIR)
+    writer = StagingDirWriter(store, snapshot, FILES_MERGE.staging_dir)
     summary, frame = fetcher.run(
         snapshot,
         # 名单已按名额截断（点名时名单即范围）；这里不再切第二刀。
@@ -613,13 +596,8 @@ def run_fetch_files(
         writer.write(frame.slice(writer.flushed, frame.height - writer.flushed))
     print()
 
-    # 短锁：只在这段独占数据目录，把本轮结果与残留分片一次并入正式表。
-    # 抓不到锁就失败，分片原样留着，下一轮继续（不丢已抓到的数据）。
-    with exclusive(store.root, "fetch-files:merge", lock_wait):
-        merged, paths = read_staged_dir(store, FILES_STAGING_DIR, FILES_SCHEMA)
-        if merged.height:
-            store.upsert("files", merged)
-        clear_staged_dir(store, paths, FILES_STAGING_DIR)
+    # 短锁收尾：抓不到锁就失败、分片留着，下一轮据此续抓（细节见 `merge_staged`）。
+    merge_staged(store, FILES_MERGE, lock_wait)
     _print_files(summary, store.read("files").height)
     return Outcome(summary)
 
@@ -646,7 +624,7 @@ def run_fetch_readme(
     # 都用不到正文。整表读入是 365 MB 压缩 / 3 GB 解压——2026-11-19 实测收尾时
     # 峰值 3.8 GB，而这一步只是想知道哪些 id 已有结论。
     existing = store.read("readme", columns=["id", "status", "source_sha"])
-    staged, _ = read_staged_dir(store, README_STAGING_DIR, README_SCHEMA)
+    staged, _ = read_staged_dir(store, README_MERGE.staging_dir, README_MERGE.schema)
     if staged.height:
         existing = pl.concat(
             [existing, staged.select("id", "status", "source_sha")], how="vertical_relaxed"
@@ -720,7 +698,7 @@ def run_fetch_readme(
         progress=lambda done, total: _progress_line(done, total, "补 README"),
         heartbeat=lambda done, total: _stall_line(done, total, "补 README"),
     )
-    writer = StagingDirWriter(store, snapshot, README_STAGING_DIR)
+    writer = StagingDirWriter(store, snapshot, README_MERGE.staging_dir)
     summary, frame = fetcher.run(
         snapshot,
         dataset_ids=candidates,
@@ -739,19 +717,8 @@ def run_fetch_readme(
     # 进度条走的是 \r 原地刷新，收尾必须换行，否则摘要会贴在同一行上。
     print()
 
-    # 短锁：只在这段独占数据目录，把本轮结果与残留分片一次并入正式表。
-    # 抓不到锁就失败，分片原样留着，下一轮继续（不丢已抓到的数据）。
-    with exclusive(store.root, "fetch-readme:merge", lock_wait):
-        merged, paths = read_staged_dir(store, README_STAGING_DIR, README_SCHEMA)
-        if merged.height:
-            # 临时失败不许抹掉已拿到的全文；absent / denied 是明确结论，可以覆盖。
-            #
-            # 只读 `id` 与 `status`：`keep_previous_ok` 的判据就这两列。整表读入会
-            # 把正文（全量 2.8 GB）一起搬进内存，收尾峰值十几 GB——2026-11-18 实测
-            # 16 GB 机器直接 OOM，只能靠一次性脚本绕路。合并本身也走流式。
-            previous = store.read("readme", columns=["id", "status"])
-            store.merge_by_id("readme", keep_previous_ok(previous, merged))
-        clear_staged_dir(store, paths, README_STAGING_DIR)
+    # 短锁收尾：正文 2.8 GB 的判定与流式合并都在 `merge_staged` 里（细节见那里）。
+    merge_staged(store, README_MERGE, lock_wait)
 
     _print_readme(summary, store.read("readme").height)
     return Outcome(summary)

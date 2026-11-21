@@ -16,12 +16,13 @@ import polars as pl
 import pytest
 
 from hf_data_crawl.acquire.hf.api import HfResponse, TransportError
+from hf_data_crawl.acquire.merge import keep_ok_rows
 from hf_data_crawl.acquire.sizes import (
+    SIZE_MERGE,
     SIZE_SCHEMA,
     HfSizeApi,
     SizeFetcher,
     SizeSummary,
-    protect_ok_rows,
     tail,
 )
 
@@ -79,7 +80,7 @@ def test_不可用不覆盖已拿到的数字() -> None:
         schema=SIZE_SCHEMA,
     )
 
-    kept = protect_ok_rows(previous, fresh)
+    kept = keep_ok_rows(previous, fresh, degraded=SIZE_MERGE.degraded)
 
     assert kept.filter(pl.col("id") == "a/ok").height == 0, "已拿到数字的 id 不该被降级行覆盖"
     assert kept.filter(pl.col("id") == "b/was-bad")["num_rows"].item() == 200
@@ -91,13 +92,16 @@ def test_重试不可用拿到数据时仍然覆盖() -> None:
     previous = pl.DataFrame([_size_row("a/x", "unavailable", None)], schema=SIZE_SCHEMA)
     fresh = pl.DataFrame([_size_row("a/x", "ok", 7)], schema=SIZE_SCHEMA)
 
-    assert protect_ok_rows(previous, fresh)["num_rows"].item() == 7
+    assert keep_ok_rows(previous, fresh, degraded=SIZE_MERGE.degraded)["num_rows"].item() == 7
 
 
 def test_没有旧表时原样返回() -> None:
     fresh = pl.DataFrame([_size_row("a/x", "unavailable", None)], schema=SIZE_SCHEMA)
 
-    assert protect_ok_rows(pl.DataFrame(schema=SIZE_SCHEMA), fresh).height == 1
+    assert (
+        keep_ok_rows(pl.DataFrame(schema=SIZE_SCHEMA), fresh, degraded=SIZE_MERGE.degraded).height
+        == 1
+    )
 
 
 class FakeSizeTransport:

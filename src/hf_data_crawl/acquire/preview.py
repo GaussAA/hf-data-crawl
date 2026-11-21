@@ -47,6 +47,7 @@ from ..platform.tables import PREVIEW_SCHEMA, url_for
 from .batch import collect_rows
 from .hf.api import Transport, TransportError
 from .hf.retry import StatusPolicy, exponential_seconds
+from .merge import MergeSpec
 from .readme import RateLimiter
 
 #: 默认取几行。样例的用途是「看一眼」，三条足够看出列与值的形状。
@@ -61,6 +62,18 @@ DEFAULT_RATE = 4.0
 #: `store.root / subdir`，传 "preview" 会把分片落到 `data/preview/`，doctor 的
 #: 残留检查与清理都看不见它（2026-11-20 由测试审计发现）。
 PREVIEW_STAGING_DIR = ".staging/preview"
+
+#: 收尾合并的声明。
+#:
+#: **不做旧值保护**：样例是「某一刻的切片」，旧的 `ok` 与新 `unavailable` 之间
+#: 没有「谁更全」的次序——库里换了数据，旧样例就不再代表现在。这与 `size` /
+#: `readme` 不同：那两张表的旧值是**观测结果**（行数、正文），不该被一次失败抹掉。
+PREVIEW_MERGE = MergeSpec(
+    table="preview",
+    staging_dir=PREVIEW_STAGING_DIR,
+    schema=PREVIEW_SCHEMA,
+    lock="fetch-preview:merge",
+)
 
 #: 每攒多少条落一次分片。样例一行只有几 KB，200 条一次足够细。
 PREVIEW_FLUSH_EVERY = 200
