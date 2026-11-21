@@ -410,6 +410,43 @@ def test_命令行changed会带上还没有结论的库(store_with_data: Dataset
     assert store_with_data.read("readme").height == 3
 
 
+def test_命令行重试denied要真的发请求(store_with_data: DatasetStore) -> None:
+    """`denied` 是结论，不算缺口；不显式点进候选，`--retry-denied` 就是空转。"""
+    store_with_data.upsert(
+        "readme",
+        pl.DataFrame(
+            [
+                {
+                    "id": "acme/ds-1",
+                    "url": "https://huggingface.co/datasets/acme/ds-1",
+                    "snapshot_date": DAY,
+                    "source_sha": "sha-1",
+                    "status": "denied",
+                    "bytes": 0,
+                    "text": None,
+                }
+            ],
+            schema=README_SCHEMA,
+        ),
+    )
+    transport = FakeReadmeTransport({"acme/ds-1": BODY})
+
+    code = main(
+        [
+            "--data-dir",
+            str(store_with_data.root),
+            "fetch-readme",
+            "--changed",
+            "5",
+            "--retry-denied",
+        ],
+        transport=transport,
+    )
+
+    assert code == 0
+    assert "acme/ds-1" in transport.calls, "denied 被点名重取，而不是按结论跳过"
+
+
 def test_只剩暂存分片时也要合并(store_with_data: DatasetStore) -> None:
     """上一轮抓完却没合并（撞锁、被杀）：本轮没有候选，但分片必须并进表。
 

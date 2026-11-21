@@ -2640,13 +2640,13 @@
      收进 `acquire/candidates.py`：`EnrichPolicy(table, evidence, fresh_states,
      resolved_states, retry_states)` 只声明「这张表怎么算新鲜」，算法只一份；
      `refresh_candidates(current, existing, policy, budget=, gap_budget=)` 返回
-     `Candidates(picked, stale, gap, truncated, deferred)`。
+     `Candidates(picked, stale, gap, retried, deferred)`。
 
      - **名额是总数**：`budget` 是这一轮最多发多少个请求。陈旧先吃（开关叫 `--changed`，
        它命名的就是陈旧），余额给缺口；`budget=None`（`--changed-all`）表示陈旧全取，
        缺口此时受 `gap_budget` 单独限制。
      - **明细不截断**：`stale` / `gap` 是真实欠账，体检要的是它，不是「今天排了多少」。
-       被挡下的数量走 `truncated` / `deferred` 并打进摘要——排了没排完必须说出来。
+       被挡下的总数走 `deferred` 并打进摘要——排了没排完必须说出来。
      - **检索口径跟着同一函数走**：`_readme_freshness`、`_field_freshness`、`_enrich_lag`
        三处全部改调它，文案统一「陈旧 / 缺口」。
 
@@ -2690,3 +2690,37 @@
 
      **通则**：一个开关的实际效果若取决于数据现状（这里是覆盖率），就不能只写默认值，
      要把「名义值 → 实际值」的换算放进实现，让两者恒等。#149 / #155 与本条同形。
+
+
+157. **「结论不完整」要有名字，点名重试不能靠状态自猜**（2026-11-21，files 的截断状态化）：
+     两件事在候选集化之后才显形。
+
+     一、**`truncated` 此前不是判据能叫出的一类**。`files` 的清单按页取，没取完时四个
+     读数（`file_count` / `total_bytes` / `formats` / `has_readme`）都只是下限；它算结论
+     （一页重抓只是把截断重新确认一遍，不该天天重抓），又不算完整。`EnrichPolicy` 增
+     `partial=Partial(column, state)`：该列为真时状态记作 `ok_partial`。事实仍留在列上、
+     不搬进 `status`——`truncated` 是宽表与交付文档的既定列名，搬过去要改结构与下游，
+     这里要的只是「让判据叫得出这一类」。旧表没有该列时不覆盖，照旧判。
+
+     二、**三个 `--retry-*` 开关在候选集化之后会空转**。#155 把三个命令的候选集换成了
+     「陈旧 ∪ 缺口」，而 `unavailable` / `denied` / `ok_partial` 都是结论，不进缺口；
+     于是 `--retry-unavailable`、`--retry-denied`、`--refresh-truncated` 只影响「跳过谁」，
+     却没有任何目标被选进来——命令成功、请求零个。这正是本条最该记住的形态：**把
+     「选谁」和「跳过谁」拆成两处之后，重试这类「本不该选中、但用户点名要」的行会掉进
+     缝里，而且不报错**。
+
+     修法：`refresh_candidates(..., retry=frozenset())`，命令层把开关翻译成状态集合
+     （`--retry-unavailable` → `{"unavailable"}`、`--refresh-truncated` →
+     `{FILES_POLICY.partial.state}`）。重试行排在陈旧之前、同样吃名额；传进来的状态先与
+     `resolved_states` 求交——缺口状态走这条路会既算重试又算缺口，重复请求、`deferred`
+     也对不上。`FileFetcher` 的 `refresh_truncated` / `retry_unavailable` 两个自猜参数随之
+     删除，改为显式的 `refresh` 名单（与 sizes / readme 同形）。
+
+     体检新增 `files_partial`：报「多少个库的清单只是下限」，不判红——`fetch-files` 按需跑、
+     不在链上，判红等于给一个没人天天跑的任务常年挂红点。真机（11-21）：1,145 行里
+     **650 行是截断**（每库默认只取一页），也就是 57% 的文件读数只是下限；缺口
+     1,151,605 个（#156）。这个比例正是「不判红、但必须报」的理由——判红它永远红，
+     不报它，`total_bytes` 会被当成真值去用。
+
+     **通则**：「跳过谁」的判断若与「选谁」分居两处，先问一句——有没有哪一类行，
+     本该由用户点名才重取？那种行一定会在缝里。

@@ -316,15 +316,16 @@ def _failure(
     return FileResult(dataset_id=dataset_id, status=status, row=row, payload_bytes=payload_bytes)
 
 
-def truncated_ids(existing: pl.DataFrame | None) -> set[str]:
-    """上次标了截断的 id。升级前的旧表没有该列，一律当作未截断，不擅自重抓。
+def partial_count(frame: pl.DataFrame | None) -> int:
+    """清单只是下限的行数（`truncated=true`）。
 
-    公开给命令层：候选集按状态判（`candidates.FILES_POLICY`），看不见「清单没取完」
-    这一类，`--refresh-truncated` 要把它们显式并进名单。
+    它不影响抓取（一页重抓只是重新确认截断），但影响读数：这些行的
+    `file_count` / `total_bytes` / `formats` / `has_readme` 都只是下限，
+    体检要能报出「多少个库的清单不完整」，否则这类读数会被当成真值。
     """
-    if existing is None or not existing.height or "truncated" not in existing.columns:
-        return set()
-    return set(existing.filter(pl.col("truncated").fill_null(False))["id"].to_list())
+    if frame is None or frame.height == 0 or "truncated" not in frame.columns:
+        return 0
+    return frame.filter(pl.col("truncated").fill_null(False)).height
 
 
 class FileFetcher:
@@ -349,34 +350,29 @@ class FileFetcher:
         *,
         dataset_ids: Iterable[str] | None = None,
         top: int = 1_000,
-        retry_unavailable: bool = False,
-        refresh_truncated: bool = False,
+        refresh: Iterable[str] = (),
         existing: pl.DataFrame | None = None,
         flush: Callable[[pl.DataFrame], object] | None = None,
         flush_every: int = 100,
     ) -> tuple[FileSummary, pl.DataFrame]:
         """返回 (摘要, 结果表)。已处理的 id 默认跳过，实现断点续跑。
 
-        `refresh_truncated` 把上次标了截断的 id 从跳过集合里摘出来重抓：截断
-        等于「清单没取完」，若也按已处理跳过，它们就永远是下限、永远补不成
-        完整清单。故刷新须配合更大的 `max_pages`，否则只是把截断重新确认一遍。
+        `refresh` 是这一轮点名重抓的 id（清单没取完的、以及显式 `--retry-unavailable`
+        的）：它们已有结论，按「已处理」跳过就永远是旧结论，故从跳过集合里摘出来。
+        截断的重抓须配合更大的 `max_pages`，否则只是把截断重新确认一遍——那条守卫
+        在命令层（`--refresh-truncated` 与 `--max-pages`）。
         """
         started = time.monotonic()
         candidates = list(dataset_ids or [])[:top]
-        # 截断等于「清单没取完」，不能按「已处理」跳过——否则它们永远是下限。
-        stale = truncated_ids(existing) if refresh_truncated else set()
+        again = set(refresh)
         if existing is not None and existing.height:
-            done = (
-                set(existing.filter(pl.col("status") == "ok")["id"].to_list())
-                if retry_unavailable
-                else set(existing["id"].to_list())
-            )
+            done = set(existing["id"].to_list())
         else:
             done = set()
-        done -= stale
+        done -= again
         pending = [dataset_id for dataset_id in candidates if dataset_id not in done]
         skipped = len(candidates) - len(pending)
-        refreshed = sum(1 for dataset_id in pending if dataset_id in stale)
+        refreshed = sum(1 for dataset_id in pending if dataset_id in again)
 
         traffic: list[int] = []
 

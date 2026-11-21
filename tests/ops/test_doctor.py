@@ -35,6 +35,7 @@ from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.platform.tables import (
     CURRENT_SCHEMA,
     ENRICH_SCHEMA,
+    FILES_SCHEMA,
     README_SCHEMA,
     SIZE_SCHEMA,
 )
@@ -553,6 +554,32 @@ def test_上次临时失败的库也算缺口(tmp_path: Path) -> None:
 
     assert len(found) == 1, found
     assert "缺口 2,100" in found[0]
+
+
+def test_文件清单的截断只报数不判红(tmp_path: Path) -> None:
+    """`truncated` 的行，`file_count` 等四项只是下限，不该被当成真值。
+
+    不判红：补全要逐库翻完 tree，而 `fetch-files` 按需跑、不在链上——判红等于给
+    一个没人天天跑的任务常年挂红点。它要回答的是「多少条读数只是下限」。
+    """
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    store.upsert(
+        "files",
+        pl.DataFrame(
+            [
+                {"id": "acme/a", "status": "ok", "truncated": True},
+                {"id": "acme/b", "status": "ok", "truncated": False},
+                {"id": "acme/c", "status": "unavailable", "truncated": None},
+            ],
+            schema=FILES_SCHEMA,
+        ),
+    )
+
+    finding = next(item for item in diagnose(store, NOW) if item.code == "files_partial")
+
+    assert not finding.problem
+    assert "其中 1 个的清单只是下限" in finding.text
 
 
 def test_预览被限流停车不算故障但真崩了要报(tmp_path: Path) -> None:

@@ -23,6 +23,7 @@ from typing import Any
 import polars as pl
 
 from ..acquire.candidates import README_POLICY, SIZE_POLICY, refresh_candidates
+from ..acquire.files import partial_count
 from ..acquire.reconcile import PROBE_DEGRADE_AFTER
 from ..delivery.delivery import (
     deliveries_of,
@@ -1004,6 +1005,27 @@ def _readme_freshness(ctx: RunContext) -> Finding:
     return Finding(False, f"README 全文：正常（{age_days} 天前刷新，{counts}）")
 
 
+def _files_partial(ctx: RunContext) -> Finding:
+    """文件清单有多少只是下限：`truncated` 的行，四个读数字段都不是真值。
+
+    只报数、不判红。补全要逐库翻完 tree（`--refresh-truncated --max-pages>1`），
+    而 `fetch-files` 按需跑、不在链上——判红等于给一个没人天天跑的任务常年挂红点。
+    这一项的价值是「别把下限当真相」：`file_count` / `total_bytes` / `formats` /
+    `has_readme` 在截断行上只是这一页的统计。
+    """
+    frame = ctx.store.read("files")
+    if frame.height == 0:
+        return Finding(False, "文件清单：未抓过（按需命令，不判红）")
+    partial = partial_count(frame)
+    text = (
+        f"文件清单：{frame.height:,} 个库，其中 {partial:,} 个的清单只是下限"
+        "（`truncated`，四个读数都是下限）"
+    )
+    if partial:
+        text += "；补全用 fetch-files --refresh-truncated --max-pages>1"
+    return Finding(False, text)
+
+
 def _enrich_lag(ctx: RunContext) -> Finding:
     """富化资产跟上了没有：看「该刷的刷了没」，不看「最近抓过没」。
 
@@ -1864,6 +1886,7 @@ CHECKS: tuple[Check, ...] = (
     Check("card_provenance", _card_provenance, snapshot_dependent=True),
     Check("readme_freshness", _readme_freshness, snapshot_dependent=True),
     Check("enrich_lag", _enrich_lag, snapshot_dependent=True),
+    Check("files_partial", _files_partial),
     Check("raw_growth", _raw_growth),
     Check("cold_backlog", _cold_backlog),
     Check("archive_backlog", _archive_backlog),

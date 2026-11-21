@@ -210,6 +210,99 @@ def test_无凭据的策略不许声明新鲜状态() -> None:
         )
 
 
+def test_截断的库是结论而不是缺口() -> None:
+    """`truncated=true` 的清单只是下限，但它已是结论：默认不该天天重抓。
+
+    一页重抓只会把截断重新确认一遍，白烧请求与配额；补全须显式
+    `--refresh-truncated --max-pages>1`。
+    """
+    current = pl.DataFrame({"id": ["a/full", "a/partial"], "downloads": [2, 1]})
+    existing = pl.DataFrame(
+        {
+            "id": ["a/full", "a/partial"],
+            "status": ["ok", "ok"],
+            "truncated": [False, True],
+        }
+    )
+
+    found = refresh_candidates(current, existing, FILES_POLICY)
+
+    assert found.gap.height == 0, "截断不是缺口"
+    assert found.picked.height == 0, "默认不重抓截断"
+
+
+def test_点名重试把结论行拉回候选并排在缺口之前() -> None:
+    """`--retry-unavailable` / `--refresh-truncated` 若不进候选，开关就是空转。
+
+    命令照常成功、请求一个没发——候选集化之后最容易漏的一类静默回归。
+    """
+    current = pl.DataFrame(
+        {
+            "id": ["a/partial", "a/unavailable", "a/new"],
+            "downloads": [30, 20, 10],
+        }
+    )
+    existing = pl.DataFrame(
+        {
+            "id": ["a/partial", "a/unavailable"],
+            "status": ["ok", "unavailable"],
+            "truncated": [True, False],
+        }
+    )
+
+    found = refresh_candidates(
+        current, existing, FILES_POLICY, retry=frozenset({"unavailable", "ok_partial"})
+    )
+
+    assert sorted(found.retried["id"].to_list()) == ["a/partial", "a/unavailable"]
+    assert set(found.picked["id"].to_list()) == {"a/partial", "a/unavailable", "a/new"}
+    assert found.gap["id"].to_list() == ["a/new"]
+
+
+def test_重试先吃名额() -> None:
+    """点名的重试是这一轮的目的，名额先给它；缺口排后面。"""
+    current = pl.DataFrame(
+        {
+            "id": ["a/partial", "a/new-high", "a/new-low"],
+            "downloads": [10, 100, 5],
+        }
+    )
+    existing = pl.DataFrame({"id": ["a/partial"], "status": ["ok"], "truncated": [True]})
+
+    found = refresh_candidates(
+        current, existing, FILES_POLICY, budget=1, retry=frozenset({"ok_partial"})
+    )
+
+    assert found.picked["id"].to_list() == ["a/partial"]
+    assert found.deferred == 2
+
+
+def test_缺口状态不能借重试通道绕过判据() -> None:
+    """把 `error` 传进 `retry` 只会被 `resolved_states` 收窄：它本来就是缺口。
+
+    不收窄就会既算重试又算缺口，同一行重复请求、`deferred` 也对不上。
+    """
+    current = pl.DataFrame({"id": ["a/err"], "downloads": [1]})
+    existing = pl.DataFrame({"id": ["a/err"], "status": ["error"]})
+
+    found = refresh_candidates(current, existing, FILES_POLICY, retry=frozenset({"error"}))
+
+    assert found.retried.height == 0
+    assert found.gap["id"].to_list() == ["a/err"]
+    assert found.deferred == 0
+
+
+def test_旧表没有截断列时不影响判定() -> None:
+    """加列之前写入的行没有 `truncated`：不能因此整表算缺口，也不能算不完整。"""
+    current = pl.DataFrame({"id": ["a/x"], "downloads": [1]})
+    existing = pl.DataFrame({"id": ["a/x"], "status": ["ok"]})
+
+    found = refresh_candidates(current, existing, FILES_POLICY)
+
+    assert found.gap.height == 0
+    assert found.retried.height == 0
+
+
 # ---------------------------------------------------------------- 名额
 
 
@@ -249,8 +342,7 @@ def test_名额是总数而不是陈旧的名额() -> None:
 
     assert found.picked.height == 3
     assert set(found.picked["id"].to_list()) == {"acme/s0", "acme/s1", "acme/s2"}
-    assert found.truncated == 2, "还有 2 个陈旧没排进来"
-    assert found.deferred == 5, "缺口一个没排进来，要如实报"
+    assert found.deferred == 7, "2 个陈旧 + 5 个缺口没排进来，要如实报"
     assert found.stale.height == 5 and found.gap.height == 5, "明细不受名额影响"
 
 
@@ -270,7 +362,7 @@ def test_陈旧不足时余额给缺口() -> None:
 
     assert found.picked.height == 4
     assert set(found.picked["id"].to_list()) == {"acme/s0", "acme/g0", "acme/g1", "acme/g2"}
-    assert found.truncated == 0
+    assert found.deferred == 2, "缺口还剩 2 个没排进来"
     assert found.deferred == 2
 
 
@@ -281,7 +373,6 @@ def test_缺口另有独立上限() -> None:
     found = refresh_candidates(current, existing, README_POLICY, budget=None, gap_budget=2)
 
     assert found.picked.height == 7
-    assert found.truncated == 0
     assert found.deferred == 3
 
 
@@ -291,7 +382,7 @@ def test_都不设上限时全取() -> None:
     found = refresh_candidates(current, existing, README_POLICY)
 
     assert found.picked.height == 10
-    assert found.truncated == 0 and found.deferred == 0
+    assert found.deferred == 0
 
 
 def test_候选按下载量降序() -> None:
@@ -343,7 +434,7 @@ def test_current为空时返回空候选() -> None:
     found = refresh_candidates(current, existing, README_POLICY, budget=10)
 
     assert found.picked.height == 0 and found.stale.height == 0 and found.gap.height == 0
-    assert found.truncated == 0 and found.deferred == 0
+    assert found.deferred == 0
 
 
 def test_existing为空时全是缺口() -> None:

@@ -297,6 +297,38 @@ def test_changed顺带补上新库的规模缺口(root: Path) -> None:
     assert sorted(transport.calls) == ["acme/ds-1", "acme/ds-3"], "陈旧与新库缺口都该被抓"
 
 
+def test_changed时重试不可用也要真的发请求(root: Path) -> None:
+    """`--retry-unavailable` 的目标已是结论，不进缺口。
+
+    候选集化之后（DECISIONS #156）最容易漏的一类静默回归：命令成功、请求零个。
+    故重试状态必须由调用方显式点进候选，而不是靠「跳过谁」的旧逻辑兜底。
+    """
+    store = DatasetStore(root)
+    raw.write(store, snapshot_date=DAY, page_index=1, records=[record(1), record(2)], meta={})
+    derive_day(store, DAY)
+    _put_sizes(
+        root,
+        [{"id": "acme/ds-1", "snapshot_date": DAY, "status": "unavailable"}],
+    )
+    transport = SizeTransport()
+
+    code = run(
+        root,
+        "fetch-sizes",
+        "--date",
+        DAY_ARG,
+        "--changed",
+        "10",
+        "--retry-unavailable",
+        "--workers",
+        "1",
+        transport=transport,
+    )
+
+    assert code == 0
+    assert "acme/ds-1" in transport.calls, "点了名就该重问，哪怕它上次是 unavailable"
+
+
 def test_changed在没有陈旧时也不跳过缺口(root: Path) -> None:
     """原先 `if not refresh: return` 会把缺口一并跳过——没有陈旧≠没有欠账。"""
     store = DatasetStore(root)

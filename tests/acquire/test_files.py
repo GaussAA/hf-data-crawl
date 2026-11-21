@@ -368,7 +368,8 @@ def test_第二页失败时整库记临时失败() -> None:
 # ---------------------------------------------------------------- 调度与续跑
 
 
-def test_已处理的id默认跳过且可重试不可用() -> None:
+def test_已处理的id默认跳过_点名才重抓() -> None:
+    """断点续跑：跑过的就跳过。要重抓谁，由候选集点名（`refresh`），不靠状态自猜。"""
     transport = FakeFilesTransport({f"acme/ds-{i}": tree() for i in range(1, 4)})
     ids = [f"acme/ds-{i}" for i in range(1, 4)]
     existing = pl.DataFrame(
@@ -386,10 +387,11 @@ def test_已处理的id默认跳过且可重试不可用() -> None:
     assert transport.calls == ["acme/ds-3"]
 
     retry_summary, retry_frame = fetcher(transport).run(
-        DAY, dataset_ids=ids, existing=existing, retry_unavailable=True
+        DAY, dataset_ids=ids, existing=existing, refresh=["acme/ds-2"]
     )
 
     assert retry_summary.skipped == 1
+    assert retry_summary.refreshed == 1
     assert retry_frame.height == 2
 
 
@@ -443,7 +445,7 @@ def test_刷新截断只重抓截断行() -> None:
     )
 
     summary, frame = fetcher(transport).run(
-        DAY, dataset_ids=ids, existing=existing, refresh_truncated=True
+        DAY, dataset_ids=ids, existing=existing, refresh=["acme/ds-1", "acme/ds-3"]
     )
 
     assert sorted(transport.calls) == ["acme/ds-1", "acme/ds-3"]
@@ -464,22 +466,6 @@ def test_默认不重抓截断行() -> None:
 
     assert transport.calls == []
     assert summary.skipped == 1
-    assert summary.refreshed == 0
-    assert frame.height == 0
-
-
-def test_旧表缺truncated列时当作未截断() -> None:
-    """升级前的产物没有该列，不能因此抛错，也不能把全部历史行重抓一遍。"""
-    transport = FakeFilesTransport({"acme/ds-1": tree()})
-    existing = pl.DataFrame(
-        {"id": ["acme/ds-1"], "status": ["ok"]}, schema={"id": pl.Utf8, "status": pl.Utf8}
-    )
-
-    summary, frame = fetcher(transport).run(
-        DAY, dataset_ids=["acme/ds-1"], existing=existing, refresh_truncated=True
-    )
-
-    assert transport.calls == []
     assert summary.refreshed == 0
     assert frame.height == 0
 

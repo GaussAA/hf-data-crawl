@@ -39,7 +39,7 @@ from .candidates import (
 )
 from .collect import Collector, CollectSummary
 from .enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
-from .files import FILES_STAGING_DIR, FileFetcher, FileSummary, HfFilesApi, truncated_ids
+from .files import FILES_STAGING_DIR, FileFetcher, FileSummary, HfFilesApi
 from .hf.api import HfDatasetApi, Transport
 from .hf.transport import HttpxTransport
 from .preview import (
@@ -328,6 +328,9 @@ def run_fetch_sizes(
             SIZE_POLICY,
             budget=None if args.changed_all else args.changed,
             gap_budget=GAP_BUDGET,
+            # `--retry-unavailable` 点名重抓上次判「上游没有」的那批：它们已是结论，
+            # 不算缺口，不在这里显式点名就永远进不了候选——开关会变成空转。
+            retry=frozenset({"unavailable"}) if args.retry_unavailable else frozenset(),
         )
         ordered = found.picked
         refresh = set(ordered["id"].to_list())
@@ -338,11 +341,8 @@ def run_fetch_sizes(
             f"规模随变化刷新：{found.stale.height} 个库内容已变、"
             f"{found.gap.height} 个还没有结论，本轮取 {ordered.height} 个（按下载量）。"
         )
-        if found.truncated or found.deferred:
-            print(
-                f"另有 {found.truncated} 个陈旧、{found.deferred} 个缺口排到下一轮"
-                "（本轮名额已满）。"
-            )
+        if found.deferred:
+            print(f"另有 {found.deferred} 个候选排到下一轮（本轮名额已满）。")
 
     if args.ids:
         # 按需补：只问点名的库。全量一轮三小时，而交付实际命中的常常只有几十条。
@@ -545,6 +545,8 @@ def run_fetch_files(
         existing = pl.concat([existing, staged], how="vertical_relaxed")
 
     ordered = current.sort("downloads", descending=True, nulls_last=True)
+    names: list[str] = []
+    retried: list[str] = []
     if args.ids:
         # 与 fetch-sizes / fetch-readme 同一套按需补：名单即范围，`--top` 不参与。
         ordered, problem = pick_ids(ordered, args.ids)
@@ -553,30 +555,32 @@ def run_fetch_files(
             return Outcome({"error": "ids"}, code=1, reason=problem)
         names = ordered["id"].to_list()
     else:
-        # 候选 = 缺口（没有结论的库），再按名额截断——`--top N` 是这一轮最多发多少
-        # 个请求。此前它截的是底库前 N 名，已经抓过的也占名额：覆盖率过半时，
-        # `--top 1000` 可能只发出几十个请求，而命令看上去「跑完了」。
+        # 候选 = 缺口 ∪（点名重试的结论：清单没取完的、`--retry-unavailable` 的），
+        # 再按名额截断——`--top N` 是这一轮最多发多少个请求。此前它截的是底库前
+        # N 名，已经抓过的也占名额：覆盖率过半时，`--top 1000` 可能只发出几十个
+        # 请求，而命令看上去「跑完了」。
+        retry_states = set()
+        if args.refresh_truncated and FILES_POLICY.partial is not None:
+            # 「清单没取完」已是独立状态（`ok_partial`），由声明驱动，不在这里手拼名单。
+            retry_states.add(FILES_POLICY.partial.state)
+        if args.retry_unavailable:
+            retry_states.add("unavailable")
         found = refresh_candidates(
-            current, existing, FILES_POLICY, budget=None if args.top <= 0 else args.top
+            current,
+            existing,
+            FILES_POLICY,
+            budget=None if args.top <= 0 else args.top,
+            retry=frozenset(retry_states),
         )
-        picked = found.picked
-        # 截断是「有结论但清单没取完」（status=ok），判据看不见这一类，故显式并进来，
-        # 且排在缺口之前——它是这一趟唯一的目的，本身已由 `--max-pages>1` 校验过。
-        if args.refresh_truncated:
-            retry = current.join(
-                pl.DataFrame({"id": sorted(truncated_ids(existing))}, schema={"id": pl.Utf8}),
-                on="id",
-                how="semi",
-            ).sort("downloads", descending=True, nulls_last=True)
-            if retry.height:
-                picked = pl.concat([retry, picked]).unique(subset="id", maintain_order=True)
-                if args.top > 0:
-                    picked = picked.head(args.top)
-        names = picked["id"].to_list()
+        names = found.picked["id"].to_list()
+        retried = found.retried["id"].to_list()
         if not names:
             print(f"文件清单无缺口：`files` 表已覆盖全部 {current.height:,} 个库。")
             return Outcome({"fetched": 0})
-        print(f"文件清单：缺口 {found.gap.height:,} 个，本轮取 {len(names):,} 个（按下载量）")
+        print(
+            f"文件清单：缺口 {found.gap.height:,} 个、待重抓 {found.retried.height:,} 个，"
+            f"本轮取 {len(names):,} 个（按下载量）"
+        )
         if found.deferred:
             print(f"另有 {found.deferred:,} 个排到下一轮（--top 名额已满）")
 
@@ -596,8 +600,8 @@ def run_fetch_files(
         # 名单已按名额截断（点名时名单即范围）；这里不再切第二刀。
         dataset_ids=names,
         top=len(names),
-        retry_unavailable=args.retry_unavailable,
-        refresh_truncated=args.refresh_truncated,
+        # 点名重抓的 id 不能按「已处理」跳过，否则永远是旧结论。
+        refresh=retried,
         existing=existing,
         # 边跑边落暂存分片：中断时最多损失一个批次，但写入发生在锁外。
         flush=writer.write,
@@ -665,6 +669,7 @@ def run_fetch_readme(
             README_POLICY,
             budget=None if args.changed_all else args.changed,
             gap_budget=GAP_BUDGET,
+            retry=frozenset({"denied"}) if args.retry_denied else frozenset(),
         )
         ordered = found.picked
         refresh = set(ordered["id"].to_list())
@@ -673,11 +678,8 @@ def run_fetch_readme(
                 f"README 随内容刷新：{found.stale.height} 个库 commit 已变、"
                 f"{found.gap.height} 个还没有结论，本轮取 {len(refresh)} 个（按下载量）。"
             )
-            if found.truncated or found.deferred:
-                print(
-                    f"另有 {found.truncated} 个陈旧、{found.deferred} 个缺口排到下一轮"
-                    "（本轮名额已满）。"
-                )
+            if found.deferred:
+                print(f"另有 {found.deferred} 个候选排到下一轮（本轮名额已满）。")
         elif staged.height:
             # 上一轮抓完却没来得及合并（撞锁、被杀）：分片在盘上，本轮没有新候选
             # ——分片里的行已算「有结论」，缺口也是 0。但收尾必须走到，否则分片

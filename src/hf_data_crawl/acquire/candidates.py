@@ -59,6 +59,20 @@ GAP_BUDGET: Final = 20_000
 
 
 @dataclass(frozen=True)
+class Partial:
+    """「结论不完整」的标记列：该列为真的行，状态记作 `state`。
+
+    为什么不把事实搬进 `status`：落盘的 `truncated` 列已是既定契约（宽表里也有同一
+    列，交付与文档都按它说话），搬过去要改表结构与下游。这里要的只是「让判据叫得
+    出这一类」——事实留在列上，状态是它在候选语言里的名字。列在旧表里可能不存在，
+    那时不覆盖，照旧判。
+    """
+
+    column: str
+    state: str
+
+
+@dataclass(frozen=True)
 class EnrichPolicy:
     """一张富化表「怎么算新鲜」的静态声明。算法在 `refresh_candidates`，不在这里。
 
@@ -66,7 +80,8 @@ class EnrichPolicy:
     `last_modified` 与抓取时刻比大小——比较方式属于算法，跟着算法走。
 
     `fresh_states` 是「内容对得上当前版本」的状态，`resolved_states` 是「已有结论」
-    的状态（缺口看它），`retry_states` 是「明确结论但允许显式重试」的那些。
+    的状态（缺口看它），`retry_states` 是「明确结论但允许显式重试」的那些，
+    `partial` 声明「哪一列为真时结论不完整」。
     """
 
     table: str
@@ -74,6 +89,7 @@ class EnrichPolicy:
     fresh_states: frozenset[str]
     resolved_states: frozenset[str]
     retry_states: frozenset[str] = frozenset()
+    partial: Partial | None = None
 
     def __post_init__(self) -> None:
         if self.evidence not in (SHA, MODIFIED, NONE):
@@ -86,6 +102,11 @@ class EnrichPolicy:
             # 两头不落地的状态最坏：既不算缺口（被 resolved 挡住），又不在重试范围，
             # 于是永远没人管——静默漏抓。
             raise ValueError(f"{self.table}：可重试状态必须算作已有结论")
+        if self.partial is not None:
+            if self.partial.state not in self.resolved_states:
+                raise ValueError(f"{self.table}：不完整结论也是结论，必须在 resolved 里")
+            if self.partial.state in self.fresh_states:
+                raise ValueError(f"{self.table}：不完整的结论不可能算新鲜")
 
 
 #: README：仓库里的一个文件，属于哪个版本由 commit 决定。`absent`（作者没写）
@@ -108,14 +129,17 @@ SIZE_POLICY = EnrichPolicy(
     retry_states=frozenset({"unavailable"}),
 )
 
-#: 文件清单：只判缺口。`truncated`（清单没取完）不是状态而是「结论不完整」，
-#: 由 `fetch-files --refresh-truncated` 单独点名，不进这里的判据——那是另一根轴。
+#: 文件清单：只判缺口，但「清单没取完」（`truncated`）是一类独立的结论。
+#:
+#: 它算结论（不该每次都重抓：一页重抓只是把截断重新确认一遍），又不算完整，
+#: 故单列 `ok_partial`，由 `--refresh-truncated --max-pages>1` 显式点名重取。
 FILES_POLICY = EnrichPolicy(
     table="files",
     evidence=NONE,
     fresh_states=frozenset(),
-    resolved_states=frozenset({"ok", "unavailable"}),
-    retry_states=frozenset({"unavailable"}),
+    resolved_states=frozenset({"ok", "ok_partial", "unavailable"}),
+    retry_states=frozenset({"ok_partial", "unavailable"}),
+    partial=Partial(column="truncated", state="ok_partial"),
 )
 
 #: 预览样例：只判缺口。`ok` 与 `unavailable`（没有 viewer / 受限）都是终局。
@@ -130,17 +154,17 @@ PREVIEW_POLICY = EnrichPolicy(
 
 @dataclass(frozen=True)
 class Candidates:
-    """一轮的候选集。三个表都是 `current` 的列，便于调用方直接取 `sha` / `downloads`。
+    """一轮的候选集。四张表都是 `current` 的列，便于调用方直接取 `sha` / `downloads`。
 
-    `picked` 已按下载量降序、已截断；`stale` / `gap` 是未截断的明细，供体检与
-    摘要报数。`truncated` 是本该重取却被名额挡下的陈旧数，`deferred` 是被挡下的
-    缺口数——「排了但没排完」必须说出来，否则下一轮看着一切正常。
+    `picked` 已按下载量降序、已截断；`retried` / `stale` / `gap` 是未截断的明细，
+    供体检与摘要报数。`deferred` 是被名额挡下的总数（三类合计）——「排了但没排完」
+    必须说出来，否则下一轮看着一切正常。
     """
 
     picked: pl.DataFrame
     stale: pl.DataFrame
     gap: pl.DataFrame
-    truncated: int = 0
+    retried: pl.DataFrame
     deferred: int = 0
 
 
@@ -151,23 +175,33 @@ def refresh_candidates(
     *,
     budget: int | None = None,
     gap_budget: int | None = None,
+    retry: frozenset[str] = frozenset(),
 ) -> Candidates:
     """算出这一轮该抓谁。
 
     `budget` 为 None 表示陈旧全取（链上的 `--changed-all`），否则是**总数**上限；
     `gap_budget` 为 None 表示缺口不设上限（体检要真实欠账，不要排期后的数）。
+
+    `retry` 是「这一轮显式要求重试的结论状态」——`--retry-unavailable` 传
+    `{"unavailable"}`，`--refresh-truncated` 传 `{"ok_partial"}`。它们不是缺口
+    （本来不会被选中），故单列一档、排在陈旧之前：用户点名的先办。
+    传进来的状态会被 `resolved_states` 收窄——缺口状态不该走这条路，否则同一行
+    会既算重试又算缺口，重复请求、口径也对不上。
     """
     empty = current.head(0)
     if current.height == 0:
-        return Candidates(picked=empty, stale=empty, gap=empty)
+        return Candidates(picked=empty, stale=empty, gap=empty, retried=empty)
 
     observed = _observations(existing, policy)
+    retried = _ranked(_retried(current, observed, retry & policy.resolved_states))
     stale = _ranked(_stale(current, observed, policy))
     gap = _ranked(_gap(current, observed, policy))
 
-    picked_stale = stale if budget is None else stale.head(budget)
-    # 「名额」是总请求数：陈旧先吃，剩下的才轮到缺口。
-    room = None if budget is None else max(0, budget - picked_stale.height)
+    # 「名额」是总请求数：点名的重试先吃，其次陈旧，最后才是缺口。
+    picked_retried = retried if budget is None else retried.head(budget)
+    room = None if budget is None else max(0, budget - picked_retried.height)
+    picked_stale = stale if room is None else stale.head(room)
+    room = None if room is None else max(0, room - picked_stale.height)
     if gap_budget is None:
         limit = room
     elif room is None:
@@ -176,16 +210,16 @@ def refresh_candidates(
         limit = min(gap_budget, room)
     picked_gap = gap if limit is None else gap.head(limit)
 
-    picked = picked_stale
-    if picked_gap.height:
-        picked = _ranked(pl.concat([picked_stale, picked_gap]))
+    parts = [frame for frame in (picked_retried, picked_stale, picked_gap) if frame.height]
+    picked = _ranked(pl.concat(parts)) if parts else empty
+    total = retried.height + stale.height + gap.height
 
     return Candidates(
         picked=picked,
         stale=stale,
         gap=gap,
-        truncated=stale.height - picked_stale.height,
-        deferred=gap.height - picked_gap.height,
+        retried=retried,
+        deferred=total - picked.height,
     )
 
 
@@ -217,7 +251,21 @@ def _observations(existing: pl.DataFrame, policy: EnrichPolicy) -> pl.DataFrame 
         )
         evidence = pl.coalesce([fetched, snapshot])
     columns.append(evidence.alias("_evidence"))
-    return keep.select(columns)
+    # 旧表没有「不完整」那一列时照旧判，不许因此把整表当成不完整。
+    partial = policy.partial
+    mark = partial.column if partial is not None and partial.column in keep.columns else None
+    if mark is not None:
+        columns.append(pl.col(mark))
+    observed = keep.select(columns)
+    if partial is not None and mark is not None:
+        observed = observed.with_columns(
+            pl.when(pl.col(mark).fill_null(False))
+            .then(pl.lit(partial.state))
+            .otherwise(pl.col("_status"))
+            .alias("_status")
+        )
+    # 收窄成「id → 状态 + 证据」三列：标记列用完即弃，别让它漏进下游的 join。
+    return observed.select("id", "_status", "_evidence")
 
 
 def _stale(
@@ -241,6 +289,22 @@ def _stale(
     fresh = pl.col("_status").is_in(sorted(policy.fresh_states))
     joined = current.join(observed, on="id", how="left")
     return joined.filter(fresh & changed).select(current.columns)
+
+
+def _retried(
+    current: pl.DataFrame, observed: pl.DataFrame | None, states: frozenset[str]
+) -> pl.DataFrame:
+    """显式点名重试的结论行：`--retry-unavailable` / `--refresh-truncated`。
+
+    它们本来已被判成「有结论」，常规候选里不会出现；不单独挑出来，那两个开关在
+    候选集化之后就变成了空转——命令照常成功，请求一个没发。
+    """
+    if not states or observed is None:
+        return current.head(0)
+    wanted = observed.filter(pl.col("_status").is_in(sorted(states))).select("id")
+    if wanted.height == 0:
+        return current.head(0)
+    return current.join(wanted, on="id", how="semi")
 
 
 def _gap(
