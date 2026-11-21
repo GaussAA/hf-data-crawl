@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -158,6 +158,30 @@ class RunContext:
     current_ids: frozenset[str]
     #: 需求目录在数据目录之外，由调用方显式传入；没传就如实说没查。
     requests_root: Path | None = None
+    #: 惰性读到的表：表名 → DataFrame。一次体检里同一张表只读一遍。
+    #: 不参与比较与哈希——它是缓存，不是「这个上下文是什么」的一部分。
+    _frames: dict[str, pl.DataFrame] = field(
+        default_factory=dict, repr=False, compare=False, hash=False
+    )
+
+    def frame(self, table: str) -> pl.DataFrame:
+        """按表名取一份，**一次体检只读一遍**。
+
+        这里的承诺原先只兑现了一半：`_context` 读齐了 current 与 runs，而
+        `readme` / `size` / `carddata` / `files` 仍是各检查自己 `store.read`——
+        docstring 写着「所有读表都在这里发生」，实际有 5 处不在这里。于是
+        「这次体检读了哪些表」还得翻五个函数体才答得上。
+        """
+        cached = self._frames.get(table)
+        if cached is None:
+            cached = self.store.read(table)
+            self._frames[table] = cached
+        return cached
+
+    @property
+    def tables_read(self) -> frozenset[str]:
+        """这次体检到目前为止读过的表。**答案在类型上，不用翻函数体。**"""
+        return frozenset(self._frames)
 
     @property
     def today(self) -> date:
@@ -171,7 +195,13 @@ class RunContext:
 
 
 def _context(store: DatasetStore, now: datetime, requests_root: Path | None) -> RunContext:
-    """把一次体检要用的东西读齐。所有读表都在这里发生，检查函数不再自己读。"""
+    """把**每项检查都要**的东西读齐：`current` 与 `runs`。
+
+    其余的表不必在这里无条件读——`readme` 有全文、`files` 上千行，只有做那几项
+    检查时才需要。它们走 `ctx.frame(table)`，同样一次体检只读一遍。
+    docstring 原先写「所有读表都在这里发生」，实际有 5 处不是；现在改成两段：
+    共用输入在这里，按需输入在 `frame()`。
+    """
     current = state.read_current(store)
     return RunContext(
         store=store,
@@ -678,7 +708,7 @@ def _contract_coverage(ctx: RunContext) -> Finding:
         source = COLUMN_SOURCES.get(column)
         if source is None:
             blocked.append(column)
-        elif store.read(source).height == 0:
+        elif ctx.frame(source).height == 0:
             pending.setdefault(source, []).append(column)
         else:
             blocked.append(f"{column}（{source} 有数据却全空）")
@@ -746,7 +776,7 @@ def _field_freshness(ctx: RunContext) -> Finding:
       字节全是空——2026-11-18 实测两者差 25 个百分点（99.2% vs 73.8%），
       只报前者会让读的人以为行数基本齐全，而实际四分之一是空的。
     """
-    store, runs = ctx.store, ctx.runs
+    runs = ctx.runs
     current = ctx.current
     if current.height == 0:
         return Finding(True, "字段新鲜度：current 为空，无法判定")
@@ -760,9 +790,9 @@ def _field_freshness(ctx: RunContext) -> Finding:
     current_ids = set(ctx.current_ids)
     total = len(current_ids)
 
-    cards = store.read("carddata")
+    cards = ctx.frame("carddata")
     covered = _covered(cards, current_ids)
-    sizes = store.read("size")
+    sizes = ctx.frame("size")
     covered_sizes = _covered(sizes, current_ids)
     # 「有行」≠「有值」：`unavailable` 行也占一行，但 num_rows 与字节全是空。
     # 两者相差 25 个百分点（2026-11-18：99.2% vs 73.8%），只报前者等于虚报。
@@ -967,7 +997,7 @@ def _files_partial(ctx: RunContext) -> Finding:
     这一项的价值是「别把下限当真相」：`file_count` / `total_bytes` / `formats` /
     `has_readme` 在截断行上只是这一页的统计。
     """
-    frame = ctx.store.read("files")
+    frame = ctx.frame("files")
     if frame.height == 0:
         return Finding(False, "文件清单：未抓过（按需命令，不判红）")
     partial = partial_count(frame)
@@ -1010,7 +1040,7 @@ def _enrich_lag(ctx: RunContext) -> Finding:
     over = 0
     notes: list[str] = []
     for label, policy in (("README", README_POLICY), ("规模", SIZE_POLICY)):
-        frame = ctx.store.read(policy.table)
+        frame = ctx.frame(policy.table)
         if frame.height == 0:
             notes.append(f"{label} 未抓过")
             continue

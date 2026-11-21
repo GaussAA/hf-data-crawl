@@ -1937,3 +1937,47 @@ def test_文档口径不扫工作区副本与本机记忆(tmp_path: Path) -> Non
     assert "SKILL.md" in finding.text, "skills 仍要扫，别把整个 .agents 跳过"
     assert "DECISIONS.md" not in finding.text
     assert "2026-11-15.md" not in finding.text
+
+
+# ---------------------------------------------------------------- 上下文与读表
+
+
+def test_体检每张表只读一次(tmp_path: Path, monkeypatch) -> None:
+    """同一张表被多项检查用到时，一次体检只读一遍。
+
+    `RunContext` 的 docstring 承诺「所有读表都在这里发生」，此前只有 current 与
+    runs 做到了；`readme` / `size` / `carddata` / `files` 仍是各检查自己读，
+    有几项就重读几次。这条盯的是「读表次数」这个承诺本身。
+    """
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    calls: list[str] = []
+    original = DatasetStore.read
+
+    def counting(self: DatasetStore, name: str, dt=None, *, columns=None):  # noqa: ANN001
+        calls.append(name)
+        return original(self, name, dt, columns=columns)
+
+    monkeypatch.setattr(DatasetStore, "read", counting)
+
+    diagnose(store, NOW)
+
+    assert calls, "体检至少要读表"
+    assert len(calls) == len(set(calls)), f"有表被重复读：{calls}"
+
+
+def test_读表清单写在上下文上而不是翻函数体(tmp_path: Path) -> None:
+    """「这次体检读了哪些表」应当是一个属性，不是五个函数体的结论。"""
+    from hf_data_crawl.ops.doctor import _context
+
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+
+    ctx = _context(store, NOW, None)
+    assert ctx.tables_read == frozenset(), "构造时不读按需表——它们是惰性的"
+
+    first = ctx.frame("files")
+    second = ctx.frame("files")
+
+    assert ctx.tables_read == frozenset({"files"})
+    assert first is second, "第二次取到的该是同一份，不是重读"
