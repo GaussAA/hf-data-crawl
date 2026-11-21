@@ -268,6 +268,38 @@ def test_全部成功时退出码为零(tmp_path: Path, monkeypatch) -> None:
 
     assert outcome.code == 0
     assert outcome.reason is None
+    assert outcome.payload["blocked"] == [], "没有未完成就别写这一段"
+
+
+def test_超窗口没跑到的步骤以未完成报出(tmp_path: Path, monkeypatch) -> None:
+    """链条没一步失败，但导出没跑——不能以退出码 0 收场。
+
+    这正是「未完成」单列一类的理由：把它们算进 `failed` 会淹没真正的故障，
+    算成「跳过」又会让整条链全绿退出，而当天根本没导出（#149）。
+    """
+    store = DatasetStore(tmp_path / "data")
+    fake_steps(monkeypatch)
+    args = Namespace(budget_hours=0, launch_hours=0)
+
+    outcome = refresh.run(args, store)
+
+    assert outcome.payload["failed"] == [], "没有一步真的跑失败"
+    assert "export" in outcome.payload["blocked"]
+    assert outcome.code == 1
+    assert outcome.reason is not None and "未完成" in outcome.reason
+
+
+def test_失败与未完成在原因里各占一段(tmp_path: Path, monkeypatch) -> None:
+    """两件事要分开说：哪一步退出非零、哪几步压根没跑。"""
+    store = DatasetStore(tmp_path / "data")
+    fake_steps(monkeypatch, {"collect": 1})
+    args = Namespace(budget_hours=8.5, launch_hours=8.0)
+
+    outcome = refresh.run(args, store)
+
+    assert outcome.reason is not None
+    assert "collect(退出 1)" in outcome.reason
+    assert "未完成" in outcome.reason and "build" in outcome.reason
 
 
 def test_doctor非零只算告警不算链条失败(tmp_path: Path, monkeypatch) -> None:
@@ -509,20 +541,75 @@ def test_skip把下游一起跳过() -> None:
     assert "sizes" not in dropped
 
 
-def test_plan里被skip的步骤带原因且不参与依赖判断() -> None:
-    ready, skipped = refresh._plan(
-        refresh.ALL_STEPS, done=set(), failed=set(), skip=frozenset({"readme"})
+def test_决策层里被skip的步骤带原因且不参与依赖判断() -> None:
+    """跳过原因要分清「用户点名」与「被上游带下水」——两种指向不同的下一步动作。"""
+    dropped = refresh._skip_closure(refresh.ALL_STEPS, frozenset({"readme"}))
+    decisions = refresh.decide(
+        refresh.ALL_STEPS,
+        done=set(),
+        failed=set(),
+        dropped=dropped,
+        requested=frozenset({"readme"}),
     )
 
-    names = [step.name for step in ready]
-    notes = {item.name: item.note for item in skipped}
-    assert "readme" not in names
+    running = [item.step.name for item in decisions if item.run]
+    notes = {item.step.name: item.note for item in decisions if not item.run}
+    assert "readme" not in running
     assert notes["readme"] == "被 --skip 跳过"
     # 下游（依赖 readme 的）也一起被跳过，标的是上游原因
     downstream = [step.name for step in refresh.ALL_STEPS if "readme" in step.needs]
     assert downstream, "readme 至少有一个下游（parse）"
     for name in downstream:
         assert notes.get(name) == "上游被 --skip 跳过"
+
+
+def test_依赖未完成不算失败步骤(tmp_path: Path, monkeypatch) -> None:
+    """一次 collect 失败，不该把 build/export/deliver 全算成「失败步骤」。
+
+    下游没动是后果，不是独立故障。此前串行两段把这种情形也塞进 failed，摘要里的
+    失败列表被下游淹没，真正该看的那一条反而要翻（并行段当时就没标，两处已经分叉）。
+    """
+    store = DatasetStore(tmp_path / "data")
+    fake_steps(monkeypatch, {"collect": 1})
+
+    plan = refresh.execute(store, log=lambda _: None)
+
+    assert [item.name for item in plan.failed] == ["collect"]
+    build = _result(plan, "build")
+    assert build is not None and build.code is None and "依赖未完成" in build.note
+
+
+def test_决策是纯函数_不消耗也不改动入参() -> None:
+    """决策不该有副作用：同输入同输出，`done` / `failed` 一个都不许改。
+
+    它们一旦被决策顺带更新，串行段的「逐步决策」就失去意义——剩余步骤会看到
+    还没发生的完成状态。
+    """
+    done = {"collect"}
+    failed = {"sizes"}
+    first = refresh.decide(refresh.ALL_STEPS, done, failed)
+    second = refresh.decide(refresh.ALL_STEPS, done, failed)
+
+    assert [item.note for item in first] == [item.note for item in second]
+    assert done == {"collect"} and failed == {"sizes"}
+
+
+def test_跳过原因按优先级只取第一条() -> None:
+    """`--skip readme` 的 `parse` 会同时满足「被上游带下水」与「依赖未完成」。
+
+    必须报前者：后者看着像故障，而它只是用户自己点的名。
+    """
+    dropped = refresh._skip_closure(refresh.ALL_STEPS, frozenset({"readme"}))
+    decision = refresh.decide_one(
+        refresh.STEP_BY_NAME["parse"],
+        done=set(),
+        failed=set(),
+        dropped=dropped,
+        requested=frozenset({"readme"}),
+    )
+
+    assert not decision.run
+    assert decision.note == "上游被 --skip 跳过"
 
 
 def test_文件清单与样例不在每日链上() -> None:

@@ -46,7 +46,7 @@ import argparse
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -303,45 +303,84 @@ def _skip_closure(steps: tuple[Step, ...], skip: frozenset[str]) -> frozenset[st
     return frozenset(dropped)
 
 
-def _plan(
-    steps: tuple[Step, ...],
+@dataclass(frozen=True)
+class Decision:
+    """一步的去留。`note` 为空表示该跑，否则就是跳过的原因。
+
+    单独成类型而不共用 `StepResult`：决策发生在**执行之前**，此时没有退出码、
+    没有耗时、没有日志——拿 `StepResult` 凑合，`code=None` 就会同时表示
+    「还没跑」与「跳过了」，下游再也没法分辨。
+    """
+
+    step: Step
+    note: str = ""
+    #: 不是用户主动跳过的：被上游挡下、或到点没跑。这一天该做的没做完。
+    #: 它与「今天已完成」「不属于 --only」不同——那两种是设计内的，不必惊动人。
+    blocked: bool = False
+
+    @property
+    def run(self) -> bool:
+        return not self.note
+
+
+def decide_one(
+    step: Step,
     done: set[str],
     failed: set[str],
+    *,
     only: frozenset[str] | None = None,
-    skip: frozenset[str] = frozenset(),
-) -> tuple[list[Step], list[StepResult]]:
-    """把步骤分成「要跑」与「跳过」，跳过的带上原因。
+    dropped: frozenset[str] = frozenset(),
+    requested: frozenset[str] = frozenset(),
+) -> Decision:
+    """这一步跑不跑。判据只此一处：串行头、并行段、串行尾全调它。
 
-    `only` 非空时是**手动补跑**模式：只跑点名的步骤，且**不看依赖**——
-    `--only export` 的人知道自己在干什么，让他先拼一串前置只会把「补一步」
-    变成「补整条」。代价写在 `--only` 的 help 里：导出的口径取决于底层数据
-    今天是否真的更新过。
+    跳过原因有四种，顺序即优先级——用户主动点名跳过的要先说，否则
+    `--skip readme` 的 `parse` 会显示「依赖未完成」，看着像故障。
 
-    `skip` 是「今天别跑这些」，用于让出配额给正在跑的手动长任务：与 `only`
-    相反，它**会**把下游一起跳过（见 `_skip_closure`）。
+    1. `--skip` 点名，或上游被它带下水（`dropped`）；
+    2. 不在 `--only` 里（手动补跑模式）；
+    3. 今天已完成（`done` 已按依赖封闭收窄过）；
+    4. 依赖未完成（上游没进 `done`，或进了 `failed`）。
+
+    **第四种既不算失败、也不算正常跳过**：`blocked=True`。上游没跑成，下游没动是
+    后果，不是独立故障——此前串行两段把它标进 `failed`，于是 `collect` 一失败，
+    `build`/`export`/`deliver` 全成了「失败步骤」，失败列表被下游淹没，真正该看的
+    那一条反而要翻。但反过来当作「无事发生」也不行：超窗口导致导出没跑，链条会
+    全绿退出（#149：排了但没跑完，比不排更坏）。故单列一类：不报失败，但必须报
+    「未完成」。
     """
-    ready: list[Step] = []
-    skipped: list[StepResult] = []
-    dropped = _skip_closure(steps, skip) if skip else frozenset()
-    for step in steps:
-        if step.name in dropped:
-            note = "被 --skip 跳过" if step.name in skip else "上游被 --skip 跳过"
-            skipped.append(StepResult(step.name, note=note))
-            continue
-        if only is not None and step.name not in only:
-            skipped.append(StepResult(step.name, note="不在 --only 里"))
-            continue
-        if step.name in done:
-            skipped.append(StepResult(step.name, note="今天已完成"))
-            continue
-        missing: list[str] = []
-        if only is None:
-            missing = [need for need in step.needs if need not in done or need in failed]
+    if step.name in dropped:
+        return Decision(step, "被 --skip 跳过" if step.name in requested else "上游被 --skip 跳过")
+    if only is not None and step.name not in only:
+        return Decision(step, "不在 --only 里")
+    if step.name in done:
+        return Decision(step, "今天已完成")
+    if only is None:
+        missing = [need for need in step.needs if need not in done or need in failed]
         if missing:
-            skipped.append(StepResult(step.name, note=f"依赖未完成：{','.join(missing)}"))
-            continue
-        ready.append(step)
-    return ready, skipped
+            return Decision(step, f"依赖未完成：{','.join(missing)}", blocked=True)
+    return Decision(step)
+
+
+def decide(
+    steps: Iterable[Step],
+    done: set[str],
+    failed: set[str],
+    *,
+    only: frozenset[str] | None = None,
+    dropped: frozenset[str] = frozenset(),
+    requested: frozenset[str] = frozenset(),
+) -> list[Decision]:
+    """一批步骤的决策。**纯函数**：不读时钟、不碰文件、不跑子进程。
+
+    串行段仍须逐步调用 `decide_one`——`build` 依赖同一批里还没跑的 `collect`，
+    一次性评估会把它判成依赖未完成，导出链整条塌掉（2026-11-19 首测的形状）。
+    并行段没有批内依赖，才用这个批量版。
+    """
+    return [
+        decide_one(step, done, failed, only=only, dropped=dropped, requested=requested)
+        for step in steps
+    ]
 
 
 #: 全部步骤，按链上的出现顺序。`--only` 的合法名与续跑的台账映射都从这一份派生。
@@ -361,18 +400,73 @@ class Plan:
 
     results: list[StepResult] = field(default_factory=list)
     started_at: datetime = field(default_factory=datetime.now)
+    #: 被挡下或到点没跑的步骤名。不是故障，但这一天该做的没做完。
+    #: 与「今天已完成」「不在 --only 里」区分开：那两种是设计内的，不必报。
+    blocked: set[str] = field(default_factory=set)
 
     @property
     def failed(self) -> list[StepResult]:
         return [item for item in self.results if item.code not in (None, 0)]
 
 
-def _collect_failure(plan: Plan, done: set[str], failed: set[str], result: StepResult) -> None:
+def _record(
+    plan: Plan, done: set[str], failed: set[str], result: StepResult, *, blocked: bool = False
+) -> None:
+    """记一步的结果。**只有真跑过且有退出码的**才进 `done` / `failed`。
+
+    「没跑」与「跑失败」是两件事：前者 `code is None`，不计入这两者。此前串行
+    两段把「依赖未完成」也塞进 `failed`，一次 `collect` 失败会连带把 `build` /
+    `export` / `deliver` 全算成失败步骤。
+
+    没跑的原因分两类：设计内的（今天已完成、不在 `--only` 里、用户 `--skip`）
+    不必惊动人；被上游挡下或到点没跑的进 `plan.blocked`——链条会以非零退出，
+    摘要里单列一段。
+    """
     plan.results.append(result)
+    if result.code is None:
+        if blocked:
+            plan.blocked.add(result.name)
+        return
     if result.code == 0:
         done.add(result.name)
     else:
         failed.add(result.name)
+
+
+def _advance(
+    steps: tuple[Step, ...],
+    root: Path,
+    plan: Plan,
+    done: set[str],
+    failed: set[str],
+    decide_step: Callable[[Step], Decision],
+    announce: Callable[[StepResult], None],
+    *,
+    budget: Callable[[Step], bool] | None = None,
+) -> None:
+    """串行推进：一步决策、一步执行、一步记账。
+
+    必须**逐步**决策：`build` 依赖同一批里还没跑的 `collect`，一次性评估会把它判成
+    依赖未完成，导出链整条塌掉（2026-11-19 首测就是这个形状）。
+
+    串行头与串行尾此前的循环逐字相同（连注释都抄了一份），唯一的差别是串行尾多一条
+    「导出 / 交付到点就留给次日」——现在由 `budget` 参数表达。
+    """
+    for step in steps:
+        decision = decide_step(step)
+        if not decision.run:
+            result = StepResult(step.name, note=decision.note)
+            _record(plan, done, failed, result, blocked=decision.blocked)
+            announce(result)
+            continue
+        if budget is not None and budget(step):
+            result = StepResult(step.name, note="超过时间预算，留给次日续跑")
+            _record(plan, done, failed, result, blocked=True)
+            announce(result)
+            continue
+        result = run_step(step, root)
+        _record(plan, done, failed, result)
+        announce(result)
 
 
 def execute(
@@ -397,6 +491,9 @@ def execute(
     plan = Plan()
     done = _dependency_closed(store) if only is None else set()
     failed: set[str] = set()
+    # `--skip` 的下游扩散对整条链算一次：`readme` 在并行段、`parse` 在串行尾，
+    # 只在段内算会漏掉跨段的那条依赖。
+    dropped = _skip_closure(ALL_STEPS, skip) if skip else frozenset()
 
     def over_launch() -> bool:
         return only is None and time.monotonic() - started > launch_hours * 3600
@@ -411,47 +508,28 @@ def execute(
         state = "ok" if result.code == 0 else f"退出 {result.code}"
         emit(f"[{state}] {result.name}（{result.seconds:.0f}s，日志 {result.log}）")
 
-    # ① 串行头：采集定稿。**逐步推进**，不能一次性 `_plan`——build 依赖同批的
-    # collect，一次性评估会把「还没跑的 collect」判成依赖未完成，build 直接被跳过，
-    # 然后导出的依赖链整条塌掉（2026-11-19 首测就是这个形状）。
-    for step in SERIAL_HEAD:
-        if only is not None and step.name not in only:
-            result = StepResult(step.name, note="不在 --only 里")
-            plan.results.append(result)
-            announce(result)
-            continue
-        if step.name in done:
-            result = StepResult(step.name, note="今天已完成")
-            plan.results.append(result)
-            announce(result)
-            continue
-        missing = (
-            []
-            if only is not None
-            else [need for need in step.needs if need not in done or need in failed]
-        )
-        if missing:
-            result = StepResult(step.name, note=f"依赖未完成：{','.join(missing)}")
-            plan.results.append(result)
-            announce(result)
-            failed.add(step.name)
-            continue
-        result = run_step(step, store.root)
-        _collect_failure(plan, done, failed, result)
-        announce(result)
+    def decide_step(step: Step) -> Decision:
+        # 每次现取 `done` / `failed`：上一步刚跑完的结果要立刻影响下一步的判定。
+        return decide_one(step, done, failed, only=only, dropped=dropped, requested=skip)
+
+    # ① 串行头：采集定稿。
+    _advance(SERIAL_HEAD, store.root, plan, done, failed, decide_step, announce)
 
     # ② 并行段：对账与两个锁外抓取同时跑。各走不同端点，互不干扰。
-    ready, skipped = _plan(PARALLEL, done, failed, only)
-    for result in skipped:
-        plan.results.append(result)
+    decisions = decide(PARALLEL, done, failed, only=only, dropped=dropped, requested=skip)
+    for decision in decisions:
+        if decision.run:
+            continue
+        result = StepResult(decision.step.name, note=decision.note)
+        _record(plan, done, failed, result, blocked=decision.blocked)
         announce(result)
 
-    batch = list(ready)
+    batch = [decision.step for decision in decisions if decision.run]
     if batch:
         if over_launch():
             for step in batch:
                 result = StepResult(step.name, note="超过启动窗口，留给次日续跑")
-                plan.results.append(result)
+                _record(plan, done, failed, result, blocked=True)
                 announce(result)
         else:
             with ThreadPoolExecutor(max_workers=len(batch)) as pool:
@@ -461,43 +539,21 @@ def execute(
                 for future, _step in list(futures.items()):
                     wait([future])
                     result = future.result()
-                    _collect_failure(plan, done, failed, result)
+                    _record(plan, done, failed, result)
                     announce(result)
                     del futures[future]
 
-    # ③ 串行尾：导出、交付、清理、体检。
-    # ③ 串行尾：**逐步推进**，理由同串行头——`export` 依赖同批的 `parse`，
-    # 一次性 `_plan` 会把「还没跑的 parse」判成依赖未完成，导出与交付整条塌掉。
-    for step in SERIAL_TAIL:
-        if only is not None and step.name not in only:
-            result = StepResult(step.name, note="不在 --only 里")
-            plan.results.append(result)
-            announce(result)
-            continue
-        if step.name in done:
-            result = StepResult(step.name, note="今天已完成")
-            plan.results.append(result)
-            announce(result)
-            continue
-        missing = (
-            []
-            if only is not None
-            else [need for need in step.needs if need not in done or need in failed]
-        )
-        if missing:
-            result = StepResult(step.name, note=f"依赖未完成：{','.join(missing)}")
-            plan.results.append(result)
-            announce(result)
-            failed.add(step.name)
-            continue
-        if step.name in {"export", "deliver"} and over_budget():
-            result = StepResult(step.name, note="超过时间预算，留给次日续跑")
-            plan.results.append(result)
-            announce(result)
-            continue
-        result = run_step(step, store.root)
-        _collect_failure(plan, done, failed, result)
-        announce(result)
+    # ③ 串行尾：导出、交付、清理、体检。到点的导出与交付留给次日。
+    _advance(
+        SERIAL_TAIL,
+        store.root,
+        plan,
+        done,
+        failed,
+        decide_step,
+        announce,
+        budget=lambda step: step.name in {"export", "deliver"} and over_budget(),
+    )
 
     return plan
 
@@ -517,6 +573,7 @@ def summary_payload(plan: Plan, budget_hours: float) -> dict[str, object]:
             for item in plan.results
         ],
         "failed": [item.name for item in plan.failed],
+        "blocked": sorted(plan.blocked),
     }
 
 
@@ -592,8 +649,17 @@ def run(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     # 拖垮整条链——告警与故障挤进同一个退出码，铃声很快就没人听。详情在
     # `data/ALERT.txt`。这条与旧 daily.ps1 的 `Report = $true` 是同一判断。
     failures = [item for item in plan.failed if item.name != "doctor"]
+    # 被挡下或到点没跑的，单列一段：它们不是故障，但这一天该做的没做完。
+    # 退出码仍非零——「全绿」与「跑完了」必须是两件事（#149）。
+    blocked = sorted(plan.blocked)
     payload = summary_payload(plan, args.budget_hours)
     if failures:
         reason = "、".join(f"{item.name}(退出 {item.code})" for item in failures)
+        if blocked:
+            reason += f"；另有 {len(blocked)} 步未完成：{'、'.join(blocked)}"
         return Outcome(payload, code=1, reason=f"刷新鲜未全部成功：{reason}")
+    if blocked:
+        return Outcome(
+            payload, code=1, reason=f"刷新鲜有 {len(blocked)} 步未完成：{'、'.join(blocked)}"
+        )
     return Outcome(payload)
