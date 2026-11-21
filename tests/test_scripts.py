@@ -137,15 +137,20 @@ def test_链条按序且前置失败会跳过() -> None:
     assert set(export.needs) == {"build", "reconcile", "sizes", "parse"}
 
 
-def test_补跑只留给链条() -> None:
-    """错过时补跑整条链是对的；其余纯周期维护补跑只会跟链抢写锁。
+def test_链条必须补跑其余任务不补() -> None:
+    """错过就补：链不补等于**整天静默断更**（2026-11-21 实测）。
 
-    2026-11-19 起只有一个任务，且它**不补跑**：续跑靠 runs 台账 + staging 分片，
-    比把整条链重放一遍精细（ADR-0008）。
+    当晚机器关着，00:30 那次没跑，开机后也不补，于是一个分片都没采、底库停在
+    昨天，而 `ALERT.txt` 也没生成——唯一会写告警的 `doctor` 自己就在链里。
+    补跑安全的前提是：只有一条链（`IgnoreNew` 不并发）、`refresh` 有台账与锁、
+    `collect --full-scan` 拿的是扫描那一刻的全站快照而非重放昨天。
     """
     source = text(SCRIPTS / "setup-schedule.ps1")
+    assert "CatchUp = $true" in job_block(source, "refresh"), "链条必须补跑"
     for block in source.split('Name = "hf-')[1:]:
         name = block.split('"')[0]
+        if name == "refresh":
+            continue
         assert "CatchUp = $true" not in job_block(source, name), f"hf-{name} 不该补跑"
 
 
