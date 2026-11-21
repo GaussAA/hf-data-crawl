@@ -25,6 +25,13 @@ COLLECT_COMPLETE_REASONS = frozenset(
     {"end", "watermark", "watermark_timestamp", "watermark_no_new"}
 )
 
+#: 「扫到末页」——**全站定稿**的唯一凭据。刷新链的 `collect` 与对账的完整会话都认它。
+#:
+#: 与 `COLLECT_COMPLETE_REASONS` 不是一回事，别合并：那一组回答「今天采过了吗」
+#: （增量模式停在水位线也算），这一组回答「扫完了吗」。2026-11-20 的教训是——
+#: 采集 23:08 才定稿，而白天按水位线停的那次被当成了「已完成」。
+FULL_SCAN = frozenset({"end"})
+
 
 @dataclass(frozen=True)
 class Outcome:
@@ -158,6 +165,72 @@ def _jsonable(value: Any) -> Any:
         # asdict 会递归展开，但 Path/date 仍需兜底转字符串
         return json.loads(json.dumps(dataclasses.asdict(value), default=str))
     return json.loads(json.dumps(value, default=str))
+
+
+def run_time(value: object) -> datetime | None:
+    """runs/ 里的时间戳统一成 naive UTC；坏值、空值返回 None。
+
+    `write_run` 用 `datetime.now()` 写本地无时区时间，而外部注入或旧版本的记录可能
+    带 `Z` / `+00:00`。混用两种形态做减法会抛 TypeError；更隐蔽的是拿 ISO 字符串
+    做字典序比较——精度或时区写法一变，「谁在谁之后」就反了。
+
+    **这是唯一的一处归一**：此前 doctor 有此函数、refresh 直接用
+    `datetime.fromisoformat`，而 `_reconcile_sessions` / `_last_sweep_date` 又各自
+    再写一遍。四份读法里两份不做归一，一旦两边的时刻被放在一起比就崩。
+
+    归一的目标是**本地表示**，不是 UTC：写入端 `datetime.now()` 写的就是本地
+    无时区时间，两边的表示必须对齐。原先这里转 UTC，于是 UTC+8 机器上 `15:08Z`
+    变成 `15:08`，与同一条本地记录（`23:08`）差 8 小时——两个时刻一并排就判反。
+    时区不变的前提下这才成立；哪天记录改带时区写入，这里该跟着改。
+    """
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
+
+
+def last_success(
+    runs: list[dict[str, Any]],
+    command: str,
+    *,
+    done_reasons: frozenset[str] | None = None,
+) -> datetime | None:
+    """某命令最近一次成功完成的**完成时刻**（naive UTC），没有则 None。
+
+    `done_reasons` 是「这次算完整吗」的判据：
+
+    - `None`：不检查 `stopped_reason`，成功即完整（`build` / `export` 这类没有
+      「扫到哪」的概念）；
+    - 集合：要求记录里的 `stopped_reason` 命中它——`collect` 传
+      `COLLECT_COMPLETE_REASONS`（今天采过了）或 `FULL_SCAN`（扫到末页了），
+      `reconcile` 传 `FULL_SCAN`（`--max-pages` 的半轮不算）。
+
+    用**完成时刻**而不是开始时刻：并行段里 `fetch-sizes` 可能比 `collect` 晚开始
+    一点、却早结束，比开始时刻会把「谁用的数据更新」判反。缺 `finished_at` 的旧
+    记录退回 `started_at`。
+    """
+    latest: datetime | None = None
+    for item in runs:
+        if item.get("command") != command or item.get("status") != "success":
+            continue
+        if done_reasons is not None:
+            payload = item.get("payload") or {}
+            if payload.get("stopped_reason") not in done_reasons:
+                continue
+        stamp = run_time(item.get("finished_at")) or run_time(item.get("started_at"))
+        if stamp is None:
+            continue
+        if latest is None or stamp > latest:
+            latest = stamp
+    return latest
 
 
 def read_runs(store: DatasetStore) -> list[dict[str, Any]]:

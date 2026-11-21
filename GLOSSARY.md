@@ -39,6 +39,7 @@
 | **Watermark** | 增量扫描的停止条件，表示「早于此刻的记录本轮不必再看」 | 不是 `max(lastModified)`——实测存在 2028 年的异常值 |
 | **Reconcile** | 全量核对：确认哪些 Dataset 仍在、哪些已下架、哪些字段被外部改动 | 不是重新抓一遍就完事，核心产出是差异 |
 | **Status** | `current.status` 的取值，四值：`active` / `disappeared` / `restricted` / `renamed`，词表即 `platform.vocab.Status`，写入时校验。探测结论到状态的映射在 `acquire.reconcile.STATUS_BY_VERDICT`：`deleted→disappeared`、`restricted→restricted`、`renamed→renamed`、`present→active` | 不是 `Disappeared` 的同义词；「没扫到」不等于 `disappeared` |
+| **扫到末页**（`FULL_SCAN`） | `stopped_reason == "end"`：这一轮确实扫完了。刷新链的 `collect`、对账的完整会话都认它。定义在 `platform.runs`，一处 | 不是「今天采过了」——增量模式停在水位线也算采过（`COLLECT_COMPLETE_REASONS`），但没扫完。两者合并过一次，代价是半轮顶替全量轮 |
 | **Reconcile session** | 一次（可能分段的）全量核对的游标、已见集合与基线，同键、同生命周期，由 `acquire.session.ReconcileSession` 拥有；基线固定在会话开始时，分段跑与单次跑的差异计数必须一致 | 不是 `Checkpoint`——后者只记游标一件事 |
 | **Disappeared** | 全量核对没扫到、且单库探测返回 404 的 Dataset（Status 的一个取值） | 不是删除——本地观测史必须保留；转私有是 `restricted`，改名是 `renamed` |
 | **Observation** | 某一轮对某 Dataset 指标的一次读数，带 `snapshot_date` | 不是当前态；当前态只有一行 |

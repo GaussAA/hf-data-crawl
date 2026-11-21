@@ -184,7 +184,7 @@ def test_only的前置今天都跑过就不提示(tmp_path: Path, capsys) -> Non
     """提示只在真缺前置时出现；天天提示等于没提示。"""
     store = DatasetStore(tmp_path / "data")
     seed_run(store, "build")
-    seed_run(store, "reconcile")
+    seed_run(store, "reconcile", payload={"stopped_reason": "end"})
     seed_run(store, "fetch-sizes")
     seed_run(store, "fetch-readme", payload={"stopped_reason": "end"})
     seed_run(store, "parse-readme")
@@ -396,7 +396,7 @@ def test_收尾段里已完成的那一步不再跑(tmp_path: Path, monkeypatch)
     store = DatasetStore(tmp_path / "data")
     seed_run(store, "collect", payload={"stopped_reason": "end"})
     seed_run(store, "build")
-    seed_run(store, "reconcile")
+    seed_run(store, "reconcile", payload={"stopped_reason": "end"})
     seed_run(store, "fetch-sizes")
     seed_run(store, "fetch-readme")
     seed_run(store, "parse-readme")
@@ -408,6 +408,23 @@ def test_收尾段里已完成的那一步不再跑(tmp_path: Path, monkeypatch)
     assert "export" not in calls
     export = _result(plan, "export")
     assert export is not None and export.note == "今天已完成"
+
+
+def test_半轮对账不算今天已完成(tmp_path: Path, monkeypatch) -> None:
+    """`reconcile --max-pages 100` 是 success、退出码 0，但它只扫了前 100 页。
+
+    只认 `status` 会让半轮顶替真正的全量轮。doctor 的 `_last_sweep_date` 早就按
+    `stopped_reason=end` 判定，编排器此前没有——同一件事两套判据。
+    """
+    store = DatasetStore(tmp_path / "data")
+    seed_run(store, "collect", payload={"stopped_reason": "end"})
+    seed_run(store, "build")
+    seed_run(store, "reconcile", payload={"stopped_reason": "max_pages", "pages": 100})
+
+    calls = fake_steps(monkeypatch)
+    refresh.execute(store, log=lambda _: None)
+
+    assert "reconcile" in calls, "半轮对账要重跑"
 
 
 def test_上游重跑时下游不算已完成(tmp_path: Path, monkeypatch) -> None:

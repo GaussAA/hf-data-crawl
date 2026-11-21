@@ -2815,3 +2815,45 @@
      **通则**：把「判定」与「执行」拆开之后，判据才能脱离进程测试；而一个状态若同时
      被三种消费者解释（进度、告警、退出码），它的类别必须比消费者的需要更细。
      #149 / #155 / #159 与本条同形：不是写法不统一，是**语义没分够**。
+
+161. **台账只有一个读法：时刻归一与「完整」判据都在 `platform/runs`**（2026-11-21）：
+     同一份 `runs/*.json`，四处读法互不相认：
+
+     | 读取方 | 时间 | 完成态 |
+     |---|---|---|
+     | `refresh._finished_at` | 直接 `fromisoformat`，**不归一** | 硬编码 `!= "end"` |
+     | `doctor._run_time` | 归一（但转 **UTC**） | — |
+     | `doctor._last_success` | 用 `_run_time` | 参数 `done_reasons` |
+     | `doctor._reconcile_sessions` | **不归一** | 硬编码 `!= "end"` |
+     | `doctor._last_sweep_date` | **不归一** | `_RECONCILE_DONE` 字面量 |
+
+     时间有两种表示（本地 naive / 带时区 aware），两份读法不做归一——把两边的时刻
+     放在一起比，轻则判反、重则 `TypeError`。完成态有三套判据，其中 `"end"` 这个
+     字面量出现四次。
+
+     收成 `platform/runs` 的查询面：`run_time(value)`（唯一归一）、
+     `last_success(runs, command, *, done_reasons)`（唯一「最近一次成功」）、
+     `FULL_SCAN = frozenset({"end"})`（「扫到末页」的唯一声明）。doctor 删掉自己的
+     `_run_time` / `_last_success` / `_RECONCILE_DONE`，refresh 删掉 `_finished_at`；
+     四个读取点全部改调它们。
+
+     **`COLLECT_COMPLETE_REASONS` 与 `FULL_SCAN` 不是一回事，别合并**：前者回答
+     「今天采过了吗」（增量模式停在水位线也算，`--skip-if-done` 用），后者回答
+     「扫完了吗」（刷新链的 `collect`、对账的完整会话用）。11-20 那次正是把前者当
+     后者：白天按水位线停的一次被当「已完成」，夜里 23:08 才定稿。
+
+     顺带修掉一处真 bug：原 `_run_time` 把带时区的值 `astimezone(UTC)` 再去掉
+     tzinfo，而写入端 `datetime.now()` 写的是**本地**时间。UTC+8 机器上 `15:08Z`
+     被读成 `15:08`，与同一条本地记录（`23:08`）差八小时。改为 `astimezone()`（转
+     本地）。当前没有带时区的写入源，所以这只在「外部注入记录」时才显形——正因为
+     显形晚，才更该一次改对。
+
+     有意带出的行为变化：`reconcile` 现在要 `stopped_reason=end` 才算「今天已完成」。
+     此前只看 `status`，于是手动跑过的 `--max-pages 100`（success、退出码 0、只扫
+     前 100 页）会顶替真正的全量对账——doctor 的 `_last_sweep_date` 早就按 end 判，
+     编排器没有。两条测试的种子数据随之补上 `stopped_reason`（真实台账里对账成功
+     必有它）。
+
+     **通则**：同一份落盘数据有两个以上读者时，「怎么读」必须先成为一个函数。读者
+     各写一份解析，漂移不会报错——它只会在两个读者第一次把结果放在一起比较时暴露。
+     #155 / #160 与本条同形。

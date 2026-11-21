@@ -51,9 +51,8 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
 
-from ..platform.runs import Outcome, read_runs
+from ..platform.runs import FULL_SCAN, Outcome, last_success, read_runs
 from ..platform.store import DatasetStore
 
 #: 整条链的时间预算（小时）。超过它只停止「还没启动」的步骤。
@@ -164,51 +163,38 @@ class StepResult:
     log: Path | None = None
 
 
-def _finished_at(item: dict[str, Any]) -> datetime | None:
-    """一轮运行的完成时刻。缺 `finished_at` 的退回 `started_at`。
-
-    用完成时刻而不是开始时刻：并行段里 `fetch-sizes` 可能比 `collect` 记得晚开始
-    一点、却早结束，比开始时刻会把「谁用的数据更新」判反。
-    """
-    for key in ("finished_at", "started_at"):
-        raw = str(item.get(key) or "")
-        if not raw:
-            continue
-        try:
-            return datetime.fromisoformat(raw)
-        except ValueError:
-            continue
-    return None
+#: 各步骤的完成态判据。没列出的表示「成功即完整」——`build` / `export` 这类没有
+#: 「扫到哪」的概念，退出码 0 就是跑完了。
+#:
+#: `reconcile` 也要 `FULL_SCAN`：手动跑过的 `--max-pages 100` 是 success、却只扫了
+#: 前 100 页。只认 status 会让半轮顶替真正的全量轮（doctor 的 `_last_sweep_date`
+#: 早就按这个判据办，编排器此前没有）。
+STEP_DONE_REASONS: dict[str, frozenset[str]] = {
+    "collect": FULL_SCAN,
+    "reconcile": FULL_SCAN,
+}
 
 
 def _success_times(store: DatasetStore) -> dict[str, datetime]:
-    """今天成功跑过的**步骤名 → 它最后一次成功的完成时刻**。`collect` 只认扫到末页那次。
+    """今天成功跑过的**步骤名 → 它最后一次成功的完成时刻**。
 
     台账记的是子命令名（`fetch-sizes` / `export-wide` / `request-run-due`），步骤名
     是它的短名（`sizes` / `export` / `deliver`）。这一步换算不能省：直接拿短名去
     比对台账，七个步骤永远比不上，续跑每天白跑一遍，而输出里看不出异常。
 
     同一命令今天跑过多轮时取**最晚**完成的那次——最晚那次才是当前数据的来源。
+    时间归一与「最近一次成功」都交给 `platform.runs`（`last_success`）：这两件事
+    doctor 与编排器此前各写一份，且两份的完成态判据不一致。
     """
     today = date.today().isoformat()
+    # 按 `started_at` 归日：跨零点的运行属于它开始的那个班次。
+    runs = [item for item in read_runs(store) if str(item.get("started_at", ""))[:10] == today]
     times: dict[str, datetime] = {}
-    for item in read_runs(store):
-        if item.get("status") != "success":
-            continue
-        if str(item.get("started_at", ""))[:10] != today:
-            continue
-        command = str(item.get("command"))
-        if command == "collect":
-            payload = item.get("payload") or {}
-            if payload.get("stopped_reason") != "end":
-                # 水位线早停那次不是全站扫完，不算采集定稿。
-                continue
-        stamp = _finished_at(item)
-        if stamp is None:
-            continue
-        if command not in times or stamp > times[command]:
-            times[command] = stamp
-    return {step.name: times[step.ledger] for step in ALL_STEPS if step.ledger in times}
+    for step in ALL_STEPS:
+        stamp = last_success(runs, step.ledger, done_reasons=STEP_DONE_REASONS.get(step.name))
+        if stamp is not None:
+            times[step.name] = stamp
+    return times
 
 
 def today_successes(store: DatasetStore) -> set[str]:

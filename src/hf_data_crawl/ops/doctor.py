@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -57,7 +57,7 @@ from ..platform.retention import (
     BACKUP_KEEP_DAYS,
     REPLAY_WINDOW_DAYS,
 )
-from ..platform.runs import COLLECT_COMPLETE_REASONS, read_runs
+from ..platform.runs import COLLECT_COMPLETE_REASONS, FULL_SCAN, last_success, read_runs, run_time
 from ..platform.store import DatasetStore
 from ..platform.tables import table
 from ..query.gold import share_text
@@ -128,8 +128,8 @@ CARD_BEHIND_ALERT_SHARE = 20.0
 #: 周期——连着两周没动才算「没人管」，漏跑一次不至于喊。
 README_MAX_AGE_DAYS = 14
 
-#: 有界试跑（max_pages）与 dry_run 不是完成；collect 的完成态与 cli 共用一份枚举。
-_RECONCILE_DONE = frozenset({"end"})
+#: 有界试跑（max_pages）与 dry_run 不是完成。对账与刷新链的 collect 都认 `FULL_SCAN`
+#: （`platform.runs`）——同一件事不再各写一份字面量。
 
 
 @dataclass(frozen=True)
@@ -183,45 +183,6 @@ def _context(store: DatasetStore, now: datetime, requests_root: Path | None) -> 
     )
 
 
-def _run_time(value: object) -> datetime | None:
-    """把 runs/ 里的时间戳统一成 naive UTC；坏值、空值返回 None。
-
-    `runs.write_run` 用 `datetime.now()` 写本地无时区时间，而外部注入或未来
-    版本可能带 `Z` / `+00:00`。混用两种形态做减法会抛 TypeError；更隐蔽的是
-    拿 ISO 字符串做字典序比较——精度或时区写法一变，「谁在谁之后」就反了。
-    """
-    if isinstance(value, datetime):
-        parsed = value
-    elif isinstance(value, str) and value:
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    else:
-        return None
-    if parsed.tzinfo is not None:
-        parsed = parsed.astimezone(UTC).replace(tzinfo=None)
-    return parsed
-
-
-def _last_success(
-    runs: list[dict[str, Any]], command: str, done_reasons: frozenset[str]
-) -> datetime | None:
-    latest: datetime | None = None
-    for item in runs:
-        if item.get("command") != command or item.get("status") != "success":
-            continue
-        payload = item.get("payload") or {}
-        if payload.get("stopped_reason") not in done_reasons:
-            continue
-        finished = _run_time(item.get("finished_at"))
-        if finished is None:
-            continue
-        if latest is None or finished > latest:
-            latest = finished
-    return latest
-
-
 def _freshness(
     runs: list[dict[str, Any]],
     now: datetime,
@@ -230,10 +191,10 @@ def _freshness(
     max_age: timedelta,
     label: str,
 ) -> Finding:
-    last = _last_success(runs, command, done_reasons)
+    last = last_success(runs, command, done_reasons=done_reasons)
     if last is None:
         return Finding(True, f"{label}：从未成功完成过")
-    age = (_run_time(now) or now) - last
+    age = (run_time(now) or now) - last
     hours = age.total_seconds() / 3600
     if age > max_age:
         return Finding(True, f"{label}：已 {hours:.0f} 小时没有成功完成（上次 {last:%m-%d %H:%M}）")
@@ -341,13 +302,9 @@ def _reconcile_sessions(runs: list[dict[str, Any]]) -> list[tuple[datetime | Non
         records += run_records
         if payload.get("stopped_reason") != "end":
             continue
-        finished: datetime | None = None
-        raw_time = item.get("finished_at") or item.get("started_at")
-        if raw_time:
-            try:
-                finished = datetime.fromisoformat(str(raw_time))
-            except ValueError:
-                finished = None
+        # 时刻归一交给 `runs.run_time`：这里原先自己 parse 一遍，带时区的记录
+        # 会与别处的 naive 时刻混在一起，直到有人把它们相减才炸。
+        finished = run_time(item.get("finished_at")) or run_time(item.get("started_at"))
         sessions.append((finished, pages, records))
         pages = records = 0
     return sessions
@@ -746,14 +703,14 @@ def _last_sweep_date(runs: list[dict[str, Any]]) -> date | None:
     必须同时看 `stopped_reason`：`reconcile --max-pages N` 的退出码是 0、状态是
     success，但它只扫了前 N 页。只认 `status` 会让半轮的 snapshot_date 顶替真正的
     全量轮，成为 `_field_freshness` 的基准——覆盖率随之失真（假红「没扫完」，或把
-    此前的全量轮挡在基准之外）。同一判据在 `_freshness` 里已用 `_RECONCILE_DONE`，
+    此前的全量轮挡在基准之外）。同一判据在 `_freshness` 里已用 `FULL_SCAN`，
     这里原先漏了。
     """
     for item in reversed(runs):
         if item.get("command") != "reconcile" or item.get("status") != "success":
             continue
         payload = item.get("payload") or {}
-        if payload.get("stopped_reason") not in _RECONCILE_DONE:
+        if payload.get("stopped_reason") not in FULL_SCAN:
             continue
         raw = payload.get("snapshot_date")
         if raw:
@@ -761,12 +718,9 @@ def _last_sweep_date(runs: list[dict[str, Any]]) -> date | None:
                 return date.fromisoformat(str(raw))
             except ValueError:
                 pass
-        finished = item.get("finished_at")
-        if finished:
-            try:
-                return datetime.fromisoformat(str(finished)).date()
-            except ValueError:
-                pass
+        stamp = run_time(item.get("finished_at")) or run_time(item.get("started_at"))
+        if stamp is not None:
+            return stamp.date()
     return None
 
 
@@ -970,7 +924,7 @@ def _readme_freshness(ctx: RunContext) -> Finding:
     for item in ctx.runs:
         if item.get("command") != "fetch-readme" or item.get("status") != "success":
             continue
-        finished = _run_time(item.get("finished_at"))
+        finished = run_time(item.get("finished_at"))
         if finished is not None and (last_run is None or finished > last_run):
             last_run = finished
 
@@ -1397,12 +1351,12 @@ def _recent_failures(ctx: RunContext) -> Finding:
     告警文件长期有效而失去信号价值。
     """
     runs, now = ctx.runs, ctx.now
-    reference = _run_time(now) or datetime.now()
+    reference = run_time(now) or datetime.now()
     last_success: dict[str, datetime] = {}
     for item in runs:
         if item.get("status") != "success":
             continue
-        stamp = _run_time(item.get("started_at"))
+        stamp = run_time(item.get("started_at"))
         if stamp is None:
             continue
         command = str(item.get("command"))
@@ -1432,7 +1386,7 @@ def _recent_failures(ctx: RunContext) -> Finding:
         # 只认 reason 里的「被限流」——真的崩了照样报。
         if item.get("command") == "fetch-preview" and "被限流" in str(item.get("reason") or ""):
             continue
-        started = _run_time(item.get("started_at"))
+        started = run_time(item.get("started_at"))
         if started is None:
             continue
         if reference - started > FAILURE_WINDOW:
@@ -1763,9 +1717,7 @@ def _collect_freshness(ctx: RunContext) -> Finding:
 
 
 def _reconcile_freshness(ctx: RunContext) -> Finding:
-    return _freshness(
-        ctx.runs, ctx.now, "reconcile", _RECONCILE_DONE, RECONCILE_MAX_AGE, "全量对账"
-    )
+    return _freshness(ctx.runs, ctx.now, "reconcile", FULL_SCAN, RECONCILE_MAX_AGE, "全量对账")
 
 
 #: 体检项登记表。顺序就是输出顺序——人读的那份清单靠它，别按字母排。

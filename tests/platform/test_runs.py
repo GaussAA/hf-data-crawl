@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -245,3 +245,87 @@ def test_台账里的绝对路径被脱敏(tmp_path: Path) -> None:
     reason = json.loads(path.read_text(encoding="utf-8"))["reason"]
     assert str(store.root.resolve()) not in reason
     assert "<data>/state/x.parquet" in reason
+
+
+# ---------------------------------------------------------------- 查询面（时间归一与完成态）
+
+
+def test_带时区的时间戳与本地表示可互比() -> None:
+    """`15:08Z` 与 UTC+8 的 `23:08` 是同一时刻，必须相等。
+
+    原先归一成 UTC：UTC+8 机器上 `15:08Z` 变成 `15:08`，与同一条本地记录差 8 小时
+    ——两个时刻一并排就判反。写入端 `datetime.now()` 写的是本地无时区时间，归一
+    目标必须与它对齐。
+    """
+    from hf_data_crawl.platform.runs import run_time
+
+    local = datetime(2026, 11, 21, 12, 0)
+    aware = local.astimezone(UTC)
+
+    assert run_time(local) == run_time(aware.isoformat())
+
+
+def test_坏时间戳返回空值而不是抛错() -> None:
+    """台账里可能有半截写入的 JSON 与旧格式；读取方不能因此崩。"""
+    from hf_data_crawl.platform.runs import run_time
+
+    assert run_time("soon") is None
+    assert run_time(None) is None
+    assert run_time("") is None
+    assert run_time(123) is None
+
+
+def test_last_success按完成态筛掉半轮() -> None:
+    """`reconcile --max-pages 100` 是 success，但不是完整会话。"""
+    from hf_data_crawl.platform.runs import FULL_SCAN, last_success
+
+    runs = [
+        {
+            "command": "reconcile",
+            "status": "success",
+            "finished_at": "2026-11-21T01:00:00",
+            "payload": {"stopped_reason": "max_pages"},
+        },
+        {
+            "command": "reconcile",
+            "status": "success",
+            "finished_at": "2026-11-20T01:00:00",
+            "payload": {"stopped_reason": "end"},
+        },
+    ]
+
+    assert last_success(runs, "reconcile", done_reasons=FULL_SCAN) == datetime(2026, 11, 20, 1, 0)
+
+
+def test_last_success不传完成态时成功即完整() -> None:
+    """`build` / `export` 没有「扫到哪」的概念，`stopped_reason` 缺席不算缺陷。"""
+    from hf_data_crawl.platform.runs import last_success
+
+    runs = [
+        {"command": "build", "status": "success", "finished_at": "2026-11-21T02:00:00"},
+        {"command": "build", "status": "failed", "finished_at": "2026-11-21T03:00:00"},
+    ]
+
+    assert last_success(runs, "build") == datetime(2026, 11, 21, 2, 0)
+
+
+def test_last_success取最晚而不是第一条() -> None:
+    """同一命令一天跑过多轮时，最晚那次才是当前数据的来源。"""
+    from hf_data_crawl.platform.runs import last_success
+
+    runs = [
+        {
+            "command": "collect",
+            "status": "success",
+            "finished_at": "2026-11-21T00:32:00",
+            "payload": {"stopped_reason": "end"},
+        },
+        {
+            "command": "collect",
+            "status": "success",
+            "finished_at": "2026-11-21T23:08:00",
+            "payload": {"stopped_reason": "end"},
+        },
+    ]
+
+    assert last_success(runs, "collect") == datetime(2026, 11, 21, 23, 8)

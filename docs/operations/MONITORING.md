@@ -16,6 +16,13 @@
 | `started_at` / `finished_at` | 微秒精度 ISO 时间戳；**耗时由二者相减**，台账里没有独立的耗时字段 |
 | `payload` | 命令自己的摘要；`collect` 的 `stopped_reason` 在这里，不在 `.summary` |
 
+**读这份台账只走两个函数**（`platform.runs`）：`run_time` 把时间戳归一成本地无时区
+表示（带 `Z` / `+00:00` 的记录也能与本地记录相比），`last_success(runs, command,
+done_reasons=…)` 给「最近一次成功完成的时刻」。`done_reasons` 缺省表示「成功即完整」；
+`collect` 传 `COLLECT_COMPLETE_REASONS`（今天采过了，含水位线停）或 `FULL_SCAN`
+（扫到末页了），`reconcile` 传 `FULL_SCAN`。别在别处再写一份解析——四个读取点各写
+一遍的后果，是两份不做时间归一、完成态出现四份字面量。
+
 `doctor` 的退出码 1 表示「有告警」而非「命令失败」，它的结论**不进 `runs/`**：
 看 `ALERT.txt`（覆盖式，只存最新一次）、`data/state/health-history.jsonl`（一行一次，
 可追「这条告警连续多少天」）与当轮 `logs/`。
