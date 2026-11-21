@@ -28,7 +28,14 @@ from .retention import (
     manifest_path,
     read_compressed_dates,
 )
-from .runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs, write_run
+from .runs import (
+    COLLECT_COMPLETE_REASONS,
+    FULL_SCAN,
+    Outcome,
+    last_success,
+    read_runs,
+    write_run,
+)
 from .store import DatasetStore
 from .tables import (
     BRONZE_SCHEMA,
@@ -100,6 +107,8 @@ __all__ = [
     "write_run",
     "read_runs",
     "COLLECT_COMPLETE_REASONS",
+    "FULL_SCAN",
+    "last_success",
     # 保留窗口与冷区
     "REPLAY_WINDOW_DAYS",
     "ARCHIVE_AFTER_DAYS",

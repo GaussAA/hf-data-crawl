@@ -23,12 +23,13 @@ import polars as pl
 from ..pipeline import raw, state
 from ..pipeline.derive import derive_day
 from ..platform.atomic import write_parquet, write_text
+from ..platform.runs import FULL_SCAN, last_success, read_runs
 from ..platform.store import DatasetStore
 from ..platform.tables import PolarsType
 from ..platform.vocab import INACTIVE, Status
 from .collect import LEAN_EXPAND
 from .hf.api import MAX_LIMIT, HfDatasetApi, Page
-from .hf.scan import ScanRun, ScanSpec
+from .hf.scan import ScanRun, ScanSpec, ScanSummary
 from .session import ReconcileSession
 
 #: 探测结论 → 落库状态。`unknown`（网络异常等）不在表内，表示「先别动」。
@@ -102,6 +103,48 @@ def probe_cursor_path(store: DatasetStore) -> Path:
     return store.root / "meta" / PROBE_CURSOR_NAME
 
 
+def read_seen(store: DatasetStore, snapshot_date: date) -> dict[str, str | None]:
+    """当天 Raw 分块里的 (id → sha)，同一 id 取写入序最晚的那条。
+
+    为什么对账要读分块、而不是自己再扫一遍全站
+    ----------------------------------------
+    对账需要的只有两件事：「这一天见过谁」与「它们是什么 sha」。这两件事当天的
+    采集分块里全都有——2026-11-21 实测 `collect --full-scan` 与 `reconcile` 各扫
+    一遍全站，交集 1,140,886 个 id 里 1,140,360 条逐字段相同（99.95%）。同一接口、
+    同一天、为同一批库再发一次请求，拿回来的是同一份数据，代价是约 1,141 页与
+    12–20 分钟。
+
+    取最晚的那条：当天可能有多轮采集（增量按 lastModified 跑多次），同一 id 在
+    不同分块里的 sha 可能不同。Bronze 的胜负也是按 `written_at` 取最后一条，
+    这里用同一口径，「今天它是什么样」才与派生层说的一致。
+
+    返回空字典＝当天没有可用分块。调用方必须当成错误，而不是「全站都下架了」。
+    """
+    batches: list[raw.Batch] = []
+    for path in raw.bronze_files(store, snapshot_date):
+        batches.extend(raw.load_batches(path))
+    batches.sort(key=lambda batch: batch.key)
+    seen: dict[str, str | None] = {}
+    for batch in batches:
+        for record in batch.records:
+            dataset_id = record.get("id")
+            if isinstance(dataset_id, str) and dataset_id:
+                seen[dataset_id] = record.get("sha") or None
+    return seen
+
+
+def collect_completed(store: DatasetStore, snapshot_date: date) -> bool:
+    """当天 `collect` 是否扫到了末页。
+
+    「没扫完就不许判下架」这条铁律的新判据：从前看的是对账自己那趟扫描的
+    `stopped_reason`，现在对账不再扫描，改看它所依赖的那趟采集。`collect` 若被
+    页数上限截断、或中途中断，分块就不全，拿它判下架会把没扫到的部分整片标成
+    下架——不可逆。
+    """
+    stamp = last_success(read_runs(store), "collect", done_reasons=FULL_SCAN)
+    return stamp is not None and stamp.date() == snapshot_date
+
+
 @dataclass(frozen=True)
 class ReconcileSummary:
     """一轮对账的摘要。
@@ -138,6 +181,8 @@ class ReconcileSummary:
     probe_degraded: int = 0
     #: 因「当天已有相同内容」而未落盘的记录数（详见 `raw.DayRecords`）。
     deduped: int = 0
+    #: 已见集合的来源：`raw` = 读当天采集分块（默认），`scan` = 自己扫全站。
+    source: str = "raw"
 
 
 class Reconciler:
@@ -172,45 +217,72 @@ class Reconciler:
         *,
         limit: int = MAX_LIMIT,
         max_pages: int | None = None,
+        rescan: bool = False,
     ) -> ReconcileSummary:
+        """对账。
+
+        默认**不扫描**：从当天采集分块读出 (id, sha) 与基线比（见 `read_seen`）。
+        `rescan=True` 保留原来的「自己扫全站」路径，作为分块可疑时的逃生舱——
+        删掉它等于把「对账」与「采集」绑成死结，而它们本该可以分开排障。
+        """
         started = time.monotonic()
         self._probe_degraded = []
 
+        seen: dict[str, str | None] | None = None
+        if not rescan:
+            seen = read_seen(self._store, snapshot_date)
+            # 当天没有采集分块（`collect` 未跑、或跑失败）：退化到自己扫一趟。
+            # 这是「读分块」的逃生方向——宁可多扫一次，也不要因为上游没跑就
+            # 拒绝服务；而且此时本轮的分块就是那天唯一的数据源，非落不可。
+            rescan = not seen
+
         # 基线在会话开始时固定：有界停止那一轮也会更新 current，续跑若再读 current，
         # 上半段的新增与 sha 变更就被当成「本来就有」而丢掉。
-        session = ReconcileSession.open(self._store, checkpoint_filename=self._checkpoint_filename)
+        session = ReconcileSession.open(
+            self._store, checkpoint_filename=self._checkpoint_filename, resume=rescan
+        )
 
         def remember(page: Page, _index: int) -> str | None:
             """把本页 id 追加进已见集合。幂等：ScanRun 在存游标之前调用它。"""
             session.remember(page.records)
             return None
 
-        # 当天 `collect --full-scan` 通常已经把全站落过一遍（11-21 实测 99.95%
-        # 逐字段相同）。先读当天已落分块建指纹索引，本轮只落「还没出现过」的
-        # 记录：内容变了的照落（sha 不同即指纹不同），重复的整页不写。
-        #
-        # 若当天还没有分块（单独跑对账、collect 未跑），索引为空、全部照落——
-        # 此时本轮的分块就是唯一数据源，去重必须自动退化成「不丢」。
-        dedup = raw.DayRecords.load(self._store, snapshot_date, label="part")
-
-        scan = ScanRun(self._api, self._store).run(
-            snapshot_date,
-            ScanSpec(
-                sort="createdAt",
-                expand=LEAN_EXPAND,
-                mode="reconcile",
-                limit=limit,
-                max_pages=max_pages,
-                checkpoint=session.checkpoint,
-                on_page=remember,
-                dedup=dedup,
-            ),
-        )
-        stopped_reason = scan.stopped_reason
+        scan: ScanSummary | None = None
+        if rescan:
+            seen = None
+            # 当天 `collect --full-scan` 通常已经把全站落过一遍（11-21 实测 99.95%
+            # 逐字段相同）。先读当天已落分块建指纹索引，本轮只落「还没出现过」的
+            # 记录：内容变了的照落（sha 不同即指纹不同），重复的整页不写。
+            #
+            # 若当天还没有分块（单独跑对账、collect 未跑），索引为空、全部照落——
+            # 此时本轮的分块就是唯一数据源，去重必须自动退化成「不丢」。
+            dedup = raw.DayRecords.load(self._store, snapshot_date, label="part")
+            scan = ScanRun(self._api, self._store).run(
+                snapshot_date,
+                ScanSpec(
+                    sort="createdAt",
+                    expand=LEAN_EXPAND,
+                    mode="reconcile",
+                    limit=limit,
+                    max_pages=max_pages,
+                    checkpoint=session.checkpoint,
+                    on_page=remember,
+                    dedup=dedup,
+                ),
+            )
+            stopped_reason = scan.stopped_reason
+            pages, records = scan.pages, scan.records
+            source = "scan"
+        else:
+            stopped_reason = (
+                "end" if collect_completed(self._store, snapshot_date) else "incomplete_collect"
+            )
+            pages, records = 0, len(seen or {})
+            source = "raw"
 
         derive_day(self._store, snapshot_date)
 
-        diff = session.diff()
+        diff = session.diff(seen)
         new_ids = diff.new
         sha_changed = diff.sha_changed
         reactivated = diff.reactivated
@@ -270,8 +342,8 @@ class Reconciler:
 
         return ReconcileSummary(
             snapshot_date=snapshot_date,
-            pages=scan.pages,
-            records=scan.records,
+            pages=pages,
+            records=records,
             new_ids=len(new_ids),
             disappeared=len(disappeared),
             sha_changed=len(sha_changed),
@@ -288,7 +360,8 @@ class Reconciler:
             probe_failed=failed,
             probe_deferred=deferred,
             probe_degraded=len(self._probe_degraded),
-            deduped=scan.deduped,
+            deduped=scan.deduped if scan is not None else 0,
+            source=source,
         )
 
     def _classify_missing(

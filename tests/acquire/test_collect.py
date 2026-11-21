@@ -253,6 +253,38 @@ def test_顶部刷新使用下载量排序(store: DatasetStore) -> None:
     assert downloads_calls[0]["direction"] == "-1"
 
 
+def test_全站扫描时不再单独刷顶部池(store: DatasetStore) -> None:
+    """主扫描已扫完全站，头部 2 万条必然含在里面，再按下载量取一遍是重复请求。
+
+    2026-11-21 实测：top 的 20,000 条里 19,792 条与主扫描逐字段相同（99.0%）。
+    同一接口同一天为同一批库发两次请求、只为换个排序，没有信息增量。
+    """
+    transport = SortAwareTransport(
+        {"lastModified": [page("a", 3)], "downloads": [page("t", 1), page("u", 1)]}
+    )
+
+    summary = collector(transport, store).run(
+        DAY1, limit=3, refresh_top=6, pages_without_new=5, full_scan=True
+    )
+
+    assert summary.top_pages == 0
+    assert summary.refreshed == 0
+    assert summary.top_reason == "covered_by_full_scan"
+    assert {call["sort"] for call in transport.calls} == {"lastModified"}, (
+        "不该再发下载量排序的请求"
+    )
+
+
+def test_增量扫描时顶部池照旧刷(store: DatasetStore) -> None:
+    """跳过只成立在「已扫全站」这一前提上；增量扫描没覆盖头部，这一趟仍必要。"""
+    transport = SortAwareTransport({"lastModified": [page("a", 1)], "downloads": [page("t", 1)]})
+
+    summary = collector(transport, store).run(DAY1, limit=100, refresh_top=100, pages_without_new=5)
+
+    assert summary.top_pages == 1
+    assert summary.top_reason != "covered_by_full_scan"
+
+
 # ---------------------------------------------------------------- 水位线跨轮
 
 

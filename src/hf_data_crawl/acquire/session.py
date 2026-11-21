@@ -130,7 +130,16 @@ class ReconcileSession:
         self._discarded = discarded
 
     @classmethod
-    def open(cls, store: DatasetStore, *, checkpoint_filename: str) -> ReconcileSession:
+    def open(
+        cls, store: DatasetStore, *, checkpoint_filename: str, resume: bool = True
+    ) -> ReconcileSession:
+        """开一个会话。
+
+        `resume=False` 表示本轮没有「翻页续跑」这回事（已见集合来自当天分块，
+        见 `reconcile.read_seen`）：此时残留的游标是上一代扫描模式留下的，
+        必须清掉而不是接着用——接着用它会让本轮以为自己是「续跑」，
+        进而跳过基线重建、拿到一份与当前 current 无关的旧基线。
+        """
         state_dir = store.state_dir
         baseline_path = state_dir / BASELINE_FILENAME
         seen_path = state_dir / SEEN_FILENAME
@@ -139,8 +148,10 @@ class ReconcileSession:
         for legacy in state_dir.glob(LEGACY_SEEN_GLOB):
             legacy.unlink(missing_ok=True)
 
-        resumed = checkpoint.cursor is not None
+        resumed = resume and checkpoint.cursor is not None
         discarded = False
+        if not resume and checkpoint.cursor is not None:
+            checkpoint.save(None)
         if resumed and not (baseline_path.exists() and seen_path.exists()):
             # 旧会话：基线无法还原，丢弃重来。
             checkpoint.save(None)
@@ -225,8 +236,14 @@ class ReconcileSession:
             for dataset_id, sha in zip(frame["id"].to_list(), frame["sha"].to_list(), strict=True)
         }
 
-    def diff(self) -> SetDiff:
-        return diff_sets(self._baseline, self.seen())
+    def diff(self, seen: Seen | None = None) -> SetDiff:
+        """与基线的差。给了 `seen` 就用它，否则读已见集合文件。
+
+        已见集合现在有两个来源：扫描模式逐页追加成文件，默认模式从当天 Raw
+        直接算出来（`reconcile.read_seen`）。后者上百万行，没必要先写一份 CSV
+        再读回来——多一次落盘、多一次解析，还多一份可能过期的中间态。
+        """
+        return diff_sets(self._baseline, self.seen() if seen is None else seen)
 
     def close(self) -> None:
         """会话完成：游标归零，基线与已见集合一起删除。"""

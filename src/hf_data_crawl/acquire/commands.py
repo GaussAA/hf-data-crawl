@@ -193,7 +193,9 @@ def run_reconcile(
         store=store,
         probe_limit=args.probe_limit,
     )
-    summary = reconciler.run(snapshot, limit=args.limit, max_pages=args.max_pages)
+    summary = reconciler.run(
+        snapshot, limit=args.limit, max_pages=args.max_pages, rescan=getattr(args, "scan", False)
+    )
     _print_reconcile(summary)
     return Outcome(summary)
 
@@ -786,6 +788,8 @@ def _print_collect(summary: CollectSummary) -> None:
     print(f"  配额余量 {summary.rate_remaining} · 停止原因 {summary.stopped_reason}")
     if summary.top_pages:
         print(f"  顶部池刷新 {summary.top_pages} 页 / {summary.refreshed} 条")
+    elif summary.top_reason == "covered_by_full_scan":
+        print("  顶部池刷新：全站扫描已覆盖头部，省掉这一趟（同一接口不重复取同一批）")
     if summary.card_pages:
         print(f"  变化集卡片 {summary.card_pages} 页 / {summary.card_records} 条")
     elif summary.card_reason == "no_watermark":
@@ -796,11 +800,18 @@ def _print_reconcile(summary: ReconcileSummary) -> None:
     tag = "（续跑，页数为本轮，差异计数为整个会话）" if summary.resumed else ""
     if summary.discarded_stale_session:
         print("发现旧版本留下的对账会话（缺基线，无法还原），已丢弃并从头开始。")
-    print(
-        f"{summary.snapshot_date} 对账完成{tag}："
-        f"{summary.pages} 页 / {summary.records} 条 / 耗时 {summary.elapsed_seconds:.1f}s"
-        + (f" / 与当天已有分块重复 {summary.deduped} 条未再落盘" if summary.deduped else "")
-    )
+    if summary.source == "scan":
+        scope = f"{summary.pages} 页 / {summary.records:,} 条"
+        if summary.deduped:
+            scope += f"，其中 {summary.deduped:,} 条与当天分块重复未再落盘"
+    else:
+        scope = f"读当天分块 {summary.records:,} 条（未重复扫描全站）"
+    print(f"{summary.snapshot_date} 对账完成{tag}：{scope} / 耗时 {summary.elapsed_seconds:.1f}s")
+    if summary.stopped_reason == "incomplete_collect":
+        print(
+            "  [!] 当天 collect 未扫到末页，本轮只出差异清单、不判下架——"
+            "先跑完 collect --full-scan 再来"
+        )
     print(
         f"  新增 {summary.new_ids} · 删除 {summary.disappeared} · "
         f"转私有 {summary.restricted} · 改名 {summary.renamed} · "

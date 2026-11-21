@@ -274,14 +274,21 @@ def build_parser() -> argparse.ArgumentParser:
         "right", nargs="?", default=None, metavar="新时刻", help="交付目录名，默认最新一次"
     )
 
-    reconcile = subparsers.add_parser("reconcile", help="全量对账（按 createdAt 稳定序）")
+    reconcile = subparsers.add_parser(
+        "reconcile", help="全量对账：读当天采集分块比对基线，默认不再单独扫全站"
+    )
     reconcile.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
     reconcile.add_argument("--limit", type=int, default=MAX_LIMIT, help="每页条数，上限 1000")
     reconcile.add_argument(
         "--max-pages",
         type=int,
         default=None,
-        help="本轮最多抓几页（未扫完不判下架）；0 表示不设上限，一轮扫完全站",
+        help="仅在 --scan 下生效：本轮最多抓几页（未扫完不判下架）；0 表示不设上限",
+    )
+    reconcile.add_argument(
+        "--scan",
+        action="store_true",
+        help="强制自己扫一遍全站（默认复用当天 collect 的分块；分块可疑时用它排障）",
     )
     reconcile.add_argument(
         "--probe-limit",

@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -14,7 +14,7 @@ import polars as pl
 import pytest
 
 from hf_data_crawl.acquire.hf.api import HfDatasetApi, HfResponse
-from hf_data_crawl.acquire.reconcile import Reconciler
+from hf_data_crawl.acquire.reconcile import Reconciler, read_seen
 from hf_data_crawl.pipeline import raw, state
 from hf_data_crawl.pipeline.derive import derive_day
 from hf_data_crawl.platform.store import DatasetStore
@@ -114,6 +114,26 @@ def status_of(store: DatasetStore, dataset_id: str) -> str:
     return frame.row(0, named=True)["status"]
 
 
+def make_collect_run(store: DatasetStore, day: date, reason: str = "end") -> None:
+    """造一条当天 collect 的运行记录，作为「采集是否扫完」的判据。
+
+    `write_run` 的 `finished_at` 取真实当前时间，而判据比的是它落在哪一天，
+    故写入后按夹具日期改写——不改就会拿「今天」去比「2026-11-02」。
+    """
+    import json
+
+    from hf_data_crawl.platform.runs import Outcome, write_run
+
+    payload = {"snapshot_date": day.isoformat(), "stopped_reason": reason}
+    path = write_run(store, "collect", datetime.combine(day, datetime.min.time()), Outcome(payload))
+    assert path is not None
+    body = json.loads(path.read_text(encoding="utf-8"))
+    body["finished_at"] = datetime.combine(day, datetime.min.time()).isoformat(
+        timespec="microseconds"
+    )
+    path.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+
+
 def test_下架集被标记但观测史保留(store: DatasetStore) -> None:
     transport = FakeCursorTransport([[record("a", "sha-a2"), record("c", "sha-c1")]])
 
@@ -168,11 +188,12 @@ def test_差异清单落盘且含三类(store: DatasetStore) -> None:
 
 
 def test_有界对账保留游标以便续跑(store: DatasetStore) -> None:
+    """续跑只属于 `--scan`：默认模式读数当天分块，没有「翻页翻到一半」这回事。"""
     first = FakeCursorTransport([[record("a", "sha-a1")], [record("c", "sha-c1")]])
-    reconciler(first, store).run(DAY2, limit=100, max_pages=1)
+    reconciler(first, store).run(DAY2, limit=100, max_pages=1, rescan=True)
 
     resumed = FakeCursorTransport([[record("a", "sha-a1")], [record("c", "sha-c1")]])
-    reconciler(resumed, store).run(DAY2, limit=100)
+    reconciler(resumed, store).run(DAY2, limit=100, rescan=True)
 
     assert "cursor" in resumed.calls[0]
 
@@ -180,10 +201,10 @@ def test_有界对账保留游标以便续跑(store: DatasetStore) -> None:
 def test_续跑后不把前半段已扫过的判成下架(store: DatasetStore) -> None:
     """只存游标不存「见过谁」，续跑时前半段会被整片误判——实测误杀过 4.6 万条。"""
     first = FakeCursorTransport([[record("a", "sha-a1")], [record("c", "sha-c1")]])
-    reconciler(first, store).run(DAY2, limit=100, max_pages=1)
+    reconciler(first, store).run(DAY2, limit=100, max_pages=1, rescan=True)
 
     resumed = FakeCursorTransport([[record("a", "sha-a1")], [record("c", "sha-c1")]])
-    summary = reconciler(resumed, store).run(DAY2, limit=100)
+    summary = reconciler(resumed, store).run(DAY2, limit=100, rescan=True)
 
     assert summary.resumed is True
     assert summary.disappeared == 1
@@ -344,11 +365,11 @@ def test_分段跑的差异与单次跑完全一致(store: DatasetStore, tmp_pat
     new / sha_changed 就丢了（实测：单次 new=2 sha_changed=1，分段 new=1 sha_changed=0）。"""
     other = DatasetStore(tmp_path / "other")
     seed(other, DAY1, [record("a", "sha-a1"), record("b", "sha-b1")])
-    single = reconciler(FakeCursorTransport(_pages()), other).run(DAY2, limit=100)
+    single = reconciler(FakeCursorTransport(_pages()), other).run(DAY2, limit=100, rescan=True)
 
     split_transport = FakeCursorTransport(_pages())
-    first = reconciler(split_transport, store).run(DAY2, limit=100, max_pages=1)
-    final = reconciler(split_transport, store).run(DAY2, limit=100)
+    first = reconciler(split_transport, store).run(DAY2, limit=100, max_pages=1, rescan=True)
+    final = reconciler(split_transport, store).run(DAY2, limit=100, rescan=True)
 
     assert first.stopped_reason == "max_pages"
     assert final.resumed is True
@@ -689,7 +710,7 @@ def test_与当天已有内容重复的记录不再落盘(store: DatasetStore) -
     before = set(raw.batch_files(store, DAY1))
     transport = FakeCursorTransport([[record("a", "sha-a1"), record("b", "sha-b1")]])
 
-    summary = reconciler(transport, store).run(DAY1, limit=100)
+    summary = reconciler(transport, store).run(DAY1, limit=100, rescan=True)
 
     assert summary.deduped == 2
     assert set(raw.batch_files(store, DAY1)) == before, "没有新内容就不该有新分块"
@@ -701,7 +722,7 @@ def test_内容变化的记录照旧落盘(store: DatasetStore) -> None:
     before = set(raw.batch_files(store, DAY1))
     transport = FakeCursorTransport([[record("a", "sha-a1", downloads=999), record("b", "sha-b1")]])
 
-    summary = reconciler(transport, store).run(DAY1, limit=100)
+    summary = reconciler(transport, store).run(DAY1, limit=100, rescan=True)
 
     assert summary.deduped == 1
     fresh = set(raw.batch_files(store, DAY1)) - before
@@ -716,3 +737,85 @@ def test_当天尚无分块时全部照落(store: DatasetStore) -> None:
 
     assert summary.deduped == 0
     assert raw.batch_files(store, DAY2), "对账的分块必须落盘"
+
+
+# ---------------------------------------------------------------- 复用当天采集分块
+
+
+def test_当天有分块时直接读它_不再扫全站(store: DatasetStore) -> None:
+    """`collect --full-scan` 已把全站落在盘上，对账再发 1,141 页是重复请求。
+
+    11-21 实测两份交集 1,140,886 条里 1,140,360 条逐字段相同（99.95%）——
+    同一接口、同一天、同一批库，第二次问回来的是同一份数据。
+    """
+    raw.write(
+        store,
+        snapshot_date=DAY2,
+        page_index=1,
+        records=[record("a", "sha-a2"), record("c", "sha-c1")],
+        meta={},
+    )
+    make_collect_run(store, DAY2, "end")
+    transport = FakeCursorTransport([])
+
+    summary = reconciler(transport, store).run(DAY2, limit=100)
+
+    assert summary.source == "raw"
+    assert summary.stopped_reason == "end"
+    assert summary.records == 2
+    assert transport.calls == [], "一次请求都不该发"
+    assert summary.new_ids == 1, "c 是新库"
+    assert summary.sha_changed == 1, "a 的 sha 变了"
+    assert status_of(store, "acme/b") == "disappeared", "分块里没 b，探测确认它真没了"
+
+
+def test_collect没扫到末页时不判下架(store: DatasetStore) -> None:
+    """铁律换成新判据：从前看对账自己那趟扫完了没，现在看它所依赖的采集扫完了没。
+
+    `collect` 被页数上限截断时，分块里的「没见到的库」只是没扫到，不是下架。
+    """
+    raw.write(store, snapshot_date=DAY2, page_index=1, records=[record("a", "sha-a1")], meta={})
+    make_collect_run(store, DAY2, "max_pages")
+
+    summary = reconciler(FakeCursorTransport([]), store).run(DAY2, limit=100)
+
+    assert summary.source == "raw"
+    assert summary.stopped_reason == "incomplete_collect"
+    assert summary.disappeared == 0
+    assert status_of(store, "acme/b") == "active"
+
+
+def test_读分块取写入序最晚的那条(store: DatasetStore) -> None:
+    """当天可能有多轮采集；「今天它是什么样」要以最后一次观测为准，与 Bronze 同口径。"""
+    raw.write(
+        store,
+        snapshot_date=DAY2,
+        page_index=1,
+        records=[record("a", "sha-old")],
+        meta={},
+        written_at="2026-11-02T01:00:00.000000+00:00",
+    )
+    raw.write(
+        store,
+        snapshot_date=DAY2,
+        page_index=2,
+        records=[record("a", "sha-new")],
+        meta={},
+        written_at="2026-11-02T05:00:00.000000+00:00",
+    )
+
+    seen = read_seen(store, DAY2)
+
+    assert seen["acme/a"] == "sha-new"
+
+
+def test_强制扫描时不理当天分块(store: DatasetStore) -> None:
+    """逃生舱：分块可疑时用它排障，宁可多扫一次也要看到「此刻的全站」。"""
+    raw.write(store, snapshot_date=DAY2, page_index=1, records=[record("a", "sha-a2")], meta={})
+    make_collect_run(store, DAY2, "end")
+    transport = FakeCursorTransport([[record("a", "sha-a2")]])
+
+    summary = reconciler(transport, store).run(DAY2, limit=100, rescan=True)
+
+    assert summary.source == "scan"
+    assert transport.calls, "--scan 必须真的发请求"

@@ -64,6 +64,9 @@ class CollectSummary:
     preview: list[dict[str, Any]] | None = None
     top_pages: int = 0
     refreshed: int = 0
+    #: 顶部池刷新这一趟的状态。`skipped` 表示没开，`covered_by_full_scan` 表示
+    #: 主扫描已扫全站、头部必然含在内，这一趟省了（见 `_top_reason`）。
+    top_reason: str = "skipped"
     #: 变化集卡片扫描的页数与记录数；未开启时为 0。
     card_pages: int = 0
     card_records: int = 0
@@ -227,22 +230,31 @@ class Collector:
 
         # 顶部池刷新：日增量只覆盖「最近更新的万把条」，增速榜因此长期取不到
         # 第二个观测点；补这一趟，头部集每天都有新读数，成本只有二十来页。
+        #
+        # **全站扫描时这一趟是纯冗余**：主扫描已经扫完全站，头部 2 万条必然含在
+        # 里面（2026-11-21 实测：top 的 20,000 条里 19,792 条与主扫描逐字段相同，
+        # 99.0%）。同一接口同一天为同一批库发两次请求，只为换个排序——省掉。
         top = ScanSummary(
             pages=0, records=0, skipped=0, rate_remaining=None, stopped_reason="skipped"
         )
+        top_reason = "skipped"
         if refresh_top > 0:
-            page_budget = max(1, math.ceil(refresh_top / max(1, limit)))
-            top = runner.run(
-                snapshot_date,
-                ScanSpec(
-                    sort="downloads",
-                    expand=LEAN_EXPAND,
-                    mode="top-refresh",
-                    label="top",
-                    limit=limit,
-                    max_pages=page_budget,
-                ),
-            )
+            if full_scan:
+                top_reason = "covered_by_full_scan"
+            else:
+                page_budget = max(1, math.ceil(refresh_top / max(1, limit)))
+                top = runner.run(
+                    snapshot_date,
+                    ScanSpec(
+                        sort="downloads",
+                        expand=LEAN_EXPAND,
+                        mode="top-refresh",
+                        label="top",
+                        limit=limit,
+                        max_pages=page_budget,
+                    ),
+                )
+                top_reason = top.stopped_reason
 
         # 变化集卡片：同一批「今天变过的库」再扫一趟，多带 cardData。
         # 用本轮开始时的 baseline，不能用刚被本轮推高的新水位线——后者会在第一页
@@ -292,6 +304,7 @@ class Collector:
             elapsed_seconds=time.monotonic() - started,
             top_pages=top.pages,
             refreshed=top.records,
+            top_reason=top_reason,
             card_pages=card_scan.pages,
             card_records=card_scan.records,
             card_reason=card_reason,
