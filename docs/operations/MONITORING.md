@@ -196,8 +196,8 @@ uv run python -c "from pathlib import Path; from hf_data_crawl.pipeline.raw impo
 
 **`fetch-files` 与 `fetch-preview` 不在链上**（DECISIONS #149，2026-11-20 起）：两者
 都是按需取用的富化资产，全量一轮要几百 GB 下载与几十小时，塞进每日窗口只会挤掉
-采集。要跑就手动跑，命令见 `README.md`；跑的时候可以用 `refresh --skip files,preview`
-让每日窗口把这两步让开（它们已不在链上，这个开关是给「以后再加回来」留的口子）。
+采集。要跑就手动跑，命令见 `README.md`；它们已不在 `STEP_NAMES` 里，
+`refresh --skip` / `--only` 都不接受这两个名字。
 
 依赖与并发由**编排器**表达，不由钟点表达；前置失败时下游记 `[跳过]`，不相关的
 并行分支照常跑完。**09:00 软边界**：之后不再启动新的抓取，未完成的步骤次日从

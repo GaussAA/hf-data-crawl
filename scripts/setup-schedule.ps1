@@ -6,9 +6,9 @@
 .DESCRIPTION
     hf-refresh  每日 00:30 起跑完全部例行，一条链，不分钟点：
                 compact → collect --full-scan → build --stale
-                → 〔reconcile ‖ fetch-sizes / fetch-readme / fetch-preview〕
-                → fetch-files → parse-readme → export-wide → request run-due
-                → prune → doctor
+                → 〔reconcile ‖ fetch-sizes / fetch-readme〕
+                → parse-readme → export-wide → request run-due
+                → archive → prune → doctor
                 顺序与并发由 `ops/refresh.py` 保证，不由钟点猜。09:00 是软边界：
                 到点不再启动新的抓取，已在跑的收尾，`doctor` 照常跑——它是唯一
                 能说明「今天哪里没跑完」的环节（ADR-0008）。

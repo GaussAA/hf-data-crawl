@@ -229,7 +229,7 @@ Get-ScheduledTask -TaskName hf-* | Get-ScheduledTaskInfo   # 核对
 uv run hf-data-crawl doctor                        # 手动体检；有问题退出码 1，并写 data\ALERT.txt
 ```
 
-**例行是一条链，不是一个钟点表**。`scripts\refresh.ps1` 调 `hf-data-crawl refresh`，编排在 `ops/refresh.py`（ADR-0008）：三段式——串行头（压缩 → 采集 → 派生）把 `current` 定稿，然后对账与三个锁外抓取并行（文件清单排在它之后：同走 `/api` 配额），最后串行尾（解析正文 → 导出 → 榜单页 → 交付 → 归档 → 清理 → 体检）。每步是一次独立子进程，锁与 runs 台账仍由各子命令自己管，`Invoke-HfTask` 负责日志与退出码。**手动补一步**用 `pwsh scripts\refresh.ps1 --only <step>`——它复用刷新链的同一份步骤定义，参数与每日刷新一致（旧的那 11 个单命令包装已在 2026-11-19 删除，它们各自的默认参数早已与链不一致：`sizes` 是全量而非增量、`files` 只取 1000 名）。公共部分（定位 `uv`、代理默认值、日志、退出码）抽在 `scripts\_common.ps1`，两个 Python 工具在 `scripts\tools\`。
+**例行是一条链，不是一个钟点表**。`scripts\refresh.ps1` 调 `hf-data-crawl refresh`，编排在 `ops/refresh.py`（ADR-0008）：三段式——串行头（压缩 → 采集 → 派生）把 `current` 定稿，然后对账与两个锁外抓取（sizes / readme）并行，最后串行尾（解析正文 → 导出 → 榜单页 → 交付 → 归档 → 清理 → 体检）。每步是一次独立子进程，锁与 runs 台账仍由各子命令自己管，`Invoke-HfTask` 负责日志与退出码。**手动补一步**用 `pwsh scripts\refresh.ps1 --only <step>`——它复用刷新链的同一份步骤定义，参数与每日刷新一致（旧的那 11 个单命令包装已在 2026-11-19 删除，它们各自的默认参数早已与链不一致：`sizes` 是全量而非增量、`files` 只取 1000 名）。公共部分（定位 `uv`、代理默认值、日志、退出码）抽在 `scripts\_common.ps1`，两个 Python 工具在 `scripts\tools\`。
 
 时钟只负责「什么时候开始」，**先后由脚本里的顺序保证**。采集撞上瞬时断连会隔 2 分钟重试一次（2026-11-15 03:10 实测：TLS `UNEXPECTED_EOF`，一分钟后对账却正常）；仍失败就照旧记失败，重试只治抖动、不掩盖故障。导出与交付**依赖 `build` 与 `reconcile` 成功**（派生层没跟上就发布，等于把旧值当新值交出去；对账没完就导出，等于发布一份还没对齐的全站快照），前置失败即跳过并在 `-refresh.log` 里写明原因；对账是独立的全站扫描，采集失败也照样跑；体检永远跑，且它的非零只记「告警」不算链条失败——告警与故障挤进同一个码，铃声很快就没人听。
 

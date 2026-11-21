@@ -2511,7 +2511,8 @@
      ```
 
      两条都是锁外抓取 + 暂存分片，可中断续跑；`--top 0` = 全量（#145 之后四条抓取
-     链路统一的口径）。手动跑时可用 `refresh --skip files,preview` 让每日窗口让路。
+     链路统一的口径）。两步已不在 `STEP_NAMES`，`refresh --skip` / `--only` 都不再
+     接受它们；直接手动跑即可。
 
      **代价**：`files` / `preview` 现在只会「按人要求」变新，`doctor` 里的
      `artifact_freshness` 若把这两张表算进「富化资产」判据，会长期报旧——需要它们的
