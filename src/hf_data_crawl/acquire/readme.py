@@ -362,58 +362,6 @@ def _resolved_ids(
     return set(keep["id"].to_list()) - set(refresh)
 
 
-def stale_readme_ids(current: pl.DataFrame, existing: pl.DataFrame) -> pl.DataFrame:
-    """内容已变的库：当前 `sha` 与抓取时的 `source_sha` 不一致。
-
-    为什么按 sha 而不是 `lastModified`：README 是仓库里的一个文件，它属于哪个
-    版本由 commit 决定；`lastModified` 会被无关改动（比如上传数据文件）推高，
-    按它重抓等于每次有人传文件就白烧一次请求。旧行没有 `source_sha`（加列之前
-    抓的）一律算陈旧，升级后第一轮会补一次。
-
-    只挑 `ok` / `absent`：`error` 下一轮自然重试，`denied` 要显式带令牌重试。
-    """
-    empty = current.head(0)
-    if current.height == 0 or existing.height == 0:
-        return empty
-    joined = current.join(
-        existing.select(
-            "id",
-            pl.col("source_sha").alias("readme_sha"),
-            # 必须改名：`current` 自己也有 `status`（active / disappeared），
-            # 不改的话过滤条件取到的是底库在架状态，判据恒不成立、永远「无陈旧」。
-            pl.col("status").alias("readme_status"),
-        ),
-        on="id",
-        how="inner",
-    )
-    return joined.filter(
-        pl.col("readme_status").is_in(["ok", "absent"])
-        & (pl.col("readme_sha").is_null() | (pl.col("readme_sha") != pl.col("sha")))
-    )
-
-
-def missing_readme_ids(current: pl.DataFrame, existing: pl.DataFrame) -> pl.DataFrame:
-    """还没有可用结论的库：从没抓过、或上次失败的。
-
-    与 `stale_readme_ids` 互补，补的正是它 inner join 漏掉的那两类：
-
-    - **无记录**：`--changed` 的候选来自 `current ⋈ existing`，新库不在 `existing`
-      里，跑一万遍也轮不到。2026-11-19 实测 2,945 个库卡在这里，而同步修的
-      `fetch-sizes` 早就有缺口补抓（`b0ae923`），`readme` 一直没有。
-    - **`error`**：`_resolved_ids` 说它「下次自然重试」，但重试只发生在 `--top`
-      全量模式；日常那趟 `--changed` 同样把它排除在外。
-
-    `denied` 不算缺口：它是明确结论（受门禁），要显式 `--retry-denied` 才重试。
-
-    anti join 而非 `is_in`：`existing` 是百万行，collect 成 set 再查会慢一个量级。
-    """
-    empty = current.head(0)
-    if current.height == 0:
-        return empty
-    resolved = existing.filter(pl.col("status").is_in(["ok", "absent", "denied"])).select("id")
-    return current.join(resolved, on="id", how="anti")
-
-
 def keep_previous_ok(previous: pl.DataFrame, fresh: pl.DataFrame) -> pl.DataFrame:
     """不让临时失败覆盖已拿到的全文。
 

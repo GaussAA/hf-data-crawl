@@ -15,6 +15,7 @@ import os
 from ..acquire import (
     DEFAULT_PREVIEW_RATE,
     DEFAULT_TOP,
+    GAP_BUDGET,
     MAX_LIMIT,
     PREVIEW_TOP,
     PROBE_DAILY_LIMIT,
@@ -327,14 +328,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help=(
-            "规模随内容刷新：重取 lastModified 晚于抓取日的库，最多 N 个（0 表示不做）；"
-            "同一趟顺带补新库缺口（在架但没有规模行，按下载量最多 2 万个）"
+            "规模随内容刷新：这一轮最多发 N 个请求（0 表示不做）。候选＝内容已变 ∪ "
+            f"还没有结论；陈旧先吃名额，余额补缺口（缺口另有 {GAP_BUDGET:,} 上限）"
         ),
     )
     sizes.add_argument(
         "--changed-all",
         action="store_true",
-        help="刷新链用：陈旧集合全部重取，不设名额（与 --changed 的 N 互斥，优先此开关）",
+        help=f"刷新链用：陈旧全部重取，缺口最多补 {GAP_BUDGET:,} 个（与 --changed 互斥，优先此开关）",
     )
     sizes.add_argument(
         "--ids",
@@ -417,12 +418,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--changed",
         type=int,
         default=0,
-        help="README 随内容刷新：重取 commit 已变的库，最多 N 个（0 表示不做）",
+        help=(
+            "README 随内容刷新：这一轮最多发 N 个请求（0 表示不做）。"
+            "候选＝commit 已变 ∪ 还没有结论；陈旧先吃名额，余额补缺口"
+        ),
     )
     readme.add_argument(
         "--changed-all",
         action="store_true",
-        help="刷新链用：陈旧与缺口全部取，不设名额（与 --changed 的 N 互斥，优先此开关）",
+        help=(
+            f"刷新链用：陈旧全部取，缺口最多补 {GAP_BUDGET:,} 个（与 --changed 互斥，优先此开关）"
+        ),
     )
     readme.add_argument("--workers", type=int, default=12, help="并发数，实测 12 稳定在 19 req/s")
     readme.add_argument(

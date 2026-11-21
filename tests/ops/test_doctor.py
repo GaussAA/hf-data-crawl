@@ -87,7 +87,9 @@ def put_cards(store: DatasetStore, day: date, source_shas: Mapping[str, str | No
     store.write("carddata", pl.DataFrame(data, schema=ENRICH_SCHEMA))
 
 
-def put_readme(store: DatasetStore, day: date, shas: Mapping[str, str | None]) -> None:
+def put_readme(
+    store: DatasetStore, day: date, shas: Mapping[str, str | None], *, status: str = "ok"
+) -> None:
     """只造体检要读的四列：id / source_sha / status / snapshot_date。
 
     正文（`text`）留空：这一项判的是「多久没刷新」，不读内容；真读 2.8 GB 也不该
@@ -97,7 +99,7 @@ def put_readme(store: DatasetStore, day: date, shas: Mapping[str, str | None]) -
     data["id"] = list(shas)
     data["source_sha"] = list(shas.values())
     data["snapshot_date"] = [day] * len(shas)
-    data["status"] = ["ok"] * len(shas)
+    data["status"] = [status] * len(shas)
     data["bytes"] = [0] * len(shas)
     store.write("readme", pl.DataFrame(data, schema=README_SCHEMA))
 
@@ -502,7 +504,7 @@ def test_富化内容过期太久要报(tmp_path: Path) -> None:
     found = [text for text in problems(store) if "富化滞后" in text]
 
     assert len(found) == 1, found
-    assert "README 超期 2,100" in found[0]
+    assert "README 陈旧 2,100" in found[0]
 
 
 def test_从没抓过的老库也算富化滞后(tmp_path: Path) -> None:
@@ -519,7 +521,7 @@ def test_从没抓过的老库也算富化滞后(tmp_path: Path) -> None:
     found = [text for text in problems(store) if "富化滞后" in text]
 
     assert len(found) == 1, found
-    assert "从未抓 2,100" in found[0]
+    assert "缺口 2,100" in found[0]
 
 
 def test_宽限期内的新库不算富化滞后(tmp_path: Path) -> None:
@@ -532,6 +534,25 @@ def test_宽限期内的新库不算富化滞后(tmp_path: Path) -> None:
     found = [text for text in problems(store) if "富化滞后" in text]
 
     assert not found, found
+
+
+def test_上次临时失败的库也算缺口(tmp_path: Path) -> None:
+    """`error` 行在表里占一行，却既不算陈旧也不算「从未抓」——两处都看不见它。
+
+    2026-11-21 实测 readme 表里有 248 行 `error`：旧口径 `settled - set(frame["id"])`
+    只数「没有行」的，于是这批永久隐形，而抓取端也不会重取（陈旧判据只挑
+    `ok`/`absent`）。判据收成一份之后，它按「缺口」计入。
+    """
+    store = DatasetStore(tmp_path / "data")
+    healthy(store)
+    ids = [f"acme/failed-{index}" for index in range(2_100)]
+    _enrich_current(store, ids, born_days_ago=30)
+    put_readme(store, NOW.date(), dict.fromkeys(ids, "old-sha"), status="error")
+
+    found = [text for text in problems(store) if "富化滞后" in text]
+
+    assert len(found) == 1, found
+    assert "缺口 2,100" in found[0]
 
 
 def test_预览被限流停车不算故障但真崩了要报(tmp_path: Path) -> None:
@@ -1810,7 +1831,7 @@ def test_README太久没刷新要报(tmp_path: Path) -> None:
 
     assert found, "README 陈旧却没人报"
     assert "没有刷新" in found[0] and "fetch-readme" in found[0]
-    assert "陈旧" in found[0] and "无记录" in found[0], "两个计数要一并给出，否则不知道该重取多少"
+    assert "陈旧" in found[0] and "缺口" in found[0], "两个计数要一并给出，否则不知道该重取多少"
 
 
 def test_README刚跑过就不报即使一条没写(tmp_path: Path) -> None:

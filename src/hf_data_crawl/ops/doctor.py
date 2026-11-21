@@ -22,9 +22,8 @@ from typing import Any
 
 import polars as pl
 
-from ..acquire.readme import stale_readme_ids
+from ..acquire.candidates import README_POLICY, SIZE_POLICY, refresh_candidates
 from ..acquire.reconcile import PROBE_DEGRADE_AFTER
-from ..acquire.sizes import stale_ids
 from ..delivery.delivery import (
     deliveries_of,
     index_problem,
@@ -819,7 +818,7 @@ def _field_freshness(ctx: RunContext) -> Finding:
     # 直接调 `fetch-sizes --changed` 用的那个函数，不在这里复刻一份：复制品与原件
     # 分居两个切片，改了一边不会报错、不会变红，只会静默漂移。原先这里有一份逐字
     # 抄来的 join——「同一判据三处实现」的中间那一份，正是最容易被改坏的那一份。
-    stale = stale_ids(current, sizes).height
+    stale = refresh_candidates(current, sizes, SIZE_POLICY).stale.height
     newest_size: date | None = None
     if sizes.height:
         newest_size = sizes.select(pl.col("snapshot_date").max()).item()
@@ -942,10 +941,13 @@ def _readme_freshness(ctx: RunContext) -> Finding:
 
     只查数据会误报，只查运行记录会漏报（跑成功但一条没抓），故两者取大。
 
-    另外报三个计数：`陈旧`（commit 已变的库，该重取的量）、`无记录`（新库还没抓过）、
-    `侧栏落后`（正文已换版而字段没重抽）。它们只在两次刷新之间自然增长，不单独判红
-    ——判红看的是「多久没刷新」这一件事；`侧栏落后` 长期不降，则说明保鲜任务只跑了
-    第一步（`fetch-readme`）而漏了第二步（`parse-readme`）。
+    另外报四个计数：`陈旧`（commit 已变的库，该重取的量）、`缺口`（没抓过或上次
+    `error`）、`侧栏落后`（正文已换版而字段没重抽）、`最近刷新`。它们只在两次刷新
+    之间自然增长，不单独判红——判红看的是「多久没刷新」这一件事；`侧栏落后` 长期
+    不降，则说明保鲜任务只跑了第一步（`fetch-readme`）而漏了第二步（`parse-readme`）。
+
+    陈旧与缺口都调 `candidates.refresh_candidates`，不在这里另写一份：`error` 行此前
+    正是两头不落地（陈旧只挑 `ok`/`absent`，无记录只数没有行的），从两个计数里都消失。
 
     **没有 readme 表不算故障**：它与 `carddata` 同为富化产物，日常链不生成它，
     全新安装或刻意不抓都该是绿的。缺表时只报「未抓过」，把红留给「抓过、但没人管了」。
@@ -984,11 +986,13 @@ def _readme_freshness(ctx: RunContext) -> Finding:
 
     refreshed = max(marks)
     age_days = (ctx.now - refreshed).days
-    stale = stale_readme_ids(ctx.current, frame).height
-    missing = len(ctx.current_ids - set(frame["id"].to_list()))
+    # 第三处「判据复制」也在这一项里：原先自己算陈旧、自己数「无记录」，与抓取端
+    # 各写一份，于是 `error` 行既不在这里出现、也不在抓取候选里，永久隐形。
+    found = refresh_candidates(ctx.current, frame, README_POLICY)
     behind = _readme_fields_behind(store, frame)
     counts = (
-        f"陈旧 {stale:,} · 无记录 {missing:,} · 侧栏落后 {behind:,} · 最近刷新 {refreshed:%Y-%m-%d}"
+        f"陈旧 {found.stale.height:,} · 缺口 {found.gap.height:,} · "
+        f"侧栏落后 {behind:,} · 最近刷新 {refreshed:%Y-%m-%d}"
     )
 
     if age_days > README_MAX_AGE_DAYS:
@@ -1012,10 +1016,10 @@ def _enrich_lag(ctx: RunContext) -> Finding:
     - `_field_freshness` 报「规模有行 99.8%」，把 29 万个 `unavailable` 也算覆盖。
 
     两者答的都是「最近有没有抓」，不是「该抓的抓到了没有」，所以整层落后照样全绿。
-    这一条补的是后者：直接用抓取端**同一套判据**（`stale_readme_ids` / `stale_ids`）
-    算「内容已变」与「从没抓过」的在架库，只留超过 `ENRICH_LAG_DAYS` 天的，
-    合计过 `ENRICH_LAG_FLOOR` 才报——口径与 `fetch-readme` / `fetch-sizes` 完全一致，
-    体检说「该刷」的就是它们下一轮真会去刷的那批。
+    这一条补的是后者：直接用抓取端**同一个函数**（`candidates.refresh_candidates`，
+    策略由 `README_POLICY` / `SIZE_POLICY` 声明）算「陈旧」与「缺口」的在架库，
+    只留超过 `ENRICH_LAG_DAYS` 天的，合计过 `ENRICH_LAG_FLOOR` 才报——口径与
+    `fetch-readme` / `fetch-sizes` 完全一致，体检说「该刷」的就是下一轮真会去刷的那批。
 
     宽限是给新库的：每天新增上千个库，它们明天才排到，今天没抓不算出问题。
     """
@@ -1027,32 +1031,30 @@ def _enrich_lag(ctx: RunContext) -> Finding:
         return Finding(False, "富化滞后：没有在架库")
 
     cutoff = ctx.now.date() - timedelta(days=ENRICH_LAG_DAYS)
-    # 只有「出生已超过宽限期」的库，缺失才算落后；昨天刚出现的等下一轮。
-    settled = set(live.filter(pl.col("created_at").dt.date() <= cutoff)["id"].to_list())
-
     over = 0
     notes: list[str] = []
-    for label, kind, checker in (
-        ("README", "readme", stale_readme_ids),
-        ("规模", "size", stale_ids),
-    ):
-        frame = ctx.store.read(kind)
+    for label, policy in (("README", README_POLICY), ("规模", SIZE_POLICY)):
+        frame = ctx.store.read(policy.table)
         if frame.height == 0:
             notes.append(f"{label} 未抓过")
             continue
-        # 判据复用抓取端的那两个函数：口径分叉过一次（体检全绿、抓取却在漏），
-        # 别再让两处各写一份「什么算陈旧」。
-        stale = set(checker(live, frame)["id"].to_list())
-        aged = (
-            frame.filter(pl.col("id").is_in(sorted(stale)))
-            .filter(pl.col("snapshot_date") < cutoff)
-            .height
-            if stale
-            else 0
-        )
-        missing = len(settled - set(frame["id"].to_list()))
+        # 判据直接调抓取端那一个函数（`candidates.refresh_candidates`），不在这里
+        # 复刻「什么算陈旧/缺口」：口径分叉过一次（体检全绿、抓取却在漏）。
+        # 不设名额：体检要的是真实欠账，不是「今天排了多少」。
+        found = refresh_candidates(live, frame, policy)
+        aged = 0
+        if found.stale.height:
+            # 陈旧明细是 `live` 的列，抓取时刻要回到富化表里取。
+            aged = (
+                found.stale.select("id")
+                .join(frame.select("id", "snapshot_date"), on="id", how="inner")
+                .filter(pl.col("snapshot_date") < cutoff)
+                .height
+            )
+        # 缺口按「出生已过宽限期」筛：昨天刚出现的库今天还没抓是正常的。
+        missing = found.gap.filter(pl.col("created_at").dt.date() <= cutoff).height
         over += aged + missing
-        notes.append(f"{label} 超期 {aged:,} · 从未抓 {missing:,}")
+        notes.append(f"{label} 陈旧 {aged:,} · 缺口 {missing:,}")
 
     detail = " · ".join(notes)
     if over >= ENRICH_LAG_FLOOR:

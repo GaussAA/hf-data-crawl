@@ -177,10 +177,12 @@ uv run python -c "from pathlib import Path; from hf_data_crawl.pipeline.raw impo
 - Collect 耗时 > 600 秒
 - 成功率 < 90%
 - Raw 规模超阈值 / 冷区未压缩 / 归档积压 / backup 超期未清理
-- **富化滞后**：README 与规模两项合计超期 > 2,000 个在架库。「超期」指内容已经变了
-  （`source_sha` 与当前 `sha` 不一致、或 `lastModified` 晚于抓取日）或从来没有记录，
-  且已超过 3 天没被刷到；新库有 3 天宽限。判据复用抓取端同一套
-  `stale_readme_ids` / `stale_ids`，所以体检说「该刷」的，就是下一轮真会去刷的那批。
+- **富化滞后**：README 与规模两项合计「陈旧 + 缺口」> 2,000 个在架库。「陈旧」指内容
+  已经变了（`source_sha` 与当前 `sha` 不一致、或 `lastModified` 晚于抓取时刻），
+  「缺口」指从没抓过或上次 `error`；两者都只算已超过 3 天没被刷到的（新库有 3 天
+  宽限）。判据直接调抓取端同一个函数 `acquire.candidates.refresh_candidates`
+  （策略见 `README_POLICY` / `SIZE_POLICY`），所以体检说「该刷」的，就是下一轮
+  真会去刷的那批——两处各写一份判据，迟早分叉。
   它补的是另外两项看不见的格子：`readme_freshness` 看「最近抓过没有」（表里最新
   快照日）、`field_freshness` 看「有行占比」，两者答的都是「最近有没有动」，
   整层落后几千个时照样全绿（2026-11-20 实测：落后 5,416 + 6,731 个，体检 30 项全 ok）

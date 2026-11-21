@@ -292,49 +292,8 @@ def _resolved_ids(
     return done - set(refresh)
 
 
-def stale_ids(current: pl.DataFrame, existing: pl.DataFrame) -> pl.DataFrame:
-    """规模已落后于内容的行：`lastModified` 晚于规模抓取日，且上次是成功的。
-
-    判据取「抓取当天」而非更细的时刻，是因为 `size.snapshot_date` 只有日期：
-    同日之内的改动可能漏判一天，下一轮仍会被发现（日期越过即成立），不会永久
-    漏掉。宁可晚一天，也不拿「看起来相等」冒充新鲜。
-
-    新库不在此列：它压根没有规模行，`join` 时自然缺席，走常规缺口补抓。
-    `unavailable` 的也不在此列：那是「上游没做 parquet 转换」，改 README 不会
-    让它变得有行数，逐日重烧只是白费预算。要重试那批，用周任务的全量趟加
-    `--retry-unavailable`，那是另一件事。
-    """
-    empty = current.head(0)
-    if current.height == 0 or existing.height == 0:
-        return empty
-    # 两张表都有 `status`：不先改名，`pl.col("status")` 取到的是底库的在架状态
-    # （active/disappeared），过滤恒不成立——判据会静默变成「永远没有陈旧」。
-    joined = current.join(
-        existing.select("id", "snapshot_date", "fetched_at", pl.col("status").alias("size_status")),
-        on="id",
-        how="inner",
-    )
-    # 判据两侧都取真时刻：`last_modified` 是库最后一次 commit 的时刻，`fetched_at`
-    # 是这一行被抓取的时刻。只比日期会留下一个盲区——库在「被抓取的那一天」又改
-    # 一次时两侧日期恒相等，`>` 永不成立；而该行只有判据成立才会被重抓，也就不会
-    # 产生新的 `snapshot_date`，于是它永久停在旧值。加列之前写入的旧行
-    # `fetched_at` 为空，回退成「该日零点」：升级后第一轮会把「最后改动日 ==
-    # 抓取日」的库补抓一次，之后走精确判据。
-    fetched = pl.coalesce(
-        [pl.col("fetched_at"), pl.col("snapshot_date").cast(pl.Datetime("us", "UTC"))]
-    )
-    return joined.filter((pl.col("size_status") == "ok") & (pl.col("last_modified") > fetched))
-
-
 #: 规模表的暂存目录；分片只写真数据、不碰正式表，故写它不必持锁。
 STAGING_DIR = ".staging/sizes"
-
-#: `--changed` 一轮里最多顺带补多少个「新库缺口」（在架、但 `size` 表里没有行）。
-#:
-#: 与 `--top` 的默认值同量级：16 并发实测约 22 req/s，两万个约 15 分钟，仍在夜链
-#: 给的 3600 秒之内。设上限防的是「某轮全量失败后缺口涨到几十万」——那种情况该由
-#: 周日的 `--top 0` 兜底，不该让一次日常刷新跑成几小时。
-GAP_BUDGET = 20_000
 
 
 def protect_ok_rows(previous: pl.DataFrame, fresh: pl.DataFrame) -> pl.DataFrame:

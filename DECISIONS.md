@@ -2628,3 +2628,37 @@
      **通则**：判「管理有没有跟上」时，别用「最近一次动作的时间」当指标——它只能
      证明有人在动，不能证明动对了地方。要落到**被管理对象的状态**上：该更新的有多少
      还没更新、该存在的有多少还不存在。#139 / #146 / #151 / 本条，四次的形状一致。
+
+155. **名额必须是总请求数，判据只能有一份**（2026-11-21，候选集四份写法收成一份）：
+     `--changed 8000` 实际会发出最多 28,000 个请求——8000 个陈旧，外加缺口补抓的
+     20,000 个 `GAP_BUDGET`。用户看着 8000 做容量预算，跑出来三倍半；中断时也分不清
+     是没跑完还是本来就该跑这么多。同时「什么算该重取」有四份写法：`fetch-sizes` 与
+     `fetch-readme` 各在命令里拼一遍候选，`sizes.stale_ids` 与 `readme.stale_readme_ids`
+     / `missing_readme_ids` 各一份判据，体检里还有第三处逐字抄来的 join。改一份，另外
+     三份不报错、不变红，只在事故里显形（11-20 那次：体检 30 项全 ok，整层落后几千个）。
+
+     收进 `acquire/candidates.py`：`EnrichPolicy(table, evidence, fresh_states,
+     resolved_states, retry_states)` 只声明「这张表怎么算新鲜」，算法只一份；
+     `refresh_candidates(current, existing, policy, budget=, gap_budget=)` 返回
+     `Candidates(picked, stale, gap, truncated, deferred)`。
+
+     - **名额是总数**：`budget` 是这一轮最多发多少个请求。陈旧先吃（开关叫 `--changed`，
+       它命名的就是陈旧），余额给缺口；`budget=None`（`--changed-all`）表示陈旧全取，
+       缺口此时受 `gap_budget` 单独限制。
+     - **明细不截断**：`stale` / `gap` 是真实欠账，体检要的是它，不是「今天排了多少」。
+       被挡下的数量走 `truncated` / `deferred` 并打进摘要——排了没排完必须说出来。
+     - **检索口径跟着同一函数走**：`_readme_freshness`、`_field_freshness`、`_enrich_lag`
+       三处全部改调它，文案统一「陈旧 / 缺口」。
+
+     有意带出的行为变化：
+
+     - `error` 行从此可见。readme 表里 248 行 `error` 此前两头不落地——陈旧判据只挑
+       `ok`/`absent`，缺口判据只数「没有行」的——既不会被重取，也不会被体检报出。
+     - `fetch-sizes` 的陈旧判据改用**含残留分片**的 `existing`：分片里的行若已是当前
+       版本，就不该因为正式表还是旧行而重抓一次（`readme` 早就这么做了）。
+     - `--changed N` 的请求量从最多 `N + 20,000` 降到 `N`。链上用的是 `--changed-all`，
+       不受影响；手工限额的人从此按名义值兑现。
+
+     **通则**：判据只要有两个消费方，就必须是同一个函数——「各抄一份、注释里写同步」
+     不构成约束，抄写不会报错，漂移只在事故里显形。#146 / #151 / #154 与本条同形：
+     凡两处判同一件事，先问「能不能只剩一处」。

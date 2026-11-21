@@ -31,8 +31,6 @@ from hf_data_crawl.acquire.readme import (
     RateLimiter,
     ReadmeFetcher,
     keep_previous_ok,
-    missing_readme_ids,
-    stale_readme_ids,
 )
 from hf_data_crawl.ops.cli import SELF_LOCKED_COMMANDS, WRITE_COMMANDS, main
 from hf_data_crawl.pipeline import raw
@@ -298,57 +296,6 @@ def test_refresh里的id一律重抓() -> None:
 
 
 # ---------------------------------------------------------------- 陈旧与覆盖
-
-
-def test_陈旧按sha判定且不把denied算进来() -> None:
-    current = pl.DataFrame(
-        {
-            "id": ["acme/a", "acme/b", "acme/c"],
-            "sha": ["new", "same", "new"],
-            # current 自己也有 status，判据若取错列就会静默变成「永远无陈旧」。
-            "status": ["active", "active", "active"],
-            "downloads": [1, 2, 3],
-        }
-    )
-    existing = existing_frame(
-        {"id": "acme/a", "status": "ok", "source_sha": "old"},
-        {"id": "acme/b", "status": "ok", "source_sha": "same"},
-        {"id": "acme/c", "status": "denied", "source_sha": "old"},
-    )
-
-    stale = stale_readme_ids(current, existing)
-
-    assert set(stale["id"].to_list()) == {"acme/a"}
-
-
-def test_旧行没有source_sha算陈旧() -> None:
-    current = pl.DataFrame({"id": ["acme/a"], "sha": ["new"], "status": ["active"]})
-    existing = existing_frame({"id": "acme/a", "status": "ok", "source_sha": None})
-
-    assert stale_readme_ids(current, existing)["id"].to_list() == ["acme/a"]
-
-
-def test_无记录的库算缺口() -> None:
-    """`--changed` 的候选是 inner join，从没抓过的库永远进不来。
-
-    2026-11-19 实测：2,945 个库卡在这里，而 `size` 的同类问题早就有缺口补抓。
-    """
-    current = pl.DataFrame({"id": ["acme/a", "acme/b", "acme/c"]})
-    existing = existing_frame({"id": "acme/a", "status": "ok"})
-
-    assert set(missing_readme_ids(current, existing)["id"].to_list()) == {"acme/b", "acme/c"}
-
-
-def test_error算缺口而denied不算() -> None:
-    """`error` 不是结论（下次该重试）；`denied` 是结论，只在 `--retry-denied` 时重试。"""
-    current = pl.DataFrame({"id": ["acme/a", "acme/b", "acme/c"]})
-    existing = existing_frame(
-        {"id": "acme/a", "status": "error"},
-        {"id": "acme/b", "status": "denied"},
-        {"id": "acme/c", "status": "absent"},
-    )
-
-    assert set(missing_readme_ids(current, existing)["id"].to_list()) == {"acme/a"}
 
 
 def test_临时失败不覆盖已拿到的全文() -> None:

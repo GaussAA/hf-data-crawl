@@ -29,6 +29,7 @@ from .batch import (
 from .batch import (
     read_staged as read_staged_dir,
 )
+from .candidates import GAP_BUDGET, README_POLICY, SIZE_POLICY, refresh_candidates
 from .collect import Collector, CollectSummary
 from .enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
 from .files import FILES_STAGING_DIR, FileFetcher, FileSummary, HfFilesApi
@@ -47,12 +48,9 @@ from .readme import (
     ReadmeFetcher,
     ReadmeSummary,
     keep_previous_ok,
-    missing_readme_ids,
-    stale_readme_ids,
 )
 from .reconcile import PROBE_DEGRADE_AFTER, Reconciler, ReconcileSummary
 from .sizes import (
-    GAP_BUDGET,
     HfSizeApi,
     SizeFetcher,
     SizeSummary,
@@ -60,7 +58,6 @@ from .sizes import (
     clear_staged,
     protect_ok_rows,
     read_staged,
-    stale_ids,
     tail,
 )
 
@@ -307,33 +304,38 @@ def run_fetch_sizes(
         existing = pl.concat([existing, staged], how="vertical_relaxed")
 
     ordered = current.sort("downloads", descending=True, nulls_last=True)
-    # 规模是内容的函数：库改了（lastModified 越过抓取日），旧的行数就不再是事实。
-    # `--changed N` 只重取这批里的前 N 个（按下载量），不重扫全站——全量那一趟留
-    # 给周任务，这里补的是「每天都变」的那一小撮。
+    # 规模是内容的函数：库改了（最后改动时刻越过上次抓取时刻），旧行数就不再是事实。
+    # 候选集 = 陈旧 ∪ 缺口，判据只有一份（`candidates.SIZE_POLICY`）。
     #
-    # 同一趟里还要补「新库」：它们在 `size` 表里没有行，而 `stale_ids` 是 inner
-    # join，天然把它们排除在陈旧集合之外。原先这里把候选集整个换成陈旧集合，
-    # 于是新库只能等周日那趟全量——实测中位 2 天、超 7 天的有 1,322 个，
-    # 2026-11 一个月就攒下 8,726 个没有行数的新库。缺口按下载量取前
-    # `GAP_BUDGET` 个，防的是某轮全量失败后缺口涨到几十万。
+    # 缺口必须和刷新同一趟补：新库在 `size` 表里没有行，而陈旧判据是 inner join，
+    # 天然看不见它们。原先候选集整个换成陈旧集合，于是新库只能等周日那趟全量——
+    # 实测中位 2 天、超 7 天的有 1,322 个，2026-11 一个月就攒下 8,726 个没有行数的库。
+    #
+    # `--changed N` 的 N 是**这一轮的总请求数**：陈旧先吃，余额给缺口；缺口另有
+    # `GAP_BUDGET` 上限，防的是某轮全量失败后缺口涨到几十万。`--changed-all` 陈旧全取。
     refresh: set[str] = set()
     if args.changed > 0 or args.changed_all:
-        stale = stale_ids(current, store.read("size"))
-        ranked = stale.sort("downloads", descending=True, nulls_last=True)
-        # `--changed-all`：陈旧集合整个刷，不设名额——刷新链要的是「当天有多少刷多少」。
-        picked = ranked if args.changed_all else ranked.head(args.changed)
-        refresh = set(picked["id"].to_list())
-        changed = ordered.filter(pl.col("id").is_in(sorted(refresh)))
-        # `existing` 已含残留分片：上一轮中断前抓到的缺口不该再请求一遍。
-        gap = ordered.join(existing.select("id").unique(), on="id", how="anti").head(GAP_BUDGET)
-        if not changed.height and not gap.height:
+        found = refresh_candidates(
+            current,
+            existing,
+            SIZE_POLICY,
+            budget=None if args.changed_all else args.changed,
+            gap_budget=GAP_BUDGET,
+        )
+        ordered = found.picked
+        refresh = set(ordered["id"].to_list())
+        if not ordered.height:
             print("规模无陈旧、也无缺口：没有需要重取的库。")
             return Outcome({"changed": 0, "refreshed": 0, "gap": 0})
-        ordered = pl.concat([changed, gap]) if gap.height else changed
         print(
-            f"规模随变化刷新：{changed.height} 个库内容已变，"
-            f"另补 {gap.height} 个新库缺口（共 {ordered.height} 个）。"
+            f"规模随变化刷新：{found.stale.height} 个库内容已变、"
+            f"{found.gap.height} 个还没有结论，本轮取 {ordered.height} 个（按下载量）。"
         )
+        if found.truncated or found.deferred:
+            print(
+                f"另有 {found.truncated} 个陈旧、{found.deferred} 个缺口排到下一轮"
+                "（本轮名额已满）。"
+            )
 
     if args.ids:
         # 按需补：只问点名的库。全量一轮三小时，而交付实际命中的常常只有几十条。
@@ -617,31 +619,34 @@ def run_fetch_readme(
 
     ordered = current.sort("downloads", descending=True, nulls_last=True)
     # README 是仓库里的一个文件：commit 变了，旧全文就不再是当前版本。
-    # `--changed N` 只重取这批里的前 N 个（按下载量），全量那一趟留给人工择机跑。
+    # 候选集 = 陈旧 ∪ 缺口，判据只有一份（`candidates.README_POLICY`）。只看陈旧会
+    # 漏掉两类：从没记录的新库（陈旧判据是 inner join，永远看不见它们——2026-11-19
+    # 实测卡住 2,945 个）与上次 `error` 的库（`error` 不是结论，下次该重试）。
+    #
+    # `--changed N` 的 N 是这一轮的总请求数：陈旧先吃，余额给缺口。
     # `--changed-all` 单独给出也成立——刷新链只传它、不传 `--changed`，此前这个
     # 条件只看 `args.changed > 0`，整段被跳过，链上那一步就退化成「按 --top 抓头部」。
     refresh: set[str] = set()
     if args.changed > 0 or args.changed_all:
-        # 候选 = 陈旧 ∪ 缺口。只看陈旧会漏掉「从没记录」的新库——`stale_readme_ids`
-        # 是 inner join，不在表里的 id 永远进不了候选（2026-11-19 实测卡住 2,945 个）。
-        # 与 `fetch-sizes` 的缺口补抓对齐，按下载量分配这一轮的 N 个名额。
-        stale = stale_readme_ids(current, existing)
-        gap = missing_readme_ids(current, existing)
-        ranked = pl.concat(
-            [
-                stale.select("id", "downloads", "sha"),
-                gap.select("id", "downloads", "sha"),
-            ]
-        ).sort("downloads", descending=True, nulls_last=True)
-        # `--changed-all`：陈旧与缺口整个刷，不设名额（刷新链的默认形态）。
-        picked = ranked if args.changed_all else ranked.head(args.changed)
-        refresh = set(picked["id"].to_list())
+        found = refresh_candidates(
+            current,
+            existing,
+            README_POLICY,
+            budget=None if args.changed_all else args.changed,
+            gap_budget=GAP_BUDGET,
+        )
+        ordered = found.picked
+        refresh = set(ordered["id"].to_list())
         if refresh:
-            ordered = ordered.filter(pl.col("id").is_in(sorted(refresh)))
             print(
-                f"README 随内容刷新：{len(stale)} 个库 commit 已变、{len(gap)} 个还没有结论，"
-                f"本轮取 {len(refresh)} 个（按下载量）。"
+                f"README 随内容刷新：{found.stale.height} 个库 commit 已变、"
+                f"{found.gap.height} 个还没有结论，本轮取 {len(refresh)} 个（按下载量）。"
             )
+            if found.truncated or found.deferred:
+                print(
+                    f"另有 {found.truncated} 个陈旧、{found.deferred} 个缺口排到下一轮"
+                    "（本轮名额已满）。"
+                )
         elif staged.height:
             # 上一轮抓完却没来得及合并（撞锁、被杀）：分片在盘上，本轮没有新候选
             # ——分片里的行已算「有结论」，缺口也是 0。但收尾必须走到，否则分片

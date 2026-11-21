@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from typing import Any
 
 import polars as pl
@@ -22,10 +22,8 @@ from hf_data_crawl.acquire.sizes import (
     SizeFetcher,
     SizeSummary,
     protect_ok_rows,
-    stale_ids,
     tail,
 )
-from hf_data_crawl.platform.tables import TIMESTAMP
 
 DAY = date(2026, 11, 4)
 
@@ -54,48 +52,6 @@ def _size_row(
         "num_columns_max": None,
         "configs": None,
     }
-
-
-def _current_row(dataset_id: str, last_modified: datetime) -> dict[str, Any]:
-    """`current` 里陈旧判据要用到的两列。"""
-    return {"id": dataset_id, "last_modified": last_modified}
-
-
-def test_同日再次改动的库会被判成陈旧() -> None:
-    """库在被抓取的同一天又改一次：只比日期会永久漏判。
-
-    两侧日期相等时 `last_modified.date() > snapshot_date` 恒不成立；而该行只有
-    判据成立才会被重抓，也就不会产生新的 snapshot_date，于是它永久停在旧值，
-    连 doctor 的「规模待重取」也看不见（判据与 fetch-sizes --changed 同源）。
-    """
-    stale = stale_ids(
-        pl.DataFrame(
-            [_current_row("a/x", datetime(2026, 11, 4, 18, 0, tzinfo=UTC))],
-            schema={"id": pl.Utf8, "last_modified": TIMESTAMP},
-        ),
-        pl.DataFrame(
-            [_size_row("a/x", "ok", 100, fetched_at=datetime(2026, 11, 4, 10, 0, tzinfo=UTC))],
-            schema=SIZE_SCHEMA,
-        ),
-    )
-
-    assert stale.height == 1
-
-
-def test_抓取之后没再改动的不算陈旧() -> None:
-    """收紧判据不能把「本来就是最新」的行也拖进来——那会天天白烧配额。"""
-    stale = stale_ids(
-        pl.DataFrame(
-            [_current_row("a/x", datetime(2026, 11, 4, 9, 0, tzinfo=UTC))],
-            schema={"id": pl.Utf8, "last_modified": TIMESTAMP},
-        ),
-        pl.DataFrame(
-            [_size_row("a/x", "ok", 100, fetched_at=datetime(2026, 11, 4, 10, 0, tzinfo=UTC))],
-            schema=SIZE_SCHEMA,
-        ),
-    )
-
-    assert stale.height == 0
 
 
 def test_不可用不覆盖已拿到的数字() -> None:
@@ -348,50 +304,6 @@ def test_指定的库即使已存在也会重取() -> None:
     assert summary.skipped == 0
     assert transport.calls == ["acme/ds-0"]
     assert frame.height == 1
-
-
-def test_陈旧判据只看内容晚于抓取时刻() -> None:
-    """抓取之后没再改动就不算陈旧；只比日期会让「同日二次变更」永久漏判。
-
-    这里给 `acme/same` 一个晚于 `last_modified` 的 `fetched_at`，表示「那次改动
-    已经包含在本次抓取里」；`acme/changed` 留空 `fetched_at`（加列之前的旧行），
-    判据回退成「该日零点」，所以仍然判陈旧——升级后第一轮会把它补抓一次。
-    """
-    current = pl.DataFrame(
-        {
-            "id": ["acme/same", "acme/changed", "acme/new", "acme/no_size"],
-            # 底库也有 `status`（active/disappeared）。两张表同名列时，过滤若取到
-            # 这一列，判据恒不成立——夹具带它，才钉得住这个坑。
-            "status": ["active"] * 4,
-            "last_modified": [
-                datetime(2026, 11, 3, 8, tzinfo=UTC),
-                datetime(2026, 11, 5, 9, tzinfo=UTC),
-                datetime(2026, 11, 9, 9, tzinfo=UTC),
-                datetime(2026, 11, 6, 9, tzinfo=UTC),
-            ],
-        },
-        schema={"id": pl.Utf8, "status": pl.Utf8, "last_modified": TIMESTAMP},
-    )
-    existing = pl.DataFrame(
-        {
-            "id": ["acme/same", "acme/changed", "acme/no_size"],
-            "snapshot_date": [date(2026, 11, 3)] * 3,
-            "fetched_at": [datetime(2026, 11, 3, 10, tzinfo=UTC), None, None],
-            "status": ["ok", "ok", "unavailable"],
-        },
-        schema={
-            "id": pl.Utf8,
-            "snapshot_date": pl.Date,
-            "fetched_at": TIMESTAMP,
-            "status": pl.Utf8,
-        },
-    )
-
-    stale = stale_ids(current, existing)
-
-    # 新库没有规模行，本就不在这条判据里——它走常规缺口补抓；
-    # unavailable 的改了 README 也变不出行数，逐日重烧只是白费预算。
-    assert stale["id"].to_list() == ["acme/changed"]
 
 
 def test_重试开关只跳过已成功的() -> None:

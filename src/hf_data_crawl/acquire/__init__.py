@@ -1,6 +1,7 @@
 """Acquire 切片公开接口：数据采集与对账。
 
-对外只有两个常量：单页上限 `MAX_LIMIT`、每轮探测上限 `PROBE_DAILY_LIMIT`。
+对外只有几个常量：单页上限 `MAX_LIMIT`、每轮探测上限 `PROBE_DAILY_LIMIT`、
+默认头部 `DEFAULT_TOP`、缺口上限 `GAP_BUDGET` 等。
 
 `Transport` 是**类型**，不是运行期对象，只在 `TYPE_CHECKING` 下导入。曾经写成
 `else: Transport = None` 并列入 `__all__`，于是 `from ..acquire import Transport`
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .candidates import GAP_BUDGET
 from .enrich import DEFAULT_TOP
 from .hf.api import MAX_LIMIT
 from .preview import DEFAULT_RATE as DEFAULT_PREVIEW_RATE
@@ -23,6 +25,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_PREVIEW_RATE",
+    "GAP_BUDGET",
     "DEFAULT_TOP",
     "MAX_LIMIT",
     "PREVIEW_TOP",
