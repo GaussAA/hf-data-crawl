@@ -22,7 +22,7 @@ from ..acquire import (
 )
 from ..delivery import Cadence, Kind
 from ..platform import ARCHIVE_AFTER_DAYS, BACKUP_KEEP_DAYS, REPLAY_WINDOW_DAYS
-from ..platform.presets import list_presets
+from ..platform.presets import DEFAULT_PRESET_NAME, get_preset, list_presets
 from ..query import BOARDS
 from .refresh import DEFAULT_BUDGET_HOURS, DEFAULT_LAUNCH_HOURS
 
@@ -62,6 +62,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    # 帮助里的数值一律从预设表取：手抄一份的后果是「不传 preset 得 3、传 default
+    # 得 5」——同一个词两种行为，而 help 只说了其中一种。
+    default_preset = get_preset(DEFAULT_PRESET_NAME)
     collect = subparsers.add_parser("collect", help="日增量采集")
     collect.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
     collect.add_argument("--limit", type=int, default=MAX_LIMIT, help="每页条数，上限 1000")
@@ -69,13 +72,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-pages",
         type=int,
         default=None,
-        help="本轮最多抓几页（有界试跑）；0 表示不设上限，扫到末页",
+        help=(
+            f"本轮最多抓几页（有界试跑）；0 表示不设上限，扫到末页。"
+            f"不指定时取预设值（{DEFAULT_PRESET_NAME} 为 {default_preset.max_pages} 页）；"
+            "--full-scan 时不受此限——它说的就是扫到末页"
+        ),
     )
     collect.add_argument(
         "--pages-without-new",
         type=int,
         default=None,
-        help="连续多少页无新记录即判定到达水位线。默认 3（--preset 可覆盖）",
+        help=(
+            f"连续多少页无新记录即判定到达水位线。不指定时取预设值"
+            f"（{DEFAULT_PRESET_NAME} 为 {default_preset.pages_without_new} 页）"
+        ),
     )
     collect.add_argument(
         "--full-scan",
@@ -90,7 +100,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "使用预设配置，只填未显式指定的参数（--refresh-top 等显式值不会被覆盖）。"
-            "可选: default(推荐), aggressive(高新鲜度), maximum(需异步), minimal(测试), conservative(旧行为)"
+            f"不传即 {DEFAULT_PRESET_NAME}；可选: "
+            + "、".join(preset.name for preset in list_presets())
         ),
     )
     collect.add_argument(
@@ -99,7 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "额外按下载量补扫前 N 名（0 表示不补），用于让增速榜每天有新读数。"
-            "默认 5000（--preset 可覆盖）"
+            f"不指定时取预设值（{DEFAULT_PRESET_NAME} 为 {default_preset.refresh_top:,}）"
         ),
     )
 

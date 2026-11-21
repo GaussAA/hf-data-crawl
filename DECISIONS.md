@@ -2758,3 +2758,29 @@
 
      **通则**：把「知识」从循环里搬到声明里——分区是常量、读法是算法。搬家之后，
      「这里为什么是 500」不再需要读一遍循环才看得见。
+
+159. **「默认」只能有一处定义**（2026-11-21，collect 的两套默认值合一）：不传 `--preset`
+     与 `--preset default` 此前给出三个不同的答案——`pages_without_new` 3 对 5、
+     `max_pages` `None`（扫到末页）对 100，只有 `refresh_top` 恰好相同。同一个词两条
+     路径，命令行上没有任何提示；help 写的是「默认 3（--preset 可覆盖）」，只说了其中
+     一条。根因是命令层另有一套游离常量 `DEFAULT_REFRESH_TOP` / `DEFAULT_PAGES_WITHOUT_NEW`，
+     与 `PRESETS["default"]` 各写一份——改一处不报错，只是行为悄悄变（#155 同形）。
+
+     收成一处：删掉两个游离常量，`DEFAULT_PRESET_NAME` 进 `presets.py`（并在 import 期
+     校验它确实在登记表里），`apply_collect_defaults` 不传 preset 就取它；help 的数值
+     一律从 `get_preset(DEFAULT_PRESET_NAME)` 取，不再手抄（`README` 里手抄的
+     `--pages-without-new 3`、`--refresh-top 20000` 也是同一个毛病，一处早已漂移）。
+
+     **但 `--full-scan` 必须从页数上限里豁免**：它说的就是「扫到末页」，与「最多 100 页」
+     互斥。链上跑的正是 `collect --full-scan`（不传 preset），若它继承 default 的 100 页，
+     `stopped_reason` 会记成 `max_pages`，而刷新链只认 `end`（`ops/refresh.py`）——整条链
+     的下游全部跳过，每天只采约 10 万条，且不报错。故：用户显式给的 `--max-pages` 照旧
+     尊重（那是他要的有界试跑），没给且带 `--full-scan` 时不填预设值。
+
+     有意带出的行为变化：**裸跑 `collect` 从此最多 100 页**（此前靠水位线停；无水位线时
+     会扫到末页）。首轮建库本就该用 `--full-scan`——那是文档里「扫到末页」的唯一入口，
+     现在它还是唯一不受页数约束的入口。另：`apply_collect_defaults` 现在总会打印
+     「使用预设: …」，裸跑也看得见自己实际用的是哪一套。
+
+     **通则**：一个词若有两个消费者（命令层与帮助），它就只能有一个定义；抄写不构成
+     约束，抄写的副本也不会跟着改。#146 / #151 / #155 / #158 与本条同形。

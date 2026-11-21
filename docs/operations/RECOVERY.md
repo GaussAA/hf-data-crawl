@@ -65,6 +65,9 @@ rm data/state/collect-watermark.txt
 uv run hf-data-crawl collect --pages-without-new 5
 ```
 
+`--pages-without-new` 显式写出来是刻意的：恢复时不吃默认值，将来 `default` 预设调整
+水位线也不会连带改掉这条恢复路径。
+
 ### 5. 锁文件冲突
 
 **症状**：

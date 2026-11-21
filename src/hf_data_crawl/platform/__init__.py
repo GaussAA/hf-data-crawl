@@ -15,7 +15,7 @@ from .atomic import replace, write_bytes, write_csv, write_parquet, write_text
 from .coerce import as_bool, as_datetime, as_float, as_int, as_json, as_list, as_text
 from .env import load_env_file
 from .lock import LockBusy, exclusive, read_holder
-from .presets import get_preset
+from .presets import DEFAULT_PRESET_NAME, get_preset
 from .retention import (
     ARCHIVE_AFTER_DAYS,
     BACKUP_KEEP_DAYS,
@@ -114,6 +114,7 @@ __all__ = [
     "LockBusy",
     "read_holder",
     # 采集预设与 .env
+    "DEFAULT_PRESET_NAME",
     "get_preset",
     "load_env_file",
 ]

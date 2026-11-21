@@ -27,6 +27,12 @@ class CollectPreset:
     pages_without_new: int
 
 
+#: 不传 `--preset` 时用的预设。**「默认」只在这一处定义**：命令层的填空与命令行
+#: 帮助都从它取数。此前命令层另有一套游离默认值（`DEFAULT_REFRESH_TOP` 等），
+#: 于是「不传」与「传 default」在同一参数上给出两个答案。
+DEFAULT_PRESET_NAME = "default"
+
+
 #: 预设配置字典
 PRESETS: dict[str, CollectPreset] = {
     "default": CollectPreset(
@@ -92,3 +98,8 @@ def list_presets() -> list[CollectPreset]:
         预设配置列表
     """
     return list(PRESETS.values())
+
+
+if DEFAULT_PRESET_NAME not in PRESETS:
+    # 改名或删表时立刻炸，而不是等到有人裸跑 `collect` 才发现「默认」指不到东西。
+    raise RuntimeError(f"默认预设 {DEFAULT_PRESET_NAME!r} 不在登记表里：{', '.join(PRESETS)}")

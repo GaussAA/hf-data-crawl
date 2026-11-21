@@ -24,7 +24,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 
 | 命令 | 作用 | 联网 |
 |---|---|---|
-| `collect` | 日增量：按 `lastModified` 倒序扫到水位线；`--full-scan` 忽略水位线扫到末页（刷新链用，约 1,140 页） | 是 |
+| `collect` | 日增量：按 `lastModified` 倒序扫到水位线；`--full-scan` 忽略水位线扫到末页、且不受页数上限约束（刷新链用，约 1,140 页）。不传 `--preset` 就是 `default` 预设（100 页 / 头部 5,000 / 水位线 5 页）——同一个词只有一种行为 | 是 |
 | `enrich` | 按下载量取头部补抓 `cardData`（标签、config/split 明细、行数列数）；`--ids a,b,c` 按需补（上限 200） | 是 |
 | `fetch-sizes` | 经 datasets-server 补规模与列数（`num_rows` / `num_columns_max`）；`--changed N` 是这一轮的总请求数（候选＝内容已变 ∪ 还没有结论，陈旧优先，余额补缺口），`--top 0` 表示全量（按 `current` 实际行数，不写死常量），`--ids a,b,c` 只补点名的库（上限 200，忽略 `--top`） | 是 |
 | `fetch-files` | 按下载量取头部，经 `/tree/main` 补文件清单汇总（试点：默认 1000；`--top N` 是这一轮的总请求数——先算缺口再截断，已抓过的不占名额）；`--ids a,b,c` 只补点名的库（上限 200，忽略 `--top`） | 是 |
@@ -46,7 +46,7 @@ uv run hf-data-crawl report                     # 生成 data/reports/dashboard.
 常用参数：
 
 ```bash
-hf-data-crawl collect      [--date YYYY-MM-DD] [--limit 1000] [--max-pages N] [--pages-without-new 3] [--preset NAME] [--refresh-top 20000] [--cards] [--card-pages 200] [--skip-if-done] [--dry-run]
+hf-data-crawl collect      [--date YYYY-MM-DD] [--limit 1000] [--max-pages N] [--pages-without-new N] [--preset NAME] [--refresh-top N] [--cards] [--card-pages 200] [--skip-if-done] [--dry-run]
 hf-data-crawl enrich       [--date YYYY-MM-DD] [--top 20000] [--ids a,b,c] [--limit 1000]
 hf-data-crawl fetch-sizes  [--date YYYY-MM-DD] [--top 20000] [--changed N] [--ids a,b,c] [--workers 16] [--retry-unavailable]
 hf-data-crawl fetch-files  [--date YYYY-MM-DD] [--top 1000] [--ids a,b,c] [--workers 8] [--retry-unavailable] [--timeout 30] [--max-retries 1] [--max-pages 1] [--refresh-truncated]

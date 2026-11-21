@@ -27,6 +27,7 @@
 | **Card Config** | 卡片里一个配置（子集）及其 split 明细，带行数、字节、列结构 | 不是数据集本身；一个 Dataset 可有数十个 Config |
 | **Dataset Size** | datasets-server 给出的转换后规模（`num_rows` / `num_columns` / 内存字节） | 不是仓库字节（`mainSize`），也不是原始文件大小 |
 | **状态分区**（`StatusPolicy`） | 一张端点自己的「状态码怎么读」：`retryable`（可重试）与 `permanent`（终态 → 落库的 `status`）。两者互斥，由 `acquire.hf.retry` 校验；同一个 500 在 `/size` 是终态、在其余端点是瞬时故障 | 不是通用重试策略——扫描/探测那条路读的是 `RateLimit` 的 `t=`，另有一套 |
+| **预设**（preset） | `collect` 的一组参数（页数上限 / 头部补扫量 / 水位线页数）。**不传 `--preset` 就是 `default`**，由 `platform.presets.DEFAULT_PRESET_NAME` 一处定义，命令层与命令行帮助都从它取数 | 不是「不传就用一套更宽松的隐含值」——那正是 3 与 5 两个答案的由来。`--full-scan` 例外：它说的就是扫到末页，不受预设的页数上限约束 |
 | **富化**（Enrich） | 底库之上按需补齐的资产：规模（`size`）、README 全文（`readme`）、卡片、文件清单。一律按 `id` 覆盖、都是 `Origin.NETWORK`——删掉就得重抓 | 不是采集的一部分；采集只读列表接口，富化逐库补 |
 | **陈旧**（stale） | 富化行还在，但它记的版本已不是当前版本：README 的 `source_sha` 落后于 `current.sha`，规模的抓取时刻早于 `last_modified`。比什么由 `acquire.candidates.EnrichPolicy.evidence` 声明；`files` / `preview` 没有版本凭据（`evidence=NONE`），只判缺口 | 不是「抓得早」——抓得早但内容没变不算陈旧，重抓等于白烧配额 |
 | **缺口**（gap） | 没有可用结论：从没抓过，或上次是 `error`。`denied`（门禁）与 `unavailable`（上游没做 parquet 转换）是结论，不算缺口 | 不是「表里没有行」——`error` 行占了一行，但它不是结论 |

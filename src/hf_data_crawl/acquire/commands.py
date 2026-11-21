@@ -13,7 +13,7 @@ import pyarrow.parquet as pq
 from ..pipeline import readme_fields, rebuild, state
 from ..platform.env import load_env_file
 from ..platform.lock import exclusive
-from ..platform.presets import get_preset
+from ..platform.presets import DEFAULT_PRESET_NAME, get_preset
 from ..platform.runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs
 from ..platform.store import DatasetStore
 from ..platform.tables import FILES_SCHEMA, README_FIELDS_SCHEMA, README_SCHEMA
@@ -121,33 +121,33 @@ def _collected_today(store: DatasetStore, snapshot: date) -> bool:
     return False
 
 
-#: 未给 `--refresh-top` 时补扫的头部数量。给这个默认值是为了让增速榜每天有新读数：
-#: 只靠 `lastModified` 水位线的话，下载量涨了但文件没变的库永远拿不到第二个观测点。
-DEFAULT_REFRESH_TOP = 5000
-
-#: 未给 `--pages-without-new` 时，连续多少页无新记录即判定到达水位线。
-DEFAULT_PAGES_WITHOUT_NEW = 3
-
-
 def apply_collect_defaults(args: argparse.Namespace) -> None:
-    """把预设与默认值填进 `args`；**只填空位，一个显式参数都不改**。
+    """把预设填进 `args`；**只填空位，一个显式参数都不改**。
 
-    早先的写法用「值是否等于默认值」来判断用户有没有指定，于是 `--refresh-top 5000`
-    （恰好等于当时的默认值）会被预设悄悄换掉，命令行上还看不出任何提示。argparse
-    本身分不清「没给」与「给了默认值」，所以只能让这两个参数没有默认值——`None`
-    才是可靠的哨兵。
+    不传 `--preset` 就是 `default` 预设——同一个词只有一种行为。此前这里另有一套
+    游离的默认值（`refresh_top=5000`、`pages_without_new=3`），于是「不传」与
+    「传 default」在同一个参数上给出 3 与 5 两个答案，且命令行上没有任何提示；
+    `max_pages` 更是 `None`（扫到末页）对 100。默认值分居两处，改一处不会报错。
+
+    早先的写法还用「值是否等于默认值」判断用户有没有指定，于是 `--refresh-top 5000`
+    （恰好等于当时的默认值）会被预设悄悄换掉。argparse 分不清「没给」与「给了
+    默认值」，所以这几个参数一律没有 argparse 默认值——`None` 才是可靠的哨兵。
+
+    `--full-scan` 与页数上限是**互斥语义**：前者说的就是「扫到末页」，后者是
+    「最多这么多页」。用户只给了 `--full-scan`（链上正是这样跑的），页数护栏就必须
+    让位——否则预设的 100 页会把它截断，`stopped_reason` 记成 `max_pages`，而刷新链
+    只认 `end`（见 `ops/refresh.py`），整条链的下游会全部跳过，且不报错。
+    用户显式给了 `--max-pages` 则照旧尊重：那是他自己要的有界试跑。
     """
-    preset = get_preset(args.preset) if args.preset else None
-    if preset is not None:
-        print(f"使用预设: {preset.name} - {preset.description}")
-    if args.max_pages is None and preset is not None:
+    preset = get_preset(args.preset if args.preset else DEFAULT_PRESET_NAME)
+    # 说出来：裸跑也是在用某个预设，不该只有显式 `--preset` 才看得见。
+    print(f"使用预设: {preset.name} - {preset.description}")
+    if args.max_pages is None and not args.full_scan:
         args.max_pages = preset.max_pages
     if args.refresh_top is None:
-        args.refresh_top = preset.refresh_top if preset is not None else DEFAULT_REFRESH_TOP
+        args.refresh_top = preset.refresh_top
     if args.pages_without_new is None:
-        args.pages_without_new = (
-            preset.pages_without_new if preset is not None else DEFAULT_PAGES_WITHOUT_NEW
-        )
+        args.pages_without_new = preset.pages_without_new
 
 
 def run_collect(
