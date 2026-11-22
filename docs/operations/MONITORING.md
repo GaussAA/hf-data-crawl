@@ -208,12 +208,17 @@ uv run python -c "from pathlib import Path; from hf_data_crawl.pipeline.raw impo
 ② 并行   reconcile ‖ fetch-sizes --changed-all
                     ‖ fetch-readme --changed-all
 ③ 串行   parse-readme → export-wide（sizes 合并后即跑）→ report → request run-due → archive → prune → doctor
+④ 并行   fetch-files --top 0 ‖ fetch-preview --top 0          （两者都带 --until 00:20）
 ```
 
-**`fetch-files` 与 `fetch-preview` 不在链上**（DECISIONS #149，2026-11-20 起）：两者
-都是按需取用的富化资产，全量一轮要几百 GB 下载与几十小时，塞进每日窗口只会挤掉
-采集。要跑就手动跑，命令见 `README.md`；它们已不在 `STEP_NAMES` 里，
-`refresh --skip` / `--only` 都不接受这两个名字。
+**第 ④ 段是兜底**（DECISIONS #177，2026-11-23）：`fetch-files` 与 `fetch-preview` 曾在
+2026-11-20 被移出链（DECISIONS #149），代价是它们永久停摆——没人会天天手动跑几十小时
+的任务。现在挂在链尾：`--top 0` 缺口全取，抓满后自然退化成只刷陈旧；`--until 00:20`
+钉死收工点，赶在次日 00:30 的 `collect` 之前让出同一个 `api` 桶。**这一段不套启动窗口**
+（链越忙它越晚开始，而那正是它的用途），也**不套预算**，只有自己的死线管它。
+
+到点收工记**退出码 0**，摘要写「到点收工（--until）」；它只是没跑完，不是失败——记成
+失败会让下面那套 `blocked` / `failed` 判据失真。
 
 依赖与并发由**编排器**表达，不由钟点表达；前置失败时下游记 `[跳过]`，不相关的
 并行分支照常跑完。**09:00 软边界**：之后不再启动新的抓取，未完成的步骤次日从

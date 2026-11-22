@@ -11,6 +11,7 @@ import polars as pl
 import pyarrow.parquet as pq
 
 from ..pipeline import readme_fields, rebuild, state
+from ..platform.deadline import DeadlineError, deadline_epoch
 from ..platform.env import load_env_file
 from ..platform.lock import exclusive
 from ..platform.presets import DEFAULT_PRESET_NAME, get_preset
@@ -402,6 +403,11 @@ def run_fetch_preview(
     只抓 `size` 表里 `status=ok` 的库——没有 viewer 的库（14.25%）连请求都不该发。
     """
     snapshot = _snapshot(args)
+    try:
+        deadline = _deadline_of(args)
+    except DeadlineError as error:
+        print(f"失败：{error}")
+        return Outcome({"error": "until"}, code=1, reason=str(error))
     current = state.read_current(store)
     if current.height == 0:
         print("尚无采集数据，请先运行 `hf-data-crawl collect`。")
@@ -471,6 +477,7 @@ def run_fetch_preview(
         candidates,
         flush=writer.write,
         flush_every=args.flush_every,
+        deadline=deadline,
     )
     # `flush` 只在攒满一批时触发；尾巴必须补写，否则合并时漏掉最后几条。
     if frame.height > writer.flushed:
@@ -499,6 +506,18 @@ def _print_preview(summary: PreviewSummary, total_rows: int) -> None:
         f"限流等待 {summary.throttles} 次；"
         f"preview 表现有 {total_rows} 行（{summary.elapsed_seconds:.0f}s）"
     )
+    if summary.stopped == "deadline":
+        print("  到点收工（--until）：候选未跑完，已抓的全部有效，下次接着抓")
+
+
+def _deadline_of(args: argparse.Namespace) -> float | None:
+    """`--until` 转 epoch 秒；未给（含测试直接构造的 Namespace）表示不限时。
+
+    解析失败抛 `DeadlineError`，由命令层转成 `code=1`。不静默落回「不限时」的
+    理由：一个写错的时刻会让长跑一直跑下去，而它存在的唯一目的就是让长跑停下来。
+    """
+    spec = getattr(args, "until", None)
+    return deadline_epoch(spec) if spec else None
 
 
 def run_fetch_files(
@@ -515,6 +534,11 @@ def run_fetch_files(
     现在结果先落 `.staging/files/` 的原子分片，收尾才用短锁并入 `enrich/files.parquet`。
     """
     snapshot = _snapshot(args)
+    try:
+        deadline = _deadline_of(args)
+    except DeadlineError as error:
+        print(f"失败：{error}")
+        return Outcome({"error": "until"}, code=1, reason=str(error))
     # 这条守卫只对分页端点成立：`detail` 一次取到 10 万条，截断只剩「撞到上限」这一种，
     # 与页数无关；拿它去拦 detail 会把正常请求误拒。用 getattr 兼容直接构造 Namespace
     # 的调用方（测试与内部复用），缺省值与 parser 的默认值一致。
@@ -616,6 +640,7 @@ def run_fetch_files(
         # 边跑边落暂存分片：中断时最多损失一个批次，但写入发生在锁外。
         flush=writer.write,
         flush_every=args.flush_every,
+        deadline=deadline,
     )
     # `flush` 只在攒满一批时触发；不足一批的尾巴必须补写进分片，否则合并只读
     # 分片时会漏掉它们。
@@ -922,6 +947,10 @@ def _print_files(summary: FileSummary, table_rows: int) -> None:
         f"临时失败 {summary.failed}{breakdown} · 已存跳过 {summary.skipped}"
     )
     print(f"  汇总表累计 {table_rows} 行（临时失败不入库，下次自然重试）")
+    if summary.stopped == "deadline":
+        # 措辞刻意避开「失败/中断」：到点收工是计划内的，说成失败会让人去查一个
+        # 根本不存在的问题，也会让 doctor 的告警口径失真。
+        print("  到点收工（--until）：候选未跑完，已抓的全部有效，下次接着抓")
 
 
 def run_parse_readme(

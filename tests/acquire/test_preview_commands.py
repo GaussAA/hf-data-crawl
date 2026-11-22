@@ -61,10 +61,12 @@ class FakeFetcher:
         *,
         flush: object = None,
         flush_every: int = 200,
+        deadline: float | None = None,
     ) -> tuple[PreviewSummary, pl.DataFrame]:
         self.seen = list(candidates)
         self.flush = flush
         self.flush_every = flush_every
+        self.deadline = deadline
         return self.summary, self.frame
 
 

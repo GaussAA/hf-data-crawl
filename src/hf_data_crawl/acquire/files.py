@@ -162,6 +162,9 @@ class FileSummary:
     elapsed_seconds: float
     #: 临时失败按原因分类的计数（键取自 `FAILURE_REASONS`）。只统计不入库的那些。
     failed_reasons: dict[str, int] = field(default_factory=dict)
+    #: 提前收工的原因。目前只有 `"deadline"`（到了 `--until` 的钟点）。
+    #: 它**不是失败**：已抓的全部有效，只是这一轮没把候选跑完。
+    stopped: str | None = None
 
 
 def next_cursor(headers: Mapping[str, str]) -> str | None:
@@ -517,6 +520,8 @@ class FileFetcher:
         existing: pl.DataFrame | None = None,
         flush: Callable[[pl.DataFrame], object] | None = None,
         flush_every: int = 100,
+        deadline: float | None = None,
+        clock: Callable[[], float] = time.time,
     ) -> tuple[FileSummary, pl.DataFrame]:
         """返回 (摘要, 结果表)。已处理的 id 默认跳过，实现断点续跑。
 
@@ -544,7 +549,7 @@ class FileFetcher:
             traffic.append(result.payload_bytes)
             return result
 
-        results, frame = collect_rows(
+        results, frame, stopped = collect_rows(
             pending=pending,
             fetch=fetch,
             schema=FILES_SCHEMA,
@@ -553,6 +558,8 @@ class FileFetcher:
             flush_every=flush_every,
             progress=self._progress,
             heartbeat=self._heartbeat,
+            deadline=deadline,
+            clock=clock,
         )
         ok = sum(1 for result in results if result.status == "ok")
         unavailable = sum(1 for result in results if result.status == "unavailable")
@@ -584,6 +591,7 @@ class FileFetcher:
                 downloaded_bytes=sum(traffic),
                 elapsed_seconds=time.monotonic() - started,
                 failed_reasons=failed_reasons,
+                stopped=stopped,
             ),
             frame,
         )

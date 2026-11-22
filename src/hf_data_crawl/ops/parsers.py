@@ -39,6 +39,14 @@ SNAPSHOT_LOCK_WAIT = 60.0
 #: 也不要卡住；等不到锁会照常体检，并把跨表检查降级为提示。
 DOCTOR_LOCK_WAIT = 2.0
 
+#: `--until` 的统一说明。files 与 preview 共用一份，免得两条链路的说法漂开。
+UNTIL_HELP = (
+    "跑到几点收工：`HH:MM`（今天这个点，已过则取明天）或 ISO 时刻。"
+    "到点后不再投新请求，已发出的跑完照常落盘，退出码仍为 0——"
+    "它不是失败，只是这一轮没跑完，次日接着抓。刷新链用它把长跑卡在次日 00:20，"
+    "给 00:30 的 collect 让出同一个 api 桶"
+)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -397,6 +405,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="按需补：只补这些 id（逗号分隔，上限 200，忽略 --top）",
     )
+    files.add_argument("--until", default=None, help=UNTIL_HELP)
     files.add_argument(
         "--via",
         choices=("detail", "tree"),
@@ -577,6 +586,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=200,
         help="每攒多少条落一次暂存分片（默认 200）。中断后重跑据此续抓，不丢已抓到的",
     )
+    preview.add_argument("--until", default=None, help=UNTIL_HELP)
     doctor = subparsers.add_parser("doctor", help="体检：任务是否按时、Raw 是否断日、有无残留文件")
     # 未显式给时沿用全局默认；SUPPRESS 避免把全局 --lock-wait 覆盖回 None。
     doctor.add_argument(

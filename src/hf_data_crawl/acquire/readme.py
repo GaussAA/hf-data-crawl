@@ -301,7 +301,7 @@ class ReadmeFetcher:
         # 全文一条几 KB、全量上百万条：给了 flush（即真的有落盘去处）就走流式，
         # 不在内存里攒结果；否则全量跑会在收尾时占掉几个 GB。
         stream = flush is not None
-        _, frame = collect_rows(
+        _, frame, _ = collect_rows(
             pending=pending,
             fetch=lambda dataset_id: self._api.fetch(
                 dataset_id, snapshot_date, sha_by_id.get(dataset_id)

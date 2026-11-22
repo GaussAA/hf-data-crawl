@@ -182,6 +182,9 @@ class PreviewSummary:
     aborted: bool = False
     #: 本轮撞了几次 429（设了 --throttle-wait 时它们只是等待，不算失败）。
     throttles: int = 0
+    #: 提前收工的原因。目前只有 `"deadline"`：到了 `--until` 的钟点，不再投新任务。
+    #: 与 `aborted` 分开记——撞限流是「被迫中断」，到点是「按计划收工」。
+    stopped: str | None = None
 
 
 class HfPreviewApi:
@@ -460,14 +463,17 @@ class PreviewFetcher:
         *,
         flush: Callable[[pl.DataFrame], object] | None = None,
         flush_every: int = PREVIEW_FLUSH_EVERY,
+        deadline: float | None = None,
+        clock: Callable[[], float] = time.time,
     ) -> tuple[PreviewSummary, pl.DataFrame]:
         started = time.monotonic()
         # `collect_rows` 会把异常直接抛出来，那时它拼好的表也一起没了；用
         # `on_result` 自己留一份，撞限流中止时还能把已取到的行交出去。
         results: list[PreviewResult] = []
         aborted = False
+        stopped: str | None = None
         try:
-            _, frame = collect_rows(
+            _, frame, stopped = collect_rows(
                 pending=dataset_ids,
                 fetch=lambda item: self._api.fetch(item, snapshot_date),
                 schema=PREVIEW_SCHEMA,
@@ -477,6 +483,8 @@ class PreviewFetcher:
                 progress=self._progress,
                 heartbeat=self._heartbeat,
                 on_result=results.append,
+                deadline=deadline,
+                clock=clock,
             )
         except Throttled:
             # 按 IP 限流：继续打只会延长封禁。已取到的行仍然有效，交给调用方并入。
@@ -492,6 +500,7 @@ class PreviewFetcher:
             elapsed_seconds=time.monotonic() - started,
             aborted=aborted,
             throttles=self._api.throttles,
+            stopped=stopped,
         )
         return summary, frame
 

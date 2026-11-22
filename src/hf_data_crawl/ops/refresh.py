@@ -7,8 +7,8 @@
 三件事：**排顺序、开并发、判续跑**，每一步仍是一次独立的 `hf-data-crawl` 子进程
 ——锁与台账由它自己管，并发段里各步骤不会互相踩。
 
-三段式（ADR-0008）
-==================
+四段式（ADR-0008；④ 于 2026-11-23 增补）
+==========================================
 ① 串行头：`compact` → `collect --full-scan` → `build --stale`
    跑完这一步，`current` 才叫「采集定稿」（DECISIONS #134）。锁外抓取的候选集
    取自 `current`，早于它启动就会漏掉当天新增的库。
@@ -16,13 +16,21 @@
 ② 并行段：`reconcile`（持锁全站扫）‖ `fetch-sizes` / `fetch-readme`（锁外抓取）。
    三段各走不同端点，限速互不干扰。
 
-`fetch-files` 与 `fetch-preview` **不在链上**（2026-11-20 起）：两者都是「按下载量
-取头部、按需补」的富化资产，全量跑一轮要几百 GB 下载与几十小时，把它塞进每日窗口
-只会挤掉采集本身，还隔着锁与配额互相拖慢。改为**自由抓取**——只在人明确要的时候
-跑 `fetch-files` / `fetch-preview`（两条都支持 `--top 0` 跑全量、暂存分片续抓）。
-
 ③ 串行尾：`export-wide`（`sizes` 合并后即跑，契约里的 `server_*` 只依赖它）→
    `request run-due` → `archive` → `prune` → `doctor`。
+
+④ 兜底段：`fetch-files` ‖ `fetch-preview`，`--top 0` 不限名额，`--until 00:20` 收工。
+
+`fetch-files` 与 `fetch-preview` 曾在 2026-11-20 被移出链：两者都是「按下载量取头部」
+的富化资产，全量一轮要几百 GB 下载与几十小时，塞进每日窗口只会挤掉采集本身。当时
+的处理是改成**纯手工**。2026-11-23 以**末段兜底**的方式挂回来——位置在整条链之后，
+所以永远不挤采集；`--top 0` 表达「有多少剩余时间就填多少」；`--until 00:20` 钉死
+收工点，赶在次日 00:30 的 `collect` 之前让出同一个 `api` 桶。抓满之后缺口为空，
+`--top 0` 自然退化成「只刷陈旧」，与 `sizes` / `readme` 的日常增量是同一个语义，
+不必再加开关。
+
+这一段**不套启动窗口**（见 `execute` 里的说明）：链跑得越久它越晚开始，而那正是
+它存在的意义。
 
 续跑与边界
 ==========
@@ -59,6 +67,14 @@ from ..platform.store import DatasetStore
 DEFAULT_BUDGET_HOURS = 8.5
 #: 到这个点之后不再启动新的抓取，只等正在跑的收尾。
 DEFAULT_LAUNCH_HOURS = 8.0
+
+#: 兜底段的收工钟点（次日）。
+#:
+#: 必须早于次日 00:30 的链起点：`collect --full-scan` 打 `huggingface.co/api`，
+#: 与 `fetch-files` 是**同一个桶**（1000 次 / 300 秒）。两个进程各持一份节流额度，
+#: 合起来就是两倍超发，双方一起 429、各自退避几十秒——2026-11-22 实测过这个形状。
+#: 留 10 分钟，是给收尾合并的短锁（它要把几千个分片并进 `enrich/files.parquet`）。
+FILL_UNTIL = "00:20"
 #: 子进程等锁的上限：并行段里 reconcile 持锁，锁外抓取的收尾合并要排在它后面。
 LOCK_WAIT_SECONDS = 1800.0
 #: 日志目录（相对数据根），与 `scripts/_common.ps1` 的 `data/logs` 是同一处。
@@ -150,6 +166,39 @@ SERIAL_TAIL: tuple[Step, ...] = (
     Step("archive", ("archive",), needs=("build",)),
     Step("prune", ("prune",)),
     Step("doctor", ("doctor",)),
+)
+
+#: ④ 兜底段：把链外的时间用来填 files 与 preview 的缺口。
+#:
+#: 与前三段目的不同：前三段是「今天该做完的事」，做完就散；这一段是「还剩多少时间
+#: 就填多少」，所以三条约束都跟前面相反——
+#:
+#: - **不设名额**（`--top 0`）：缺口全取。抓满之后缺口为空，候选自然只剩下陈旧项，
+#:   行为就跟 `fetch-sizes --changed-all` 一样了，不需要另设开关。
+#: - **自己找死线**（`--until`）：它是唯一会跨过次日 00:30 的步骤，必须自己停。
+#: - **不套启动窗口**：链跑得越久它越晚开始，而这正是它的用途（把剩余时间用掉）。
+#:   套上 `launch_hours` 会得到反效果——最忙的那天直接跳过兜底。
+#:
+#: 两者**必须并行**：串行的话先跑的那个会吃满整个窗口，后一个一条都跑不到。
+#: 并行也不冲突：files 打 `api` 桶，preview 打 `datasets-server`（没有配额头）。
+FILL: tuple[Step, ...] = (
+    Step(
+        "files",
+        ("fetch-files", "--top", "0", "--until", FILL_UNTIL, "--workers", "12"),
+        needs=("build",),
+        # 台账记的是真跑的子命令。不写这一行，`name` 会顶上去记成 `files`，
+        # 而 cli 落盘的是 `fetch-files`——续跑判「今天跑过没有」永远对不上，
+        # 表现是「每天都重跑一遍」，输出里一个字都看不出来。
+        command="fetch-files",
+    ),
+    Step(
+        "preview",
+        # `--throttle-wait` 必须给：preview 默认「撞一次 429 就整轮中止」，手工跑
+        # 十来分钟无所谓，挂在链上要跑七八个小时，撞一次就白跑一整晚。
+        ("fetch-preview", "--top", "0", "--until", FILL_UNTIL, "--throttle-wait", "600"),
+        needs=("build",),
+        command="fetch-preview",
+    ),
 )
 
 
@@ -371,7 +420,7 @@ def decide(
 
 
 #: 全部步骤，按链上的出现顺序。`--only` 的合法名与续跑的台账映射都从这一份派生。
-ALL_STEPS: tuple[Step, ...] = (*SERIAL_HEAD, *PARALLEL, *SERIAL_TAIL)
+ALL_STEPS: tuple[Step, ...] = (*SERIAL_HEAD, *PARALLEL, *SERIAL_TAIL, *FILL)
 
 #: 全部步骤名，供 `--only` 校验。写在这里而不是扫描四个元组，是为了让拼错的步骤名
 #: 在参数解析期就报错——`--only exprot` 静默什么都不跑，比报错坏得多。
@@ -456,6 +505,34 @@ def _advance(
         announce(result)
 
 
+def _run_parallel(
+    steps: list[Step],
+    root: Path,
+    plan: Plan,
+    done: set[str],
+    failed: set[str],
+    announce: Callable[[StepResult], None],
+) -> None:
+    """并行跑一批已经决定要跑的步骤，完成一个记一个。
+
+    ② 与 ④ 两段共用这段骨架，差别只在「跑之前要不要过启动窗口」——那由调用方判，
+    因为两段的答案正好相反：② 该过（太晚了就别启动三小时的抓取），④ 不该过
+    （它本来就是吃剩余时间的）。
+    """
+    if not steps:
+        return
+    with ThreadPoolExecutor(max_workers=len(steps)) as pool:
+        futures: dict[Future[StepResult], Step] = {
+            pool.submit(run_step, step, root): step for step in steps
+        }
+        for future, _step in list(futures.items()):
+            wait([future])
+            result = future.result()
+            _record(plan, done, failed, result)
+            announce(result)
+            del futures[future]
+
+
 def execute(
     store: DatasetStore,
     *,
@@ -519,16 +596,7 @@ def execute(
                 _record(plan, done, failed, result, blocked=True)
                 announce(result)
         else:
-            with ThreadPoolExecutor(max_workers=len(batch)) as pool:
-                futures: dict[Future[StepResult], Step] = {
-                    pool.submit(run_step, step, store.root): step for step in batch
-                }
-                for future, _step in list(futures.items()):
-                    wait([future])
-                    result = future.result()
-                    _record(plan, done, failed, result)
-                    announce(result)
-                    del futures[future]
+            _run_parallel(batch, store.root, plan, done, failed, announce)
 
     # ③ 串行尾：导出、交付、清理、体检。到点的导出与交付留给次日。
     _advance(
@@ -540,6 +608,31 @@ def execute(
         decide_step,
         announce,
         budget=lambda step: step.name in {"export", "deliver"} and over_budget(),
+    )
+
+    # ④ 兜底段：files 与 preview 用剩余时间填缺口，跑到次日 `FILL_UNTIL` 为止。
+    #
+    # 刻意不判 `over_launch` / `over_budget`：`launch_hours` 的本意是「太晚了别再
+    # 启动耗时步骤，免得挤掉次日的班次」，而这一段存在的理由恰好是把那些剩余时间
+    # 用掉——套上它等于「链越忙越不填」，与设计正好相反。它自己有 `--until` 兜底，
+    # 不会跑过次日 00:30 的链起点。
+    #
+    # 依赖只挂 `build`：files 的候选来自 `current`，与导出物无关。`export` 万一
+    # 失败，不该连带把今晚的兜底也停掉——那正是唯一还能干点活的时候。
+    fill_decisions = decide(FILL, done, failed, only=only, dropped=dropped, requested=skip)
+    for decision in fill_decisions:
+        if decision.run:
+            continue
+        result = StepResult(decision.step.name, note=decision.note)
+        _record(plan, done, failed, result, blocked=decision.blocked)
+        announce(result)
+    _run_parallel(
+        [decision.step for decision in fill_decisions if decision.run],
+        store.root,
+        plan,
+        done,
+        failed,
+        announce,
     )
 
     return plan

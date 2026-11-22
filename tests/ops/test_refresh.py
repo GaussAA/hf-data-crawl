@@ -629,27 +629,60 @@ def test_跳过原因按优先级只取第一条() -> None:
     assert decision.note == "上游被 --skip 跳过"
 
 
-def test_文件清单与样例不在每日链上() -> None:
-    """`fetch-files` / `fetch-preview` 是自由抓取：每日链不该再点名它们。
+def test_文件清单与样例挂在链尾并自己找死线() -> None:
+    """两者从「纯手工」改回「末段兜底」（2026-11-23）。
 
-    两者都是「按下载量取头部」的富化资产，全量一轮几百 GB 下载、几十小时；
-    塞进每日窗口只会挤掉采集本身，还会隔着锁与 /api 配额互相拖慢。
+    塞进并行段会挤掉采集——它们是全量几十小时的富化资产。挂在链尾就没这个问题：
+    该做完的都做完了，剩下的时间才归它们。要盯的是三条：名额不设、死线自带、
+    且不能跨过次日 00:30 的链起点。
     """
-    assert "files" not in refresh.STEP_NAMES
-    assert "preview" not in refresh.STEP_NAMES
+    assert "files" in refresh.STEP_NAMES
+    assert "preview" in refresh.STEP_NAMES
 
-    commands = {step.args[0] for step in refresh.ALL_STEPS}
-    assert "fetch-files" not in commands
-    assert "fetch-preview" not in commands
+    by_name = {step.name: step for step in refresh.FILL}
+    for name in ("files", "preview"):
+        step = by_name[name]
+        assert step.args[step.args.index("--top") + 1] == "0", "--top 0 才是「不限名额」"
+        assert step.args[step.args.index("--until") + 1] == refresh.FILL_UNTIL
+        # 台账要对得上真跑的子命令，否则「今天跑过没有」永远失配，每天重跑一遍。
+        assert step.ledger == step.args[0]
+
+    assert refresh.FILL_UNTIL < "00:30", "必须赶在次日链起点之前收工"
+
+    # 不在前三段：位置本身就是「不挤采集」的保证。
+    front = (*refresh.SERIAL_HEAD, *refresh.PARALLEL, *refresh.SERIAL_TAIL)
+    assert not {step.name for step in front} & {"files", "preview"}
 
 
-def test_only点名已下线的文件清单会报未知步骤(tmp_path: Path) -> None:
-    """`--only files` 必须报错，而不是「跑完了、什么都没做」。
+def test_preview挂了长跑必须带节流等待() -> None:
+    """默认「撞一次 429 就整轮中止」：手工跑十来分钟无所谓，挂链上会白跑一整晚。"""
+    preview = next(step for step in refresh.FILL if step.name == "preview")
 
-    静默成功比报错坏得多：人会以为今天的文件清单已经补过了。
-    """
+    assert preview.args[preview.args.index("--throttle-wait") + 1] == "600"
+
+
+def test_only能点名文件清单(tmp_path: Path, monkeypatch) -> None:
+    """`--only files` 要能跑起来。它曾是被移出链的步骤，2026-11-23 挂回链尾。"""
     store = DatasetStore(tmp_path / "data")
+    calls = fake_steps(monkeypatch)
     args = Namespace(only="files", strict=False, budget_hours=8.5, launch_hours=8.0)
 
-    with pytest.raises(SystemExit, match="未知步骤名"):
-        refresh.run(args, store)
+    refresh.run(args, store)
+
+    assert calls == ["files"]
+
+
+def test_兜底段不受启动窗口限制(tmp_path: Path, monkeypatch) -> None:
+    """链跑到第 9 小时，兜底段仍必须启动——它存在的理由就是吃掉这段时间。
+
+    套上 `launch_hours` 会得到反效果：越忙的那天越跳过兜底，正好在最需要它的时候
+    缺席。并行段仍该被拦住，作对照。
+    """
+    store = DatasetStore(tmp_path / "data")
+    calls = fake_steps(monkeypatch)
+
+    refresh.execute(store, launch_hours=0.0, log=lambda _: None)
+
+    assert "files" in calls, "启动窗口不该拦住兜底段"
+    assert "preview" in calls
+    assert "sizes" not in calls, "并行段仍该被窗口拦住（对照组）"

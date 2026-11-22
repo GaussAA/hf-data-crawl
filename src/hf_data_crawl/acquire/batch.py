@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import date
@@ -76,8 +77,10 @@ def collect_rows[R: FetchResult](
     heartbeat: Callable[[int, int], None] | None = None,
     retain: bool = True,
     on_result: Callable[[R], None] | None = None,
-) -> tuple[list[R], pl.DataFrame]:
-    """并发跑完 `pending`，返回 (逐条结果, 汇总表)。
+    deadline: float | None = None,
+    clock: Callable[[], float] = time.time,
+) -> tuple[list[R], pl.DataFrame, str | None]:
+    """并发跑完 `pending`，返回 (逐条结果, 汇总表, 提前收工的原因)。
 
     有两点容易写错：
 
@@ -96,6 +99,11 @@ def collect_rows[R: FetchResult](
     `flush` 直接写盘、不在内存里攒（否则全量 README 会在收尾时占掉几个 GB），
     统计改由 `on_result` 逐条累加；此时返回的汇总表为空，尾巴那一小批也会在
     返回前写完。用 `retain=False` 必须同时给 `flush`——不给就真的把数据丢了。
+
+    `deadline` 是**墙钟 epoch 秒**（不是 monotonic）：它由命令行上的
+    `--until 00:20` 解析而来，是给人看的绝对时刻，用单调钟换算会错开进程启动前
+    的那段时间。到点后只停「投放」，池里在飞的仍会跑完并落盘——`stopped` 会返回
+    `"deadline"` 以示这一轮没跑完，调用方据此写摘要，但**不该记成失败**。
     """
     if not retain and flush is None:
         raise ValueError("retain=False 必须同时给 flush，否则结果无处可去")
@@ -121,6 +129,11 @@ def collect_rows[R: FetchResult](
         def fill() -> None:
             nonlocal cursor
             while len(waiting) < window and cursor < total:
+                # 到点就不再往池子里投新任务。已经投出去的那些照旧跑完、照旧落盘——
+                # 收工要「停投放」，不能「砍进程」，否则在飞的那十几个请求白跑，
+                # 而它们往往正是最慢、最值钱的大库。
+                if deadline is not None and clock() >= deadline:
+                    break
                 waiting.add(pool.submit(fetch, pending[cursor]))
                 cursor += 1
 
@@ -161,7 +174,10 @@ def collect_rows[R: FetchResult](
         buffer.clear()
 
     frame = pl.DataFrame(rows, schema=schema) if rows else pl.DataFrame(schema=schema)
-    return results, frame
+    # `cursor < total` 就是「还没投完」：到点那刻可能正好是最后一批，那不算提前收工，
+    # 记成 `deadline` 会让摘要里凭空多一条「没跑完」，实际一条不缺。
+    stopped = "deadline" if deadline is not None and cursor < total else None
+    return results, frame, stopped
 
 
 # ------------------------------------------------------------ 暂存分片

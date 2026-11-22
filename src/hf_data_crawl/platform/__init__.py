@@ -13,6 +13,7 @@ store 建立在 atomic 与 tables 之上，runs / retention / lock 建立在 sto
 
 from .atomic import replace, write_bytes, write_csv, write_parquet, write_text
 from .coerce import as_bool, as_datetime, as_float, as_int, as_json, as_list, as_text
+from .deadline import DeadlineError, deadline_epoch, resolve_deadline
 from .env import load_env_file
 from .lock import LockBusy, exclusive, read_holder
 from .presets import DEFAULT_PRESET_NAME, get_preset
@@ -128,4 +129,8 @@ __all__ = [
     "DEFAULT_PRESET_NAME",
     "get_preset",
     "load_env_file",
+    # 收工时刻（`--until`）
+    "resolve_deadline",
+    "deadline_epoch",
+    "DeadlineError",
 ]

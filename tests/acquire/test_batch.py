@@ -40,7 +40,7 @@ def test_一条都没完成时发心跳(monkeypatch: pytest.MonkeyPatch) -> None
         time.sleep(0.25)
         return ok(dataset_id)
 
-    results, _ = batch.collect_rows(
+    results, _, _ = batch.collect_rows(
         pending=["a", "b"],
         fetch=slow,
         schema=SCHEMA,
@@ -60,7 +60,7 @@ def test_顺利跑完时不需要心跳() -> None:
     """正常速度下不响，否则心跳就成了噪声，真出问题那行反而被淹掉。"""
     beats: list[tuple[int, int]] = []
 
-    results, frame = batch.collect_rows(
+    results, frame, _ = batch.collect_rows(
         pending=[f"acme/ds-{index}" for index in range(20)],
         fetch=ok,
         schema=SCHEMA,
@@ -109,3 +109,72 @@ def test_边跑边落库每批一次() -> None:
     )
 
     assert batches == [3, 3, 3], f"每满 flush_every 条落一次；尾巴留在返回值里：{batches}"
+
+
+# ---------------------------------------------------------------- 到点收工
+
+
+def test_到点后不再投新任务并报告原因() -> None:
+    """收工只停投放：已发出去的跑完、照常返回，`stopped` 说明这一轮没跑完。
+
+    刷新链用它把 files 卡在次日 00:20，好给 00:30 的 collect 让出同一个 api 桶。
+    若这里改成「砍进程」，在飞的那批大库（往往最慢也最值钱）就白跑了。
+    """
+    now = [0.0]
+
+    def fetch(dataset_id: str) -> FakeResult:
+        now[0] += 0.5
+        return ok(dataset_id)
+
+    results, _, stopped = batch.collect_rows(
+        pending=[f"ds-{index}" for index in range(100)],
+        fetch=fetch,
+        schema=SCHEMA,
+        workers=1,
+        deadline=2.0,
+        clock=lambda: now[0],
+    )
+
+    assert stopped == "deadline"
+    assert 0 < len(results) < 100, "到点后不该把 100 条全跑完"
+    assert len({item.row["id"] for item in results}) == len(results), "不该重复抓同一个 id"
+
+
+def test_没到点时不报stopped() -> None:
+    """跑完了却记一条「到点收工」，摘要里会凭空多一个没跑完的假象。"""
+    results, _, stopped = batch.collect_rows(
+        pending=[f"ds-{index}" for index in range(5)],
+        fetch=ok,
+        schema=SCHEMA,
+        workers=2,
+        deadline=9_999_999_999.0,
+        clock=lambda: 0.0,
+    )
+
+    assert stopped is None
+    assert len(results) == 5
+
+
+def test_到点也把已抓的落盘() -> None:
+    """到点不等于丢数据：盘上必须留下已完成的那些。"""
+    now = [0.0]
+    written: list[int] = []
+
+    def fetch(dataset_id: str) -> FakeResult:
+        now[0] += 0.5
+        return ok(dataset_id)
+
+    _, frame, stopped = batch.collect_rows(
+        pending=[f"ds-{index}" for index in range(100)],
+        fetch=fetch,
+        schema=SCHEMA,
+        workers=1,
+        flush=lambda part: written.append(part.height),
+        flush_every=1,
+        deadline=2.0,
+        clock=lambda: now[0],
+    )
+
+    assert stopped == "deadline"
+    assert written, "到点前完成的行必须已写出去"
+    assert sum(written) == frame.height

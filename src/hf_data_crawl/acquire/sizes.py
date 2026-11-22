@@ -248,7 +248,7 @@ class SizeFetcher:
         pending = [dataset_id for dataset_id in candidates if dataset_id not in done]
         skipped = len(candidates) - len(pending)
 
-        results, frame = collect_rows(
+        results, frame, _ = collect_rows(
             pending=pending,
             fetch=lambda dataset_id: self._api.fetch(dataset_id, snapshot_date),
             schema=SIZE_SCHEMA,
