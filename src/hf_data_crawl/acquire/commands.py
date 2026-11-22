@@ -512,7 +512,10 @@ def run_fetch_files(
     现在结果先落 `.staging/files/` 的原子分片，收尾才用短锁并入 `enrich/files.parquet`。
     """
     snapshot = _snapshot(args)
-    if args.refresh_truncated and args.max_pages <= 1:
+    # 这条守卫只对分页端点成立：`detail` 一次取到 10 万条，截断只剩「撞到上限」这一种，
+    # 与页数无关；拿它去拦 detail 会把正常请求误拒。用 getattr 兼容直接构造 Namespace
+    # 的调用方（测试与内部复用），缺省值与 parser 的默认值一致。
+    if getattr(args, "via", "detail") == "tree" and args.refresh_truncated and args.max_pages <= 1:
         # 页数还是一页时重抓，只会把「截断」原样重新确认一遍，白烧请求与配额。
         message = "--refresh-truncated 需配合 --max-pages>1；否则只是重新确认截断，白烧请求"
         print(f"失败：{message}")
@@ -539,6 +542,24 @@ def run_fetch_files(
             print(f"失败：{problem}")
             return Outcome({"error": "ids"}, code=1, reason=problem)
         names = ordered["id"].to_list()
+        # 点名的库若已有结论，默认按「已处理」跳过——那样 `--ids X --refresh-truncated`
+        # 永远抓不到 X，而「补一个清单没取完的库」正是最需要它的场景。显式要求重抓
+        # 时，把名单里状态匹配的 id 摘出来交给 fetcher 的 `refresh`。
+        #
+        # 注意判据落在**事实列**而不是 `status`：`truncated` 为真的行，`status` 仍是
+        # `ok`（候选语言里才把它叫 `ok_partial`）。照 status 筛会一个都匹配不到，
+        # 而命令会安静地报「已存跳过」。
+        masks: list[pl.Expr] = []
+        if args.retry_unavailable:
+            masks.append(pl.col("id").is_in(names) & (pl.col("status") == "unavailable"))
+        partial = FILES_POLICY.partial
+        if args.refresh_truncated and partial is not None and partial.column in existing.columns:
+            masks.append(pl.col("id").is_in(names) & pl.col(partial.column).fill_null(False))
+        if masks:
+            mask = masks[0]
+            for extra in masks[1:]:
+                mask = mask | extra
+            retried = existing.filter(mask).unique("id")["id"].to_list()
     else:
         # 候选 = 缺口 ∪（点名重试的结论：清单没取完的、`--retry-unavailable` 的），
         # 再按名额截断——`--top N` 是这一轮最多发多少个请求。此前它截的是底库前
@@ -574,6 +595,7 @@ def run_fetch_files(
             transport=_files_transport(transport, args.timeout),
             max_retries=args.max_retries,
             max_pages=args.max_pages,
+            mode=getattr(args, "via", "detail"),
         ),
         workers=args.workers,
         progress=lambda done, total: _progress_line(done, total, "补齐文件清单"),

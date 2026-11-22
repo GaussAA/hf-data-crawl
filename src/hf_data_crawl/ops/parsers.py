@@ -389,13 +389,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="按需补：只补这些 id（逗号分隔，上限 200，忽略 --top）",
     )
     files.add_argument(
-        "--workers", type=int, default=8, help="并发数，tree 每页虽轻仍是外网请求，保守取 8"
+        "--via",
+        choices=("detail", "tree"),
+        default="detail",
+        help=(
+            "取清单的端点：detail 走单库详情（一次拿全，文件多的库最大约 24 MB）；"
+            "tree 按页翻（每页 1000 条，文件多时要几十页）。detail 形态异常时会自动退到 tree"
+        ),
+    )
+    files.add_argument(
+        "--workers", type=int, default=8, help="并发数；两种端点都是外网请求，保守取 8"
     )
     files.add_argument(
         "--timeout",
         type=float,
-        default=30.0,
-        help="单库请求超时秒数；tree 实测 0.4-0.7s，超时即记临时失败",
+        default=60.0,
+        help=(
+            "单库请求超时秒数。detail 的响应随文件数增长（实测 10 万文件的库 23.9 MB / 6.1s），"
+            "留足余量；tree 单页仅 0.4–0.7s。超时即记临时失败"
+        ),
     )
     files.add_argument(
         "--max-retries",
@@ -407,7 +419,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-pages",
         type=int,
         default=1,
-        help="每个库最多取几页 tree（每页 1000 条）；默认 1 页，未取完会标 truncated",
+        help=(
+            "每个库最多取几页 tree（每页 1000 条）；只在 --via tree 或 detail 退到兜底时生效。"
+            "detail 模式下清单一次取到 10 万条，不需要这个"
+        ),
     )
     files.add_argument(
         "--retry-unavailable",
@@ -417,7 +432,10 @@ def build_parser() -> argparse.ArgumentParser:
     files.add_argument(
         "--refresh-truncated",
         action="store_true",
-        help="重抓上次标了截断的库（须配合 --max-pages>1，否则只是重新确认截断）",
+        help=(
+            "重抓上次标了截断的库。detail 模式下截断只剩「文件数达 10 万上限」这一种，重抓通常仍是截断；"
+            "tree 模式须配合 --max-pages>1，否则只是重新确认截断"
+        ),
     )
     files.add_argument(
         "--flush-every",

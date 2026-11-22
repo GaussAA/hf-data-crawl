@@ -23,6 +23,7 @@ from hf_data_crawl.acquire.files import (
     EMPTY_PAGE_GRACE,
     TREE_LIMIT,
     FileFetcher,
+    FilesMode,
     HfFilesApi,
     next_cursor,
 )
@@ -126,10 +127,24 @@ class FakeFilesTransport:
         )
 
 
-def api(transport: FakeFilesTransport, *, max_pages: int = 1) -> HfFilesApi:
+def api(
+    transport: FakeFilesTransport, *, max_pages: int = 1, mode: FilesMode = "tree"
+) -> HfFilesApi:
+    """默认 `tree`：下面这一组测的是兜底路径（分页、游标、全目录页），仍然要守。
+
+    详情路径的用例集中在「详情端点」一节，另有专门一条钉住「生产默认是 detail」。
+    """
     return HfFilesApi(
-        transport=transport, max_retries=2, max_pages=max_pages, sleeper=lambda _: None
+        transport=transport,
+        max_retries=2,
+        max_pages=max_pages,
+        mode=mode,
+        sleeper=lambda _: None,
     )
+
+
+def detail_api(transport: FakeFilesTransport) -> HfFilesApi:
+    return api(transport, mode="detail")
 
 
 def fetcher(transport: FakeFilesTransport) -> FileFetcher:
@@ -595,6 +610,8 @@ def test_命令行按ids只补点名的库(tmp_path: Path) -> None:
             "--data-dir",
             str(root),
             "fetch-files",
+            "--via",
+            "tree",
             "--top",
             "1",
             "--ids",
@@ -621,11 +638,20 @@ def test_top算的是本轮请求数而不是底库前N名(tmp_path: Path) -> No
     transport = FakeFilesTransport({f"acme/ds-{i}": tree() for i in range(1, 6)})
 
     # 先让下载量最高的 3 个有结论。
-    assert main(["--data-dir", str(root), "fetch-files", "--top", "3"], transport=transport) == 0
+    assert (
+        main(
+            ["--data-dir", str(root), "fetch-files", "--via", "tree", "--top", "3"],
+            transport=transport,
+        )
+        == 0
+    )
     assert sorted(transport.calls) == ["acme/ds-3", "acme/ds-4", "acme/ds-5"]
 
     transport.calls.clear()
-    code = main(["--data-dir", str(root), "fetch-files", "--top", "2"], transport=transport)
+    code = main(
+        ["--data-dir", str(root), "fetch-files", "--via", "tree", "--top", "2"],
+        transport=transport,
+    )
 
     assert code == 0
     assert sorted(transport.calls) == ["acme/ds-1", "acme/ds-2"], "名额该给还没有结论的库"
@@ -643,7 +669,10 @@ def test_top为零抓全量缺口(tmp_path: Path) -> None:
     seed(store, 4)
     transport = FakeFilesTransport({f"acme/ds-{i}": tree() for i in range(1, 5)})
 
-    code = main(["--data-dir", str(root), "fetch-files", "--top", "0"], transport=transport)
+    code = main(
+        ["--data-dir", str(root), "fetch-files", "--via", "tree", "--top", "0"],
+        transport=transport,
+    )
 
     assert code == 0
     assert len(transport.calls) == 4
@@ -663,7 +692,7 @@ def test_命令行可显式加大页数(tmp_path: Path) -> None:
     )
 
     code = main(
-        ["--data-dir", str(root), "fetch-files", "--top", "1", "--max-pages", "2"],
+        ["--data-dir", str(root), "fetch-files", "--via", "tree", "--top", "1", "--max-pages", "2"],
         transport=transport,
     )
 
@@ -679,7 +708,16 @@ def test_命令行刷新截断需配合多页(tmp_path: Path) -> None:
     transport = FakeFilesTransport({"acme/ds-1": tree()})
 
     code = main(
-        ["--data-dir", str(root), "fetch-files", "--top", "1", "--refresh-truncated"],
+        [
+            "--data-dir",
+            str(root),
+            "fetch-files",
+            "--via",
+            "tree",
+            "--top",
+            "1",
+            "--refresh-truncated",
+        ],
         transport=transport,
     )
 
@@ -727,6 +765,8 @@ def test_命令行刷新后截断消失(tmp_path: Path) -> None:
             "--data-dir",
             str(root),
             "fetch-files",
+            "--via",
+            "tree",
             "--top",
             "1",
             "--max-pages",
@@ -758,3 +798,142 @@ def store_with_data(tmp_path: Path) -> DatasetStore:
     store = DatasetStore(tmp_path / "data")
     seed(store)
     return store
+
+
+# ---------------------------------------------------------------- 详情端点（生产默认）
+
+
+def siblings(*files: tuple[str, int]) -> dict[str, Any]:
+    return {
+        "id": "acme/x",
+        "siblings": [{"rfilename": name, "size": size, "blobId": "b"} for name, size in files],
+    }
+
+
+def test_详情一次拿全清单与体积() -> None:
+    transport = FakeFilesTransport(
+        {"acme/x": siblings(("README.md", 10), ("a.csv", 90), ("b.parquet", 900))}
+    )
+
+    result = detail_api(transport).fetch("acme/x", DAY)
+
+    assert result.status == "ok"
+    assert result.row["file_count"] == 3
+    assert result.row["total_bytes"] == 1000
+    assert result.row["truncated"] is False
+    assert result.row["has_readme"] is True
+    assert json.loads(result.row["formats"]) == {"md": 1, "csv": 1, "parquet": 1}
+
+
+def test_详情只发一次请求且带blobs() -> None:
+    """`blobs=true` 才带 size：少了它 `total_bytes` 会整列变空，而请求依然成功。"""
+    transport = FakeFilesTransport({"acme/x": siblings(("a.csv", 5))})
+
+    detail_api(transport).fetch("acme/x", DAY)
+
+    assert len(transport.calls) == 1
+    assert transport.urls[0].endswith("/api/datasets/acme/x")
+    assert transport.params[0] == {"blobs": "true"}
+
+
+def test_空仓库算成功且不标截断() -> None:
+    """没有 siblings 条目是合法空仓库，不是「没拿到」。"""
+    transport = FakeFilesTransport({"acme/x": {"siblings": []}})
+
+    result = detail_api(transport).fetch("acme/x", DAY)
+
+    assert result.status == "ok"
+    assert result.row["file_count"] == 0
+    assert result.row["truncated"] is False
+
+
+def test_达上限条数标截断(monkeypatch: pytest.MonkeyPatch) -> None:
+    """10 万是详情接口的硬顶：到那个数既可能是真有十万个文件，也可能是被截断。
+
+    用 monkeypatch 改小上限而不是真造 10 万条：这里要守的是「到顶就标截断」这条
+    判定，不是 JSON 解析的吞吐。
+    """
+    monkeypatch.setattr("hf_data_crawl.acquire.files.SIBLINGS_CAP", 3)
+    transport = FakeFilesTransport({"acme/x": siblings(("a", 1), ("b", 2), ("c", 3))})
+
+    result = detail_api(transport).fetch("acme/x", DAY)
+
+    assert result.row["truncated"] is True
+    assert result.row["file_count"] == 3
+
+
+def test_详情形态不对时退回tree() -> None:
+    """上游改字段或返回半截 JSON 时不能整库记失败：tree 往往还拿得到。"""
+    transport = FakeFilesTransport(
+        {"acme/x": ({"siblings": "oops"}, [{"path": "a.csv", "type": "file", "size": 5}])}
+    )
+
+    result = detail_api(transport).fetch("acme/x", DAY)
+
+    assert result.status == "ok"
+    assert result.row["file_count"] == 1
+    assert len(transport.calls) == 2
+    assert transport.urls[-1].endswith("/tree/main")
+
+
+def test_详情404记永久缺失且不再试tree() -> None:
+    transport = FakeFilesTransport({"acme/x": 404})
+
+    result = detail_api(transport).fetch("acme/x", DAY)
+
+    assert result.status == "unavailable"
+    assert result.row["status"] == "unavailable"
+    assert len(transport.calls) == 1, "库都不存在，tree 也是 404，不必再问一次"
+
+
+def test_默认模式是详情() -> None:
+    """默认值写错不会报错，只会让上千个库每次多花几十倍请求。"""
+    transport = FakeFilesTransport({"acme/x": siblings(("a.csv", 1))})
+    default = HfFilesApi(transport=transport, max_retries=2, sleeper=lambda _: None)
+
+    default.fetch("acme/x", DAY)
+
+    assert transport.urls[0].endswith("/api/datasets/acme/x")
+
+
+def test_ids加刷新开关时重抓点名的截断库(tmp_path: Path) -> None:
+    """「补一个清单没取完的库」只能靠点名，而点名默认按「已处理」跳过。
+
+    判据还必须落在 `truncated` 列：这些行的 `status` 是 `ok`，候选语言里那个
+    `ok_partial` 在表里根本不存在，照 status 筛会一个都匹配不到、然后安静地
+    报「已存跳过」。
+    """
+    root = tmp_path / "data"
+    store = DatasetStore(root)
+    seed(store, 1)
+    store.upsert(
+        "files",
+        pl.DataFrame(
+            [
+                {
+                    "id": "acme/ds-1",
+                    "url": "https://huggingface.co/datasets/acme/ds-1",
+                    "snapshot_date": DAY,
+                    "status": "ok",
+                    "file_count": None,
+                    "total_bytes": None,
+                    "formats": None,
+                    "has_readme": None,
+                    "truncated": True,
+                }
+            ],
+            schema=FILES_SCHEMA,
+        ),
+    )
+    transport = FakeFilesTransport({"acme/ds-1": siblings(("a.bin", 5), ("b.bin", 7))})
+
+    code = main(
+        ["--data-dir", str(root), "fetch-files", "--ids", "acme/ds-1", "--refresh-truncated"],
+        transport=transport,
+    )
+
+    stored = store.read("files")
+    assert code == 0
+    assert stored["file_count"].to_list() == [2]
+    assert stored["truncated"].to_list() == [False]
+    assert len(transport.calls) == 1, "点名重抓必须真的发出请求"

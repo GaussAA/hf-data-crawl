@@ -1,18 +1,32 @@
 """按下载量取头部，补数据集的文件清单汇总（B 案轻量试点）。
 
-为什么走 /tree/main 而不是单库详情
-----------------------------------
-2026-11-07 两轮实测：列表接口即便带 `expand[]=siblings` 或 `full=true` 也不返回
-文件清单，`siblings` 只出现在 `/api/datasets/{id}` 详情里。但详情响应呈极端
-长尾——下载量头部的两个库分别 13 MB / 44s 与 25 MB / 76s，按头部补 1000 个会
-反复超时（首次 `--top 20` 跑满 240s 被杀）。改用
-`/tree/main?recursive=true&expand=false`：每页固定 1000 条、约 110–230 KB /
-0.4–0.7s，快两个数量级，且大库不再挂死。
+为什么先用详情接口、再用 /tree/main 兜底
+------------------------------------------
+2026-11-07 的判断是「列表接口即便带 `expand[]=siblings` 或 `full=true` 也不返回
+文件清单，`siblings` 只出现在 `/api/datasets/{id}` 详情里；而详情响应呈极端长尾
+——两个头部库分别 13 MB / 44s 与 25 MB / 76s，补 1000 个会反复超时」，于是改用
+`/tree/main?recursive=true&expand=false`（每页 1000 条、110–230 KB）。
+
+2026-11-22 复测，两件事都变了：
+
+1. **详情的耗时不再是问题**：`?blobs=true` 下最慢的样本（2.8 万文件的 fineweb）
+   6.9 MB / 2.2 秒，10 万文件的 Event6D 23.9 MB / 6.1 秒——不再是 44–76 秒。
+2. **详情一次就能拿全，而 tree 要翻几十页**：同一个 fineweb，详情 1 次请求 6.9 MB，
+   tree 要 29 次、约 8.7 MB。文件越多，差距越大。
+
+故改为**详情优先**：`GET /api/datasets/{id}?blobs=true` 的 `siblings` 给出
+`rfilename` + `size` + `lfs`（含 `sha256`），一次请求拿全。`tree` 保留为兜底路径
+——详情返回的形态一旦不是预期的 JSON 对象，就退回去分页，宁可多花几十次请求，
+也不要因为上游改了字段就把整库记成失败。
+
+`siblings` 有一个**硬上限 10 万条**（实测：两个文件数超过十万的库都正好停在
+100,000），故超过十万的库仍标 `truncated`。这比 tree 的「一页 1,000 条」高两个
+数量级，但**不是无限**，别把它当成「一定能拿全」。
 
 口径边界（务必看清）
 --------------------
-tree 按页返回，`Link: rel="next"` 表示还有后续页。默认只取第一页，命中的库
-以 `truncated=True` 标记「清单没取完」——此时 `file_count` / `total_bytes` /
+tree 兜底路径按页返回，`Link: rel="next"` 表示还有后续页。默认只取第一页，命中的
+库以 `truncated=True` 标记「清单没取完」——此时 `file_count` / `total_bytes` /
 `formats` / `has_readme` 全是**这一页的下限**，不是全库真值。要拿完整清单须显式
 加大 `--max-pages`。只统计 `type=file` 的条目，目录不进文件数。满页却没给出
 next 也一律标成截断：宁可承认是下限，也不假装完整。
@@ -42,7 +56,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import parse_qs, urlsplit
 
 import orjson
@@ -57,6 +71,14 @@ from .merge import MergeSpec
 
 #: tree 接口每页硬上限；显式带上 limit，免得哪天上游默认值变了口径跟着漂。
 TREE_LIMIT = 1000
+
+#: 详情接口 `siblings` 的硬上限。实测两个文件数超过十万的库都正好停在 100,000，
+#: 所以「条数到了这个数」既可能是真有十万个文件，也可能是被截断——一律按截断记，
+#: 与「满页却没给 next 也标 truncated」同一条原则：宁可承认是下限。
+SIBLINGS_CAP = 100_000
+
+#: 抓取方式。`detail` 一次请求拿全（首选）；`tree` 按页翻（兜底，也是排障开关）。
+FilesMode = Literal["detail", "tree"]
 
 #: 文件清单的暂存目录；分片只写真数据、不碰正式表，故写它不必持锁。
 #:
@@ -146,8 +168,41 @@ def parse_tree(body: bytes) -> list[dict[str, Any]] | None:
     ]
 
 
+def parse_siblings(body: bytes) -> tuple[list[dict[str, Any]], bool] | None:
+    """把详情接口的 `siblings` 归一成 tree 的形状：`[{"path", "size"}]`。
+
+    返回 `(条目, 是否截断)`；形态不对返回 None，由调用方退到 tree 兜底。
+
+    `siblings` 只列文件、不含目录条目（实测 0 个路径以 `/` 结尾），所以不必像
+    tree 那样按 `type` 过滤——但仍跳过以 `/` 结尾的项，避免上游哪天改口径后
+    把目录算进文件数。
+
+    截断判定用**原始条目数**而不是过滤后的条目数：过滤掉了几个畸形项不代表
+    清单完整，取原始数才是「上游给了多少」。
+    """
+    try:
+        payload = orjson.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    siblings = payload.get("siblings")
+    if not isinstance(siblings, list):
+        return None
+
+    entries: list[dict[str, Any]] = []
+    for item in siblings:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("rfilename")
+        if not isinstance(name, str) or not name or name.endswith("/"):
+            continue
+        entries.append({"path": name, "size": item.get("size")})
+    return entries, len(siblings) >= SIBLINGS_CAP
+
+
 class HfFilesApi:
-    """单库文件树查询：列表接口拿不到、详情接口又太重的那部分。"""
+    """单库文件清单：详情一次拿全，`/tree/main` 兜底。"""
 
     def __init__(
         self,
@@ -156,6 +211,7 @@ class HfFilesApi:
         base_url: str = API_BASE_URL,
         max_retries: int = 3,
         max_pages: int = 1,
+        mode: FilesMode = "detail",
         retry_base_delay: float = 2.0,
         sleeper: Callable[[float], None] | None = None,
     ) -> None:
@@ -163,10 +219,19 @@ class HfFilesApi:
         self._base_url = base_url
         self._max_retries = max_retries
         self._max_pages = max(1, max_pages)
+        self._mode = mode
         self._retry_base_delay = retry_base_delay
         self._sleeper = sleeper or time.sleep
 
     def fetch(self, dataset_id: str, snapshot_date: date) -> FileResult:
+        if self._mode == "detail":
+            detail = self._fetch_detail(dataset_id, snapshot_date)
+            if detail is not None:
+                return detail
+        return self._fetch_tree(dataset_id, snapshot_date)
+
+    def _fetch_tree(self, dataset_id: str, snapshot_date: date) -> FileResult:
+        """按页翻 `/tree/main`：详情形态异常时的兜底，也是排障开关。"""
         entries: list[dict[str, Any]] = []
         cursor: str | None = None
         payload_bytes = 0
@@ -240,6 +305,52 @@ class HfFilesApi:
                 continue
             return response
         return None
+
+    def _fetch_detail(self, dataset_id: str, snapshot_date: date) -> FileResult | None:
+        """`?blobs=true` 一次拿全；返回 None 表示形态不对、交给 tree 兜底。
+
+        与分页路径的差别不只是请求数：`siblings` 带 `size`，所以 `total_bytes` 是
+        真值而不是「这一页的和」；上限也从一页 1,000 条变成 10 万条。
+
+        **形态不对时不落失败结论**，而是让调用方继续走 tree。上游给个空对象、把
+        字段改名，或代理返回半截 JSON，这里都会拿到 None——把它记成 `error` 会让
+        整库白等一轮重试，而 tree 往往还拿得到。两条路都走不通才算真失败。
+        """
+        for attempt in range(self._max_retries + 1):
+            try:
+                response = self._transport.get(
+                    f"{self._base_url}/{dataset_id}",
+                    {"blobs": "true"},
+                    {"Accept": "application/json"},
+                )
+            except TransportError:
+                if attempt >= self._max_retries:
+                    return _failure(dataset_id, "error")
+                self._sleeper(exponential_seconds(attempt, base=self._retry_base_delay))
+                continue
+
+            terminal = POLICY.terminal(response.status)
+            if terminal is not None:
+                return _failure(dataset_id, terminal, snapshot_date)
+            if response.status != 200:
+                if POLICY.retry(response.status) and attempt < self._max_retries:
+                    self._sleeper(
+                        delay_seconds(
+                            response.status,
+                            response.headers,
+                            attempt,
+                            base=self._retry_base_delay,
+                        )
+                    )
+                    continue
+                return _failure(dataset_id, "error")
+
+            parsed = parse_siblings(response.body)
+            if parsed is None:
+                return None
+            entries, truncated = parsed
+            return _summarize(dataset_id, snapshot_date, entries, truncated, len(response.body))
+        return _failure(dataset_id, "error")
 
 
 def _summarize(
