@@ -120,3 +120,17 @@ def test_交付档案与项目技能的白名单确实生效() -> None:
         assert ignored is expected_ignored, (
             f"{path} 的忽略判定不符合白名单契约（ignored={ignored}）"
         )
+
+
+def test_临时探针脚本也被忽略() -> None:
+    """`.tmp_` 前缀与 `.tmp` 后缀是「当场用完即废」的约定，不是命名风格。
+
+    2026-11-22 真发生过：一份 `.tmp_probe.py`（硬编码本机代理端口、import 即发请求）
+    被 `git add -A` 带进了 `ab5b063` 的功能提交，直到有人问「这个需要提交吗」才发现。
+    与 `.coverage` 同一类：**规则缺一条，事故就会自己找上门**——所以这里连「来源是
+    仓库 .gitignore」也一并验，免得将来靠全局 excludesFile 蒙混过关。
+    """
+    for path in (".tmp_probe.py", "probe.tmp"):
+        ignored, source = _check_ignore(path)
+        assert ignored, f"{path} 未被 git 忽略"
+        assert source.startswith(".gitignore:"), f"{path} 的忽略来源不是仓库 .gitignore"
