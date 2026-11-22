@@ -22,7 +22,14 @@ from typing import Any
 import polars as pl
 
 from ..acquire.reconcile import REPORT_KEEP, REPORT_MAX_BYTES
-from ..delivery.fields import CONTRACT_VERSION, DEFAULT_COLUMNS, EXTENDED_FIELDS, EXTENDED_NOTE
+from ..delivery.fields import (
+    CONTRACT_VERSION,
+    DEFAULT_COLUMNS,
+    EXTENDED_FIELDS,
+    EXTENDED_NOTE,
+    INJECTED_COLUMNS,
+    VIEW_COLUMNS,
+)
 from ..pipeline.raw import BRONZE_LABELS, CARD_LABEL
 from ..platform.store import DatasetStore
 from ..platform.tables import TABLES, Origin, TableSpec
@@ -328,7 +335,10 @@ def _overview(stamp: str, store_root: Path) -> list[str]:
         "  STATE --> GOLD",
         "  ENRICH --> GOLD",
         "  SIZE --> GOLD",
-        '  GOLD -->|"视图里的 30 列"| EXPORT["exports/datasets.parquet<br/>默认契约 35 列"]',
+        # 两个列数都由契约算：手写会在下次增删列时安静地停在旧数字上，
+        # 而图的读者不会想到去核对它。
+        f'  GOLD -->|"视图里的 {len(VIEW_COLUMNS)} 列"| '
+        f'EXPORT["exports/datasets.parquet<br/>默认契约 {len(DEFAULT_COLUMNS)} 列"]',
         '  RM -->|"清洗后正文 readme"| EXPORT',
         '  RF -->|"paper_url / citation_bibtex"| EXPORT',
         '  ENRICH -->|"split / features"| EXPORT',
@@ -337,7 +347,8 @@ def _overview(stamp: str, store_root: Path) -> list[str]:
         "**Raw 是唯一不可重算的一层**：其余各层删掉都能从它重新推出来，",
         "所以 `build` 可以断网重跑，而 `raw/` 一旦丢失就真的没有了。",
         "",
-        "导出物那 35 列里，**有 5 列不在 `datasets` 视图里**（`readme` / `split` / "
+        f"导出物那 {len(DEFAULT_COLUMNS)} 列里，**有 {len(INJECTED_COLUMNS)} 列不在 "
+        "`datasets` 视图里**（`readme` / `split` / "
         "`features` / `paper_url` / `citation_bibtex`）：它们要么太大（正文 2 GB、"
         "features 265 MB），要么粒度不同（config 级），由 `export-wide` 的第二步现场 "
         "join 上去。所以「视图里查不到」不等于「导出物里没有」。",
@@ -504,7 +515,7 @@ def _others() -> list[str]:
         "",
         "### `exports/` —— 给人用的",
         "",
-        "宽表：`gold.datasets` 视图的单文件物化，默认 35 列。",
+        f"宽表：`gold.datasets` 视图的单文件物化，默认 {len(DEFAULT_COLUMNS)} 列。",
         "**为什么要物化**——视图背后是二十来个 parquet，每次查询都要重连；",
         "而分析工具（Excel、BI）要的是一个能直接打开的文件。",
         "代价是它会落后于底库，所以每日重导出，且 `doctor` 会逐 id 核对导出行数是否等于 `current`。",

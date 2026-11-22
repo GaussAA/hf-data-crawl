@@ -75,6 +75,22 @@ HF 列表接口也不提供「被哪些模型 / Space 使用」这类应用字�
 「不指定时给什么」，不是「总共有什么」**。低覆盖列塞回默认面，等于把 v1 裁掉的
 「九成空」问题请回来。
 
+v7：`task_ids` 移回扩展清单，`paper_url` 留下
+---------------------------------------------
+v4 把 `task_ids` 当「有实际信息量的用途字段」放进来时它还有 0.72%；到 v7 实测
+0.74%，且**有值的 8,503 / 8,548 行（99.5%）同时有 `task_categories`**，独有的只有
+45 行。它给的是大类之下更细一级（`text-classification` 下钻到
+`multi-class-classification`），属于「点名叫得出来才要」的东西，不是默认面该有的。
+
+同组的 `paper_url` 只有 0.89%，却**留在默认面**：那 10,310 行里有 2,224 行的
+`arxiv_ids` 是空的——对这些库它是唯一的论文链接（HF papers、PDF 直链），删了就
+再也查不到。
+
+**判据不是覆盖率，是有没有替代来源。** 对照 `regions`：100% 非空但 99.94% 是同一个
+`us`，那才是真该删的。低覆盖的列因此分两种——「有别的列能给」与「只有它能给」：
+前者移出默认面，后者保留并在 `THIN_COLUMN_EXEMPTIONS` 登记，否则 `doctor` 每天都会
+为它报同一条告警，最后变成噪声。
+
 改这份清单要升 `CONTRACT_VERSION`：交付档案会钉住当时的版本号，否则同一份
 需求的两份交付会显得「口径没变却列数变了」。
 """
@@ -90,7 +106,7 @@ from ..query.gold import wide_column_names
 #:
 #: 版本号只增不减：历史交付档案钉住的是当时那一版，倒退会让两份档案都说不清。
 #: 故 v3 的扁平化撤销后记作 v5，而不是退回 v2。
-CONTRACT_VERSION = 6
+CONTRACT_VERSION = 7
 
 #: 分组 → 列。顺序即交付列序：标识在前、画像居中、数值在后，便于人读。
 GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -122,7 +138,7 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     (
         "学术关联与用途",
-        ("arxiv_ids", "source_datasets", "task_ids", "paper_url", "citation_bibtex"),
+        ("arxiv_ids", "source_datasets", "paper_url", "citation_bibtex"),
     ),
     (
         "规模",
@@ -195,7 +211,6 @@ COLUMN_NOTES: dict[str, str] = {
     "multilinguality": "多语言性标记（单语 / 多语 / 翻译等）；未声明则为空",
     "arxiv_ids": "关联的 arXiv 论文编号，如 2507.02259；仅少数库在卡片里声明",
     "source_datasets": "该数据集派生自哪些上游数据集；取值由作者填写，未必是 HF 数据集 id",
-    "task_ids": "具体任务标识，比 task_categories 大类更细；未声明则为空",
     "paper_url": "README 里声明的论文链接；未声明则为空",
     "citation_bibtex": "README 里给出的 BibTeX 引用块；未声明则为空",
     "size_categories": "规模档位标签（页面 Size）；存 100K<n<1M，页面显示 100K - 1M",
@@ -251,7 +266,6 @@ COLUMN_TYPES: dict[str, str] = {
     "multilinguality": "list",
     "arxiv_ids": "list",
     "source_datasets": "list",
-    "task_ids": "list",
     "split": "list",
 }
 
@@ -274,6 +288,19 @@ def type_family(dtype: PolarsType) -> str:
     if dtype == pl.Boolean or dtype.is_numeric():
         return "number"
     return str(dtype)
+
+
+#: 默认面里覆盖率长期低于 1%、但**没有替代来源**因此保留的列。
+#:
+#: `doctor` 的「交付面取值」会对 `< 1%` 的列报一条待办（该在契约重审时决定去留）。
+#: 已决定「留」的列必须登记在这里，否则每次体检都报同一条——而一条天天出现的告警
+#: 等于没有告警，真有一天某列掉到 0 也会被淹没。
+#:
+#: 登记要同时满足三条，缺一不可：覆盖率 < 1%、同组没有别的列能替它、且它不是一个
+#: 恒定值（`regions` 那种 100% 非空但 99.94% 都是 `us` 的，该删，不是豁免）。
+THIN_COLUMN_EXEMPTIONS: dict[str, str] = {
+    "paper_url": "0.89%；但有值的行里 2,224 行 arxiv_ids 为空，是这些库唯一的论文链接",
+}
 
 
 #: 详情页标签行 → 库列 → 值的显示形式。交付 README 照抄，回答「页面那一项在哪一列」。
@@ -315,6 +342,11 @@ EXTENDED_FIELDS: tuple[tuple[str, str], ...] = (
     ("language_creators", "语料来源（原始采集 / 翻译 / 机器生成）"),
     ("card_multilinguality", "卡片声明的多语言性；与 multilinguality 近重复"),
     ("card_source_datasets", "卡片声明的上游数据集；与 source_datasets 近重复"),
+    (
+        "task_ids",
+        "具体任务标识，比 task_categories 的大类更细一级（0.74% 有值，且 99.5% 与 "
+        "task_categories 并存，v7 起移出默认面）",
+    ),
     ("card_num_rows", "卡片声明的行数；与 datasets-server 实测行数是两个口径"),
     ("card_dataset_bytes", "卡片声明的数据体积"),
     ("card_config_count", "卡片里列出的 config 个数"),
@@ -499,6 +531,11 @@ def contract_errors() -> list[str]:
     extra_notes = sorted(set(COLUMN_NOTES) - set(DEFAULT_COLUMNS))
     if extra_notes:
         problems.append(f"说明里有契约之外的列：{extra_notes}")
+    # 豁免清单指向已移出默认面的列，是一条**永远不生效**的登记：它不会报错，
+    # 只会让人以为「这列已经处理过了」。移出契约时必须同步删掉它的豁免。
+    stray_exemptions = sorted(set(THIN_COLUMN_EXEMPTIONS) - set(DEFAULT_COLUMNS))
+    if stray_exemptions:
+        problems.append(f"豁免清单里有契约之外的列：{stray_exemptions}")
     missing_fallbacks = [
         source
         for column, source in FALLBACKS.items()

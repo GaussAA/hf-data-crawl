@@ -36,6 +36,7 @@ from ..delivery.fields import (
     COLUMN_SOURCES,
     COLUMN_TYPES,
     DEFAULT_COLUMNS,
+    THIN_COLUMN_EXEMPTIONS,
     contract_errors,
     type_family,
 )
@@ -689,18 +690,29 @@ def _contract_coverage(ctx: RunContext) -> Finding:
         filled = rows - int(counted[worst])
         # 契约列覆盖率不足 1%：按「空值率 > 99% 就该删」这条规则，它们是**下一次
         # 契约重审的待办**，不是数据坏了。所以这里只列名字与实测行数，不给结论。
-        thin = [column for column in DEFAULT_COLUMNS if (rows - int(counted[column])) / rows < 0.01]
+        # 已决定「留」的列登记在 `THIN_COLUMN_EXEMPTIONS`：一条天天出现的告警等于
+        # 没有告警，真有一天某列掉到 0 也会被它淹没。
+        thin = [
+            column
+            for column in DEFAULT_COLUMNS
+            if (rows - int(counted[column])) / rows < 0.01 and column not in THIN_COLUMN_EXEMPTIONS
+        ]
+        exempt = sorted(column for column in DEFAULT_COLUMNS if column in THIN_COLUMN_EXEMPTIONS)
+        # 最空的往往是豁免列本身，别再在尾注里重复一遍它的名字。
+        rest = [column for column in exempt if column != worst]
+        tail = f"；另有 {len(rest)} 列不足 1% 但已登记豁免：{'、'.join(rest)}" if rest else ""
+        worst_note = "，已登记豁免" if worst in THIN_COLUMN_EXEMPTIONS else ""
         if thin:
             detail = "、".join(f"{column}（{rows - int(counted[column]):,} 行）" for column in thin)
             return Finding(
                 False,
                 f"交付面取值：{len(DEFAULT_COLUMNS)} 列都有值，但 {len(thin)} 列覆盖率不足 1%："
-                f"{detail}——按契约规则该在下一次重审时决定去留",
+                f"{detail}——按契约规则该在下一次重审时决定去留{tail}",
             )
         return Finding(
             False,
             f"交付面取值：{len(DEFAULT_COLUMNS)} 列都有值"
-            f"（最空的是 {worst}，{filled:,} / {rows:,} 行有值）",
+            f"（最空的是 {worst}，{filled:,} / {rows:,} 行有值{worst_note}）{tail}",
         )
 
     blocked: list[str] = []

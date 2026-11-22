@@ -25,6 +25,7 @@ from hf_data_crawl.delivery.fields import (
     GROUPS,
     INJECTED_COLUMNS,
     PAGE_FIELDS,
+    THIN_COLUMN_EXEMPTIONS,
     VIEW_COLUMNS,
     contract_errors,
     display_expr,
@@ -102,8 +103,10 @@ def test_低覆盖补抓列不进默认交付面() -> None:
         "file_count",
     }
     assert not (sparse & set(DEFAULT_COLUMNS))
-    # 这两列覆盖也低（3.67% / 0.72%），但语义明确、用户点名，故进默认面。
-    assert {"arxiv_ids", "task_ids"} <= set(DEFAULT_COLUMNS)
+    # arxiv_ids 覆盖 3.72%，语义明确、用户点名，仍在默认面。
+    # task_ids 曾在此，v7 移出：0.74% 有值，且其中 99.5% 与 task_categories 并存。
+    assert "arxiv_ids" in DEFAULT_COLUMNS
+    assert "task_ids" not in DEFAULT_COLUMNS
 
 
 def test_用户点名的画像字段都在契约里() -> None:
@@ -249,13 +252,14 @@ def test_列表列仍能展平成页面形式交给CSV() -> None:
 # ---------------------------------------------------------------- v4：克制扩充 + 扩展清单
 
 
-def test_v4新增五列与v6扩充都在默认面() -> None:
-    added = {"pretty_name", "multilinguality", "arxiv_ids", "source_datasets", "task_ids"}
+def test_v4新增列与v6扩充在默认面_task_ids于v7移出() -> None:
+    added = {"pretty_name", "multilinguality", "arxiv_ids", "source_datasets"}
     assert added <= set(DEFAULT_COLUMNS)
     # v6：31 → 35（删 5：description / license_name / plain_tags / server_config_count /
     # server_num_columns；加 9：readme 等）。
-    assert len(DEFAULT_COLUMNS) == 35
-    assert CONTRACT_VERSION >= 6
+    # v7：35 → 34，task_ids 移入 EXTENDED_FIELDS（0.74%，且 99.5% 与 task_categories 并存）。
+    assert len(DEFAULT_COLUMNS) == 34
+    assert CONTRACT_VERSION >= 7
     v6 = {
         "readme",
         "has_readme",
@@ -428,3 +432,26 @@ def test_展示清单之外的列原样透传() -> None:
 def test_不认识的类型返回类型本身() -> None:
     """折不成四种族时给类型本名：比对时能一眼看出是哪列、什么类型。"""
     assert type_family(pl.Binary) == "Binary"
+
+
+# ---------------------------------------------------------------- v7：低覆盖列的两种去向
+
+
+def test_移出默认面的列仍在扩展清单里() -> None:
+    """移出默认面 ≠ 删数据：宽视图里仍在，需求点名列名即可投。"""
+    extended = {column for column, _definition in EXTENDED_FIELDS}
+
+    assert "task_ids" in extended
+    assert "task_ids" not in DEFAULT_COLUMNS, "两处同时出现会被 contract_errors 拦下"
+
+
+def test_豁免清单不能指向已移出的列() -> None:
+    """指向已移出列的豁免是一条**永远不生效**的登记：不报错，只让人以为处理过了。"""
+    assert set(THIN_COLUMN_EXEMPTIONS) <= set(DEFAULT_COLUMNS)
+    assert contract_errors() == []
+
+
+def test_论文链接留在默认面且登记了豁免理由() -> None:
+    """0.89% 但无可替代：有值的行里 2,224 行 arxiv_ids 为空，删了就再也查不到。"""
+    assert "paper_url" in DEFAULT_COLUMNS
+    assert THIN_COLUMN_EXEMPTIONS.get("paper_url")
