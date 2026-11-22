@@ -1005,10 +1005,11 @@ def _readme_freshness(ctx: RunContext) -> Finding:
 def _files_partial(ctx: RunContext) -> Finding:
     """文件清单有多少只是下限：`truncated` 的行，四个读数字段都不是真值。
 
-    只报数、不判红。补全要逐库翻完 tree（`--refresh-truncated --max-pages>1`），
-    而 `fetch-files` 按需跑、不在链上——判红等于给一个没人天天跑的任务常年挂红点。
-    这一项的价值是「别把下限当真相」：`file_count` / `total_bytes` / `formats` /
-    `has_readme` 在截断行上只是这一页的统计。
+    只报数、不判红。补全曾经要逐库翻完 tree（`--refresh-truncated --max-pages>1`），
+    现在默认走详情端点、一次取到 10 万条，`truncated` 只剩「撞到 10 万上限」这一种
+    ——那类库重抓也是同样的结论。而 `fetch-files` 按需跑、不在链上，判红等于给一个
+    没人天天跑的任务常年挂红点。这一项的价值是「别把下限当真相」：`file_count` /
+    `total_bytes` / `formats` / `has_readme` 在截断行上只是那一页（或前十万条）的统计。
     """
     frame = ctx.frame("files")
     if frame.height == 0:
@@ -1019,7 +1020,7 @@ def _files_partial(ctx: RunContext) -> Finding:
         "（`truncated`，四个读数都是下限）"
     )
     if partial:
-        text += "；补全用 fetch-files --refresh-truncated --max-pages>1"
+        text += "；补全用 fetch-files --refresh-truncated（详情一次取到 10 万条）"
     return Finding(False, text)
 
 
