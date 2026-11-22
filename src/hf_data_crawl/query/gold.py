@@ -268,6 +268,25 @@ def share_text(ratio: float) -> str:
 #: 那是观测到的声明值，删掉它就是在替作者改口。规模榜的 caption 里有一句说明。
 NUM_ROWS_SENTINEL = 9_000_000_000_000_000_000
 
+#: 增速榜的最大区间：跨度超过它就不比较（跨季度比较没有意义，上游计数也会漂）。
+GROWTH_MAX_SPAN_DAYS = 35
+
+#: 建 `v_growth` 时只扫最近这么多天的观测，而不是全表。
+#:
+#: 必须 ≥ `GROWTH_MAX_SPAN_DAYS`：`span_days <= 35` 意味着该库最近两个观测点都落在
+#: 最近 35 天内，所以「扫 45 天」与「扫全表」的**结果集完全相同**——不同的只是不再
+#: 扫那 300 多天用不上的历史。分层采样之后这张表每天仍在长 10 万行（一年约 3,600 万），
+#: 而 `row_number() OVER (PARTITION BY id ...)` 是全表扫描：2026-11-22 实测 775 万行
+#: 已是 1.0 秒，不设窗口会随天数线性变慢。
+#:
+#: 留 10 天余量而不是「正好等于阈值」：35 天这个阈值是给人调的（没有硬依据），
+#: 而窗口若恰好等于它，任何一次上调都会立刻裁掉边界附近的库。写成 `+ 10` 让阈值在
+#: 10 天以内的小调整不影响结果；真要调得更大，这个表达式会自己跟上，不需要动第二处。
+#:
+#: 两个数不能各写一个常量：`GROWTH_SCAN_WINDOW_DAYS < GROWTH_MAX_SPAN_DAYS` 不会
+#: 报错，只会让一批库悄悄从榜上消失。
+GROWTH_SCAN_WINDOW_DAYS = GROWTH_MAX_SPAN_DAYS + 10
+
 #: 内置榜单。`?` 为条数上限占位。
 #:
 #: 每个榜都以唯一键收尾（数据集榜用 `id`，聚合榜用分组键）：只按计数排序时，
@@ -682,17 +701,26 @@ class GoldCatalog:
         # 日增量只扫最新更新的万把条，全站指标靠周对账刷新，7 日窗口在周节奏下几乎取不到两点。
         # 间隔上限 35 天，避免跨季度比较；跨度以 span_days 明示，读榜的人自己判断。
         #
+        # `ranked` 只扫最近 `GROWTH_SCAN_WINDOW_DAYS` 天：`span_days <= 35` 已把两个点
+        # 都限定在最近 35 天内，扫更早的历史永远用不上。这不是近似——结果集与扫全表
+        # 完全一致，只是不读那 300 多天（见该常量的注释）。
+        #
         # `growth` 是**区间累计**，`growth_daily` / `growth_rate_daily` 是折成日均的
         # 同一件事。分层采样之后头部（日采）与长尾（周采）的 span 不同，拿累计增量
         # 排序会让 7 天的长尾压过 1 天的头部——差的是采样节奏，不是势头。
         # 日率用复合折算而非「除以天数」：7 天涨 70% 是日均 7.9%，不是 10%。
         connection.execute(
-            """
+            f"""
             CREATE VIEW v_growth AS
-            WITH ranked AS (
+            WITH edge AS (
+                SELECT max(snapshot_date) - INTERVAL {GROWTH_SCAN_WINDOW_DAYS} DAY AS since
+                FROM observations
+            ),
+            ranked AS (
                 SELECT id, snapshot_date, downloads,
                        row_number() OVER (PARTITION BY id ORDER BY snapshot_date DESC) AS rn
-                FROM observations
+                FROM observations, edge
+                WHERE snapshot_date >= edge.since
             ),
             last_two AS (
                 SELECT id,
@@ -724,7 +752,7 @@ class GoldCatalog:
                    span_days
             FROM spanned
             WHERE downloads_start IS NOT NULL
-              AND span_days <= 35
+              AND span_days <= {GROWTH_MAX_SPAN_DAYS}
             """
         )
 

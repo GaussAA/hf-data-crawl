@@ -19,6 +19,8 @@ from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.platform.tables import CURRENT_SCHEMA, SIZE_SCHEMA
 from hf_data_crawl.query.gold import (
     BOARDS,
+    GROWTH_MAX_SPAN_DAYS,
+    GROWTH_SCAN_WINDOW_DAYS,
     FillKind,
     GoldCatalog,
     column_coverage,
@@ -763,3 +765,27 @@ def test_规模榜剔除int64溢出报出的行数(tmp_path: Path) -> None:
         catalog.close()
 
     assert ids == ["acme/ds-1"]
+
+
+def test_跨度恰为上限的集仍在榜上(tmp_path: Path) -> None:
+    """回看窗口不能把「刚好卡在阈值上」的库裁掉。
+
+    `span_days <= 35` 已把两个观测点限定在最近 35 天内，所以回看 45 天与扫全表
+    结果一致。这里用跨度恰为 35 天的库钉住边界：`>=` 是闭区间，窗口不小于阈值时
+    它在榜上；窗口一旦小于阈值，它就会消失——不报错，只是少一批行。
+    """
+    store = DatasetStore(tmp_path / "window")
+    first = date(2026, 11, 1)
+    last = date(2026, 12, 6)  # 相差正好 35 天
+    seed(store, first, [record(9, downloads=100)])
+    seed(store, last, [record(9, downloads=300)])
+
+    rows = GoldCatalog(store).board("growth", limit=10)
+
+    assert rows["id"].to_list() == ["acme/ds-9"]
+    assert rows["span_days"].to_list() == [35]
+
+
+def test_扫描窗口不小于最大区间() -> None:
+    """两个数分开写就会不一致，而「窗口小于阈值」不会报错，只会静默丢库。"""
+    assert GROWTH_SCAN_WINDOW_DAYS >= GROWTH_MAX_SPAN_DAYS
