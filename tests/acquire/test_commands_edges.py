@@ -27,6 +27,7 @@ import pytest
 
 from hf_data_crawl.acquire import commands
 from hf_data_crawl.acquire.collect import CollectSummary
+from hf_data_crawl.acquire.files import FileSummary
 from hf_data_crawl.acquire.reconcile import ReconcileSummary
 from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.platform.tables import table
@@ -535,3 +536,66 @@ def test_README点名不到在架库时拒绝(tmp_path: Path, capsys) -> None:
     assert outcome.code == 1
     assert outcome.reason == "--ids 无有效 id"
     assert "没有有效" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- 失败成因标签
+
+
+def test_失败成因与标签两边对齐() -> None:
+    """少一条标签不会报错，只会在摘要里露出英文键（「临时失败 725（rate 612…）」）。
+
+    这跟「散文里的列数没人管」是同一类：文案与代码各写一份，漂了也没人发现。
+    """
+    from hf_data_crawl.acquire.files import FAILURE_REASONS
+
+    assert set(commands.FILE_FAILURE_LABELS) == set(FAILURE_REASONS) | {"unknown"}
+
+
+def test_摘要打印失败原因分类() -> None:
+    """「临时失败 725」不足以决定往哪调：429 要降并发，超时要加超时。"""
+    summary = FileSummary(
+        snapshot_date=datetime.now(UTC).date(),
+        requested=5,
+        fetched=1,
+        refreshed=0,
+        unavailable=1,
+        failed=3,
+        skipped=0,
+        table_rows=2,
+        downloaded_bytes=0,
+        elapsed_seconds=1.0,
+        failed_reasons={"rate": 2, "transport": 1},
+    )
+
+    buffer = io.StringIO()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sys, "stdout", buffer)
+        commands._print_files(summary, 2)
+
+    out = buffer.getvalue()
+    assert "临时失败 3（429 限流 2 · 连接/超时 1）" in out
+
+
+def test_没有失败时不打印空分类() -> None:
+    """「（无）」只是一种噪声：临时失败为零时整段都不该出现。"""
+    summary = FileSummary(
+        snapshot_date=datetime.now(UTC).date(),
+        requested=1,
+        fetched=1,
+        refreshed=0,
+        unavailable=0,
+        failed=0,
+        skipped=0,
+        table_rows=1,
+        downloaded_bytes=0,
+        elapsed_seconds=1.0,
+    )
+
+    buffer = io.StringIO()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sys, "stdout", buffer)
+        commands._print_files(summary, 1)
+
+    out = buffer.getvalue()
+    assert "临时失败 0 ·" in out
+    assert "（" not in out.split("临时失败")[1].split("\n")[0]

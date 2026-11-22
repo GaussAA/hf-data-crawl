@@ -937,3 +937,58 @@ def test_ids加刷新开关时重抓点名的截断库(tmp_path: Path) -> None:
     assert stored["file_count"].to_list() == [2]
     assert stored["truncated"].to_list() == [False]
     assert len(transport.calls) == 1, "点名重抓必须真的发出请求"
+
+
+# ---------------------------------------------------------------- 失败成因分类
+
+
+def detail_fetcher(transport: FakeFilesTransport) -> FileFetcher:
+    return FileFetcher(api=detail_api(transport), workers=2)
+
+
+def test_429耗尽后记为限流() -> None:
+    """`rate` 与 `transport` 的处置相反：前者要降并发，后者要加超时。
+
+    此前两者都被压进 `failed` 一个数里，看到「临时失败 725」无从判断该往哪边调。
+    """
+    result = detail_api(FakeFilesTransport({"acme/x": RateLimited(1.0)})).fetch("acme/x", DAY)
+
+    assert result.status == "error"
+    assert result.reason == "rate"
+
+
+def test_连接失败记为transport() -> None:
+    result = detail_api(FakeFilesTransport({"acme/x": TransportError("boom")})).fetch("acme/x", DAY)
+
+    assert result.status == "error"
+    assert result.reason == "transport"
+
+
+def test_5xx记为上游抖动() -> None:
+    result = detail_api(FakeFilesTransport({"acme/x": 503})).fetch("acme/x", DAY)
+
+    assert result.reason == "server"
+
+
+def test_摘要按原因分类计数(tmp_path: Path) -> None:
+    """成功与永久缺失不占这一列：它们是有结论的，不该混进「为什么没拿到」。"""
+    store = DatasetStore(tmp_path / "reason")
+    seed(store, 5)
+    transport = FakeFilesTransport(
+        {
+            "acme/ds-1": siblings(("a.csv", 1)),
+            "acme/ds-2": RateLimited(1.0),
+            "acme/ds-3": TransportError("boom"),
+            "acme/ds-4": 503,
+            "acme/ds-5": 404,
+        }
+    )
+
+    summary, _ = detail_fetcher(transport).run(
+        DAY, dataset_ids=[f"acme/ds-{index}" for index in range(1, 6)]
+    )
+
+    assert summary.fetched == 1
+    assert summary.unavailable == 1
+    assert summary.failed == 3
+    assert summary.failed_reasons == {"rate": 1, "server": 1, "transport": 1}

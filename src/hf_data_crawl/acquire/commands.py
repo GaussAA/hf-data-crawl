@@ -889,16 +889,37 @@ def _print_sizes(summary: SizeSummary, table_rows: int) -> None:
     print(f"  规模表累计 {table_rows} 行（临时失败不入库，下次自然重试）")
 
 
+#: 失败成因 → 给人看的标签。键必须与 `files.FAILURE_REASONS` 对齐：少一条不会报错，
+#: 只会在摘要里露出英文键（「临时失败 725（rate 612…）」），与「散文里的列数没人管」
+#: 同一类问题，故由契约测试钉住两边相等。
+FILE_FAILURE_LABELS = {
+    "rate": "429 限流",
+    "server": "5xx",
+    "transport": "连接/超时",
+    "parse": "响应形态不对",
+    "http": "其他状态码",
+    "unknown": "未分类",
+}
+
+
 def _print_files(summary: FileSummary, table_rows: int) -> None:
     print(
         f"{summary.snapshot_date} 文件清单补齐：候选 {summary.requested} 条"
         f" / 耗时 {summary.elapsed_seconds:.1f}s"
         f" / 下载 {summary.downloaded_bytes / 1e6:.1f}MB"
     )
+    # 分类只在有失败时出现：临时失败为零时添一段「（无）」只是噪声。
+    breakdown = ""
+    if summary.failed_reasons:
+        parts = (
+            f"{FILE_FAILURE_LABELS.get(name, name)} {count}"
+            for name, count in summary.failed_reasons.items()
+        )
+        breakdown = "（" + " · ".join(parts) + "）"
     print(
         f"  成功 {summary.fetched}（其中刷新截断 {summary.refreshed}） · "
         f"永久缺失 {summary.unavailable} · "
-        f"临时失败 {summary.failed} · 已存跳过 {summary.skipped}"
+        f"临时失败 {summary.failed}{breakdown} · 已存跳过 {summary.skipped}"
     )
     print(f"  汇总表累计 {table_rows} 行（临时失败不入库，下次自然重试）")
 

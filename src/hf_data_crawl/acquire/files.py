@@ -53,7 +53,7 @@ import re
 import time
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import PurePosixPath
 from typing import Any, Literal
@@ -110,17 +110,41 @@ POLICY = StatusPolicy(
     permanent={401: "unavailable", 403: "unavailable", 404: "unavailable"},
 )
 
+#: 临时失败的成因。**处置各不相同**，所以不能只报个数：
+#: - `rate`：撞 429，降并发或放慢，重试只会继续撞；
+#: - `server`：5xx，上游抖动，下一轮自然好；
+#: - `transport`：连接层失败（超时、代理断、握手失败），加超时或换链路；
+#: - `parse`：200 但形态不对，上游改字段，要改解析而不是重试；
+#: - `http`：其余非 200（400/416 之类），先查请求本身。
+FAILURE_REASONS = ("rate", "server", "transport", "parse", "http")
+
+
+def _reason_for(status: int) -> str:
+    """HTTP 状态码 → 失败成因。只用于「重试用尽仍非 200」的那一支。"""
+    if status == 429:
+        return "rate"
+    if status >= 500:
+        return "server"
+    return "http"
+
+
 _NEXT_LINK = re.compile(r'<([^>]+)>\s*;\s*rel="?next"?', re.IGNORECASE)
 
 
 @dataclass(frozen=True)
 class FileResult:
-    """单库文件清单查询结果。`payload_bytes` 用于量化真实流量，不落库。"""
+    """单库文件清单查询结果。`payload_bytes` 用于量化真实流量，不落库。
+
+    `reason` 只在临时失败时有值，取值是**有限的一组**（见 `FAILURE_REASONS`）：
+    「失败了几个」不足以调参——429 要降并发、超时要加超时、5xx 要重试，三种处置
+    完全不同，而它们此前全被压成同一个 `failed` 计数。
+    """
 
     dataset_id: str
     status: str
     row: dict[str, Any]
     payload_bytes: int = 0
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -135,6 +159,8 @@ class FileSummary:
     table_rows: int
     downloaded_bytes: int
     elapsed_seconds: float
+    #: 临时失败按原因分类的计数（键取自 `FAILURE_REASONS`）。只统计不入库的那些。
+    failed_reasons: dict[str, int] = field(default_factory=dict)
 
 
 def next_cursor(headers: Mapping[str, str]) -> str | None:
@@ -246,19 +272,26 @@ class HfFilesApi:
             response = self._request(dataset_id, cursor)
             requests += 1
             if response is None:
-                return _failure(dataset_id, "error", payload_bytes=payload_bytes)
+                return _failure(
+                    dataset_id, "error", payload_bytes=payload_bytes, reason="transport"
+                )
             payload_bytes += len(response.body)
             terminal = POLICY.terminal(response.status)
             if terminal is not None:
                 return _failure(dataset_id, terminal, snapshot_date, payload_bytes=payload_bytes)
             if response.status != 200:
-                return _failure(dataset_id, "error", payload_bytes=payload_bytes)
+                return _failure(
+                    dataset_id,
+                    "error",
+                    payload_bytes=payload_bytes,
+                    reason=_reason_for(response.status),
+                )
 
             parsed = parse_tree(response.body)
             if parsed is None:
                 # 200 却不是数组属于上游形态变化，记临时失败等下轮重试，
                 # 不把「空仓库」和「没拿到数据」混成同一件事。
-                return _failure(dataset_id, "error", payload_bytes=payload_bytes)
+                return _failure(dataset_id, "error", payload_bytes=payload_bytes, reason="parse")
             entries.extend(parsed)
 
             cursor = next_cursor(response.headers)
@@ -325,7 +358,7 @@ class HfFilesApi:
                 )
             except TransportError:
                 if attempt >= self._max_retries:
-                    return _failure(dataset_id, "error")
+                    return _failure(dataset_id, "error", reason="transport")
                 self._sleeper(exponential_seconds(attempt, base=self._retry_base_delay))
                 continue
 
@@ -343,14 +376,14 @@ class HfFilesApi:
                         )
                     )
                     continue
-                return _failure(dataset_id, "error")
+                return _failure(dataset_id, "error", reason=_reason_for(response.status))
 
             parsed = parse_siblings(response.body)
             if parsed is None:
                 return None
             entries, truncated = parsed
             return _summarize(dataset_id, snapshot_date, entries, truncated, len(response.body))
-        return _failure(dataset_id, "error")
+        return _failure(dataset_id, "error", reason="transport")
 
 
 def _summarize(
@@ -401,14 +434,24 @@ def _failure(
     snapshot_date: date | None = None,
     *,
     payload_bytes: int = 0,
+    reason: str = "",
 ) -> FileResult:
     """不可用的落库（下轮跳过），临时失败留空（下轮自然重试）。
 
     与 `sizes._failure` 同一套语义：把可救的记录钉成失败，或每轮重烧
     不可用的请求预算，都是静悄悄的成本泄漏。
+
+    `reason` 只对临时失败有意义，且只进摘要不进表——表里没有这一列，也不该有：
+    它是「这一轮为什么没拿到」的运行时诊断，不是关于这个库的事实。
     """
     if status != "unavailable" or snapshot_date is None:
-        return FileResult(dataset_id=dataset_id, status=status, row={}, payload_bytes=payload_bytes)
+        return FileResult(
+            dataset_id=dataset_id,
+            status=status,
+            row={},
+            payload_bytes=payload_bytes,
+            reason=reason,
+        )
     row: dict[str, Any] = {name: None for name in FILES_SCHEMA}
     row.update(
         {
@@ -498,6 +541,20 @@ class FileFetcher:
         )
         ok = sum(1 for result in results if result.status == "ok")
         unavailable = sum(1 for result in results if result.status == "unavailable")
+        # 只统计「不入库」的那一类：ok 与 unavailable 都是有结论的，不占这一列。
+        # 顺序按 FAILURE_REASONS 固定，免得同一批数据两次跑出两种键序。
+        counts = Counter(
+            result.reason or "unknown"
+            for result in results
+            if result.status not in {"ok", "unavailable"}
+        )
+        failed_reasons = {name: counts[name] for name in FAILURE_REASONS if counts[name]}
+        # 兜住没归类的（例：采集器在工作线程里抛异常，压根没走到 `_failure`）。
+        # 只取 `FAILURE_REASONS` 的话，这类失败会在分类里凭空消失，而 `failed`
+        # 总数又对不上——两个数互相矛盾比数字粗糙更难查。
+        failed_reasons.update(
+            {name: counts[name] for name in sorted(counts) if name not in FAILURE_REASONS}
+        )
 
         return (
             FileSummary(
@@ -511,6 +568,7 @@ class FileFetcher:
                 table_rows=frame.height,
                 downloaded_bytes=sum(traffic),
                 elapsed_seconds=time.monotonic() - started,
+                failed_reasons=failed_reasons,
             ),
             frame,
         )
