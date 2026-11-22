@@ -379,10 +379,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     files = subparsers.add_parser(
-        "fetch-files", help="按下载量取头部，补文件清单汇总（只补 top N，不逐库全量）"
+        "fetch-files",
+        help="补文件清单汇总（候选 = 缺口 ∪ 点名重抓；`--top` 是请求数）",
     )
     files.add_argument("--date", default=None, help="快照日期 YYYY-MM-DD，默认今天")
-    files.add_argument("--top", type=int, default=1_000, help="按下载量取前多少名（默认 1000）")
+    files.add_argument(
+        "--top",
+        type=int,
+        default=1_000,
+        help=(
+            "这一轮最多发多少个请求（默认 1000，0 = 不限）；按下载量优先，"
+            "`--refresh-truncated` / `--retry-unavailable` 的点名重抓先吃名额"
+        ),
+    )
     files.add_argument(
         "--ids",
         default=None,
@@ -398,7 +407,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     files.add_argument(
-        "--workers", type=int, default=8, help="并发数；两种端点都是外网请求，保守取 8"
+        "--workers",
+        type=int,
+        default=8,
+        help=(
+            "并发数；detail 的响应随文件数增大（大的库二十多 MB），默认 8 保守。"
+            "本机代理实测 12 路是吞吐拐点，但 API 429 会随速率突增出现"
+        ),
     )
     files.add_argument(
         "--timeout",
