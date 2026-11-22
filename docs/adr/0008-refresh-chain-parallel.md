@@ -153,3 +153,9 @@
   的实际需求回落；`--launch-hours` 的默认值未动，留待有实测再调。
 - 少了两步之后，「同走 `/api` 配额所以要串行」这条约束在链上只剩
   `reconcile` 与 `fetch-sizes` / `fetch-readme` 的并行——它们本就分属不同端点。
+
+## 修订（2026-11-22）：契约 v7，默认面 35 → 34 列
+
+`task_ids` 移出默认面（覆盖率 0.74%，且其中 99.5% 与 `task_categories` 并存），
+上面两处「35 列」按 **34 列**读。`export` 的依赖不变：`paper_url` / `citation_bibtex`
+仍在默认面，仍由 `parse-readme` 供。取舍与判据见 DECISIONS #169。

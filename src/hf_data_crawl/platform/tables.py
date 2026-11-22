@@ -315,7 +315,7 @@ FILES_SCHEMA: dict[str, PolarsType] = {
 
 #: README 全文。按 id 覆盖的单文件表，`text` 是原始 Markdown（含 YAML 头）。
 #:
-#: 为什么单开一张表而不是给 `description` 换源：全文均值 4.6 KB，塞进默认 35 列
+#: 为什么单开一张表而不是给 `description` 换源：全文均值 4.6 KB，塞进默认导出列
 #: 导出会让文件从 105 MB 涨到约 4 GB，而绝大多数筛选只看摘要。两者并存——
 #: `description` 供粗筛，本表供精读。`status` 区分四种空：`ok` 拿到全文、
 #: `absent` 仓库本来没有 README、`denied` 受限读不到、`error` 临时失败；

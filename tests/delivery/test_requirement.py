@@ -554,7 +554,7 @@ def test_需求不能点名只在导出物里的注入列(tmp_path: Path) -> Non
 
 
 def test_需求可以点名视图里有的契约列(tmp_path: Path) -> None:
-    """边界另一侧：视图里有的列照常放行，别把校验做成「只许默认 35 列」。"""
+    """边界另一侧：视图里有的列照常放行，别把校验做成「只许默认那几列」。"""
     sql = sql_of(tmp_path, output={"columns": ["id", "xet_enabled"]})
     assert '"xet_enabled"' in sql
     assert '"readme"' not in sql

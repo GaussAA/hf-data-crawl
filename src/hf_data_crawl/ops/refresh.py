@@ -21,7 +21,7 @@
 只会挤掉采集本身，还隔着锁与配额互相拖慢。改为**自由抓取**——只在人明确要的时候
 跑 `fetch-files` / `fetch-preview`（两条都支持 `--top 0` 跑全量、暂存分片续抓）。
 
-③ 串行尾：`export-wide`（`sizes` 合并后即跑，35 列契约只依赖它）→
+③ 串行尾：`export-wide`（`sizes` 合并后即跑，契约里的 `server_*` 只依赖它）→
    `request run-due` → `archive` → `prune` → `doctor`。
 
 续跑与边界
@@ -120,7 +120,8 @@ PARALLEL: tuple[Step, ...] = (
     Step("readme", ("fetch-readme", "--changed-all"), needs=("build",), command="fetch-readme"),
 )
 
-#: ③ 收尾。导出只依赖 sizes：35 列契约里的 `server_*` 四列来自 `size` 表。
+#: ③ 收尾。导出紧邻的前置只有 sizes：契约里的 `server_*` 四列来自 `size` 表
+#: （`paper_url` / `citation_bibtex` 来自更早的 `parse-readme`，不在这里等）。
 SERIAL_TAIL: tuple[Step, ...] = (
     # `fetch-readme` 只抓正文：`readme_fields` 的字段要靠 `parse-readme` 派生。
     # 必须排在导出前——`paper_url` / `citation_bibtex` 就来自那张表，不解析就会
