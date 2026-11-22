@@ -817,11 +817,17 @@ def _print_reconcile(summary: ReconcileSummary) -> None:
         f"转私有 {summary.restricted} · 改名 {summary.renamed} · "
         f"sha 变更 {summary.sha_changed} · 恢复 {summary.reactivated}"
     )
+    if summary.source == "raw":
+        print(
+            "  注：新增与 sha 变更记在当天 collect 一侧——本表的基线取自采集之后，"
+            "这两项在此模式下恒为 0；消失与状态判定不受影响"
+        )
     print(f"  差异清单 {summary.report_path} · 停止原因 {summary.stopped_reason}")
     if summary.probe_probed or summary.probe_deferred:
         tail = f" · 顺延 {summary.probe_deferred}（下一轮继续）" if summary.probe_deferred else ""
         failed = f"，失败 {summary.probe_failed}" if summary.probe_failed else ""
-        print(f"  探测复核 {summary.probe_probed} 个{failed}{tail}")
+        settled = f" · 已结案不再复核 {summary.probe_settled:,}" if summary.probe_settled else ""
+        print(f"  探测复核 {summary.probe_probed} 个{failed}{tail}{settled}")
     if summary.probe_degraded:
         print(
             f"  探测顽固失败 {summary.probe_degraded} 个（连续 {PROBE_DEGRADE_AFTER} 轮无结论，"

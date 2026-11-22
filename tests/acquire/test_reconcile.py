@@ -576,7 +576,7 @@ def test_探测失败不消费轮转额度(store: DatasetStore) -> None:
     )
     probe = reconciler(transport, store, probe_limit=2)
 
-    verdicts, probed, failed, deferred = probe._classify_missing(
+    verdicts, probed, failed, deferred, _settled = probe._classify_missing(
         ids, statuses={item: "active" for item in ids}
     )
 
@@ -819,3 +819,42 @@ def test_强制扫描时不理当天分块(store: DatasetStore) -> None:
 
     assert summary.source == "scan"
     assert transport.calls, "--scan 必须真的发请求"
+
+
+def test_清单标出差异由哪一侧负责(store: DatasetStore) -> None:
+    """「读分块」模式下 new 与 sha_changed 恒为空，清单不写明就会被读成「上游静止」。"""
+    raw.write(store, snapshot_date=DAY2, page_index=1, records=[record("a", "sha-a1")], meta={})
+    make_collect_run(store, DAY2, "end")
+
+    summary = reconciler(FakeCursorTransport([]), store).run(DAY2, limit=100)
+
+    frame = pl.read_parquet(summary.report_path)
+    source = frame.filter(pl.col("kind") == "source")
+    assert source.height == 1
+    assert source["detail"][0] == "source=raw"
+    assert "collect" in source["note"][0]
+
+
+def test_自扫模式的清单标明相对会话基线(store: DatasetStore) -> None:
+    summary = reconciler(FakeCursorTransport([[record("a", "sha-a2")]]), store).run(DAY2, limit=100)
+
+    frame = pl.read_parquet(summary.report_path)
+    source = frame.filter(pl.col("kind") == "source")
+    assert source["detail"][0] == "source=scan"
+
+
+def test_顺延只数待复核的不含已结案(store: DatasetStore) -> None:
+    """`missing` 里大半是已判定的库，按 `len(missing) - probed` 报顺延会虚高十倍。
+
+    2026-11-22 实测：12,041 个 missing 里 8,231 disappeared + 895 renamed，
+    真正在架待复核只有 2,915；探 2,000 个后该报顺延 915，不是 10,041。
+    """
+    probe = reconciler(FakeCursorTransport([[]]), store, probe_limit=1)
+    ids = ["x/1", "x/2", "x/3", "x/4"]
+    statuses = {"x/1": "active", "x/2": "active", "x/3": "disappeared", "x/4": "renamed"}
+
+    _verdicts, probed, _failed, deferred, settled = probe._classify_missing(ids, statuses=statuses)
+
+    assert probed == 1
+    assert deferred == 1, "待复核 2 个、探了 1 个"
+    assert settled == 2, "两个已结案，不占额度"

@@ -1306,6 +1306,10 @@ def _probe_quality(ctx: RunContext) -> Finding:
     探测失败落成 `unknown`，处置是「先别动」——不报错，只是状态原地不动。配额紧
     的时候，一批早已下架的库会长期挂着 `active`，而界面上看不出任何异常。这条把
     它变成可数的结论：探了多少、失败多少、还有多少顺延。
+
+    「顺延」只数还该复核的（在架或状态未知）。已判定的非在架库永远不在列表里，
+    每轮都探等于拿配额确认旧结论，故单列为「已结案」——混进来会让积压看起来是
+    实际的十倍（2026-11-22：12,041 个 missing 里 9,126 个已结案）。
     """
     runs = ctx.runs
     latest = _latest_probe_payload(runs)
@@ -1315,18 +1319,20 @@ def _probe_quality(ctx: RunContext) -> Finding:
     probed = int(latest.get("probe_probed") or 0)
     failed = int(latest.get("probe_failed") or 0)
     deferred = int(latest.get("probe_deferred") or 0)
+    settled = int(latest.get("probe_settled") or 0)
     if probed == 0 and deferred == 0:
         return Finding(False, "探测复核：本轮没有待复核的库")
 
     tail = f"，顺延 {deferred:,} 个待下轮" if deferred else ""
+    rest = f"（另有 {settled:,} 个已判定非在架，不占额度）" if settled else ""
     share = failed / probed if probed else 0.0
     if share > PROBE_FAIL_SHARE:
         return Finding(
             True,
-            f"探测复核：本轮探 {probed:,} 个、失败 {failed:,}（{share:.0%}）{tail}；"
+            f"探测复核：本轮探 {probed:,} 个、失败 {failed:,}（{share:.0%}）{tail}{rest}；"
             "失败即「先别动」，这些库的状态会停在旧值——检查配额与重试退避",
         )
-    return Finding(False, f"探测复核：本轮探 {probed:,} 个、失败 {failed:,}{tail}")
+    return Finding(False, f"探测复核：本轮探 {probed:,} 个、失败 {failed:,}{tail}{rest}")
 
 
 def _probe_degraded(ctx: RunContext) -> Finding:

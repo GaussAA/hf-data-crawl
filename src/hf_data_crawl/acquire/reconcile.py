@@ -175,8 +175,11 @@ class ReconcileSummary:
     probe_probed: int = 0
     #: 探测没拿到结论的库数（重试耗尽、仍被限流）。这些不落状态，留待下轮。
     probe_failed: int = 0
-    #: 本轮未探测、顺延到下一轮的库数。积压量长期不降，说明限额或配额要调。
+    #: 本轮未探测、顺延到下一轮的**待复核**库数（已判定的非在架库不计入）。
     probe_deferred: int = 0
+    #: 已经判定过、本次不再复核的库数（disappeared / restricted / renamed）。
+    #: 与 `probe_deferred` 分开报：混在一起会让「积压」看起来是实际的十倍。
+    probe_settled: int = 0
     #: 连续 `PROBE_DEGRADE_AFTER` 轮都拿不到结论的库数；具体 id 见差异清单。
     probe_degraded: int = 0
     #: 因「当天已有相同内容」而未落盘的记录数（详见 `raw.DayRecords`）。
@@ -292,10 +295,10 @@ class Reconciler:
         restricted: list[str] = []
         renamed: list[str] = []
         probe_reactivated: list[str] = []
-        probed = failed = deferred = 0
+        probed = failed = deferred = settled = 0
         verdicts: dict[str, Status] = {}
         if stopped_reason == "end":
-            verdicts, probed, failed, deferred = self._classify_missing(
+            verdicts, probed, failed, deferred, settled = self._classify_missing(
                 diff.missing, statuses=session.status_of(diff.missing)
             )
             disappeared = [i for i, s in verdicts.items() if s is Status.DISAPPEARED]
@@ -332,6 +335,7 @@ class Reconciler:
             disappeared,
             sha_changed,
             reactivated,
+            source=source,
             restricted=restricted,
             renamed=renamed,
             probe_reactivated=probe_reactivated,
@@ -359,6 +363,7 @@ class Reconciler:
             probe_probed=probed,
             probe_failed=failed,
             probe_deferred=deferred,
+            probe_settled=settled,
             probe_degraded=len(self._probe_degraded),
             deduped=scan.deduped if scan is not None else 0,
             source=source,
@@ -369,8 +374,8 @@ class Reconciler:
         missing: list[str],
         *,
         statuses: Mapping[str, str] | None = None,
-    ) -> tuple[dict[str, Status], int, int, int]:
-        """复核「没扫到」的真实原因，返回 (判定, 已探, 失败, 顺延)。
+    ) -> tuple[dict[str, Status], int, int, int, int]:
+        """复核「没扫到」的真实原因，返回 (判定, 已探, 失败, 顺延, 已结案)。
 
         列表扫描看不见一个库，可能是删除、转私有或改名。直接问一次详情接口即可
         分辨：404 是删除，401 是转私有，307 跟随到 200 则是改名。
@@ -381,9 +386,16 @@ class Reconciler:
 
         按 `statuses` 把在架的排前面，再按 id 稳定排序、从游标处取。已判定为非在架
         的不必天天复核：它们本就不在列表里，每轮都探等于拿一半配额去确认旧结论。
+
+        **「顺延」只数还该复核的那些**（在架或状态未知）。`missing` 里通常大半是
+        已结案的库——2026-11-22 实测 12,041 个 missing 里 8,231 个 disappeared、
+        895 个 renamed，真正在架待复核只有 2,915。若按 `len(missing) - probed`
+        报顺延，体检会显示「顺延 10,041」，看起来像失控的积压，实际每天探 2,000
+        个就能覆盖全部待复核项。第九个返回值 `settled` 把这批已结案的单独报出来，
+        数字才对得上账。
         """
         if not missing:
-            return {}, 0, 0, 0
+            return {}, 0, 0, 0, 0
 
         batch, start, total = self._probe_batch(missing, statuses or {})
         verdicts: dict[str, Status] = {}
@@ -439,7 +451,15 @@ class Reconciler:
             prefix += 1
         if total:
             self._write_probe_cursor((start + prefix) % total, failures)
-        return verdicts, probed, failed, len(missing) - probed
+        known = statuses or {}
+        reviewable = sum(1 for item in missing if known.get(item) not in INACTIVE)
+        return (
+            verdicts,
+            probed,
+            failed,
+            max(reviewable - probed, 0),
+            max(len(missing) - reviewable, 0),
+        )
 
     def _probe_batch(
         self, missing: list[str], statuses: Mapping[str, str]
@@ -521,6 +541,7 @@ class Reconciler:
         sha_changed: list[str],
         reactivated: list[str],
         *,
+        source: str = "scan",
         restricted: list[str] | None = None,
         renamed: list[str] | None = None,
         probe_reactivated: list[str] | None = None,
@@ -531,6 +552,23 @@ class Reconciler:
         rows: list[dict[str, Any]] = [
             {"kind": "run", "id": "", "detail": f"stopped_reason={stopped_reason}", "note": ""}
         ]
+        # 从当天分块读 seen 时，基线取自 collect 之后的 current、seen 也取自 collect
+        # 落的同一批记录——两边同源，`new` 与 `sha_changed` 必然为空。这是设计的
+        # 结果，不是「今天恰好没有变化」，必须在清单里写明，否则日后看到一片 0
+        # 会误判成上游静止。
+        rows.append(
+            {
+                "kind": "source",
+                "id": "",
+                "detail": f"source={source}",
+                "note": (
+                    "新增与 sha 变更由当天 collect 一侧记录（本表基线取自采集之后，此处恒为空）；"
+                    "消失、受限、改名与状态判定仍以本表为准"
+                    if source == "raw"
+                    else "对账自扫全站，差异相对本会话开始时的基线"
+                ),
+            }
+        )
         if probe is not None:
             probed, failed, deferred = probe
             if probed or deferred:
