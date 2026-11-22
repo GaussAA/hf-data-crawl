@@ -81,24 +81,26 @@ def _open_transport(transport: Transport | None) -> Transport:
     return HttpxTransport()
 
 
-def _files_transport(transport: Transport | None, timeout: float) -> Transport:
-    """`fetch-files` 需要自定义超时，故单独留一个同样先加载凭据的入口。"""
-    if transport is not None:
-        return transport
-    load_env_file()
-    return HttpxTransport(timeout=timeout)
-
-
-def _readme_transport(transport: Transport | None, timeout: float) -> Transport:
-    """`fetch-readme` 是十几小时的长跑：关掉空闲连接复用。
+def _batch_transport(transport: Transport | None, timeout: float | None = None) -> Transport:
+    """逐库批抓的长跑（`files` / `readme` / `sizes`）：**关掉空闲连接复用**。
 
     代理侧会把空闲连接单方面丢掉，而 httpx 仍当它可用，下一次复用就卡在 TLS
     握手上直到超时——实测 10 个连接同时变坏后吞吐从 14/s 掉到 0.33/s，进程重启
     即恢复。每条请求各开各的连接后，坏连接最多影响一条请求。
+
+    2026-11-22 在 `fetch-files` 上又踩了一次同一个坑：连跑四十分钟后从 3.4 个/秒
+    掉到 0.5 个/秒，落盘间隔从 90s 拖到 300s，看上去像上游变慢或限流，实际是连接
+    烂了。当时只给 readme 关复用，理由是「只有它跑十几小时」；`--top 40000` 让 files
+    也成了小时级任务，判据「跑多久」一变，同一个坑就换个命令重演。
+
+    所以判据不是命令名，是**这一次要发多少请求**：逐库几千条以上都走这里，
+    短命令（collect / reconcile / 单次 refresh）仍用 `_open_transport`。
     """
     if transport is not None:
         return transport
     load_env_file()
+    if timeout is None:
+        return HttpxTransport(max_keepalive=0)
     return HttpxTransport(timeout=timeout, max_keepalive=0)
 
 
@@ -348,7 +350,8 @@ def run_fetch_sizes(
             return Outcome({"error": "ids"}, code=1, reason=problem)
 
     fetcher = SizeFetcher(
-        api=HfSizeApi(transport=_open_transport(transport)),
+        # 全量一轮三小时（见本函数 docstring），属长跑，关掉连接复用。
+        api=HfSizeApi(transport=_batch_transport(transport)),
         workers=args.workers,
         progress=_progress_line,
         heartbeat=_stall_line,
@@ -592,7 +595,7 @@ def run_fetch_files(
 
     fetcher = FileFetcher(
         api=HfFilesApi(
-            transport=_files_transport(transport, args.timeout),
+            transport=_batch_transport(transport, args.timeout),
             max_retries=args.max_retries,
             max_pages=args.max_pages,
             mode=getattr(args, "via", "detail"),
@@ -714,7 +717,7 @@ def run_fetch_readme(
 
     fetcher = ReadmeFetcher(
         api=HfReadmeApi(
-            transport=_readme_transport(transport, args.timeout),
+            transport=_batch_transport(transport, args.timeout),
             max_retries=args.max_retries,
             rate=args.rate,
         ),

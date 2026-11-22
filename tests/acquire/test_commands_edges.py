@@ -221,8 +221,8 @@ def test_注入的传输原样传出() -> None:
     """注入的传输必须原样传出：测试与离线回放靠的就是这个口子，不能被包装掉。"""
     sentinel = cast("Transport", object())
 
-    assert commands._files_transport(sentinel, timeout=60.0) is sentinel
-    assert commands._readme_transport(sentinel, timeout=60.0) is sentinel
+    assert commands._batch_transport(sentinel, timeout=60.0) is sentinel
+    assert commands._batch_transport(sentinel) is sentinel
 
 
 def test_文件抓取用自定义超时(tmp_path: Path, monkeypatch) -> None:
@@ -230,25 +230,33 @@ def test_文件抓取用自定义超时(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(commands, "HttpxTransport", RecordingTransport)
     monkeypatch.setattr(commands, "load_env_file", lambda: None)
 
-    made = commands._files_transport(None, timeout=120.0)
+    made = commands._batch_transport(None, timeout=120.0)
 
     assert isinstance(made, RecordingTransport)
-    assert made.kwargs == {"timeout": 120.0}
+    assert made.kwargs == {"timeout": 120.0, "max_keepalive": 0}
 
 
-def test_readme抓取关掉空闲连接复用(monkeypatch) -> None:
+def test_长跑批抓一律关掉空闲连接复用(monkeypatch) -> None:
     """代理会单方面丢掉空闲连接，而 httpx 仍当它可用——下一次复用就卡在 TLS 上。
 
     2026-11 实测：10 个连接同时变坏后吞吐从 14/s 掉到 0.33/s，重启才恢复。
-    `max_keepalive=0` 是这条事故的结论，不能被后来者「顺手统一」掉。
+    2026-11-22 在 `fetch-files --top 40000` 上又复现一次：3.4 个/秒 → 0.5 个/秒，
+    落盘间隔 90s → 300s，而同一时刻单发一条请求仍 0.7 秒正常。
+
+    所以判据从「哪个命令跑得久」改成「这一次要发多少请求」：files / readme / sizes
+    三个逐库长跑共用这一份配置。这条不能被子系统「顺手统一」回复用——症状要跑几
+    十分钟才出现，回归测试抓不住，只能靠断言配置来守。
     """
     monkeypatch.setattr(commands, "HttpxTransport", RecordingTransport)
     monkeypatch.setattr(commands, "load_env_file", lambda: None)
 
-    made = commands._readme_transport(None, timeout=45.0)
+    with_timeout = commands._batch_transport(None, timeout=45.0)
+    without_timeout = commands._batch_transport(None)
 
-    assert isinstance(made, RecordingTransport)
-    assert made.kwargs == {"timeout": 45.0, "max_keepalive": 0}
+    assert isinstance(with_timeout, RecordingTransport)
+    assert isinstance(without_timeout, RecordingTransport)
+    assert with_timeout.kwargs == {"timeout": 45.0, "max_keepalive": 0}
+    assert without_timeout.kwargs == {"max_keepalive": 0}
 
 
 # ---------------------------------------------------------------- 打印分支
