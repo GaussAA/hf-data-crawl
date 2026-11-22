@@ -46,9 +46,9 @@ from ..platform.coerce import as_int
 from ..platform.tables import PREVIEW_SCHEMA, url_for
 from .batch import collect_rows
 from .hf.api import Transport, TransportError
+from .hf.pace import RateLimiter
 from .hf.retry import StatusPolicy, exponential_seconds
 from .merge import MergeSpec
-from .readme import RateLimiter
 
 #: 默认取几行。样例的用途是「看一眼」，三条足够看出列与值的形状。
 DEFAULT_ROWS = 3

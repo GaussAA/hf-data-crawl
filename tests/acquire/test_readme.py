@@ -25,12 +25,12 @@ import pytest
 from hf_data_crawl.acquire.batch import staged_shards
 from hf_data_crawl.acquire.commands import run_parse_readme
 from hf_data_crawl.acquire.hf.api import HfResponse, TransportError
+from hf_data_crawl.acquire.hf.pace import BUCKET_SITE, shared
 from hf_data_crawl.acquire.merge import keep_ok_rows
 from hf_data_crawl.acquire.readme import (
     README_MERGE,
     README_STAGING_DIR,
     HfReadmeApi,
-    RateLimiter,
     ReadmeFetcher,
 )
 from hf_data_crawl.ops.cli import SELF_LOCKED_COMMANDS, WRITE_COMMANDS, main
@@ -89,7 +89,7 @@ def api(
     slept: list[float] | None = None,
     rate: float = 0,
 ) -> HfReadmeApi:
-    """测试默认不限速：真实配额由 `RateLimiter` 的单测覆盖，这里只测抓取逻辑。"""
+    """测试默认不限速：`rate=0` 关掉闸，节流本身由 `test_pace.py` 守着。"""
     return HfReadmeApi(
         transport=transport,
         max_retries=max_retries,
@@ -211,44 +211,65 @@ def test_连接失败也走重试() -> None:
     assert result.status == "ok"
 
 
-def test_限速器按间隔放行() -> None:
-    """配额是「5000 次 / 5 分钟」，靠撞 429 后退避会反复撞线；匀速才跑得完。"""
-    now = [0.0]
-    sleeps: list[float] = []
-    limiter = RateLimiter(10, clock=lambda: now[0], sleep=sleeps.append)
-
-    limiter.acquire()
-    now[0] = 0.05
-    limiter.acquire()
-
-    assert sleeps == [pytest.approx(0.05)]
-
-
-def test_限速为零时不等待() -> None:
-    sleeps: list[float] = []
-    limiter = RateLimiter(0, clock=lambda: 0.0, sleep=sleeps.append)
-
-    limiter.acquire()
-    limiter.acquire()
-
-    assert sleeps == []
-    assert not limiter.enabled
-
-
 def test_每次请求都先买票() -> None:
+    """含重试在内，每发一次请求就占一个配额位——配额按请求数算，不按条目数。"""
     transport = FakeReadmeTransport({"acme/x": BODY})
     readme_api = HfReadmeApi(transport=transport, rate=0, sleeper=lambda _: None)
 
     class Spy:
         calls = 0
 
-        def acquire(self) -> None:
+        def wait(self) -> None:
             Spy.calls += 1
 
-    readme_api._limiter = Spy()  # type: ignore[assignment]  # noqa: SLF001 - 只想确认调用次序，不重建限速器
+    readme_api._pacer = Spy()  # type: ignore[assignment]  # noqa: SLF001 - 只想确认调用次序，不重建闸
     readme_api.fetch("acme/x", DAY)
 
     assert Spy.calls == 1
+
+
+def test_重试也各自买票() -> None:
+    """一次瞬断后重试，是第二次真实请求，就得再买一张。"""
+    transport = FakeReadmeTransport({"acme/x": TransportError("boom")})
+    readme_api = HfReadmeApi(transport=transport, rate=0, max_retries=2, sleeper=lambda _: None)
+
+    class Spy:
+        calls = 0
+
+        def wait(self) -> None:
+            Spy.calls += 1
+
+    readme_api._pacer = Spy()  # type: ignore[assignment]  # noqa: SLF001
+    readme_api.fetch("acme/x", DAY)
+
+    assert Spy.calls == 3  # 首次 + 两次重试
+
+
+def test_默认挂站点桶的共享闸() -> None:
+    """不传 `rate` 时走 `shared(resolvers)`，且同一进程里取到的是同一个对象。"""
+    transport = FakeReadmeTransport({"acme/x": BODY})
+    first = HfReadmeApi(transport=transport, sleeper=lambda _: None)
+    second = HfReadmeApi(transport=transport, sleeper=lambda _: None)
+
+    assert first._pacer is not None  # noqa: SLF001
+    assert first._pacer is second._pacer  # noqa: SLF001
+    assert first._pacer is shared(BUCKET_SITE)  # noqa: SLF001
+
+
+def test_显式速率不与共享闸叠加() -> None:
+    """给了 `--rate` 就自建闸：若同时挂共享闸，每个请求会各买两张票。"""
+    transport = FakeReadmeTransport({"acme/x": BODY})
+    custom = HfReadmeApi(transport=transport, rate=5.0, sleeper=lambda _: None)
+
+    assert custom._pacer is not None  # noqa: SLF001
+    assert custom._pacer is not shared(BUCKET_SITE)  # noqa: SLF001
+
+
+def test_速率为零时不设闸() -> None:
+    transport = FakeReadmeTransport({"acme/x": BODY})
+    free = HfReadmeApi(transport=transport, rate=0, sleeper=lambda _: None)
+
+    assert free._pacer is None  # noqa: SLF001
 
 
 # ---------------------------------------------------------------- 重复请求

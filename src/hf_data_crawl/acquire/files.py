@@ -66,7 +66,7 @@ from ..platform.coerce import as_int
 from ..platform.tables import FILES_SCHEMA, url_for
 from .batch import collect_rows
 from .hf.api import API_BASE_URL, HfResponse, Transport, TransportError
-from .hf.pace import Pacer, RateGate
+from .hf.pace import BUCKET_API, RateGate, shared
 from .hf.retry import StatusPolicy, delay_seconds, exponential_seconds, header_value
 from .merge import MergeSpec
 
@@ -252,7 +252,8 @@ class HfFilesApi:
         self._sleeper = sleeper or time.sleep
         #: 默认按上游配额节流：不加节流时并发只会把请求堆到 429 上，而退避会把
         #: worker 按「窗口剩余秒数」停住，吞吐反而低于配额（实测 2.76 / 3.33）。
-        self._pacer = pacer if pacer is not None else Pacer()
+        #: 取进程内共享的那个闸，而不是各建一个：配额按桶记账，多建就等于多领额度。
+        self._pacer = pacer if pacer is not None else shared(BUCKET_API)
 
     def _get(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> HfResponse:
         """所有请求的唯一出口：先按配额占位，再发。

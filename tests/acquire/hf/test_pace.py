@@ -4,7 +4,16 @@ from __future__ import annotations
 
 import pytest
 
-from hf_data_crawl.acquire.hf.pace import MIN_SLEEP_SECONDS, Pacer
+from hf_data_crawl.acquire.hf.pace import (
+    BUCKET_API,
+    BUCKET_SITE,
+    BUCKETS,
+    MIN_SLEEP_SECONDS,
+    Pacer,
+    Quota,
+    RateLimiter,
+    shared,
+)
 
 
 class FakeClock:
@@ -81,3 +90,56 @@ def test_配额非法时直接拒绝() -> None:
         Pacer(quota=0, window=10.0, clock=clock, sleep=clock.sleep)
     with pytest.raises(ValueError):
         Pacer(quota=1, window=0.0, clock=clock, sleep=clock.sleep)
+
+
+# ---------------------------------------------------------------- 按桶共享
+
+
+def test_桶配额按实测口径() -> None:
+    """这两个数是量出来的，不是估的：改它之前先再量一次响应头。"""
+    assert BUCKETS[BUCKET_API] == Quota(1000, 300.0)
+    assert BUCKETS[BUCKET_SITE] == Quota(3000, 300.0)
+
+
+def test_同桶取到同一个闸() -> None:
+    """各建一份就等于各领一份额度，合起来是 N 倍超发。"""
+    assert shared(BUCKET_API) is shared(BUCKET_API)
+    assert shared(BUCKET_SITE) is shared(BUCKET_SITE)
+
+
+def test_不同桶各自记账() -> None:
+    """readme 打满 resolvers 的 10/s 不该挤占 files 的 3.33/s——两本账互不相干。"""
+    assert shared(BUCKET_API) is not shared(BUCKET_SITE)
+
+
+def test_未知桶名直接炸() -> None:
+    """拼错的桶名若默默放行，等于这一路没有节流，且查不出来。"""
+    with pytest.raises(KeyError):
+        shared("apis")
+
+
+# ---------------------------------------------------------------- 匀速器
+
+
+def test_限速器按间隔放行() -> None:
+    """无配额头可读的端点只能靠匀速自我约束（`Pacer` 允许突发，这里不行）。"""
+    now = [0.0]
+    sleeps: list[float] = []
+    limiter = RateLimiter(10, clock=lambda: now[0], sleep=sleeps.append)
+
+    limiter.acquire()
+    now[0] = 0.05
+    limiter.acquire()
+
+    assert sleeps == [pytest.approx(0.05)]
+
+
+def test_限速为零时不等待() -> None:
+    sleeps: list[float] = []
+    limiter = RateLimiter(0, clock=lambda: 0.0, sleep=sleeps.append)
+
+    limiter.acquire()
+    limiter.acquire()
+
+    assert sleeps == []
+    assert not limiter.enabled

@@ -486,7 +486,12 @@ def build_parser() -> argparse.ArgumentParser:
             f"刷新链用：陈旧全部取，缺口最多补 {GAP_BUDGET:,} 个（与 --changed 互斥，优先此开关）"
         ),
     )
-    readme.add_argument("--workers", type=int, default=12, help="并发数，实测 12 稳定在 19 req/s")
+    readme.add_argument(
+        "--workers",
+        type=int,
+        default=12,
+        help="并发数。吞吐由配额闸决定而不是并发：实测该桶 10 req/s，开再多也只是排队",
+    )
     readme.add_argument(
         "--timeout",
         type=float,
@@ -496,8 +501,12 @@ def build_parser() -> argparse.ArgumentParser:
     readme.add_argument(
         "--rate",
         type=float,
-        default=15.0,
-        help="每秒请求数上限（HF 解析器配额 5000 次 / 5 分钟 ≈ 16.7/s，默认留余量取 15；0 不限速）",
+        default=None,
+        help=(
+            "每秒请求数上限的覆盖值。默认不传＝按实测配额放行（`resolvers` 桶 3000 次 / 300 秒"
+            " = 10 req/s）；0 表示不限速（排障用）。"
+            "旧版默认 15 是按「5000 次 / 5 分钟」估的，实测比真配额高 50%，一直靠 429 退避兜着"
+        ),
     )
     readme.add_argument(
         "--max-retries",
