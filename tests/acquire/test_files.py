@@ -992,3 +992,43 @@ def test_摘要按原因分类计数(tmp_path: Path) -> None:
     assert summary.unavailable == 1
     assert summary.failed == 3
     assert summary.failed_reasons == {"rate": 1, "server": 1, "transport": 1}
+
+
+class RecordingPacer:
+    """只记录被调用几次：节流的实现在 `test_pace.py`，这里只验「有没有接上」。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def wait(self) -> None:
+        self.calls += 1
+
+
+def test_每个请求都先过配额闸() -> None:
+    """漏一条路径不会报错，只会在跑久了以后表现为吞吐莫名偏低。"""
+    gate = RecordingPacer()
+    api = HfFilesApi(
+        transport=FakeFilesTransport({"acme/x": siblings(("a.csv", 1))}),
+        max_retries=2,
+        sleeper=lambda _: None,
+        pacer=gate,
+    )
+
+    api.fetch("acme/x", DAY)
+
+    assert gate.calls == 1
+
+
+def test_重试也各占一次配额() -> None:
+    """重试是又一个真实请求，不算配额就会把 429 越撞越多。"""
+    gate = RecordingPacer()
+    api = HfFilesApi(
+        transport=FakeFilesTransport({"acme/x": (RateLimited(0.0), siblings(("a.csv", 1)))}),
+        max_retries=2,
+        sleeper=lambda _: None,
+        pacer=gate,
+    )
+
+    api.fetch("acme/x", DAY)
+
+    assert gate.calls == 2

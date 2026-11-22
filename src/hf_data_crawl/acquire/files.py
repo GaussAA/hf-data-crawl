@@ -66,6 +66,7 @@ from ..platform.coerce import as_int
 from ..platform.tables import FILES_SCHEMA, url_for
 from .batch import collect_rows
 from .hf.api import API_BASE_URL, HfResponse, Transport, TransportError
+from .hf.pace import Pacer, RateGate
 from .hf.retry import StatusPolicy, delay_seconds, exponential_seconds, header_value
 from .merge import MergeSpec
 
@@ -240,6 +241,7 @@ class HfFilesApi:
         mode: FilesMode = "detail",
         retry_base_delay: float = 2.0,
         sleeper: Callable[[float], None] | None = None,
+        pacer: RateGate | None = None,
     ) -> None:
         self._transport = transport
         self._base_url = base_url
@@ -248,6 +250,18 @@ class HfFilesApi:
         self._mode = mode
         self._retry_base_delay = retry_base_delay
         self._sleeper = sleeper or time.sleep
+        #: 默认按上游配额节流：不加节流时并发只会把请求堆到 429 上，而退避会把
+        #: worker 按「窗口剩余秒数」停住，吞吐反而低于配额（实测 2.76 / 3.33）。
+        self._pacer = pacer if pacer is not None else Pacer()
+
+    def _get(self, url: str, params: dict[str, Any], headers: dict[str, str]) -> HfResponse:
+        """所有请求的唯一出口：先按配额占位，再发。
+
+        收成一个口子的理由与 `_open_transport` 相同——「哪条路径忘了节流」不会有
+        任何症状，只会在跑久了以后表现为吞吐莫名偏低。
+        """
+        self._pacer.wait()
+        return self._transport.get(url, params, headers)
 
     def fetch(self, dataset_id: str, snapshot_date: date) -> FileResult:
         if self._mode == "detail":
@@ -314,7 +328,7 @@ class HfFilesApi:
             params["cursor"] = cursor
         for attempt in range(self._max_retries + 1):
             try:
-                response = self._transport.get(
+                response = self._get(
                     f"{self._base_url}/{dataset_id}/tree/main",
                     params,
                     {"Accept": "application/json"},
@@ -351,7 +365,7 @@ class HfFilesApi:
         """
         for attempt in range(self._max_retries + 1):
             try:
-                response = self._transport.get(
+                response = self._get(
                     f"{self._base_url}/{dataset_id}",
                     {"blobs": "true"},
                     {"Accept": "application/json"},
