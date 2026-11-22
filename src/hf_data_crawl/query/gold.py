@@ -277,19 +277,23 @@ NUM_ROWS_SENTINEL = 9_000_000_000_000_000_000
 #: 带数据集列表的榜单都附 `url` 列：报告页据此把名字渲染成链接，查询者也能
 #: 直接拿到可点开的地址。聚合类榜单（分类、许可证、模态）没有单一数据集，不加。
 BOARDS: dict[str, str] = {
+    # 两个增速榜都按**日均**排：分层采样之后头部与长尾的 span 不同（1 天 vs 7 天），
+    # 按区间累计排会让长尾凭采样节奏而非势头占榜。区间累计仍返回，供读者核对原始数。
     "growth": f"""
-        SELECT id, {url_expr()}, downloads_start, downloads_now, growth, span_days, from_date, to_date
+        SELECT id, {url_expr()}, downloads_start, downloads_now, growth,
+               round(growth_daily, 1) AS growth_daily, span_days, from_date, to_date
         FROM v_growth
         WHERE growth > 0
-        ORDER BY growth DESC, id
+        ORDER BY growth_daily DESC, id
         LIMIT ?
     """,
     "growth_pct": f"""
         SELECT id, {url_expr()}, downloads_start, downloads_now, growth,
-               round(growth_rate * 100, 1) AS growth_pct, span_days
+               round(growth_rate * 100, 1) AS growth_pct,
+               round(growth_rate_daily * 100, 2) AS growth_pct_daily, span_days
         FROM v_growth
         WHERE growth > 0 AND downloads_start >= 100
-        ORDER BY growth_rate DESC, id
+        ORDER BY growth_rate_daily DESC, id
         LIMIT ?
     """,
     "downloads": f"""
@@ -677,6 +681,11 @@ class GoldCatalog:
         # 增速取「最近两个观测点」，而不是固定 7 日窗口：
         # 日增量只扫最新更新的万把条，全站指标靠周对账刷新，7 日窗口在周节奏下几乎取不到两点。
         # 间隔上限 35 天，避免跨季度比较；跨度以 span_days 明示，读榜的人自己判断。
+        #
+        # `growth` 是**区间累计**，`growth_daily` / `growth_rate_daily` 是折成日均的
+        # 同一件事。分层采样之后头部（日采）与长尾（周采）的 span 不同，拿累计增量
+        # 排序会让 7 天的长尾压过 1 天的头部——差的是采样节奏，不是势头。
+        # 日率用复合折算而非「除以天数」：7 天涨 70% 是日均 7.9%，不是 10%。
         connection.execute(
             """
             CREATE VIEW v_growth AS
@@ -694,16 +703,28 @@ class GoldCatalog:
                 FROM ranked
                 WHERE rn <= 2
                 GROUP BY id
+            ),
+            spanned AS (
+                SELECT *, date_diff('day', from_date, to_date) AS span_days FROM last_two
             )
             SELECT id, from_date, to_date, downloads_start, downloads_now,
                    downloads_now - downloads_start AS growth,
+                   CASE WHEN span_days > 0
+                        THEN (downloads_now - downloads_start)::DOUBLE / span_days
+                        ELSE NULL END AS growth_daily,
                    CASE WHEN downloads_start > 0
                         THEN (downloads_now - downloads_start)::DOUBLE / downloads_start
                         ELSE NULL END AS growth_rate,
-                   date_diff('day', from_date, to_date) AS span_days
-            FROM last_two
+                   CASE WHEN downloads_start > 0 AND span_days > 0
+                        THEN power(
+                                1.0 + (downloads_now - downloads_start)::DOUBLE / downloads_start,
+                                1.0 / span_days
+                             ) - 1
+                        ELSE NULL END AS growth_rate_daily,
+                   span_days
+            FROM spanned
             WHERE downloads_start IS NOT NULL
-              AND date_diff('day', from_date, to_date) <= 35
+              AND span_days <= 35
             """
         )
 

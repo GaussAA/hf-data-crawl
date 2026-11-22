@@ -785,6 +785,12 @@ def _print_collect(summary: CollectSummary) -> None:
         f"bronze {summary.bronze_rows} 行 · silver {summary.silver_rows} 行 · "
         f"观测 +{summary.appended_observations} · current {summary.current_rows} 行"
     )
+    if summary.sampled_observations:
+        print(
+            f"  观测分层采样：识别 {summary.changed_observations} 条变化，"
+            f"头部日采、长尾周采，落盘 {summary.changed_observations - summary.sampled_observations} 条"
+            f"（{summary.sampled_observations} 条留给轮次日）"
+        )
     print(f"  配额余量 {summary.rate_remaining} · 停止原因 {summary.stopped_reason}")
     if summary.top_pages:
         print(f"  顶部池刷新 {summary.top_pages} 页 / {summary.refreshed} 条")

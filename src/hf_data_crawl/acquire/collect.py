@@ -62,6 +62,12 @@ class CollectSummary:
     stopped_reason: str
     elapsed_seconds: float
     preview: list[dict[str, Any]] | None = None
+    #: 当日识别到的指标变化条数与其中被分层采样跳过的条数。
+    #:
+    #: 只报 `appended_observations`（落盘量）会把「今天没人动」与「今天轮到的长尾少」
+    #: 混成一个数，而前者要看采集是否缺批。两个数一起报，读的人才知道该不该怀疑。
+    changed_observations: int = 0
+    sampled_observations: int = 0
     top_pages: int = 0
     refreshed: int = 0
     #: 顶部池刷新这一趟的状态。`skipped` 表示没开，`covered_by_full_scan` 表示
@@ -298,6 +304,8 @@ class Collector:
             bronze_rows=bronze_rows,
             silver_rows=silver_rows,
             appended_observations=day_state.appended,
+            changed_observations=day_state.changed,
+            sampled_observations=day_state.sampled,
             current_rows=day_state.current_rows,
             rate_remaining=scan.rate_remaining,
             stopped_reason=scan.stopped_reason,

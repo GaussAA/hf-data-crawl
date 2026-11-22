@@ -74,7 +74,10 @@ FIELD_DOCS: dict[str, dict[str, str]] = {
         "snapshot_date": "该行**生效**的日期；同 id 取最新一行即为当前属性",
     },
     "observations": {
-        "snapshot_date": "这次观测发生的日期",
+        "snapshot_date": (
+            "这次观测发生的日期。分层采样下头部每天有、长尾每周轮到一天才有，"
+            "所以同一 id 的相邻两行可能隔 1 天也可能隔 7 天"
+        ),
     },
     "current": {
         "first_seen_at": "首次出现在库里的日期",

@@ -44,6 +44,22 @@ METRIC_COLUMNS: tuple[str, ...] = ("downloads", "downloads_all_time", "likes")
 #: 是设计，不是缺陷，断在这里反而会让正常的重跑失败。
 OBSERVATION_SHRINK_SHARE = 0.5
 
+#: 观测的分层采样：下载量排名前 N 的「头部」每天记一条，其余按桶每周轮一天。
+#:
+#: 为什么可以采样：`v_growth` 只用「最近两个观测点」并明示 `span_days`，从不假设
+#: 间隔是 1 天。11-22 实测全站每天约 62 万条真实变化（94% 是 `downloads` 本身在动，
+#: 不是 `downloads_all_time`），年化 7.3 GB——而榜单主力只有头部那两万个。
+#:
+#: 为什么是「分桶」而不是「降频」：若所有长尾统一每周五采，周五的分区会鼓成七倍、
+#: 其余六天近乎空，而读侧每次仍要扫全部分区。按 id 哈希分到 7 个桶、各桶对应一周
+#: 里的某一天，行数在周内摊平，且同一个库的间隔稳定为 7 天（不是 1~13 天浮动）。
+OBSERVATION_HEAD_SIZE = 20_000
+OBSERVATION_TAIL_BUCKETS = 7
+
+#: 分桶哈希的种子。写死是为了「同一天重建两次得到同一批行」；换种子等于换采样，
+#: 会让历史分区与重放结果对不上（虽不报错，但同日幂等就断了）。
+_BUCKET_SEED = 20_261_122
+
 
 def read_current(store: DatasetStore) -> pl.DataFrame:
     """读 current 表，旧表的 status 缺失时补 active（沿用历史语义）。"""
@@ -60,6 +76,47 @@ def _previous_metrics(history: pl.DataFrame) -> pl.DataFrame:
         .group_by("id", maintain_order=True)
         .agg([pl.col(column).last().alias(f"{column}_prev") for column in METRIC_COLUMNS])
     )
+
+
+def _sample_observations(
+    changed: pl.DataFrame,
+    previous: pl.DataFrame,
+    *,
+    snapshot_date: date,
+    head_size: int = OBSERVATION_HEAD_SIZE,
+    buckets: int = OBSERVATION_TAIL_BUCKETS,
+) -> pl.DataFrame:
+    """在「指标变了」的库里再筛一道：头部每天记，长尾每周轮到一天才记。
+
+    `changed` 要带 `*_prev`（`update` 里 join 出来的锚点），`previous` 是全站锚点
+    ——头部阈值必须按**全站**分布取，不能按「今天变了的库」取：头部变化频繁，
+    只拿变化集排序会把阈值抬高一大截，等于悄悄缩小头部。
+
+    三条必记，各自堵一种静默丢数据：
+
+    - **首次出现的 id**：还没有任何观测行。跳过会让层间勾稽报「没有观测来源」，
+      更麻烦的是下次的增量锚点变成 null，第一次变化被整段吞掉。
+    - **新值或旧值任一在头部**：跨在阈值上的库当天会掉出头部，若只按新值判，
+      它离开头部的那一刻恰好是把最后一段增长记下来的时刻，却会被跳过。
+    - **轮到自己的桶**：`hash(id) % buckets == 日期序号 % buckets`，同一个库的
+      间隔稳定为 `buckets` 天。
+
+    库数不足 `head_size` 时整体不采样：小库集合（测试、试运行）行为与采样前完全
+    一致，不必为「省几行」引入一整套随机性。
+    """
+    prev_column = f"{METRIC_COLUMNS[0]}_prev"
+    peers = previous.select(pl.col(prev_column)).drop_nulls()
+    if buckets <= 1 or peers.height <= head_size:
+        return changed
+
+    ordered = peers.sort(prev_column, descending=True)
+    cutoff = int(ordered[prev_column][head_size - 1])
+    head = (pl.col(METRIC_COLUMNS[0]) >= cutoff) | (pl.col(prev_column) >= cutoff)
+    turn = (pl.col("id").hash(seed=_BUCKET_SEED) % buckets).cast(pl.Int64) == (
+        snapshot_date.toordinal() % buckets
+    )
+    fresh = pl.col(prev_column).is_null()
+    return changed.filter(fresh | head | turn)
 
 
 @dataclass
@@ -111,6 +168,13 @@ class StateUpdate:
     #: 它重定向进按轮轮转的日志（只留 200 个），不进 `runs/` 的 Outcome、不进
     #: `ALERT.txt`、不进体检流水。于是「某天 78 万行变成 20 万行」在系统里不留痕。
     shrink: tuple[int, int] | None = None
+    #: 当日识别到的真实变化条数（指标确实不同），采样前。
+    changed: int = 0
+    #: 其中因分层采样而未落盘的条数。`changed - sampled` 才是写进分区的行数。
+    #:
+    #: 两个数分开报：只报落盘量的话，「今天变化少」与「今天轮到的长尾少」会混成
+    #: 一个数，而它们的处置完全不同——前者要看采集是否缺批，后者是设计如此。
+    sampled: int = 0
 
 
 def mark_status(store: DatasetStore, updates: Mapping[str, str]) -> int:
@@ -194,7 +258,10 @@ def update(
     for column in METRIC_COLUMNS:
         changed = changed | (pl.col(column).fill_null(-1) != pl.col(f"{column}_prev").fill_null(-1))
 
-    new_observations = joined.filter(changed).select(
+    changed_rows = joined.filter(changed)
+    new_observations = _sample_observations(
+        changed_rows, previous, snapshot_date=snapshot_date
+    ).select(
         [
             pl.col("id"),
             pl.col("url"),
@@ -204,11 +271,13 @@ def update(
     )
 
     shrink: tuple[int, int] | None = None
-    if before > 0 and new_observations.height < before * OBSERVATION_SHRINK_SHARE:
+    if before > 0 and changed_rows.height < before * OBSERVATION_SHRINK_SHARE:
+        # 比的是「变了多少」而非「写了多少」：分层采样会让落盘行数常年只占变化的
+        # 一小部分，拿它比旧值会把每一天都报成骤降，护栏随即变成噪声。
         shrink = (before, new_observations.height)
         print(
-            f"[!] 观测行数骤降：{snapshot_date} 分区原有 {before} 行，本轮只写入 "
-            f"{new_observations.height} 行（不足 {OBSERVATION_SHRINK_SHARE:.0%}）。"
+            f"[!] 观测行数骤降：{snapshot_date} 分区原有 {before} 行，本轮只识别到 "
+            f"{changed_rows.height} 条变化（不足 {OBSERVATION_SHRINK_SHARE:.0%}）。"
             "同日覆盖是幂等设计，但当日 Raw 截断或补抓缺批会静默删掉历史观测——"
             "核对当日 Raw 与补抓批次，确认不是缺批后再重跑派生"
         )
@@ -228,6 +297,8 @@ def update(
         appended=max(0, new_observations.height - before),
         current_rows=current.height,
         shrink=shrink,
+        changed=changed_rows.height,
+        sampled=changed_rows.height - new_observations.height,
     )
 
 

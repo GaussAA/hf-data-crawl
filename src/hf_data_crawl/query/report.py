@@ -65,6 +65,7 @@ _GROWTH_COLUMNS = [
     Column("downloads_start", "起点", "num"),
     Column("downloads_now", "当前", "num"),
     Column("growth", "增量", "num"),
+    Column("growth_daily", "日均", "num"),
     Column("from_date", "观测区间", "window"),
     Column("span_days", "跨度(天)", "num"),
 ]
@@ -463,7 +464,7 @@ class Reporter:
             f'<p class="headline-num">{_num(overview["datasets"])}</p>'
             '<p class="headline-note">一个数据集一行，是全库唯一基准；'
             "其余各表或是流水、或是子集，行数本就不该相等。</p>"
-            f'<p class="headline-foot">最近观测日有 <b>{moved}</b> 个数据集指标发生变化'
+            f'<p class="headline-foot">最近观测日采到 <b>{moved}</b> 个数据集指标变化'
             "（不是「今天」，是最后一个有读数的自然日）。</p></div>"
             f'<div class="fills"><h3>补齐程度<span>分母 {_num(total)} 行 · current</span></h3>'
             f"{filled}</div>"
@@ -484,7 +485,11 @@ class Reporter:
                 "growth",
                 growth,
                 _GROWTH_COLUMNS,
-                caption="起点与当前取自最近两个观测点；观测区间给出具体日期，跨度以天计。",
+                caption=(
+                    "起点与当前取自最近两个观测点；观测区间给出具体日期，跨度以天计。"
+                    "榜单按**日均**排序——头部每天都有观测、长尾每周一次，"
+                    "按区间累计排会让跨度长的占便宜。"
+                ),
                 frozen=frozen,
             )
         return (
