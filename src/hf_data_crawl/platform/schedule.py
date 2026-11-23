@@ -33,6 +33,10 @@ DEFAULT_FILL_LEAD = timedelta(minutes=10)
 
 ENV_DAILY_START = "HF_DAILY_START"
 ENV_FILL_ENABLED = "HF_FILL_ENABLED"
+ENV_FILL_QUIET = "HF_FILL_QUIET"
+
+#: 一个让路窗口：`(起, 止)`，止可以早于起，表示跨零点。
+QuietWindow = tuple[time, time]
 
 #: 关掉兜底段时认的写法。不用 `bool(value)`：`bool("0")` 是 `True`，那个坑太深。
 _FALSE_WORDS = frozenset({"0", "false", "no", "off", ""})
@@ -89,3 +93,47 @@ def fill_enabled(*, env: Mapping[str, str] | None = None) -> bool:
     if text in _TRUE_WORDS:
         return True
     raise ValueError(f"{ENV_FILL_ENABLED} 只认 0/1、true/false、yes/no、on/off（当前 {text!r}）")
+
+
+def parse_quiet(spec: str) -> tuple[QuietWindow, ...]:
+    """解析让路窗口：`HH:MM-HH:MM`，逗号分隔可给多个；空串表示不让路。
+
+    为什么需要它：配额按**账号**记账，不是按 token——同一账号下的两个 token 共用
+    1000 次 / 300 秒。两台机器各跑各的兜底段，等于在同一份额度里抢；而兜底段几乎
+    占满全天，另一台的每日链（`collect --full-scan` + `reconcile` 各扫一遍全站）
+    正好落在它的窗口里，双方一起 429，被退避拖长的往往是那台快要关机的。
+
+    止早于起表示跨零点（`23:50-01:40`），与 `Pacer` 的判据一致。
+    """
+    windows: list[QuietWindow] = []
+    for chunk in spec.split(","):
+        text = chunk.strip()
+        if not text:
+            continue
+        start_text, sep, end_text = text.partition("-")
+        if not sep:
+            raise ValueError(f"让路窗口需写成 HH:MM-HH:MM（当前 {text!r}）")
+        try:
+            start = parse_clock(start_text)
+            end = parse_clock(end_text)
+        except ValueError as error:
+            raise ValueError(f"让路窗口 {text!r} 不合法：{error}") from error
+        if start == end:
+            # 起止相同有两种读法（不睡 / 睡一整天），都不像笔误以外的东西。
+            raise ValueError(f"让路窗口 {text!r} 起止相同，无法判断要让多久")
+        windows.append((start, end))
+    return tuple(windows)
+
+
+def fill_quiet(*, env: Mapping[str, str] | None = None) -> str:
+    """兜底段的让路窗口，原样返回供 `--quiet` 用；空串表示不让路。
+
+    返回配置原文而不是解析结果，是因为它要原样交给子进程；合法性在这里就校验一遍，
+    免得拼错的窗口等兜底段跑到半夜才炸在子进程里。
+    """
+    text = _env(env).get(ENV_FILL_QUIET, "").strip()
+    try:
+        parse_quiet(text)
+    except ValueError as error:
+        raise ValueError(f"{ENV_FILL_QUIET}：{error}") from error
+    return text

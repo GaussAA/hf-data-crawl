@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, time, timedelta
+
 import pytest
 
 from hf_data_crawl.acquire.hf.pace import (
@@ -12,6 +14,7 @@ from hf_data_crawl.acquire.hf.pace import (
     Pacer,
     Quota,
     RateLimiter,
+    pacer_for,
     shared,
 )
 
@@ -143,3 +146,104 @@ def test_限速为零时不等待() -> None:
 
     assert sleeps == []
     assert not limiter.enabled
+
+
+# ---------------------------------------------------------------- 让路窗口
+
+
+class FakeWorld:
+    """同时推进单调钟与墙钟的假时间。
+
+    让路看墙钟（几点钟），配额看单调钟（过了多少秒），`wait` 里两套都在用，
+    所以一次 sleep 必须把两个都推走；只推一个会让循环原地打转。
+    """
+
+    def __init__(self, wall_iso: str) -> None:
+        self.wall = datetime.fromisoformat(wall_iso)
+        self.mono = 0.0
+        self.slept: list[float] = []
+
+    def clock(self) -> float:
+        return self.mono
+
+    def wall_clock(self) -> datetime:
+        return self.wall
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.mono += seconds
+        self.wall += timedelta(seconds=seconds)
+
+
+def quiet_pacer(world: FakeWorld, windows: tuple[tuple[time, time], ...]) -> Pacer:
+    return Pacer(
+        quota=10,
+        window=10.0,
+        clock=world.clock,
+        sleep=world.sleep,
+        quiet=windows,
+        wall=world.wall_clock,
+    )
+
+
+def test_让路窗口内先睡到窗口结束() -> None:
+    """配额按账号记账：另一台机器的每日链在跑时，这里一个请求都不该发。"""
+    world = FakeWorld("2026-11-24T00:30:00")
+    gate = quiet_pacer(world, ((time(0, 20), time(2, 0)),))
+
+    gate.wait()
+
+    assert world.slept == [pytest.approx(90 * 60)], "00:30 起应睡到 02:00"
+    assert world.wall.time() == time(2, 0)
+
+
+def test_窗口外不额外睡() -> None:
+    world = FakeWorld("2026-11-24T03:00:00")
+    gate = quiet_pacer(world, ((time(0, 20), time(2, 0)),))
+
+    gate.wait()
+
+    assert world.slept == []
+
+
+def test_窗口结束那一刻就该放行() -> None:
+    """`[起, 止)` 是左闭右开：02:00 整已经不在窗口里，再睡一轮等于白等一分钟。"""
+    world = FakeWorld("2026-11-24T02:00:00")
+    gate = quiet_pacer(world, ((time(0, 20), time(2, 0)),))
+
+    gate.wait()
+
+    assert world.slept == []
+
+
+def test_跨零点的窗口也照睡() -> None:
+    """`23:50-01:40`：止早于起就是跨零点，终点要算到明天，不能算成 22 小时前。"""
+    world = FakeWorld("2026-11-23T23:55:00")
+    gate = quiet_pacer(world, ((time(23, 50), time(1, 40)),))
+
+    gate.wait()
+
+    assert world.slept == [pytest.approx(105 * 60)]
+    assert world.wall.day == 24
+
+
+def test_跨零点窗口过了午夜仍在其中() -> None:
+    world = FakeWorld("2026-11-24T00:30:00")
+    gate = quiet_pacer(world, ((time(23, 50), time(1, 40)),))
+
+    gate.wait()
+
+    assert world.slept == [pytest.approx(70 * 60)]
+
+
+def test_没配窗口时取共享闸() -> None:
+    """不让路就不该多建一个闸：多建等于多领一份额度。"""
+    assert pacer_for(BUCKET_API) is shared(BUCKET_API)
+
+
+def test_带让路的闸不进共享表() -> None:
+    """共享闸是「不让路」的那一个；把让路挂上去会把同进程里别的命令一起停住。"""
+    gate = pacer_for(BUCKET_API, quiet=((time(0, 20), time(2, 0)),))
+
+    assert gate is not shared(BUCKET_API)
+    assert pacer_for(BUCKET_API) is shared(BUCKET_API)

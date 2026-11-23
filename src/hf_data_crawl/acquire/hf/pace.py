@@ -22,8 +22,10 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+from datetime import time as dt_time
 from typing import Protocol
 
 
@@ -45,12 +47,21 @@ SITE_QUOTA_WINDOW_SECONDS = 300.0
 #: 睡眠下限：算出的等待若为 0，`wait` 会退化成忙等。
 MIN_SLEEP_SECONDS = 0.01
 
+#: 让路窗口：`(起, 止)`，止早于起表示跨零点。
+QuietWindow = tuple[dt_time, dt_time]
+
 
 class Pacer:
     """滑动窗口限速：任意 `window` 秒内最多放行 `quota` 次。
 
     以「最近 quota 次请求的时刻」为判据，而不是固定窗口计数器——后者在窗口边界
     会一次放行两倍配额（前一窗口末尾撞上后一窗口开头）。
+
+    `quiet` 给的是**让路窗口**（墙钟）：落在窗口里时先睡到窗口结束，再按配额放行。
+    它与配额无关，解决的是另一个问题——配额按**账号**记账，同一账号下的两个 token
+    共用一份，另一台机器的每日链与这里的兜底段撞在同一桶上。让路是个约定，比双方
+    靠 429 互相退避更确定：撞墙时谁退避几十秒是不确定的，而被拖长的往往是那台
+    快要关机的机器。
     """
 
     def __init__(
@@ -60,6 +71,8 @@ class Pacer:
         window: float = QUOTA_WINDOW_SECONDS,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        quiet: Sequence[QuietWindow] = (),
+        wall: Callable[[], datetime] = datetime.now,
     ) -> None:
         if quota < 1:
             raise ValueError("quota 至少为 1")
@@ -69,12 +82,20 @@ class Pacer:
         self._window = window
         self._clock = clock
         self._sleep = sleep
+        self._quiet = tuple(quiet)
+        self._wall = wall
         self._stamps: deque[float] = deque()
         self._lock = threading.Lock()
 
     def wait(self) -> None:
         """占一个名额：未超配额立即返回，超了则睡到最早那次请求滑出窗口。"""
         while True:
+            pause = self._quiet_pause()
+            if pause > 0:
+                # 整段睡过让路窗口：期间一个请求都不发。分段睡没有意义，窗口是
+                # 事先约定的，「睡到点再看」只会把 12 个 worker 变成 12 次轮询。
+                self._sleep(pause)
+                continue
             with self._lock:
                 now = self._clock()
                 while self._stamps and now - self._stamps[0] >= self._window:
@@ -86,6 +107,25 @@ class Pacer:
             # 睡眠放在锁外：否则一个 worker 等窗口会把其余 worker 一起堵住，
             # 而那正是「并发看起来很高、吞吐却上不去」的成因。
             self._sleep(max(delay, MIN_SLEEP_SECONDS))
+
+    def _quiet_pause(self) -> float:
+        """当前若在让路窗口里，返回该睡多少秒；否则 0。"""
+        if not self._quiet:
+            return 0.0
+        now = self._wall()
+        current = now.time()
+        for start, end in self._quiet:
+            inside = (
+                (start <= current < end) if start <= end else (current >= start or current < end)
+            )
+            if not inside:
+                continue
+            resume = datetime.combine(now.date(), end)
+            if resume <= now:
+                # 跨零点的那种：窗口的终点在明天。
+                resume += timedelta(days=1)
+            return (resume - now).total_seconds()
+        return 0.0
 
 
 class RateLimiter:
@@ -186,3 +226,30 @@ def shared(bucket: str) -> Pacer:
             gate = Pacer(quota=quota.requests, window=quota.window)
             _SHARED[bucket] = gate
         return gate
+
+
+def pacer_for(
+    bucket: str,
+    *,
+    quiet: Sequence[QuietWindow] = (),
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    wall: Callable[[], datetime] = datetime.now,
+) -> Pacer:
+    """按桶取闸：不让路时用进程内共享的那个，要就另建一个带让路的。
+
+    带让路的闸**不进共享表**：`shared()` 的那个是「不带让路」的，若把让路挂成它的
+    可变状态，同进程里别的命令会被莫名其妙停住（尤其当窗口填错、正好盖住自己）。
+    一条长跑一个进程，本来也只该有一个带让路的闸。
+    """
+    if not quiet:
+        return shared(bucket)
+    quota = BUCKETS[bucket]
+    return Pacer(
+        quota=quota.requests,
+        window=quota.window,
+        quiet=quiet,
+        clock=clock,
+        sleep=sleep,
+        wall=wall,
+    )

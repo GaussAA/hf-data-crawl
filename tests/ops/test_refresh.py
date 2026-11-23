@@ -681,7 +681,9 @@ def test_兜底段不受启动窗口限制(tmp_path: Path, monkeypatch) -> None:
     store = DatasetStore(tmp_path / "data")
     calls = fake_steps(monkeypatch)
 
-    refresh.execute(store, launch_hours=0.0, log=lambda _: None)
+    # `fill_on` 显式钉住：这条测的是「启动窗口拦不拦它」，与「本机该不该跑」无关。
+    # 不钉就会读 `HF_FILL_ENABLED`，在关了兜底段的机器上必红。
+    refresh.execute(store, launch_hours=0.0, fill_on=True, log=lambda _: None)
 
     assert "files" in calls, "启动窗口不该拦住兜底段"
     assert "preview" in calls
@@ -739,3 +741,36 @@ def test_班次配置写错时拒绝启动(tmp_path: Path, monkeypatch) -> None:
 
     with pytest.raises(SystemExit, match="班次配置有误"):
         refresh.run(args, store)
+
+
+def test_没配让路窗口就不带quiet() -> None:
+    """单机部署不该凭空多一个参数：多一个不生效的开关，日后没人敢删。"""
+    assert "--quiet" not in refresh.fill_steps("00:20")[0].args
+
+
+def test_让路窗口只给文件清单不给preview() -> None:
+    """preview 打 `datasets-server`，与 `api` 桶不是一处，实测也没有配额头。
+
+    给它加让路不会有任何收益，只会让兜底段白白少跑一段。
+    """
+    files, preview = refresh.fill_steps("03:50", "00:20-02:00")
+
+    assert files.args[files.args.index("--quiet") + 1] == "00:20-02:00"
+    assert "--quiet" not in preview.args
+
+
+def test_让路窗口从环境变量带到子命令(tmp_path: Path, monkeypatch) -> None:
+    """链上不把 `--quiet` 传下去，子进程就不知道要让路——这一段等于没做。"""
+    monkeypatch.setenv("HF_FILL_QUIET", "00:20-02:00")
+    store = DatasetStore(tmp_path / "data")
+    seen: dict[str, tuple[str, ...]] = {}
+
+    def fake(step, root: Path) -> StepResult:
+        seen[step.name] = step.args
+        return StepResult(step.name, 0, 0.0)
+
+    monkeypatch.setattr(refresh, "run_step", fake)
+    refresh.execute(store, log=lambda _: None, only=frozenset({"files"}))
+
+    args = seen["files"]
+    assert args[args.index("--quiet") + 1] == "00:20-02:00"

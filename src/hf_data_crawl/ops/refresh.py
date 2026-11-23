@@ -61,7 +61,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from ..platform.runs import FULL_SCAN, Outcome, last_success, read_runs
-from ..platform.schedule import daily_start, fill_enabled, fill_until
+from ..platform.schedule import daily_start, fill_enabled, fill_quiet, fill_until
 from ..platform.store import DatasetStore
 
 #: 整条链的时间预算（小时）。超过它只停止「还没启动」的步骤。
@@ -177,17 +177,23 @@ SERIAL_TAIL: tuple[Step, ...] = (
 #:
 #: 两者**必须并行**：串行的话先跑的那个会吃满整个窗口，后一个一条都跑不到。
 #: 并行也不冲突：files 打 `api` 桶，preview 打 `datasets-server`（没有配额头）。
-def fill_steps(until: str) -> tuple[Step, ...]:
+def fill_steps(until: str, quiet: str = "") -> tuple[Step, ...]:
     """兜底段的两个步骤，死线由调用方给。
 
     做成函数而不是常量：班次起点每天可能不同（两台机器要错开），常量会在导入时
     把某个值定死。`ALL_STEPS` 用的那一份只是给 `--only` 校验与 `--skip` 闭包看名字
     与 `needs` 的，`--until` 不参与那些判断。
+
+    `quiet` 只在 files 上加：preview 打 `datasets-server`，与 `api` 桶不是一处，
+    实测也没有配额响应头——给它加让路只是白等。
     """
+    files_args: tuple[str, ...] = ("fetch-files", "--top", "0", "--until", until, "--workers", "12")
+    if quiet:
+        files_args = (*files_args, "--quiet", quiet)
     return (
         Step(
             "files",
-            ("fetch-files", "--top", "0", "--until", until, "--workers", "12"),
+            files_args,
             needs=("build",),
             # 台账记的是真跑的子命令。不写这一行，`name` 会顶上去记成 `files`，
             # 而 cli 落盘的是 `fetch-files`——续跑判「今天跑过没有」永远对不上，
@@ -638,7 +644,7 @@ def execute(
     # 失败，不该连带把今晚的兜底也停掉——那正是唯一还能干点活的时候。
     deadline = fill_deadline if fill_deadline is not None else fill_until()
     run_fill = fill_on if fill_on is not None else fill_enabled()
-    fill = fill_steps(deadline)
+    fill = fill_steps(deadline, fill_quiet())
 
     if not run_fill and only is None:
         # 多机部署时只有一台该跑：这一段会吃掉链尾到次日起点之间的全部空窗，

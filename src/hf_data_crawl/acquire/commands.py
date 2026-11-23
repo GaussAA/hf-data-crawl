@@ -16,6 +16,7 @@ from ..platform.env import load_env_file
 from ..platform.lock import exclusive
 from ..platform.presets import DEFAULT_PRESET_NAME, get_preset
 from ..platform.runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs
+from ..platform.schedule import parse_quiet
 from ..platform.store import DatasetStore
 from ..platform.tables import README_FIELDS_SCHEMA
 from .batch import (
@@ -39,6 +40,7 @@ from .collect import Collector, CollectSummary
 from .enrich import CARD_PAGES_CAP, Enricher, EnrichSummary
 from .files import FILES_MERGE, FileFetcher, FileSummary, HfFilesApi
 from .hf.api import HfDatasetApi, Transport
+from .hf.pace import BUCKET_API, pacer_for
 from .hf.transport import HttpxTransport
 from .merge import merge_staged
 from .preview import (
@@ -539,6 +541,11 @@ def run_fetch_files(
     except DeadlineError as error:
         print(f"失败：{error}")
         return Outcome({"error": "until"}, code=1, reason=str(error))
+    try:
+        quiet = parse_quiet(getattr(args, "quiet", "") or "")
+    except ValueError as error:
+        print(f"失败：{error}")
+        return Outcome({"error": "quiet"}, code=1, reason=str(error))
     # 这条守卫只对分页端点成立：`detail` 一次取到 10 万条，截断只剩「撞到上限」这一种，
     # 与页数无关；拿它去拦 detail 会把正常请求误拒。用 getattr 兼容直接构造 Namespace
     # 的调用方（测试与内部复用），缺省值与 parser 的默认值一致。
@@ -622,6 +629,9 @@ def run_fetch_files(
             transport=_batch_transport(transport, args.timeout),
             max_retries=args.max_retries,
             max_pages=args.max_pages,
+            # 带让路窗口的闸不共享：共享闸是「不让路」的那一个，把让路挂上去会把
+            # 同进程里别的命令一起停住。
+            pacer=pacer_for(BUCKET_API, quiet=quiet),
             mode=getattr(args, "via", "detail"),
         ),
         workers=args.workers,

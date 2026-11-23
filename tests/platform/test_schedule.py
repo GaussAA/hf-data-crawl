@@ -10,7 +10,13 @@ from datetime import time
 
 import pytest
 
-from hf_data_crawl.platform.schedule import daily_start, fill_enabled, fill_until
+from hf_data_crawl.platform.schedule import (
+    daily_start,
+    fill_enabled,
+    fill_quiet,
+    fill_until,
+    parse_quiet,
+)
 
 
 def test_缺省起跑点是凌晨半点() -> None:
@@ -72,3 +78,48 @@ def test_开关的假值写法(value: str) -> None:
 def test_开关写错就报错() -> None:
     with pytest.raises(ValueError):
         fill_enabled(env={"HF_FILL_ENABLED": "maybe"})
+
+
+# ------------------------------------------------------------ 让路窗口
+
+
+def test_没配让路窗口就返回空() -> None:
+    """单机部署不必让路，缺省必须是「不让」，否则白白空转。"""
+    assert parse_quiet("") == ()
+    assert fill_quiet(env={}) == ""
+
+
+def test_让路窗口解析成起止() -> None:
+    assert parse_quiet("00:20-02:00") == ((time(0, 20), time(2, 0)),)
+
+
+def test_多个窗口用逗号分隔() -> None:
+    """两台以上机器时，兜底段可能要避开两个窗口。"""
+    assert parse_quiet("00:20-02:00, 12:00-12:30") == (
+        (time(0, 20), time(2, 0)),
+        (time(12, 0), time(12, 30)),
+    )
+
+
+def test_跨零点的窗口照收() -> None:
+    """`23:50-01:40` 是合法的：止早于起就是跨零点，不由这里改写成两段。"""
+    assert parse_quiet("23:50-01:40") == ((time(23, 50), time(1, 40)),)
+
+
+@pytest.mark.parametrize("spec", ["00:20", "00:20-", "-02:00", "25:00-26:00", "0:20~2:00"])
+def test_窗口写法不对就报错(spec: str) -> None:
+    """宁可启动就炸：一个拼错的窗口会让兜底段在错误的钟点空转一整晚。"""
+    with pytest.raises(ValueError):
+        parse_quiet(spec)
+
+
+def test_起止相同的窗口报错() -> None:
+    """`02:00-02:00` 有两种读法（不睡、睡一整天），都不能默认猜。"""
+    with pytest.raises(ValueError):
+        parse_quiet("02:00-02:00")
+
+
+def test_env里的窗口会先校验() -> None:
+    assert fill_quiet(env={"HF_FILL_QUIET": " 00:20-02:00 "}) == "00:20-02:00"
+    with pytest.raises(ValueError, match="HF_FILL_QUIET"):
+        fill_quiet(env={"HF_FILL_QUIET": "00:20"})

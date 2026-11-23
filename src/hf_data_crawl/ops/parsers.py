@@ -407,6 +407,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     files.add_argument("--until", default=None, help=UNTIL_HELP)
     files.add_argument(
+        "--quiet",
+        default=None,
+        metavar="HH:MM-HH:MM",
+        help=(
+            "让路窗口：这段时间内一个请求都不发，睡到窗口结束再续。可逗号分隔给多个；"
+            "止早于起表示跨零点（如 23:50-01:40）。"
+            "用途：配额按账号记账，同一账号下的两台机器共用 1000 次/300 秒，"
+            "让兜底段避开另一台的每日链窗口，比双方被 429 互相退避更确定。"
+            "刷新链从 HF_FILL_QUIET 读，一般不必手传"
+        ),
+    )
+
+    files.add_argument(
         "--via",
         choices=("detail", "tree"),
         default="detail",
