@@ -61,6 +61,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from ..platform.runs import FULL_SCAN, Outcome, last_success, read_runs
+from ..platform.schedule import daily_start, fill_enabled, fill_until
 from ..platform.store import DatasetStore
 
 #: 整条链的时间预算（小时）。超过它只停止「还没启动」的步骤。
@@ -68,13 +69,6 @@ DEFAULT_BUDGET_HOURS = 8.5
 #: 到这个点之后不再启动新的抓取，只等正在跑的收尾。
 DEFAULT_LAUNCH_HOURS = 8.0
 
-#: 兜底段的收工钟点（次日）。
-#:
-#: 必须早于次日 00:30 的链起点：`collect --full-scan` 打 `huggingface.co/api`，
-#: 与 `fetch-files` 是**同一个桶**（1000 次 / 300 秒）。两个进程各持一份节流额度，
-#: 合起来就是两倍超发，双方一起 429、各自退避几十秒——2026-11-22 实测过这个形状。
-#: 留 10 分钟，是给收尾合并的短锁（它要把几千个分片并进 `enrich/files.parquet`）。
-FILL_UNTIL = "00:20"
 #: 子进程等锁的上限：并行段里 reconcile 持锁，锁外抓取的收尾合并要排在它后面。
 LOCK_WAIT_SECONDS = 1800.0
 #: 日志目录（相对数据根），与 `scripts/_common.ps1` 的 `data/logs` 是同一处。
@@ -168,6 +162,7 @@ SERIAL_TAIL: tuple[Step, ...] = (
     Step("doctor", ("doctor",)),
 )
 
+
 #: ④ 兜底段：把链外的时间用来填 files 与 preview 的缺口。
 #:
 #: 与前三段目的不同：前三段是「今天该做完的事」，做完就散；这一段是「还剩多少时间
@@ -175,31 +170,48 @@ SERIAL_TAIL: tuple[Step, ...] = (
 #:
 #: - **不设名额**（`--top 0`）：缺口全取。抓满之后缺口为空，候选自然只剩下陈旧项，
 #:   行为就跟 `fetch-sizes --changed-all` 一样了，不需要另设开关。
-#: - **自己找死线**（`--until`）：它是唯一会跨过次日 00:30 的步骤，必须自己停。
+#: - **自己找死线**（`--until`）：它是唯一会跨过次日起点的步骤，必须自己停。
+#:   死线 = 班次起点减 `FILL_LEAD`，见 `platform/schedule.py`。
 #: - **不套启动窗口**：链跑得越久它越晚开始，而这正是它的用途（把剩余时间用掉）。
 #:   套上 `launch_hours` 会得到反效果——最忙的那天直接跳过兜底。
 #:
 #: 两者**必须并行**：串行的话先跑的那个会吃满整个窗口，后一个一条都跑不到。
 #: 并行也不冲突：files 打 `api` 桶，preview 打 `datasets-server`（没有配额头）。
-FILL: tuple[Step, ...] = (
-    Step(
-        "files",
-        ("fetch-files", "--top", "0", "--until", FILL_UNTIL, "--workers", "12"),
-        needs=("build",),
-        # 台账记的是真跑的子命令。不写这一行，`name` 会顶上去记成 `files`，
-        # 而 cli 落盘的是 `fetch-files`——续跑判「今天跑过没有」永远对不上，
-        # 表现是「每天都重跑一遍」，输出里一个字都看不出来。
-        command="fetch-files",
-    ),
-    Step(
-        "preview",
-        # `--throttle-wait` 必须给：preview 默认「撞一次 429 就整轮中止」，手工跑
-        # 十来分钟无所谓，挂在链上要跑七八个小时，撞一次就白跑一整晚。
-        ("fetch-preview", "--top", "0", "--until", FILL_UNTIL, "--throttle-wait", "600"),
-        needs=("build",),
-        command="fetch-preview",
-    ),
-)
+def fill_steps(until: str) -> tuple[Step, ...]:
+    """兜底段的两个步骤，死线由调用方给。
+
+    做成函数而不是常量：班次起点每天可能不同（两台机器要错开），常量会在导入时
+    把某个值定死。`ALL_STEPS` 用的那一份只是给 `--only` 校验与 `--skip` 闭包看名字
+    与 `needs` 的，`--until` 不参与那些判断。
+    """
+    return (
+        Step(
+            "files",
+            ("fetch-files", "--top", "0", "--until", until, "--workers", "12"),
+            needs=("build",),
+            # 台账记的是真跑的子命令。不写这一行，`name` 会顶上去记成 `files`，
+            # 而 cli 落盘的是 `fetch-files`——续跑判「今天跑过没有」永远对不上，
+            # 表现是「每天都重跑一遍」，输出里一个字都看不出来。
+            command="fetch-files",
+        ),
+        Step(
+            "preview",
+            # `--throttle-wait` 必须给：preview 默认「撞一次 429 就整轮中止」，手工跑
+            # 十来分钟无所谓，挂在链上要跑七八个小时，撞一次就白跑一整晚。
+            ("fetch-preview", "--top", "0", "--until", until, "--throttle-wait", "600"),
+            needs=("build",),
+            command="fetch-preview",
+        ),
+    )
+
+
+#: 兜底段的死线，缺省班次（00:30）下的值。真正执行用 `fill_steps(fill_until())`。
+#: 传空环境是为了**不读 os.environ**：模块导入可能早于 `.env` 加载，那时读到的
+#: 是别人的配置——常量就该是常量，随环境变的东西放到 `execute` 里算。
+FILL_UNTIL = fill_until(env={})
+
+#: 供 `ALL_STEPS` 与测试引用的一份实例；`execute` 会按实际配置另生成一份。
+FILL: tuple[Step, ...] = fill_steps(FILL_UNTIL)
 
 
 @dataclass
@@ -541,6 +553,8 @@ def execute(
     only: frozenset[str] | None = None,
     skip: frozenset[str] = frozenset(),
     log: Callable[[str], None] | None = None,
+    fill_deadline: str | None = None,
+    fill_on: bool | None = None,
 ) -> Plan:
     """跑完整条链，或（`only` 非空时）只跑点名的步骤。
 
@@ -549,6 +563,10 @@ def execute(
     `only` 是**手动补跑**模式：不读「今天已完成」台账（明确要求跑就不该被跳过）、
     不检查依赖、不套用软边界与预算——手跑一步是几分钟到几小时的事，把它当整条链
     来限时没有意义，超时由 `refresh.ps1` 的墙钟兜底。
+
+    `fill_deadline` / `fill_on` 是兜底段的两个旋钮：缺省按 `.env` 的班次配置
+    （`HF_DAILY_START` 派生的收工点、`HF_FILL_ENABLED`）算，显式传入留给测试与
+    手工覆盖——测试不该依赖进程环境变量里恰好写了什么。
     """
     emit = log or print
     started = time.monotonic()
@@ -610,16 +628,33 @@ def execute(
         budget=lambda step: step.name in {"export", "deliver"} and over_budget(),
     )
 
-    # ④ 兜底段：files 与 preview 用剩余时间填缺口，跑到次日 `FILL_UNTIL` 为止。
+    # ④ 兜底段：files 与 preview 用剩余时间填缺口，跑到次日起点减 `FILL_LEAD` 为止。
     #
     # 刻意不判 `over_launch` / `over_budget`：`launch_hours` 的本意是「太晚了别再
     # 启动耗时步骤，免得挤掉次日的班次」，而这一段存在的理由恰好是把那些剩余时间
-    # 用掉——套上它等于「链越忙越不填」，与设计正好相反。它自己有 `--until` 兜底，
-    # 不会跑过次日 00:30 的链起点。
+    # 用掉——套上它等于「链越忙越不填」，与设计正好相反。它自己有 `--until` 兜底。
     #
     # 依赖只挂 `build`：files 的候选来自 `current`，与导出物无关。`export` 万一
     # 失败，不该连带把今晚的兜底也停掉——那正是唯一还能干点活的时候。
-    fill_decisions = decide(FILL, done, failed, only=only, dropped=dropped, requested=skip)
+    deadline = fill_deadline if fill_deadline is not None else fill_until()
+    run_fill = fill_on if fill_on is not None else fill_enabled()
+    fill = fill_steps(deadline)
+
+    if not run_fill and only is None:
+        # 多机部署时只有一台该跑：这一段会吃掉链尾到次日起点之间的全部空窗，
+        # 两台一起跑只是把同一份配额劈成两半。跳过要留痕——「少了一步」与
+        # 「这一步今天没跑」必须能从摘要里分开，否则次日有人来问「为什么没跑」。
+        # 不记 blocked：设计内跳过，不是「该做的没做完」。
+        #
+        # `only is None` 这一条是给手动补跑留的口子：`--only files` 是明确点名，
+        # 与 `--skip` 的处理同一个道理——用户说「就跑这个」时不该被配置挡住。
+        for step in fill:
+            result = StepResult(step.name, note="本机不跑兜底段（HF_FILL_ENABLED=0）")
+            _record(plan, done, failed, result)
+            announce(result)
+        return plan
+
+    fill_decisions = decide(fill, done, failed, only=only, dropped=dropped, requested=skip)
     for decision in fill_decisions:
         if decision.run:
             continue
@@ -639,9 +674,14 @@ def execute(
 
 
 def summary_payload(plan: Plan, budget_hours: float) -> dict[str, object]:
-    """台账里记的那份摘要：每步的退出码与耗时，跳过的也记。"""
+    """台账里记的那份摘要：每步的退出码与耗时，跳过的也记。
+
+    `daily_start` 一并记下：两台机器的班次不同，翻台账时得能一眼说出「这一轮是
+    几点该起跑的」，否则「跑晚了」与「本来就排在四点」分不清。
+    """
     return {
         "budget_hours": budget_hours,
+        "daily_start": daily_start().strftime("%H:%M"),
         "elapsed_seconds": round((datetime.now() - plan.started_at).total_seconds(), 1),
         "steps": [
             {
@@ -718,12 +758,21 @@ def run(args: argparse.Namespace, store: DatasetStore) -> Outcome:
     if only is not None and skip:
         raise SystemExit("--only 与 --skip 不能同时给：一个说只跑这些，一个说别跑这些")
     _report_dependencies(store, only, strict=getattr(args, "strict", False))
+    # 班次配置在这里就解析：写错要**开跑之前**炸掉，而不是跑完十几个小时才发现
+    # 兜底段因为一个拼错的时间提前收工。`SystemExit` 与上面几处参数校验一致。
+    try:
+        fill_deadline = fill_until()
+        fill_on = fill_enabled()
+    except ValueError as error:
+        raise SystemExit(f"班次配置有误：{error}") from error
     plan = execute(
         store,
         budget_hours=args.budget_hours,
         launch_hours=args.launch_hours,
         only=only,
         skip=skip,
+        fill_deadline=fill_deadline,
+        fill_on=fill_on,
     )
     # 体检非零只代表**有告警**（导出落后、Raw 断日这类待办也计入非零），不让它
     # 拖垮整条链——告警与故障挤进同一个退出码，铃声很快就没人听。详情在

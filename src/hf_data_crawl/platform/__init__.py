@@ -37,6 +37,7 @@ from .runs import (
     read_runs,
     write_run,
 )
+from .schedule import daily_start, fill_enabled, fill_until
 from .store import DatasetStore
 from .tables import (
     BRONZE_SCHEMA,
@@ -133,4 +134,8 @@ __all__ = [
     "resolve_deadline",
     "deadline_epoch",
     "DeadlineError",
+    # 班次：几点起跑、兜底段在哪些机器上跑
+    "daily_start",
+    "fill_until",
+    "fill_enabled",
 ]

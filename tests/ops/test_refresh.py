@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from hf_data_crawl.ops import refresh
-from hf_data_crawl.ops.refresh import StepResult
+from hf_data_crawl.ops.refresh import Step, StepResult
 from hf_data_crawl.platform.store import DatasetStore
 
 
@@ -686,3 +686,56 @@ def test_兜底段不受启动窗口限制(tmp_path: Path, monkeypatch) -> None:
     assert "files" in calls, "启动窗口不该拦住兜底段"
     assert "preview" in calls
     assert "sizes" not in calls, "并行段仍该被窗口拦住（对照组）"
+
+
+# ---------------------------------------------------------------- 班次配置
+
+
+def test_兜底段的死线跟着班次起点走(tmp_path: Path, monkeypatch) -> None:
+    """班次挪到四点，收工点必须是三点五十，而不是写死的 00:20。
+
+    这条盯的就是「改了一处、另一处不动」：任务 04:00 起跑、兜底段仍按 00:20 收工，
+    就只能跑 20 小时；挪到 22:00 则只跑两小时。两台机器错开时间的前提是这一条成立。
+    """
+    store = DatasetStore(tmp_path / "data")
+    seen: list[Step] = []
+
+    def fake(step: Step, root: Path) -> StepResult:
+        seen.append(step)
+        return StepResult(step.name, 0, 0.0)
+
+    monkeypatch.setattr(refresh, "run_step", fake)
+
+    refresh.execute(store, log=lambda _: None, fill_deadline="03:50", fill_on=True)
+
+    files = next(step for step in seen if step.name == "files")
+    assert files.args[files.args.index("--until") + 1] == "03:50"
+
+
+def test_兜底段可以整机关掉并留痕(tmp_path: Path, monkeypatch) -> None:
+    """多机部署时只有一台该跑；另一台跳过要在摘要里说出来。
+
+    不记 blocked：这是设计内跳过，不是「该做的没做完」。但也不能一声不响——
+    次日有人翻摘要问「为什么 files 没跑」时，答案得在那行 note 里。
+    """
+    store = DatasetStore(tmp_path / "data")
+    calls = fake_steps(monkeypatch)
+
+    plan = refresh.execute(store, log=lambda _: None, fill_deadline="00:20", fill_on=False)
+
+    assert "files" not in calls
+    assert "preview" not in calls
+    result = _result(plan, "files")
+    assert result is not None and result.code is None
+    assert "HF_FILL_ENABLED" in result.note
+    assert "files" not in plan.blocked, "设计内跳过，不该算进未完成"
+
+
+def test_班次配置写错时拒绝启动(tmp_path: Path, monkeypatch) -> None:
+    """拼错的时间必须在开跑前炸掉，而不是跑完十几小时后才表现为提前收工。"""
+    monkeypatch.setenv("HF_DAILY_START", "25:00")
+    store = DatasetStore(tmp_path / "data")
+    args = Namespace(only=None, skip=None, strict=False, budget_hours=8.5, launch_hours=8.0)
+
+    with pytest.raises(SystemExit, match="班次配置有误"):
+        refresh.run(args, store)

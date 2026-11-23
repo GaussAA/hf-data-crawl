@@ -4,15 +4,18 @@
     注册 / 卸载 hf-data-crawl 的 Windows 计划任务。
 
 .DESCRIPTION
-    hf-refresh  每日 00:30 起跑完全部例行，一条链，不分钟点：
+    hf-refresh  每日按**班次起点**起跑完全部例行，一条链，不分钟点：
                 compact → collect --full-scan → build --stale
                 → 〔reconcile ‖ fetch-sizes / fetch-readme〕
                 → parse-readme → export-wide → request run-due
                 → archive → prune → doctor
-                → 〔fetch-files ‖ fetch-preview（--top 0 --until 00:20）〕
+                → 〔fetch-files ‖ fetch-preview〕（`--top 0`；收工到次日起点前十分钟）
                 顺序与并发由 `ops/refresh.py` 保证，不由钟点猜。09:00 是软边界：
                 到点不再启动新的抓取，已在跑的收尾，`doctor` 照常跑——它是唯一
                 能说明「今天哪里没跑完」的环节（ADR-0008）。
+
+    班次起点默认取 `.env` 的 `HF_DAILY_START`（再缺省 00:30）。两台机器共用一份
+    代码、各有各的 `.env`，靠这一个值把任务错开；`-RefreshTime` 仍可临时覆盖。
 
     为什么不拆成多个定时任务（2026-11-09 实测，教训保留）
     ----------------------------------------------------
@@ -70,7 +73,9 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$RefreshTime = "00:30",
+    # 留空则读 `.env` 的 `HF_DAILY_START`（再缺省 00:30）。两台机器各写各的 `.env`，
+    # 代码保持一份——把时间写进脚本参数里，另一台 pull 下来就被覆盖了。
+    [string]$RefreshTime = "",
     [switch]$Uninstall
 )
 
@@ -82,6 +87,34 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
+
+<#
+.SYNOPSIS
+    从仓库根的 `.env` 读一个值（只读，不写回）。
+.DESCRIPTION
+    只做 `KEY=VALUE` 的最小解析：跳过空行与注释、容忍 `export ` 前缀与成对引号，
+    与 Python 侧 `platform/env.py` 的口径一致。解析不了就返回默认值——这份文件的
+    用途是「给两台机器各留一份不同的班次」，读不到时不该把注册流程卡死。
+#>
+function Read-HfEnvValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Key,
+        [Parameter(Mandatory = $true)][string]$Default
+    )
+    $path = Join-Path $root ".env"
+    if (-not (Test-Path -LiteralPath $path)) { return $Default }
+    foreach ($line in (Get-Content -LiteralPath $path -Encoding utf8)) {
+        $text = $line.Trim()
+        if (-not $text -or $text.StartsWith("#")) { continue }
+        if ($text.StartsWith("export ")) { $text = $text.Substring(7).TrimStart() }
+        $split = $text.IndexOf("=")
+        if ($split -lt 1) { continue }
+        if ($text.Substring(0, $split).Trim() -ne $Key) { continue }
+        $value = $text.Substring($split + 1).Trim().Trim("'").Trim('"')
+        if ($value) { return $value }
+    }
+    return $Default
+}
 
 #: 现行任务。每日 00:30 一条链（ADR-0008）。
 $taskNames = @("hf-refresh")
@@ -108,8 +141,24 @@ if ($Uninstall) {
     return
 }
 
+#: 班次起点。命令行不给就读 `.env` 的 `HF_DAILY_START`，再缺省 00:30。
+#:
+#: 两台机器共用同一份代码，靠这一个值错开：一台 00:30、一台 04:00。**动它之前先看
+#: `HF_FILL_ENABLED`**——兜底段会从链尾一直跑到次日起点前十分钟，如果两台都开着它，
+#: 错开起跑并不能错开窗口（它们是同一段配额的两半）。
+$refreshFrom = "命令行参数"
+if (-not $RefreshTime) {
+    $RefreshTime = Read-HfEnvValue -Key "HF_DAILY_START" -Default "00:30"
+    $refreshFrom = ".env 的 HF_DAILY_START（未配置则 00:30）"
+}
+if ($RefreshTime -notmatch '^([01]?\d|2[0-3]):[0-5]\d$') {
+    Write-Host "RefreshTime 需为 HH:MM（当前：$RefreshTime，来源：$refreshFrom）"
+    exit 1
+}
+Write-Host "班次起点：$RefreshTime（来源：$refreshFrom）"
+
 $jobs = @(
-    # 一条链跑完全部例行（ADR-0008）。00:30 起跑，09:00 软边界；**错过要补跑**——
+    # 一条链跑完全部例行（ADR-0008）。按班次起点起跑，09:00 软边界；**错过要补跑**——
     # 2026-11-21 实测：前一晚关机，00:30 没跑、开机也不补，整天零采集且无提醒。
     # 补跑安全的前提是全站扫描（拿的是扫描那一刻的底库，不是重放昨天）与
     # IgnoreNew（不会与下一班并发）。

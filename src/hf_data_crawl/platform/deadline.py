@@ -32,6 +32,21 @@ class DeadlineError(ValueError):
     """`--until` 的取值既不是 `HH:MM`，也不是 ISO 时刻。"""
 
 
+def parse_clock(spec: str) -> time:
+    """`HH:MM`（可写 `9:05`）→ `time`；不合法抛 `DeadlineError`。
+
+    只认时分、不认日期：`--until` 与 `HF_DAILY_START` 要的都是「每天这个钟点」。
+    时刻的合法性在这里收口，免得 `25:00` 这种值在别处被当成「明天一点」用掉。
+    """
+    match = _TIME_ONLY.fullmatch(spec.strip())
+    if not match:
+        raise DeadlineError(f"需为 HH:MM 的时刻：{spec!r}")
+    hour, minute = int(match.group(1)), int(match.group(2))
+    if not (0 <= hour < 24 and 0 <= minute < 60):
+        raise DeadlineError(f"时刻不合法：{spec!r}")
+    return time(hour, minute)
+
+
 def resolve_deadline(spec: str, *, now: datetime | None = None) -> datetime:
     """把 `--until` 的取值解析成绝对时刻。
 
@@ -44,12 +59,8 @@ def resolve_deadline(spec: str, *, now: datetime | None = None) -> datetime:
     """
     moment = now or datetime.now()
     text = spec.strip()
-    match = _TIME_ONLY.match(text)
-    if match:
-        hour, minute = int(match.group(1)), int(match.group(2))
-        if not (0 <= hour < 24 and 0 <= minute < 60):
-            raise DeadlineError(f"--until 的时刻不合法：{spec!r}")
-        target = datetime.combine(moment.date(), time(hour, minute))
+    if _TIME_ONLY.fullmatch(text):
+        target = datetime.combine(moment.date(), parse_clock(text))
         if target <= moment:
             target += timedelta(days=1)
     else:
