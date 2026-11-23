@@ -168,7 +168,7 @@ Remove-Item -Recurse "data\backup\raw\dt=$day"
 
 ## 维护建议
 
-- **每日**：检查 `hf-refresh` 单链是否跑完（串行头 `compact → collect --full-scan → build --stale`，并行段 `reconcile ‖ sizes ‖ readme`，串行尾 `parse-readme → export-wide → request run-due → archive → prune → doctor`）；到 09:00 未启动的步骤留给次日，不算失败
+- **每日**：检查 `hf-refresh` 单链是否跑完（串行头 `compact → collect --full-scan → build --stale`，并行段 `reconcile ‖ sizes ‖ readme`，串行尾 `parse-readme → export-wide → request run-due → archive → prune → doctor`，链尾 `files ‖ preview`（`--until 00:20`））；到 09:00 未启动的步骤留给次日，不算失败
 - **每周**：核对本周每天都有 `refresh` 记录（`data/runs/` 里按命令名筛），缺的那天看 `data/logs/*-refresh-*.log` 断在哪一步；确认无误后清理 `backup/`
 - **每月**：运行 `build`（默认只重放近 7 天热区）核对派生层；需要整体重算时，**先确认 `data/raw/dt=` 覆盖了全部采过的日期**（含冷区）再跑 `build --full`——冷区未复原时它会拒绝执行，硬要跑只能加 `--allow-cold-loss`，而那等于承认这批历史不要了
 - **`exports/` 不在恢复范围内**：单文件宽表是可重建投影，损坏或过期时重跑 `hf-data-crawl export-wide` 即可，不需要备份，也不能作为重建其它层的依据

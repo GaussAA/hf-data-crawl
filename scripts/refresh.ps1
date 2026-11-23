@@ -4,7 +4,8 @@
     刷新鲜：每日 00:30 起跑完全部例行，09:00 是软边界。
 .DESCRIPTION
     编排在 `ops/refresh.py`（ADR-0008）：串行头（compact → collect --full-scan →
-    build）把 `current` 定稿，然后对账与两个锁外抓取并行，最后导出、交付、清理、体检。
+    build）把 `current` 定稿，然后对账与两个锁外抓取并行，最后导出、交付、清理、体检，
+    再由链尾 files/preview 兜底到 00:20。
     本脚本只负责一件事：把任务名、墙钟上限与日志前缀交给 `Invoke-HfTask`。
 
     为什么不再用 `daily.ps1`：那条是纯串行 foreach，四个抓取只能排队；并行段必须在

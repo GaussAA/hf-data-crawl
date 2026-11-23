@@ -9,6 +9,7 @@
                 → 〔reconcile ‖ fetch-sizes / fetch-readme〕
                 → parse-readme → export-wide → request run-due
                 → archive → prune → doctor
+                → 〔fetch-files ‖ fetch-preview（--top 0 --until 00:20）〕
                 顺序与并发由 `ops/refresh.py` 保证，不由钟点猜。09:00 是软边界：
                 到点不再启动新的抓取，已在跑的收尾，`doctor` 照常跑——它是唯一
                 能说明「今天哪里没跑完」的环节（ADR-0008）。
