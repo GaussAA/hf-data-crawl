@@ -52,6 +52,17 @@
     无害（`build` 按 raw 全量重放，重复的行会去重），次日 00:30 那次被 IgnoreNew
     挡掉，数据并不缺。
 
+    **登录补跑**（2026-11-25 加）：`StartWhenAvailable` 只补「**没启动过**」的实例。
+    如果链启动了、却在半路被关机杀掉，系统认为它已经跑过，不再补——2026-11-25 实测：
+    00:30 起跑，00:40 关机，collect 只写了 408/1159 片，当天零采集，开机后毫无动静
+    （任务结果是 0x40010004，不是「错过」）。所以另加一条登录触发，延迟十分钟：
+
+      - 十分钟是等网络与代理起来。链的第一步就要连 HF，早启动只会拿到超时；
+      - 这条触发不判断「今天跑没跑」，交给 `refresh` 自己按 `runs/` 台账决定：
+        已完成的步骤一律「今天已完成」跳过，全做完时几秒就退出，不写任何数据；
+      - 与每日触发共用同一个任务，`MultipleInstances = IgnoreNew` 保证与正在跑的
+        链不会并发；登录时若链正在跑，这次触发直接作废。
+
     其余与旧版一致：
       - 允许在电池供电时启动（旧版 DisallowStartIfOnBatteries 会让任务被拒绝，
         结果码 0x800710E0），且切到电池不中断；
@@ -163,8 +174,15 @@ $jobs = @(
     # 补跑安全的前提是全站扫描（拿的是扫描那一刻的底库，不是重放昨天）与
     # IgnoreNew（不会与下一班并发）。
     @{ Name = "hf-refresh"; Script = "refresh.ps1"; Hours = 10; CatchUp = $true
-       LogonDelay = $null
-       Triggers = @((New-ScheduledTaskTrigger -Daily -At $RefreshTime)) }
+       LogonDelay = "PT10M"
+       # 两条触发，同一个任务：每日班次 + 登录后十分钟。
+       # 登录那条补的是 `StartWhenAvailable` 补不到的洞——链启动了却被中途杀掉，
+       # 系统认为「跑过了」，不会再补（2026-11-25：00:40 关机，当天零采集）。
+       # 多跑一次的代价接近于零：`refresh` 按 `runs/` 台账跳过已完成的步骤。
+       Triggers = @(
+           (New-ScheduledTaskTrigger -Daily -At $RefreshTime),
+           (New-ScheduledTaskTrigger -AtLogOn)
+       ) }
 )
 
 foreach ($job in $jobs) {
