@@ -34,7 +34,7 @@ from ..delivery.commands import (
 )
 from ..pipeline.commands import run_bronze_view, run_build
 from ..pipeline.recovery import check_and_recover
-from ..platform import DatasetStore, LockBusy, Outcome, exclusive, write_run
+from ..platform import DatasetStore, LockBusy, Outcome, exclusive, load_env_file, write_run
 from ..query.commands import run_query, run_report
 from .commands import run_archive, run_compact, run_docs, run_doctor, run_prune
 from .parsers import DOCTOR_LOCK_WAIT, SNAPSHOT_LOCK_WAIT, build_parser
@@ -96,6 +96,16 @@ def main(argv: list[str] | None = None, *, transport: Any = None) -> int:
             acquire 切片的内部抽象。
     """
     args = build_parser().parse_args(argv)
+    # `.env` 必须在**任何**配置读取之前补进环境，而且只在这里补一次。
+    #
+    # 此前只有 acquire 的两三个命令自己调 `load_env_file()`，`refresh` 这条链上
+    # 一个都没调——于是 `HF_DAILY_START` / `HF_FILL_ENABLED` / `HF_FILL_QUIET`
+    # 在编排器进程里全是「没配」，一律走缺省值。2026-11-24 的实证：`.env` 里写着
+    # `HF_FILL_ENABLED=0`，兜底段照样跑了 100 分钟。
+    #
+    # 配置读不到不会报错，只会**默默按缺省值办**，这比崩溃难查得多。放在组合根，
+    # 所有命令（含子进程）都从同一份环境出发。
+    load_env_file()
     store = DatasetStore(Path(args.data_dir))
     # 未显式给 --lock-wait 时按命令取默认值：写命令立即失败，生成命令先等一会儿；
     # 体检只等 2 秒，等不到就降级为非快照而不是阻塞排障。
