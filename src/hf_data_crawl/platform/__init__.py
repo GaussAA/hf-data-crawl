@@ -32,6 +32,7 @@ from .retention import (
 from .runs import (
     COLLECT_COMPLETE_REASONS,
     FULL_SCAN,
+    SHORT_SCAN,
     Outcome,
     last_success,
     read_runs,
@@ -110,6 +111,7 @@ __all__ = [
     "read_runs",
     "COLLECT_COMPLETE_REASONS",
     "FULL_SCAN",
+    "SHORT_SCAN",
     "last_success",
     # 保留窗口与冷区
     "REPLAY_WINDOW_DAYS",

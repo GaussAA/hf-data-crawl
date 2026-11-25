@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from datetime import date
 from typing import Any
 
@@ -15,7 +16,7 @@ from ..platform.deadline import DeadlineError, deadline_epoch
 from ..platform.env import load_env_file
 from ..platform.lock import exclusive
 from ..platform.presets import DEFAULT_PRESET_NAME, get_preset
-from ..platform.runs import COLLECT_COMPLETE_REASONS, Outcome, read_runs
+from ..platform.runs import COLLECT_COMPLETE_REASONS, FULL_SCAN, SHORT_SCAN, Outcome, read_runs
 from ..platform.schedule import parse_quiet
 from ..platform.store import DatasetStore
 from ..platform.tables import README_FIELDS_SCHEMA
@@ -149,6 +150,58 @@ def apply_collect_defaults(args: argparse.Namespace) -> None:
         args.pages_without_new = preset.pages_without_new
 
 
+#: 全站扫描的「短轮」判据：本轮条数低于上一轮完整扫描的这个比例，就当作被上游截断。
+#:
+#: 留 5% 余量是给正常波动的：底库每天新增、删除各几千，量级在千分之几。2026-11-25
+#: 那次是 64%，离阈值很远——真被截断时差得很明显，判据不必敏感。
+SHORT_SCAN_RATIO = 0.95
+
+
+def _last_full_scan_records(store: DatasetStore) -> int | None:
+    """上一轮「扫到末页」的采集拿了多少条，作为本轮该有的量级。"""
+    latest: int | None = None
+    for item in read_runs(store):
+        if item.get("command") != "collect" or item.get("status") != "success":
+            continue
+        payload = item.get("payload") or {}
+        if payload.get("stopped_reason") not in FULL_SCAN:
+            continue
+        records = payload.get("records")
+        if isinstance(records, int):
+            latest = records
+    return latest
+
+
+def _flag_short_scan(store: DatasetStore, summary: CollectSummary) -> CollectSummary:
+    """上游给了 `end`、条数却明显少于上轮时，把原因改记成 `short`。
+
+    为什么要改：`end` 的意思是「扫到末页了」，下游据此才敢判「谁下架了」。而
+    2026-11-25 那次，上游在第 740 页就不再给 `rel="next"`，条数只有底库的 64%；
+    抽 50 个「没扫到」的库逐一去问，**50/50 都还在**。也就是说这一轮的 `end` 是谎报。
+
+    改记 `short` 之后，两处下游会跟着变：
+
+    - `FULL_SCAN` 不含它 → 对账不拿这一轮当完整会话的基准，也不据此判下架；
+    - `COLLECT_COMPLETE_REASONS` 含它 → 仍算「今天采过了」，doctor 不会误报没采集。
+
+    退出码仍是 0：数据真采到了，只是没采全，不该让整条链变红。
+    """
+    if summary.stopped_reason not in FULL_SCAN:
+        return summary
+    expected = _last_full_scan_records(store)
+    if expected is None or expected <= 0:
+        return summary
+    if summary.records >= expected * SHORT_SCAN_RATIO:
+        return summary
+    share = summary.records / expected
+    print(
+        f"⚠️  本轮只扫到 {summary.records:,} 条，上一轮完整扫描是 {expected:,} 条（{share:.0%}）。\n"
+        f'    上游提前收尾了游标链——第 {summary.pages} 页之后没有 `rel="next"`。\n'
+        f"    这一轮记作 `short`：算采过（不再重采），但不算扫全，对账不会据此判下架。"
+    )
+    return replace(summary, stopped_reason=SHORT_SCAN)
+
+
 def run_collect(
     args: argparse.Namespace, store: DatasetStore, transport: Transport | None
 ) -> Outcome:
@@ -173,6 +226,9 @@ def run_collect(
         full_scan=args.full_scan,
         dry_run=args.dry_run,
     )
+    if not args.dry_run:
+        # 判在前、打印在后：摘要那一行要写 `short`，别先说 end 再改口。
+        summary = _flag_short_scan(store, summary)
     _print_collect(summary)
     # 补跑过去日期时，`collector.run` 只派生了那一天，而 `current` 是「最新一行
     # 的物化」——把它写成那天的值等于整体回退，卡片表还会被旧批次整行覆盖。

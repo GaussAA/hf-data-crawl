@@ -29,6 +29,7 @@ from hf_data_crawl.acquire import commands
 from hf_data_crawl.acquire.collect import CollectSummary
 from hf_data_crawl.acquire.files import FileSummary
 from hf_data_crawl.acquire.reconcile import ReconcileSummary
+from hf_data_crawl.platform.runs import Outcome, write_run
 from hf_data_crawl.platform.store import DatasetStore
 from hf_data_crawl.platform.tables import table
 
@@ -599,3 +600,78 @@ def test_没有失败时不打印空分类() -> None:
     out = buffer.getvalue()
     assert "临时失败 0 ·" in out
     assert "（" not in out.split("临时失败")[1].split("\n")[0]
+
+
+# ---------------------------------------------------------------- 上游截断
+
+
+def _seed_full_scan(
+    store: DatasetStore, *, records: int, reason: str = "end", day: date = date(2026, 11, 24)
+) -> None:
+    """在台账里放一轮「上一轮采集」，作为本轮该有的量级。"""
+    write_run(
+        store,
+        "collect",
+        datetime(day.year, day.month, day.day, 0, 30),
+        Outcome({"snapshot_date": day.isoformat(), "stopped_reason": reason, "records": records}),
+    )
+
+
+def _patch_collector(monkeypatch: pytest.MonkeyPatch, summary: CollectSummary) -> None:
+    class FakeCollector:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def run(self, *_args: object, **_kwargs: object) -> CollectSummary:
+            return summary
+
+    monkeypatch.setattr(commands, "Collector", FakeCollector)
+    monkeypatch.setattr(commands, "_open_transport", lambda _transport: None)
+
+
+def test_条数明显少于上轮就改记short(tmp_path: Path, monkeypatch, capsys) -> None:
+    """上游能在不给 `rel="next"` 的情况下提前收尾，而我们原先照抄成 `end`。
+
+    2026-11-25 实测：扫到 739,381 条（上轮 1,147,421，只 64%），抽 50 个「没扫到」
+    的库去问，50 个全在。`end` 那次是谎报——下游若照它判下架，会一次冤枉四十万个库。
+    """
+    store = DatasetStore(tmp_path / "data")
+    _seed_full_scan(store, records=1_000_000)
+    _patch_collector(monkeypatch, replace(summary_on(date.today()), records=640_000, pages=740))
+
+    outcome = commands.run_collect(collect_args(), store, None)
+
+    assert outcome.payload.stopped_reason == "short"
+    assert "上游提前收尾" in capsys.readouterr().out
+
+
+def test_条数与上轮相当就不改(tmp_path: Path, monkeypatch) -> None:
+    """底库每天有几千增删，正常波动不该被当成截断——那会让判据失效。"""
+    store = DatasetStore(tmp_path / "data")
+    _seed_full_scan(store, records=1_000_000)
+    _patch_collector(monkeypatch, replace(summary_on(date.today()), records=990_000))
+
+    outcome = commands.run_collect(collect_args(), store, None)
+
+    assert outcome.payload.stopped_reason == "end"
+
+
+def test_没有上一轮全扫就不判(tmp_path: Path, monkeypatch) -> None:
+    """首轮没有量级可比，宁可放过，也不要凭一个凭空编的基准把它判成截断。"""
+    store = DatasetStore(tmp_path / "data")
+    _patch_collector(monkeypatch, replace(summary_on(date.today()), records=10))
+
+    outcome = commands.run_collect(collect_args(), store, None)
+
+    assert outcome.payload.stopped_reason == "end"
+
+
+def test_上轮是有界试跑就不当基准(tmp_path: Path, monkeypatch) -> None:
+    """`--max-pages 100` 的试跑只扫了一百页，拿它当基准会把正常全扫判成截断。"""
+    store = DatasetStore(tmp_path / "data")
+    _seed_full_scan(store, records=100_000, reason="max_pages")
+    _patch_collector(monkeypatch, replace(summary_on(date.today()), records=10))
+
+    outcome = commands.run_collect(collect_args(), store, None)
+
+    assert outcome.payload.stopped_reason == "end"

@@ -22,14 +22,27 @@ RUNS_KEEP = 500
 #: collect 的完成态停止原因。`--skip-if-done` 与 doctor 的完成检查共用这一份枚举，
 #: 避免新增停止原因时两处各自维护、判定脱节。`watermark` 是历史 run 记录里的旧值。
 COLLECT_COMPLETE_REASONS = frozenset(
-    {"end", "watermark", "watermark_timestamp", "watermark_no_new"}
+    {"end", "short", "watermark", "watermark_timestamp", "watermark_no_new"}
 )
+
+#: 「上游给了一个 `end`，但条数明显少于上轮」——采过了，但没扫全。
+#:
+#: 2026-11-25 的实证：全站扫描在 740 页 / 739,381 条就没了 `Link: rel="next"`，
+#: 而抽 50 个「没扫到」的库去问 Upstream，**50/50 都还在**。也就是说上游把游标链
+#: 提前收了尾，而 `stopped_reason` 原本记的是 `end`——它谎称自己扫完了。
+#:
+#: 单独立一个原因，是因为它的处置与 `end` 相反：`end` 允许据此判下架，`short` 不许
+#: （下游把未见到的库顺延进探测队列，而不是标 disappeared）。
+SHORT_SCAN = "short"
 
 #: 「扫到末页」——**全站定稿**的唯一凭据。刷新链的 `collect` 与对账的完整会话都认它。
 #:
 #: 与 `COLLECT_COMPLETE_REASONS` 不是一回事，别合并：那一组回答「今天采过了吗」
 #: （增量模式停在水位线也算），这一组回答「扫完了吗」。2026-11-20 的教训是——
 #: 采集 23:08 才定稿，而白天按水位线停的那次被当成了「已完成」。
+#:
+#: `short` **刻意不在这里**：它采过了（所以在上面那一组），但没扫全（所以不在这一组）。
+#: 两者分开，下游才不会拿一轮被上游截断的数据去判「谁下架了」。
 FULL_SCAN = frozenset({"end"})
 
 

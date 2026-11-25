@@ -13,7 +13,13 @@ from typing import Any
 from hf_data_crawl.ops.cli import main
 from hf_data_crawl.pipeline import raw
 from hf_data_crawl.pipeline.derive import derive_day
-from hf_data_crawl.platform.runs import Outcome, read_runs, write_run
+from hf_data_crawl.platform.runs import (
+    COLLECT_COMPLETE_REASONS,
+    FULL_SCAN,
+    Outcome,
+    read_runs,
+    write_run,
+)
 from hf_data_crawl.platform.store import DatasetStore
 
 DAY1 = date(2026, 11, 1)
@@ -329,3 +335,14 @@ def test_last_success取最晚而不是第一条() -> None:
     ]
 
     assert last_success(runs, "collect") == datetime(2026, 11, 21, 23, 8)
+
+
+def test_短轮算采过但不算扫全() -> None:
+    """`short` 的两面：采过了（不必重采），但没扫全（不许据此判下架）。
+
+    2026-11-25 上游在第 740 页之后不再给 `rel="next"`，条数只有底库的 64%，而抽
+    50 个「没扫到」的库去问，50 个全在。这轮若仍记 `end`，对账就有理由把四十万个
+    库判成下架——所以它必须落在「完整」之外。
+    """
+    assert "short" in COLLECT_COMPLETE_REASONS
+    assert "short" not in FULL_SCAN
