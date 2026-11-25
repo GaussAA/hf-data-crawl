@@ -24,6 +24,53 @@ $ErrorActionPreference = "Stop"
 #: 与 runs.RUNS_KEEP 同一哲学：有界才不会被计划任务悄悄撑爆。
 $script:LogKeep = 200
 
+#: 墙钟上限：跑兜底段 25 小时，只跑链 10 小时。
+#:
+#: 兜底段（files + preview）会从链尾一直跑到次日起点前十分钟，而 `--until` 的跨度封顶
+#: 23 小时（`platform/deadline.MAX_SPAN`），加上链头到它起跑的那一小时，最长 24 小时。
+#: 10 小时是兜底段还没挂回链上时的口径；挂回之后它会在半路把兜底段斩掉（常开那台
+#: 04:40 起跑，14:00 被杀），而兜底段存在的理由正是把链外的整段时间用掉。
+$script:WallClockWithFill = 25 * 3600
+$script:WallClockChainOnly = 10 * 3600
+
+function Get-HfWallClockSeconds {
+    <#
+    .SYNOPSIS
+        墙钟上限（秒）：跑兜底段的机器给 25 小时，不跑的给 10 小时。
+    .DESCRIPTION
+        取自仓库根 `.env` 的 `HF_FILL_ENABLED`。`setup-schedule.ps1` 算任务时限用的是
+        同一个键、同一个阈值——两处必须一起改；只改一处会得到「任务时限比墙钟短」或反过来，
+        表现为兜底段跑到一半被斩，而摘要里只剩一行 124，看不出是谁下的手。
+
+        读不到这个键时按「开」算：Python 侧 `platform/schedule.fill_enabled` 的缺省也是开，
+        这里跟着它，免得同一个部署在两处得到相反的结论。
+
+        注意这**不是**设计上的终点：真正的收工点是 `--until`，墙钟只负责「有一步真卡住了」。
+        所以它只需要大于最长窗口，不需要精确。
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Root
+    )
+
+    $path = Join-Path $Root ".env"
+    if (-not (Test-Path -LiteralPath $path)) { return $script:WallClockWithFill }
+
+    foreach ($line in (Get-Content -LiteralPath $path -Encoding utf8)) {
+        $text = $line.Trim()
+        if (-not $text -or $text.StartsWith("#")) { continue }
+        if ($text.StartsWith("export ")) { $text = $text.Substring(7).TrimStart() }
+        $split = $text.IndexOf("=")
+        if ($split -lt 1) { continue }
+        if ($text.Substring(0, $split).Trim() -ne "HF_FILL_ENABLED") { continue }
+        $value = $text.Substring($split + 1).Trim().Trim("'").Trim('"')
+        if (-not $value) { return $script:WallClockWithFill }
+        if ($value -match '^(0|false|no|off)$') { return $script:WallClockChainOnly }
+        return $script:WallClockWithFill
+    }
+    return $script:WallClockWithFill
+}
+
 function Remove-StaleLogs {
     <#
     .SYNOPSIS

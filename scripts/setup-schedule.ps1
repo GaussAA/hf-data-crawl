@@ -66,7 +66,11 @@
     其余与旧版一致：
       - 允许在电池供电时启动（旧版 DisallowStartIfOnBatteries 会让任务被拒绝，
         结果码 0x800710E0），且切到电池不中断；
-      - 设执行时限：写命令持有数据目录的锁，挂死的进程会一直占着它。
+      - 设执行时限：写命令持有数据目录的锁，挂死的进程会一直占着它。**时限按兜底段
+        开关派生**（`HF_FILL_ENABLED`）：开 → 25 小时，关 → 10 小时。这个数曾写死 10 小时，
+        那是兜底段还没挂回链上时的口径；挂回之后它会在半路把兜底段斩掉——常开那台
+        04:40 起跑，14:00 就被杀，而兜底段存在的理由正是把链外的整段时间用掉。
+        `_common.ps1` 的 `Get-HfWallClockSeconds` 用的是同一个键、同一个阈值，两处必须一起改。
 
     幂等：同名任务会被覆盖，可反复执行。**升级时 11 个旧任务会被一并清掉**
     （`hf-daily` / `hf-sizes` / `hf-files` / `hf-archive` / `hf-compact` /
@@ -168,12 +172,20 @@ if ($RefreshTime -notmatch '^([01]?\d|2[0-3]):[0-5]\d$') {
 }
 Write-Host "班次起点：$RefreshTime（来源：$refreshFrom）"
 
+# 任务时限（小时）必须盖住整条链最长能跑多久，口径与 `_common.ps1` 的
+# `Get-HfWallClockSeconds` 是同一份：跑兜底段 25 小时，不跑 10 小时。两处都从
+# `HF_FILL_ENABLED` 派生，改一处必须改另一处，否则任务时限会把墙钟没跑完的链强杀。
+# 10 小时是兜底段还没挂回链上时的口径；挂回之后常开那台 04:40 起跑，14:00 就会被斩。
+$fillEnabled = (Read-HfEnvValue -Key "HF_FILL_ENABLED" -Default "1") -match '^(1|true|yes|on)$'
+$wallHours = if ($fillEnabled) { 25 } else { 10 }
+Write-Host ("兜底段：$(if ($fillEnabled) { '开' } else { '关' })（任务时限 $wallHours 小时）")
+
 $jobs = @(
     # 一条链跑完全部例行（ADR-0008）。按班次起点起跑，09:00 软边界；**错过要补跑**——
     # 2026-11-21 实测：前一晚关机，00:30 没跑、开机也不补，整天零采集且无提醒。
     # 补跑安全的前提是全站扫描（拿的是扫描那一刻的底库，不是重放昨天）与
     # IgnoreNew（不会与下一班并发）。
-    @{ Name = "hf-refresh"; Script = "refresh.ps1"; Hours = 10; CatchUp = $true
+    @{ Name = "hf-refresh"; Script = "refresh.ps1"; Hours = $wallHours; CatchUp = $true
        LogonDelay = "PT10M"
        # 两条触发，同一个任务：每日班次 + 登录后十分钟。
        # 登录那条补的是 `StartWhenAvailable` 补不到的洞——链启动了却被中途杀掉，

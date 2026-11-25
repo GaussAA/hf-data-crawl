@@ -211,7 +211,55 @@ def test_每一步都有墙钟上限且退出码可辨() -> None:
     ), "超时上限必须带 1..86400 的取值范围，且默认 1 小时"
 
     chain = text(SCRIPTS / "refresh.ps1")
-    assert "-TimeoutSeconds 36000" in chain, "刷新链必须有 10 小时墙钟上限"
+    # 墙钟不再是字面值：它由 `HF_FILL_ENABLED` 派生（DECISIONS #182）。跑兜底段的那台
+    # 最长要 24 小时（`--until` 跨度封顶 23 小时 + 链头一小时），写死 10 小时会在半路
+    # 把兜底段斩掉——而兜底段存在的理由正是把链外的整段时间用掉。
+    assert "Get-HfWallClockSeconds -Root $root" in chain, "刷新链的墙钟必须走派生函数"
+    assert "36000" not in chain, "别退回写死的 10 小时"
+
+
+def _wall_clock_hours(source: str, name: str) -> int:
+    """从 ps1 里取 `$script:WallClockXxx = N * 3600` 的 N。
+
+    写成 `N * 3600` 而不是秒数，是为了让「几小时」这个意思在源码里一眼可见——
+    这次的事故就是从一个看不出含义的 `36000` 开始的。
+    """
+    match = re.search(rf"\$script:{name} = (\d+) \* 3600", source)
+    assert match, f"{name} 必须写成 `N * 3600`"
+    return int(match.group(1))
+
+
+def test_墙钟必须大于兜底段最长窗口() -> None:
+    """10 小时是兜底段还没挂回链上时的口径，现在只够给不跑兜底段的机器。
+
+    兜底段从链尾跑到次日起点前十分钟，`--until` 的跨度封顶 `MAX_SPAN`（23 小时），
+    加上链头那一小时——墙钟一旦小于它，「03:50 收工」就变成「14:00 被强杀」，
+    而摘要里只剩一行 124，看不出是谁下的手。
+    """
+    from hf_data_crawl.platform.deadline import MAX_SPAN
+
+    source = text(COMMON)
+    longest = _wall_clock_hours(source, "WallClockWithFill") * 3600
+    shortest = _wall_clock_hours(source, "WallClockChainOnly") * 3600
+
+    assert longest > MAX_SPAN.total_seconds() + 3600, "兜底段的墙钟必须盖住最长窗口"
+    assert shortest < MAX_SPAN.total_seconds(), "不跑兜底段时不该给到 23 小时以上"
+
+
+def test_任务时限与墙钟是同一份口径() -> None:
+    """两处各算一遍这个数，一处改了另一处不改不会报错。
+
+    症状是「墙钟还没到，任务先把进程树掐了」——或者反过来，任务等墙钟，
+    而墙钟又比设计窗口长，一整天的班次被 IgnoreNew 挡掉。故两边取值必须逐字相同。
+    """
+    source = text(COMMON)
+    with_fill = _wall_clock_hours(source, "WallClockWithFill")
+    chain_only = _wall_clock_hours(source, "WallClockChainOnly")
+
+    setup = text(SCRIPTS / "setup-schedule.ps1")
+    expected = f"$wallHours = if ($fillEnabled) {{ {with_fill} }} else {{ {chain_only} }}"
+    assert expected in setup, "注册脚本的任务时限必须与 Get-HfWallClockSeconds 同值"
+    assert "Hours = $wallHours" in setup, "任务时限得真的用上那个值"
 
 
 def test_超时要杀进程树而不是只杀父进程() -> None:

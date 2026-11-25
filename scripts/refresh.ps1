@@ -27,9 +27,11 @@ param(
 
 . (Join-Path $PSScriptRoot "_common.ps1")
 
-# 墙钟上限 10 小时：编排器内部是 8.5 小时预算，留 1.5 小时给「到点时正在跑的抓取
-# 自然收尾」。超出这个上限说明有一步真的卡住了，`Invoke-HfTask` 会强杀进程树。
+# 墙钟上限由 `.env` 的 `HF_FILL_ENABLED` 派生（`Get-HfWallClockSeconds`）：跑兜底段的
+# 那台给 25 小时，链外的整段时间才用得上；不跑的仍是 10 小时。超限说明有一步真的卡住了，
+# `Invoke-HfTask` 会强杀进程树。真正的收工点仍是 `--until`，这里只是兜底。
+$root = Split-Path -Parent $PSScriptRoot
 exit (Invoke-HfTask -Name "refresh" -Arguments (@(
     "--lock-wait", "900",
     "refresh"
-) + $Rest) -TimeoutSeconds 36000)
+) + $Rest) -TimeoutSeconds (Get-HfWallClockSeconds -Root $root))
